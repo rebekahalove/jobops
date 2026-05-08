@@ -1,2 +1,40 @@
 # jobops
 JobOps is an AI job-search operations platform for serious technical candidates, featuring a candidate-agent portfolio, role-fit analysis, and agent-readable hiring endpoints.
+
+## Local Quickstart
+
+This first scaffold is local-only. It has no auth, database connection, scraping, email integration, paid-service calls, or live model calls.
+
+```powershell
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
+corepack pnpm install
+corepack pnpm dev
+```
+
+Then open:
+
+```text
+http://localhost:3000
+```
+
+The candidate-agent scaffold is at:
+
+```text
+http://localhost:3000/agent
+```
+
+## Planning Docs
+
+- [Recommended Architecture](docs/architecture.md)
+- [Initial Repo Structure](docs/repo-structure.md)
+- [Initial Data Model](docs/data-model.md)
+- [Candidate Profile Intake](docs/candidate-profile-intake.md)
+- [Environment Configuration](docs/environment.md)
+- [First Milestone](docs/milestone-01.md)
+- [Metrics](docs/metrics.md)
+- [Testing and Evals](docs/testing-evals.md)
+- [Adversarial Testing](docs/security-adversarial-testing.md)
+- [CI/CD Plan](docs/ci-cd.md)
+- [Infrastructure and Deployment](docs/infrastructure-deployment.md)
+- [First Files to Create](docs/first-files.md)

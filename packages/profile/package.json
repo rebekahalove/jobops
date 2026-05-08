@@ -1,0 +1,20 @@
+{
+  "name": "@jobops/profile",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@jobops/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "vitest": "3.0.4"
+  }
+}
