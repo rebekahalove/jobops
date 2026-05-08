@@ -19,13 +19,16 @@ Recommended structure after approval:
 |       `-- README.md
 |-- services/
 |   `-- api/
+|       |-- alembic/
 |       |-- jobops_api/
 |       |   |-- agents/
+|       |   |-- db/
 |       |   |-- routers/
 |       |   |-- services/
 |       |   |-- settings.py
 |       |   `-- main.py
 |       |-- tests/
+|       |-- alembic.ini
 |       |-- pyproject.toml
 |       `-- README.md
 |-- packages/
@@ -87,6 +90,9 @@ Recommended structure after approval:
 
 - FastAPI application.
 - Local settings and environment loading.
+- Neon Postgres access.
+- SQLAlchemy models.
+- Alembic migrations.
 - Mock agent endpoints for the first local scaffold.
 - Tenant and domain resolution.
 - Candidate-agent Q&A endpoints.
@@ -94,7 +100,7 @@ Recommended structure after approval:
 - Private JobOps CRUD when approved.
 - OpenAPI contract generation.
 
-Neon Postgres access, SQLAlchemy models, and Alembic migrations are planned for the first database increment, but are intentionally not part of the initial local scaffold.
+Neon Postgres access, SQLAlchemy models, and Alembic migrations are part of the first database increment.
 
 ## Package Responsibilities
 
