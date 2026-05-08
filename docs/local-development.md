@@ -15,7 +15,7 @@ It does not include:
 
 - Node.js 22 or newer.
 - `pnpm` through Corepack.
-- Python 3.12 if you want to run the FastAPI scaffold.
+- Python 3.14 if you want to run the FastAPI scaffold.
 
 PowerShell may block `npm.ps1` or `pnpm.ps1` shims. If so, use `npm.cmd` or run package manager commands through Corepack.
 
@@ -56,10 +56,10 @@ The API scaffold is optional for this first local run.
 From `services/api`:
 
 ```powershell
-py -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-py -m pip install -e .[dev]
-py -m uvicorn jobops_api.main:app --reload --port 8000
+python -m pip install -e ".[dev]"
+python -m uvicorn jobops_api.main:app --reload --port 8000
 ```
 
 Then open:
@@ -79,4 +79,22 @@ For local dev:
 .env.dev  -> local secrets such as DATABASE_URL
 ```
 
-The scaffold does not connect to the database yet. Keep the Neon connection string in `.env.dev`; it is ignored by Git and reserved for the first database increment.
+The backend database layer uses SQLAlchemy and Alembic. Keep the Neon connection string in `.env.dev`; it is ignored by Git and should never be committed.
+
+## Database Setup
+
+After `.env.dev` contains `DATABASE_URL`, apply migrations:
+
+```powershell
+cd C:\Users\rasho\jobops\services\api
+.\.venv\Scripts\Activate.ps1
+python -m alembic upgrade head
+```
+
+Seed the first public candidate profile shell:
+
+```powershell
+python -m jobops_api.cli seed-public-profile --hostname rebekahalove.dev
+```
+
+This creates the first tenant, candidate profile, and domain mapping. It does not publish unreviewed facts.

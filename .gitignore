@@ -43,8 +43,11 @@ jspm_packages/
 .venv/
 __pycache__/
 .pytest_cache/
+.pytest-tmp/
+.pytest-system-temp/
 .ruff_cache/
 .mypy_cache/
+*.egg-info/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/

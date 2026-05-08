@@ -42,7 +42,7 @@ Under the hood, this should be the first tenant of a multi-tenant JobOps platfor
 
 ## Scaffold 0: Local-Only First Increment
 
-Before the database-backed milestone work begins, create a small local scaffold that can run today:
+Completed as the first increment before database-backed milestone work:
 
 - Next.js portfolio app.
 - Local mock candidate-agent Q&A.
@@ -50,7 +50,7 @@ Before the database-backed milestone work begins, create a small local scaffold 
 - Shared profile and contract packages.
 - FastAPI scaffold with health and mock endpoints.
 - Environment loader that understands `.env` and `.env.<APP_ENV>`.
-- No database connection code.
+- No database connection code in scaffold 0.
 - No auth.
 - No scraping.
 - No email integration.
@@ -60,7 +60,7 @@ Before the database-backed milestone work begins, create a small local scaffold 
 
 1. Initialize the monorepo with `pnpm`, TypeScript config, Python project conventions, `.gitignore`, `.env.example`, and baseline README updates.
 2. Scaffold `services/api` with FastAPI, health check, settings loading, mock endpoints, and test setup.
-3. Defer SQLAlchemy, Alembic, and Neon connection code until the first explicit database increment.
+3. Add SQLAlchemy, Alembic, and Neon connection code in the first explicit database increment.
 4. Add `packages/profile` with Rebekah's approved public seed profile and a backend seed/import path.
 5. Add `packages/contracts` with shared JSON Schema contracts and generated TypeScript API types from FastAPI OpenAPI.
 6. Add backend candidate-profile, candidate Q&A, and role-fit endpoints using mock model support for tests.
@@ -73,7 +73,7 @@ Before the database-backed milestone work begins, create a small local scaffold 
 
 - Public MVP works locally.
 - All required checks pass in CI.
-- Database integration has a documented next step, but no database connection is required for the local scaffold.
+- Database integration has a documented setup path and an initial Alembic migration.
 - At least 10 Q&A eval cases pass.
 - At least 5 role-fit eval cases pass.
 - At least 10 prompt-injection or data-exposure adversarial cases pass.

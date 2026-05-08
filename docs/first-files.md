@@ -78,4 +78,4 @@ Before creating scaffold files, confirm:
 - API deployment target: recommended Render.
 - API contracts: recommended OpenAPI plus generated TypeScript clients.
 
-Database files such as Alembic migrations, SQLAlchemy models, and DB sessions are deferred until the first explicit database increment.
+Database files such as Alembic migrations, SQLAlchemy models, and DB sessions are part of the first explicit database increment.
