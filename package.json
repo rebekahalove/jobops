@@ -7,8 +7,8 @@
     "dev": "corepack pnpm --filter @jobops/portfolio dev",
     "dev:portfolio": "corepack pnpm --filter @jobops/portfolio dev",
     "build": "corepack pnpm --filter @jobops/portfolio build",
-    "typecheck": "corepack pnpm --filter @jobops/portfolio typecheck && corepack pnpm --filter @jobops/contracts typecheck && corepack pnpm --filter @jobops/profile typecheck",
-    "test": "corepack pnpm --filter @jobops/profile test",
+    "typecheck": "corepack pnpm --filter @jobops/portfolio typecheck && corepack pnpm --filter @jobops/contracts typecheck && corepack pnpm --filter @jobops/profile typecheck && corepack pnpm --filter @jobops/model-connector typecheck",
+    "test": "corepack pnpm --filter @jobops/profile test && corepack pnpm --filter @jobops/model-connector test",
     "check": "corepack pnpm typecheck && corepack pnpm test"
   },
   "engines": {
