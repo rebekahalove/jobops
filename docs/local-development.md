@@ -49,6 +49,30 @@ http://localhost:3000/agent
 
 The app uses local mock behavior until verified public profile facts and the real backend workflow are implemented.
 
+## Run The JobOps Dashboard Stub
+
+The dashboard shell is the private JobOps app scaffold. It does not include auth, database-backed workflows, job intake, fit scoring, material generation, or AI calls yet.
+
+```powershell
+corepack pnpm dev:jobops
+```
+
+Then open:
+
+```text
+http://localhost:3002
+```
+
+The stub includes placeholder workflow areas for:
+
+- Profile.
+- Jobs.
+- Fit Scoring.
+- Materials.
+- Applications.
+
+The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
+
 ## Run The API Scaffold
 
 The API scaffold is optional for this first local run.

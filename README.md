@@ -24,6 +24,20 @@ The candidate-agent scaffold is at:
 http://localhost:3000/agent
 ```
 
+The JobOps dashboard stub runs separately:
+
+```powershell
+corepack pnpm dev:jobops
+```
+
+Then open:
+
+```text
+http://localhost:3002
+```
+
+The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, AI calls, fit scoring, and material generation are intentionally deferred. The recommended next feature is the profile generator.
+
 ## Planning Docs
 
 - [Recommended Architecture](docs/architecture.md)
