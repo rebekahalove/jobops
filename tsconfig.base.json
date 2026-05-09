@@ -16,6 +16,8 @@
     "baseUrl": ".",
     "paths": {
       "@jobops/contracts": ["packages/contracts/src/index.ts"],
+      "@jobops/model-connector": ["packages/model-connector/src/index.ts"],
+      "@jobops/model-connector/server": ["packages/model-connector/src/server.ts"],
       "@jobops/profile": ["packages/profile/src/index.ts"]
     }
   }

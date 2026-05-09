@@ -30,6 +30,7 @@ http://localhost:3000/agent
 - [Initial Repo Structure](docs/repo-structure.md)
 - [Initial Data Model](docs/data-model.md)
 - [Candidate Profile Intake](docs/candidate-profile-intake.md)
+- [Model Connectors](docs/model-connectors.md)
 - [Environment Configuration](docs/environment.md)
 - [First Milestone](docs/milestone-01.md)
 - [Metrics](docs/metrics.md)
