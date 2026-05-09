@@ -1,0 +1,271 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --surface-strong: #eef6f5;
+  --ink: #17212f;
+  --muted: #5b6778;
+  --line: #dbe3ea;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --focus: #7c5c2b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+}
+
+a {
+  color: inherit;
+}
+
+.dashboard-shell {
+  min-height: 100vh;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  padding: 16px clamp(16px, 4vw, 40px);
+}
+
+.brand {
+  display: grid;
+  gap: 2px;
+  text-decoration: none;
+}
+
+.brand span {
+  color: var(--accent-strong);
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.brand small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.primary-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.primary-nav a,
+.workflow-card a,
+.back-link {
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.primary-nav a {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.primary-nav a:hover,
+.primary-nav a:focus-visible {
+  border-color: var(--line);
+  background: var(--surface-strong);
+}
+
+.dashboard-main {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0 48px;
+}
+
+.page-heading,
+.recommended-panel,
+.placeholder-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.page-heading {
+  display: grid;
+  gap: 12px;
+  padding: 28px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--focus);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  max-width: 820px;
+  font-size: 2.1rem;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+h2 {
+  margin-bottom: 8px;
+  font-size: 1.15rem;
+  letter-spacing: 0;
+}
+
+p {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.page-heading p,
+.recommended-panel p,
+.placeholder-panel p {
+  max-width: 780px;
+  margin-bottom: 0;
+}
+
+.recommended-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  margin-top: 18px;
+  border-color: rgba(15, 118, 110, 0.38);
+  background: var(--surface-strong);
+  padding: 24px;
+}
+
+.recommended-panel h2 {
+  font-size: 1.45rem;
+}
+
+.primary-action {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 800;
+  padding: 11px 16px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.primary-action:hover,
+.primary-action:focus-visible {
+  background: var(--accent-strong);
+}
+
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.workflow-card {
+  display: grid;
+  min-height: 250px;
+  align-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 18px;
+}
+
+.workflow-card p {
+  margin-bottom: 0;
+}
+
+.empty-state {
+  color: var(--muted);
+}
+
+.placeholder-panel {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+}
+
+.empty-state-block {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 18px;
+}
+
+.empty-state-block p {
+  margin-bottom: 0;
+}
+
+@media (max-width: 980px) {
+  .workflow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .top-bar,
+  .recommended-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .top-bar {
+    align-items: flex-start;
+  }
+
+  .primary-nav {
+    justify-content: flex-start;
+  }
+
+  .dashboard-main {
+    width: min(100% - 24px, 1180px);
+    padding: 20px 0 32px;
+  }
+
+  .page-heading,
+  .recommended-panel,
+  .placeholder-panel {
+    padding: 20px;
+  }
+
+  .workflow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .primary-action {
+    width: 100%;
+  }
+}
