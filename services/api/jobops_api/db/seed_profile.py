@@ -46,12 +46,13 @@ def seed_public_profile(
     session.flush()
 
     if hostname:
-        domain = session.scalar(select(Domain).where(Domain.hostname == hostname))
+        normalized_hostname = hostname.lower().strip()
+        domain = session.scalar(select(Domain).where(Domain.hostname == normalized_hostname))
         if domain is None:
             session.add(
                 Domain(
                     candidate_profile_id=candidate_profile.id,
-                    hostname=hostname,
+                    hostname=normalized_hostname,
                     purpose="public_profile",
                     verification_status="pending",
                     is_canonical=True,
