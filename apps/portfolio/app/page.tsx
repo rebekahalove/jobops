@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { publicProfile } from "@jobops/profile";
+import { loadCandidateProfile } from "../lib/profile";
 
-export default function HomePage() {
-  const publishedFactCount = publicProfile.facts.filter(
+export default async function HomePage() {
+  const { profile, source } = await loadCandidateProfile();
+  const publishedFactCount = profile.facts.filter(
     (fact) => fact.visibility === "public" && fact.verificationStatus === "published"
   ).length;
 
@@ -10,8 +11,8 @@ export default function HomePage() {
     <main className="page-shell">
       <section className="hero">
         <p className="eyebrow">JobOps candidate-agent portfolio</p>
-        <h1>{publicProfile.displayName}</h1>
-        <p className="lede">{publicProfile.headline}</p>
+        <h1>{profile.displayName}</h1>
+        <p className="lede">{profile.headline}</p>
         <div className="actions">
           <Link className="primary-action" href="/agent">
             Open candidate agent
@@ -35,7 +36,7 @@ export default function HomePage() {
         <dl className="status-grid">
           <div>
             <dt>Profile state</dt>
-            <dd>{publicProfile.profileStatus}</dd>
+            <dd>{profile.profileStatus}</dd>
           </div>
           <div>
             <dt>Published facts</dt>
@@ -43,7 +44,7 @@ export default function HomePage() {
           </div>
           <div>
             <dt>Data source</dt>
-            <dd>Public seed profile</dd>
+            <dd>{source === "api" ? "Backend API" : "Public seed profile"}</dd>
           </div>
         </dl>
       </section>

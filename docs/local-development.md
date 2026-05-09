@@ -81,6 +81,8 @@ For local dev:
 
 The backend database layer uses SQLAlchemy and Alembic. Keep the Neon connection string in `.env.dev`; it is ignored by Git and should never be committed.
 
+The portfolio app also reads the repo-root `.env` and `.env.<APP_ENV>` on the server so it can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
+
 ## Database Setup
 
 After `.env.dev` contains `DATABASE_URL`, apply migrations:
@@ -98,3 +100,22 @@ python -m jobops_api.cli seed-public-profile --hostname rebekahalove.dev
 ```
 
 This creates the first tenant, candidate profile, and domain mapping. It does not publish unreviewed facts.
+
+## Run The API And Portfolio Together
+
+Start the API:
+
+```powershell
+cd C:\Users\rasho\jobops\services\api
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn jobops_api.main:app --reload --port 8000
+```
+
+In another terminal, start the portfolio:
+
+```powershell
+cd C:\Users\rasho\jobops
+corepack pnpm dev
+```
+
+With `JOBOPS_API_BASE_URL=http://localhost:8000` in `.env.dev`, the portfolio should show `Backend API` as its data source.

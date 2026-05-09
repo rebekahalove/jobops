@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from .profile_seed import load_public_seed_profile
+from .db.session import get_db_session
+from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by_hostname, get_candidate_profile_by_slug
 from .settings import load_settings
 
 
@@ -36,16 +38,26 @@ def health() -> dict[str, str]:
 
 
 @app.get("/v1/profiles/{slug}")
-def get_profile(slug: str) -> dict[str, Any]:
-    profile = load_public_seed_profile()
-    if profile["slug"] != slug:
+def get_profile(slug: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    candidate_profile = get_profile_or_404(session, slug)
+    return candidate_profile_to_public_dict(candidate_profile)
+
+
+@app.get("/v1/profile-by-hostname/{hostname}")
+def get_profile_by_hostname(hostname: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    candidate_profile = get_candidate_profile_by_hostname(session, hostname)
+    if candidate_profile is None:
         raise HTTPException(status_code=404, detail="Profile not found.")
-    return profile
+    return candidate_profile_to_public_dict(candidate_profile)
 
 
 @app.post("/v1/profiles/{slug}/questions")
-def answer_candidate_question(slug: str, request: CandidateQuestionRequest) -> dict[str, Any]:
-    profile = get_profile(slug)
+def answer_candidate_question(
+    slug: str,
+    request: CandidateQuestionRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, Any]:
+    profile = candidate_profile_to_public_dict(get_profile_or_404(session, slug))
     published_facts = [
         fact for fact in profile.get("facts", [])
         if fact.get("visibility") == "public" and fact.get("verificationStatus") == "published"
@@ -73,8 +85,12 @@ def answer_candidate_question(slug: str, request: CandidateQuestionRequest) -> d
 
 
 @app.post("/v1/profiles/{slug}/role-fit")
-def analyze_role_fit(slug: str, request: RoleFitRequest) -> dict[str, Any]:
-    get_profile(slug)
+def analyze_role_fit(
+    slug: str,
+    request: RoleFitRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, Any]:
+    get_profile_or_404(session, slug)
     return {
         "fitScore": 0,
         "fitSummary": "No reliable fit score can be produced until verified candidate profile facts are approved and published.",
@@ -94,3 +110,10 @@ def analyze_role_fit(slug: str, request: RoleFitRequest) -> dict[str, Any]:
             "This endpoint uses mock behavior and no live model."
         ]
     }
+
+
+def get_profile_or_404(session: Session, slug: str):
+    candidate_profile = get_candidate_profile_by_slug(session, slug)
+    if candidate_profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return candidate_profile

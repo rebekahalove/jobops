@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { CandidateAnswer, RoleFitAnalysis } from "@jobops/contracts";
-import { publicProfile } from "@jobops/profile";
+import type { CandidateAnswer, CandidateProfile, RoleFitAnalysis } from "@jobops/contracts";
 
 type ActivePanel = "question" | "role-fit";
 
@@ -35,7 +34,13 @@ const emptyRoleFit: RoleFitAnalysis = {
   caveats: ["This local scaffold does not call a live model or database."]
 };
 
-export function AgentWorkspace() {
+export function AgentWorkspace({
+  profile,
+  source
+}: {
+  profile: CandidateProfile;
+  source: "api" | "seed";
+}) {
   const [activePanel, setActivePanel] = useState<ActivePanel>("question");
   const [question, setQuestion] = useState("");
   const [jobDescription, setJobDescription] = useState("");
@@ -44,10 +49,10 @@ export function AgentWorkspace() {
 
   const publishedFactCount = useMemo(
     () =>
-      publicProfile.facts.filter(
+      profile.facts.filter(
         (fact) => fact.visibility === "public" && fact.verificationStatus === "published"
       ).length,
-    []
+    [profile.facts]
   );
 
   function answerQuestion() {
@@ -88,7 +93,9 @@ export function AgentWorkspace() {
             to invent details until verified facts are approved.
           </p>
         </div>
-        <div className="fact-pill">{publishedFactCount} published facts</div>
+        <div className="fact-pill">
+          {publishedFactCount} published facts · {source === "api" ? "API" : "seed"}
+        </div>
       </section>
 
       <section className="workspace">
