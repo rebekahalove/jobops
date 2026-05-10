@@ -73,6 +73,18 @@ The stub includes placeholder workflow areas for:
 
 The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
 
+The `/profile` route now includes the first profile intake shell. It supports local target-role intent fields, resume text paste, deterministic mock extraction, a draft profile preview, and suggested clarifying questions. The extractor is intentionally mocked: it does not call Gemini or any live provider, does not persist raw resume text, and marks generated claims as draft, resume-derived, not verified, and private.
+
+Deferred profile work:
+
+- Real file upload.
+- Model connector integration.
+- Structured output validation against production profile contracts.
+- Database persistence.
+- Human approval and publication workflow.
+
+Recommended next step: connect the mock extraction boundary to the model connector with structured validation while keeping tests on the mock adapter.
+
 ## Run The API Scaffold
 
 The API scaffold is optional for this first local run.

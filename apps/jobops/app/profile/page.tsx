@@ -1,5 +1,6 @@
-import { PlaceholderPage } from "../../components/placeholder-page";
+import React from "react";
+import { ProfileWorkspace } from "../../components/profile-workspace";
 
 export default function ProfilePage() {
-  return <PlaceholderPage workflowId="profile" />;
+  return <ProfileWorkspace />;
 }

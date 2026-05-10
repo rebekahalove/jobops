@@ -38,6 +38,8 @@ http://localhost:3002
 
 The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, AI calls, fit scoring, and material generation are intentionally deferred. The recommended next feature is the profile generator.
 
+The Profile workspace at `/profile` now includes a local-only intake shell with target-role intent fields, resume text paste, deterministic mock draft extraction, draft preview, and clarifying questions. It does not store resume text or call a live model.
+
 ## Planning Docs
 
 - [Recommended Architecture](docs/architecture.md)
