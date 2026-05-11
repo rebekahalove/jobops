@@ -102,3 +102,20 @@ const connector = createModelConnector(readModelConnectorConfigFromEnv());
 ```
 
 The server export is intentionally separate so provider SDKs and secret-reading code stay away from client components and public browser bundles.
+
+## Profile Intake Usage
+
+The JobOps dashboard profile workspace calls a server-side API route:
+
+```text
+POST /api/profile-intake
+```
+
+That route accepts the latest user message and existing local draft state, calls `@jobops/model-connector/server`, and validates the JSON response before the client applies any draft updates.
+
+Supported local modes:
+
+- `JOBOPS_LLM_PROVIDER=mock`: deterministic local/test behavior with no live provider calls.
+- `JOBOPS_LLM_PROVIDER=gemini`: live Gemini calls using server-side `GEMINI_API_KEY`.
+
+The profile intake contract requires generated facts, skill claims, experience/project items, and evidence links to remain private, unpublished, and marked for review. Model output cannot become verified, public, or published data through this boundary.

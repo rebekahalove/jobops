@@ -219,8 +219,9 @@ Every extracted detail should carry provenance.
 
 Recommended levels:
 
-- `resume_derived`: extracted from an uploaded resume.
-- `candidate_stated`: provided in chat or form input.
+- `resume`: extracted from an uploaded or pasted resume.
+- `chat`: provided in conversation or form input.
+- `model`: inferred by the model and requiring extra review.
 - `artifact_supported`: supported by a link, repo, document, demo, or certificate.
 - `human_verified`: reviewed and approved by the candidate.
 - `published`: allowed to power the public candidate-agent profile.
@@ -345,4 +346,3 @@ Add data structures for:
 - Evidence artifacts.
 
 Avoid storing raw chat forever by default. Keep structured facts, redacted events, and user-approved source artifacts.
-

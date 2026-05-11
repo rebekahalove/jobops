@@ -1,3 +1,5 @@
+import type { ProfileIntakeOutput, ProfileIntakeSource } from "./profile-intake-contract";
+
 export type TargetRoleIntent = {
   targetTitles: string;
   roleFamilies: string;
@@ -7,23 +9,27 @@ export type TargetRoleIntent = {
   constraints: string;
 };
 
+export type DraftGeneratedStatus = "draft" | "needs_review";
+
 export type DraftProfileFact = {
   id: string;
   claim: string;
-  category: "ai_product" | "backend" | "evals" | "stakeholder_work" | "general";
-  source: "resume_derived" | "chat_derived" | "model_drafted";
-  reviewStatus: "draft";
-  verificationStatus: "not_verified";
+  category: string;
+  source: ProfileIntakeSource;
+  status: DraftGeneratedStatus;
   visibility: "private";
+  published: false;
 };
 
 export type DraftSkillClaim = {
   id: string;
   skill: string;
-  category: "programming" | "ai_systems" | "backend" | "data" | "delivery";
+  category: string;
   evidence: string;
-  source: "resume_derived" | "chat_derived" | "model_drafted";
-  verificationStatus: "not_verified";
+  source: ProfileIntakeSource;
+  status: DraftGeneratedStatus;
+  visibility: "private";
+  published: false;
 };
 
 export type DraftExperienceSummary = {
@@ -31,8 +37,20 @@ export type DraftExperienceSummary = {
   title: string;
   organization: string;
   summary: string;
-  source: "resume_derived" | "chat_derived" | "model_drafted";
-  verificationStatus: "not_verified";
+  source: ProfileIntakeSource;
+  status: DraftGeneratedStatus;
+  visibility: "private";
+  published: false;
+};
+
+export type DraftEvidenceLink = {
+  id: string;
+  url: string;
+  label: string;
+  source: ProfileIntakeSource;
+  status: DraftGeneratedStatus;
+  visibility: "private";
+  published: false;
 };
 
 export type ClarifyingQuestion = {
@@ -46,7 +64,7 @@ export type MockProfileDraft = {
   facts: DraftProfileFact[];
   skillClaims: DraftSkillClaim[];
   experienceSummaries: DraftExperienceSummary[];
-  links: string[];
+  links: DraftEvidenceLink[];
   clarifyingQuestions: ClarifyingQuestion[];
 };
 
@@ -81,6 +99,13 @@ export const emptyTargetRoleIntent: TargetRoleIntent = {
 };
 
 export const initialProfilePrompt = "I want to be a...";
+
+let generatedId = 0;
+
+function nextGeneratedId(prefix: string) {
+  generatedId += 1;
+  return `${prefix}-${generatedId}`;
+}
 
 const appliedAiQuestions: ClarifyingQuestion[] = [
   {
@@ -118,7 +143,7 @@ const appliedAiQuestions: ClarifyingQuestion[] = [
 export function createMockProfileDraft(
   resumeText: string,
   intent: TargetRoleIntent,
-  source: DraftProfileFact["source"] = "resume_derived",
+  source: DraftProfileFact["source"] = "resume",
   options: { includeTargetIntentFact?: boolean } = {}
 ): MockProfileDraft {
   const normalizedResume = resumeText.trim();
@@ -131,7 +156,7 @@ export function createMockProfileDraft(
     facts: buildDraftFacts(lowerResume, targetSummary, source, includeTargetIntentFact),
     skillClaims: buildSkillClaims(lowerResume, source),
     experienceSummaries: buildExperienceSummaries(normalizedResume, source),
-    links: extractLinks(normalizedResume),
+    links: extractLinks(normalizedResume, source),
     clarifyingQuestions: appliedAiQuestions
   };
 }
@@ -145,7 +170,7 @@ export function createMockIntakeTurn(input: MockIntakeTurnInput): MockIntakeTurn
   const hasPastWorkEvidence = looksLikePastWorkText(messageText);
   const shouldExtractProfileDraft = hasAttachedResume || hasPastedResume || hasPastWorkEvidence;
   const extractionText = [attachedResumeText, shouldExtractProfileDraft ? messageText : ""].filter(Boolean).join("\n\n");
-  const source = hasAttachedResume || hasPastedResume ? "resume_derived" : "chat_derived";
+  const source = hasAttachedResume || hasPastedResume ? "resume" : "chat";
   const draft = createMockProfileDraft(extractionText, nextIntent, source, { includeTargetIntentFact: false });
   const changeSummary = buildChangeSummary(draft, nextIntent, input.attachment);
   const changeHeadline = buildChangeHeadline(draft, Boolean(summarizeTargetIntent(nextIntent)));
@@ -156,7 +181,7 @@ export function createMockIntakeTurn(input: MockIntakeTurnInput): MockIntakeTurn
     changeHeadline,
     changeSummary,
     agentMessage: shouldExtractProfileDraft
-      ? "I updated the local draft from this conversation turn, kept every new claim unverified and private, and queued follow-up questions for review."
+      ? "I updated the local draft from this conversation turn, kept every new claim private and marked needs review, and queued follow-up questions."
       : "I captured your target direction. Next, paste your resume into this same chat or attach it here, and I will draft profile facts for review."
   };
 }
@@ -232,7 +257,7 @@ function buildDraftFacts(
 }
 
 function buildSkillClaims(lowerResume: string, source: DraftSkillClaim["source"]): DraftSkillClaim[] {
-  const skillMap: Array<[string, DraftSkillClaim["category"], string[]]> = [
+  const skillMap: Array<[string, string, string[]]> = [
     ["Python", "programming", ["python"]],
     ["TypeScript", "programming", ["typescript", "javascript", "react", "next.js", "nextjs"]],
     ["LLM systems", "ai_systems", ["llm", "prompt", "agent", "rag", "retrieval"]],
@@ -249,7 +274,9 @@ function buildSkillClaims(lowerResume: string, source: DraftSkillClaim["source"]
       category,
       evidence: "Keyword evidence found in unverified intake text.",
       source,
-      verificationStatus: "not_verified"
+      status: "needs_review",
+      visibility: "private",
+      published: false
     }));
 }
 
@@ -275,7 +302,9 @@ function buildExperienceSummaries(
         organization: "Needs review",
         summary: "Potential past work, project, education, or artifact evidence detected from intake text.",
         source,
-        verificationStatus: "not_verified"
+        status: "needs_review",
+        visibility: "private",
+        published: false
       }
     ];
   }
@@ -287,7 +316,9 @@ function buildExperienceSummaries(
       organization: "Needs review",
       summary: "Potential work, project, education, or artifact evidence detected from intake text. Candidate review is required.",
       source,
-      verificationStatus: "not_verified"
+      status: "needs_review",
+      visibility: "private",
+      published: false
     }
   ];
 }
@@ -303,15 +334,102 @@ function createDraftFact(
     claim,
     category,
     source,
-    reviewStatus: "draft",
-    verificationStatus: "not_verified",
-    visibility: "private"
+    status: "needs_review",
+    visibility: "private",
+    published: false
   };
 }
 
-function extractLinks(resumeText: string): string[] {
+function extractLinks(resumeText: string, source: DraftEvidenceLink["source"]): DraftEvidenceLink[] {
   const matches = resumeText.match(/https?:\/\/[^\s)]+/g);
-  return matches ? Array.from(new Set(matches)) : [];
+  return matches
+    ? Array.from(new Set(matches)).map((url) => ({
+        id: nextGeneratedId("evidence"),
+        url,
+        label: url,
+        source,
+        status: "needs_review",
+        visibility: "private",
+        published: false
+      }))
+    : [];
+}
+
+export function applyProfileIntakeOutputToState(
+  currentIntent: TargetRoleIntent,
+  output: ProfileIntakeOutput
+): {
+  draft: MockProfileDraft;
+  intent: TargetRoleIntent;
+  turn: MockIntakeTurn;
+} {
+  const intent = mergeIntent(currentIntent, {
+    targetTitles: output.targetRoleIntent.targetTitles,
+    roleFamilies: output.targetRoleIntent.targetRoleFamilies,
+    preferredWorkMode: output.targetRoleIntent.preferredWorkMode,
+    preferredLocations: output.targetRoleIntent.preferredLocations,
+    domainsOfInterest: output.targetRoleIntent.domainsOrIndustries,
+    constraints: output.targetRoleIntent.constraints
+  });
+  const draft: MockProfileDraft = {
+    resumeTextLength: 0,
+    facts: output.draftFacts.map((fact, index) => ({
+      id: fact.id || nextGeneratedId(`fact-${index + 1}`),
+      claim: fact.claim,
+      category: fact.category || "general",
+      source: fact.source,
+      status: fact.status,
+      visibility: fact.visibility,
+      published: fact.published
+    })),
+    skillClaims: output.skillClaims.map((skill, index) => ({
+      id: skill.id || nextGeneratedId(`skill-${index + 1}`),
+      skill: skill.skill,
+      category: skill.category || "general",
+      evidence: skill.evidence || "Needs evidence review.",
+      source: skill.source,
+      status: skill.status,
+      visibility: skill.visibility,
+      published: skill.published
+    })),
+    experienceSummaries: output.experienceAndProjects.map((experience, index) => ({
+      id: experience.id || nextGeneratedId(`experience-${index + 1}`),
+      title: experience.title,
+      organization: experience.organization || "Needs review",
+      summary: experience.summary,
+      source: experience.source,
+      status: experience.status,
+      visibility: experience.visibility,
+      published: experience.published
+    })),
+    links: output.evidenceLinks.map((link, index) => ({
+      id: link.id || nextGeneratedId(`evidence-${index + 1}`),
+      url: link.url,
+      label: link.label || link.url,
+      source: link.source,
+      status: link.status,
+      visibility: link.visibility,
+      published: link.published
+    })),
+    clarifyingQuestions: output.clarifyingQuestions.map((question, index) => ({
+      id: nextGeneratedId(`question-${index + 1}`),
+      topic: "Suggested next question",
+      question
+    }))
+  };
+  const changeSummary = output.changeSummary.length ? output.changeSummary : buildChangeSummary(draft, intent);
+
+  return {
+    draft,
+    intent,
+    turn: {
+      intent,
+      draft,
+      agentMessage: output.assistantMessage,
+      changeHeadline: buildChangeHeadline(draft, Boolean(summarizeTargetIntent(intent))),
+      changeSummary
+    }
+  };
 }
 
 function summarizeTargetIntent(intent: TargetRoleIntent): string {
@@ -384,7 +502,7 @@ function buildChangeSummary(
       ? `Updated target role intent: ${summarizeTargetIntent(intent)}.`
       : "Target role intent still needs more detail.",
     `Created ${draft.facts.length} draft claim(s), ${draft.skillClaims.length} skill claim(s), and ${draft.experienceSummaries.length} experience/project item(s).`,
-    "Kept all generated data unverified, private, and out of the public profile.",
+    "Kept all generated data private, unpublished, and marked needs review.",
     `Queued ${draft.clarifyingQuestions.length} clarifying question(s) for applied AI and FDE positioning.`
   ];
 

@@ -1,8 +1,9 @@
 "use client";
 
 import React, { type ChangeEvent, type FormEvent, useState } from "react";
+import type { ProfileIntakeOutput } from "../lib/profile-intake-contract";
 import {
-  createMockIntakeTurn,
+  applyProfileIntakeOutputToState,
   emptyTargetRoleIntent,
   initialProfilePrompt,
   type MockIntakeTurn,
@@ -40,6 +41,7 @@ export function ProfileWorkspace() {
   const [isChangeExpanded, setIsChangeExpanded] = useState(false);
   const [isReviewExpanded, setIsReviewExpanded] = useState(false);
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   function updateIntent(field: IntentField, value: string) {
     setIntent((current) => ({
@@ -72,35 +74,77 @@ export function ProfileWorkspace() {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const turn = createMockIntakeTurn({
-      messageText,
-      attachedResumeText,
-      currentIntent: intent,
-      attachment
-    });
+    const submittedMessage = messageText.trim() || initialProfilePrompt;
+    const modelMessage = [submittedMessage, attachedResumeText ? `Attached resume text:\n${attachedResumeText}` : ""]
+      .filter(Boolean)
+      .join("\n\n");
     const turnNumber = messages.length + 1;
 
-    setIntent(turn.intent);
-    setDraft(turn.draft);
-    setLastTurn(turn);
-    setMessages((current) => [
-      ...current,
-      {
-        id: `user-${turnNumber}`,
-        role: "user",
-        text: messageText.trim() || initialProfilePrompt,
-        attachmentName: attachment?.name
-      },
-      {
-        id: `agent-${turnNumber}`,
-        role: "agent",
-        text: turn.agentMessage
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch("/api/profile-intake", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          latestUserMessage: modelMessage,
+          existingDraft: draft
+        })
+      });
+      const payload = (await response.json()) as
+        | { ok: true; result: ProfileIntakeOutput }
+        | { ok: false; error: string; issues?: string[]; code?: string };
+
+      if (!response.ok || !payload.ok) {
+        const detail = !payload.ok && payload.issues?.length ? ` ${payload.issues.join(" ")}` : "";
+        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}`);
       }
-    ]);
-    setMessageText("");
+
+      const nextState = applyProfileIntakeOutputToState(intent, payload.result);
+
+      setIntent(nextState.intent);
+      setDraft(nextState.draft);
+      setLastTurn(nextState.turn);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `user-${turnNumber}`,
+          role: "user",
+          text: submittedMessage,
+          attachmentName: attachment?.name
+        },
+        {
+          id: `agent-${turnNumber}`,
+          role: "agent",
+          text: nextState.turn.agentMessage
+        }
+      ]);
+      setMessageText("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Profile intake failed.";
+      setMessages((current) => [
+        ...current,
+        {
+          id: `user-${turnNumber}`,
+          role: "user",
+          text: submittedMessage,
+          attachmentName: attachment?.name
+        },
+        {
+          id: `agent-${turnNumber}`,
+          role: "agent",
+          text: `${message} Switch to JOBOPS_LLM_PROVIDER=mock for deterministic local mode, or configure GEMINI_API_KEY for live Gemini mode.`
+        }
+      ]);
+      setMessageText("");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -120,7 +164,7 @@ export function ProfileWorkspace() {
             <p className="eyebrow">Conversation-first intake</p>
             <h2 id="conversation-title">Start with what you want to do next.</h2>
           </div>
-          <span className="status-pill">Local mock agent</span>
+          <span className="status-pill">Server model intake</span>
         </div>
 
         <div className="chat-transcript" aria-label="Profile intake conversation">
@@ -156,8 +200,8 @@ export function ProfileWorkspace() {
                 type="file"
               />
             </label>
-            <button className="primary-action button-action" suppressHydrationWarning type="submit">
-              Send to mock agent
+            <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
+              {isSubmitting ? "Reading..." : "Send to intake agent"}
             </button>
           </div>
 
@@ -505,11 +549,12 @@ function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
       <PreviewColumn count={draft.links.length} title="Evidence & Links">
         {draft.links.length ? (
           draft.links.slice(0, 2).map((link) => (
-            <li key={link}>
-              <span>{link}</span>
+            <li key={link.id}>
+              <span>{link.label}</span>
               <span className="badge-row">
                 <span>Needs review</span>
                 <span>Private</span>
+                <span>{sourceLabel(link.source)}</span>
               </span>
             </li>
           ))
@@ -527,7 +572,7 @@ export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null 
     return (
       <div className="empty-state-block">
         <h3>No questions yet</h3>
-        <p>The mock agent will queue applied AI and FDE-oriented questions after the first turn.</p>
+        <p>The intake agent will queue applied AI and FDE-oriented questions after the first turn.</p>
       </div>
     );
   }
@@ -557,16 +602,17 @@ function PreviewColumn({ children, count, title }: { children: React.ReactNode; 
 }
 
 function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["source"] }) {
-  const sourceLabel =
-    source === "resume_derived" ? "Source: Resume" : source === "model_drafted" ? "Source: Model" : "Source: Chat";
-
   return (
     <span className="badge-row">
       <span>Needs review</span>
       <span>Private</span>
-      <span>{sourceLabel}</span>
+      <span>{sourceLabel(source)}</span>
     </span>
   );
+}
+
+function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
+  return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
 }
 
 function OverflowNote({ count, noun }: { count: number; noun: string }) {

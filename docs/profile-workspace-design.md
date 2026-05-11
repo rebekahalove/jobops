@@ -93,8 +93,9 @@ Use separate statuses for source, review, visibility, and publication. Canonical
 Source and derivation:
 
 - `model_drafted`: proposed by the agent or model.
-- `resume_derived`: extracted from a pasted or uploaded resume.
-- `chat_derived`: extracted from user conversation.
+- `resume`: extracted from a pasted or uploaded resume.
+- `chat`: extracted from user conversation.
+- `model`: inferred by the model and requiring extra review.
 - `user_edited`: directly edited by the user.
 
 Review:

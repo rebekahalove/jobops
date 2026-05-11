@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import ProfilePage from "../app/profile/page";
 import {
+  applyProfileIntakeOutputToState,
   createMockIntakeTurn,
   createMockProfileDraft,
   emptyTargetRoleIntent,
@@ -23,7 +24,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Conversation-first intake");
     expect(html).toContain(initialProfilePrompt);
     expect(html).toContain("Attach resume");
-    expect(html).toContain("Send to mock agent");
+    expect(html).toContain("Send to intake agent");
     expect(html).toContain("paste your resume into this same chat");
     expect(html).not.toContain("Resume text for local mock extraction");
   });
@@ -64,10 +65,10 @@ describe("Profile intake workspace", () => {
     );
 
     expect(draft.facts.length).toBeGreaterThan(0);
-    expect(draft.facts.every((fact) => fact.reviewStatus === "draft")).toBe(true);
-    expect(draft.facts.every((fact) => fact.source === "resume_derived")).toBe(true);
-    expect(draft.facts.every((fact) => fact.verificationStatus === "not_verified")).toBe(true);
+    expect(draft.facts.every((fact) => fact.status === "needs_review")).toBe(true);
+    expect(draft.facts.every((fact) => fact.source === "resume")).toBe(true);
     expect(draft.facts.every((fact) => fact.visibility === "private")).toBe(true);
+    expect(draft.facts.every((fact) => fact.published === false)).toBe(true);
   });
 
   it("derives target role intent without creating experience or claim drafts from target text", () => {
@@ -83,7 +84,7 @@ describe("Profile intake workspace", () => {
     expect(turn.draft.facts).toHaveLength(0);
     expect(turn.draft.skillClaims).toHaveLength(0);
     expect(turn.draft.experienceSummaries).toHaveLength(0);
-    expect(turn.changeSummary.join(" ")).toContain("unverified");
+    expect(turn.changeSummary.join(" ")).toContain("needs review");
   });
 
   it("treats resume text pasted into chat as resume-derived draft input", () => {
@@ -94,8 +95,8 @@ describe("Profile intake workspace", () => {
 
     expect(turn.draft.facts.length).toBeGreaterThan(0);
     expect(turn.draft.experienceSummaries.length).toBeGreaterThan(0);
-    expect(turn.draft.facts.some((fact) => fact.source === "resume_derived")).toBe(true);
-    expect(turn.agentMessage).toContain("kept every new claim unverified and private");
+    expect(turn.draft.facts.some((fact) => fact.source === "resume")).toBe(true);
+    expect(turn.agentMessage).toContain("kept every new claim private and marked needs review");
   });
 
   it("creates experience/project items from past-work statements in chat", () => {
@@ -105,7 +106,68 @@ describe("Profile intake workspace", () => {
     });
 
     expect(turn.draft.experienceSummaries.length).toBeGreaterThan(0);
-    expect(turn.draft.experienceSummaries.every((experience) => experience.source === "chat_derived")).toBe(true);
+    expect(turn.draft.experienceSummaries.every((experience) => experience.source === "chat")).toBe(true);
+  });
+
+  it("applies model-assisted intake output to local draft review state", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {
+        targetTitles: "Applied AI Engineer",
+        targetRoleFamilies: "LLM systems"
+      },
+      draftFacts: [
+        {
+          claim: "Built an LLM eval harness.",
+          category: "evals",
+          source: "chat",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      skillClaims: [
+        {
+          skill: "LLM evals",
+          category: "ai_systems",
+          evidence: "Unverified chat evidence.",
+          source: "chat",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: ["What production constraints did you handle?"],
+      changeSummary: ["Updated target role intent.", "Created one draft claim."]
+    });
+
+    expect(nextState.intent.targetTitles).toBe("Applied AI Engineer");
+    expect(nextState.intent.roleFamilies).toBe("LLM systems");
+    expect(nextState.draft.facts[0]).toMatchObject({
+      source: "chat",
+      status: "needs_review",
+      visibility: "private",
+      published: false
+    });
+    expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
+  });
+
+  it("wires the client submit flow to the server profile-intake boundary", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('fetch("/api/profile-intake"');
+    expect(source).toContain("applyProfileIntakeOutputToState");
+  });
+
+  it("does not import server connector code into the client component", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
+
+    expect(source).not.toContain("@jobops/model-connector");
+    expect(source).not.toContain("@jobops/model-connector/server");
   });
 
   it("renders clarifying questions as a compact list without per-question titles", () => {

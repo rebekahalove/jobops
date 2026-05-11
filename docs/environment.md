@@ -79,7 +79,7 @@ APP_ENV=dev
 
 ```text
 DATABASE_URL=...
-MODEL_PROVIDER=mock
+JOBOPS_LLM_PROVIDER=mock
 ```
 
 The real Neon connection string belongs in `.env.dev`, not in `.env.example`, docs, tests, or committed fixtures.
@@ -104,4 +104,3 @@ Tests should prefer isolated test configuration:
 - Mock model provider unless the test is explicitly a live-model eval.
 
 CI should not need the user's local `.env.dev` file.
-
