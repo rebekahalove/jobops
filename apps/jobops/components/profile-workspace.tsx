@@ -102,7 +102,8 @@ export function ProfileWorkspace() {
 
       if (!response.ok || !payload.ok) {
         const detail = !payload.ok && payload.issues?.length ? ` ${payload.issues.join(" ")}` : "";
-        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}`);
+        const hint = !payload.ok && payload.code?.startsWith("MODEL_CONFIG") ? ` ${modelConfigurationHint}` : "";
+        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}${hint}`);
       }
 
       const nextState = applyProfileIntakeOutputToState(intent, payload.result);
@@ -138,7 +139,7 @@ export function ProfileWorkspace() {
         {
           id: `agent-${turnNumber}`,
           role: "agent",
-          text: `${message} Switch to JOBOPS_LLM_PROVIDER=mock for deterministic local mode, or configure GEMINI_API_KEY for live Gemini mode.`
+          text: message
         }
       ]);
       setMessageText("");
@@ -344,6 +345,9 @@ export function ProfileWorkspace() {
     </main>
   );
 }
+
+const modelConfigurationHint =
+  "Switch to JOBOPS_LLM_PROVIDER=mock for deterministic local mode, or configure GEMINI_API_KEY for live Gemini mode.";
 
 function CollapsiblePanel({
   aside,

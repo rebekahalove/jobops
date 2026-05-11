@@ -21,8 +21,8 @@ export async function generateProfileIntakeOutput(
 ): Promise<ProfileIntakeOutput> {
   const request: ModelRequest = {
     task: "profile_extract",
-    temperature: 0.2,
-    maxOutputTokens: 2200,
+    temperature: 0,
+    maxOutputTokens: 4000,
     responseFormat: {
       type: "json",
       schemaName: "jobops_profile_intake",
