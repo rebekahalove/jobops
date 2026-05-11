@@ -11,7 +11,7 @@ export type DraftProfileFact = {
   id: string;
   claim: string;
   category: "ai_product" | "backend" | "evals" | "stakeholder_work" | "general";
-  source: "resume_derived";
+  source: "resume_derived" | "chat_derived" | "model_drafted";
   reviewStatus: "draft";
   verificationStatus: "not_verified";
   visibility: "private";
@@ -22,7 +22,7 @@ export type DraftSkillClaim = {
   skill: string;
   category: "programming" | "ai_systems" | "backend" | "data" | "delivery";
   evidence: string;
-  source: "resume_derived";
+  source: "resume_derived" | "chat_derived" | "model_drafted";
   verificationStatus: "not_verified";
 };
 
@@ -31,7 +31,7 @@ export type DraftExperienceSummary = {
   title: string;
   organization: string;
   summary: string;
-  source: "resume_derived";
+  source: "resume_derived" | "chat_derived" | "model_drafted";
   verificationStatus: "not_verified";
 };
 
@@ -50,6 +50,27 @@ export type MockProfileDraft = {
   clarifyingQuestions: ClarifyingQuestion[];
 };
 
+export type MockResumeAttachment = {
+  name: string;
+  sizeLabel: string;
+  parseStatus: "metadata_only" | "text_loaded";
+};
+
+export type MockIntakeTurnInput = {
+  messageText: string;
+  attachedResumeText?: string;
+  currentIntent: TargetRoleIntent;
+  attachment?: MockResumeAttachment | null;
+};
+
+export type MockIntakeTurn = {
+  intent: TargetRoleIntent;
+  draft: MockProfileDraft;
+  agentMessage: string;
+  changeHeadline: string;
+  changeSummary: string[];
+};
+
 export const emptyTargetRoleIntent: TargetRoleIntent = {
   targetTitles: "",
   roleFamilies: "",
@@ -58,6 +79,8 @@ export const emptyTargetRoleIntent: TargetRoleIntent = {
   domainsOfInterest: "",
   constraints: ""
 };
+
+export const initialProfilePrompt = "I want to be a...";
 
 const appliedAiQuestions: ClarifyingQuestion[] = [
   {
@@ -92,26 +115,62 @@ const appliedAiQuestions: ClarifyingQuestion[] = [
   }
 ];
 
-export function createMockProfileDraft(resumeText: string, intent: TargetRoleIntent): MockProfileDraft {
+export function createMockProfileDraft(
+  resumeText: string,
+  intent: TargetRoleIntent,
+  source: DraftProfileFact["source"] = "resume_derived",
+  options: { includeTargetIntentFact?: boolean } = {}
+): MockProfileDraft {
   const normalizedResume = resumeText.trim();
   const lowerResume = normalizedResume.toLowerCase();
   const targetSummary = summarizeTargetIntent(intent);
+  const includeTargetIntentFact = options.includeTargetIntentFact ?? true;
 
   return {
     resumeTextLength: normalizedResume.length,
-    facts: buildDraftFacts(lowerResume, targetSummary),
-    skillClaims: buildSkillClaims(lowerResume),
-    experienceSummaries: buildExperienceSummaries(normalizedResume),
+    facts: buildDraftFacts(lowerResume, targetSummary, source, includeTargetIntentFact),
+    skillClaims: buildSkillClaims(lowerResume, source),
+    experienceSummaries: buildExperienceSummaries(normalizedResume, source),
     links: extractLinks(normalizedResume),
     clarifyingQuestions: appliedAiQuestions
   };
 }
 
-function buildDraftFacts(lowerResume: string, targetSummary: string): DraftProfileFact[] {
+export function createMockIntakeTurn(input: MockIntakeTurnInput): MockIntakeTurn {
+  const messageText = input.messageText.trim();
+  const attachedResumeText = input.attachedResumeText?.trim() ?? "";
+  const nextIntent = mergeIntent(input.currentIntent, deriveIntentFromMessage(messageText));
+  const hasAttachedResume = Boolean(attachedResumeText);
+  const hasPastedResume = looksLikeResumeText(messageText);
+  const hasPastWorkEvidence = looksLikePastWorkText(messageText);
+  const shouldExtractProfileDraft = hasAttachedResume || hasPastedResume || hasPastWorkEvidence;
+  const extractionText = [attachedResumeText, shouldExtractProfileDraft ? messageText : ""].filter(Boolean).join("\n\n");
+  const source = hasAttachedResume || hasPastedResume ? "resume_derived" : "chat_derived";
+  const draft = createMockProfileDraft(extractionText, nextIntent, source, { includeTargetIntentFact: false });
+  const changeSummary = buildChangeSummary(draft, nextIntent, input.attachment);
+  const changeHeadline = buildChangeHeadline(draft, Boolean(summarizeTargetIntent(nextIntent)));
+
+  return {
+    intent: nextIntent,
+    draft,
+    changeHeadline,
+    changeSummary,
+    agentMessage: shouldExtractProfileDraft
+      ? "I updated the local draft from this conversation turn, kept every new claim unverified and private, and queued follow-up questions for review."
+      : "I captured your target direction. Next, paste your resume into this same chat or attach it here, and I will draft profile facts for review."
+  };
+}
+
+function buildDraftFacts(
+  lowerResume: string,
+  targetSummary: string,
+  source: DraftProfileFact["source"],
+  includeTargetIntentFact: boolean
+): DraftProfileFact[] {
   const facts: DraftProfileFact[] = [];
 
-  if (targetSummary) {
-    facts.push(createDraftFact("target-intent", `Target role intent captured: ${targetSummary}.`, "general"));
+  if (targetSummary && includeTargetIntentFact) {
+    facts.push(createDraftFact("target-intent", `Target role intent captured: ${targetSummary}.`, "general", source));
   }
 
   if (mentionsAny(lowerResume, ["llm", "ai", "machine learning", "automation", "agent"])) {
@@ -119,14 +178,20 @@ function buildDraftFacts(lowerResume: string, targetSummary: string): DraftProfi
       createDraftFact(
         "ai-work",
         "Resume appears to mention AI, LLM, automation, machine learning, or agent-related work.",
-        "ai_product"
+        "ai_product",
+        source
       )
     );
   }
 
   if (mentionsAny(lowerResume, ["python", "fastapi", "api", "backend"])) {
     facts.push(
-      createDraftFact("backend-work", "Resume appears to mention Python, API, FastAPI, or backend work.", "backend")
+      createDraftFact(
+        "backend-work",
+        "Resume appears to mention Python, API, FastAPI, or backend work.",
+        "backend",
+        source
+      )
     );
   }
 
@@ -135,7 +200,8 @@ function buildDraftFacts(lowerResume: string, targetSummary: string): DraftProfi
       createDraftFact(
         "evals-reliability",
         "Resume appears to mention evals, tests, monitoring, reliability, or observability work.",
-        "evals"
+        "evals",
+        source
       )
     );
   }
@@ -145,17 +211,19 @@ function buildDraftFacts(lowerResume: string, targetSummary: string): DraftProfi
       createDraftFact(
         "stakeholder-work",
         "Resume appears to mention customer, stakeholder, user, client, or operator-facing work.",
-        "stakeholder_work"
+        "stakeholder_work",
+        source
       )
     );
   }
 
-  if (facts.length === 0) {
+  if (facts.length === 0 && lowerResume) {
     facts.push(
       createDraftFact(
         "resume-placeholder",
-        "Resume text was provided, but this mock extractor needs a real model pass to identify specific claims.",
-        "general"
+        "Input was provided, but this mock extractor needs a real model pass to identify specific claims.",
+        "general",
+        source
       )
     );
   }
@@ -163,7 +231,7 @@ function buildDraftFacts(lowerResume: string, targetSummary: string): DraftProfi
   return facts;
 }
 
-function buildSkillClaims(lowerResume: string): DraftSkillClaim[] {
+function buildSkillClaims(lowerResume: string, source: DraftSkillClaim["source"]): DraftSkillClaim[] {
   const skillMap: Array<[string, DraftSkillClaim["category"], string[]]> = [
     ["Python", "programming", ["python"]],
     ["TypeScript", "programming", ["typescript", "javascript", "react", "next.js", "nextjs"]],
@@ -179,13 +247,20 @@ function buildSkillClaims(lowerResume: string): DraftSkillClaim[] {
       id: `skill-${index + 1}`,
       skill,
       category,
-      evidence: "Keyword evidence found in pasted resume text.",
-      source: "resume_derived",
+      evidence: "Keyword evidence found in unverified intake text.",
+      source,
       verificationStatus: "not_verified"
     }));
 }
 
-function buildExperienceSummaries(resumeText: string): DraftExperienceSummary[] {
+function buildExperienceSummaries(
+  resumeText: string,
+  source: DraftExperienceSummary["source"]
+): DraftExperienceSummary[] {
+  if (!looksLikeResumeText(resumeText) && !looksLikePastWorkText(resumeText)) {
+    return [];
+  }
+
   const lines = resumeText
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -196,10 +271,10 @@ function buildExperienceSummaries(resumeText: string): DraftExperienceSummary[] 
     return [
       {
         id: "experience-1",
-        title: "Experience summary pending",
-        organization: "Unknown",
-        summary: "The mock extractor did not identify a clear role line. A model-backed extractor should draft this later.",
-        source: "resume_derived",
+        title: lines[0]?.slice(0, 80) || "Past work item",
+        organization: "Needs review",
+        summary: "Potential past work, project, education, or artifact evidence detected from intake text.",
+        source,
         verificationStatus: "not_verified"
       }
     ];
@@ -210,8 +285,8 @@ function buildExperienceSummaries(resumeText: string): DraftExperienceSummary[] 
       id: "experience-1",
       title: likelyExperienceLine.slice(0, 80),
       organization: "Needs review",
-      summary: "Potential experience entry detected from pasted resume text. Candidate review is required.",
-      source: "resume_derived",
+      summary: "Potential work, project, education, or artifact evidence detected from intake text. Candidate review is required.",
+      source,
       verificationStatus: "not_verified"
     }
   ];
@@ -220,13 +295,14 @@ function buildExperienceSummaries(resumeText: string): DraftExperienceSummary[] 
 function createDraftFact(
   id: string,
   claim: string,
-  category: DraftProfileFact["category"]
+  category: DraftProfileFact["category"],
+  source: DraftProfileFact["source"]
 ): DraftProfileFact {
   return {
     id,
     claim,
     category,
-    source: "resume_derived",
+    source,
     reviewStatus: "draft",
     verificationStatus: "not_verified",
     visibility: "private"
@@ -252,6 +328,127 @@ function summarizeTargetIntent(intent: TargetRoleIntent): string {
     .join(" | ");
 }
 
+function deriveIntentFromMessage(messageText: string): Partial<TargetRoleIntent> {
+  const normalized = messageText.trim();
+  const lower = normalized.toLowerCase();
+  const intent: Partial<TargetRoleIntent> = {};
+  const targetMatch = normalized.match(/i want to be an?\s+(.+)/i);
+
+  if (targetMatch?.[1]) {
+    intent.targetTitles = targetMatch[1].replace(/[.!?]+$/, "").trim();
+  }
+
+  if (mentionsAny(lower, ["llm", "agent", "ai", "machine learning", "eval", "retrieval", "rag"])) {
+    intent.roleFamilies = "Applied AI, LLM systems, evals, and agentic workflows";
+  }
+
+  if (mentionsAny(lower, ["remote"])) {
+    intent.preferredWorkMode = "remote";
+  } else if (mentionsAny(lower, ["hybrid"])) {
+    intent.preferredWorkMode = "hybrid";
+  } else if (mentionsAny(lower, ["onsite", "on-site"])) {
+    intent.preferredWorkMode = "onsite";
+  }
+
+  if (mentionsAny(lower, ["healthcare", "education", "developer tools", "enterprise", "finance"])) {
+    intent.domainsOfInterest = [
+      lower.includes("developer tools") ? "developer tools" : "",
+      lower.includes("education") ? "education" : "",
+      lower.includes("healthcare") ? "healthcare" : "",
+      lower.includes("enterprise") ? "enterprise AI" : "",
+      lower.includes("finance") ? "finance" : ""
+    ]
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  return intent;
+}
+
+function mergeIntent(currentIntent: TargetRoleIntent, derivedIntent: Partial<TargetRoleIntent>): TargetRoleIntent {
+  return {
+    ...currentIntent,
+    ...Object.fromEntries(
+      Object.entries(derivedIntent).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+    )
+  };
+}
+
+function buildChangeSummary(
+  draft: MockProfileDraft,
+  intent: TargetRoleIntent,
+  attachment?: MockResumeAttachment | null
+): string[] {
+  const summary = [
+    summarizeTargetIntent(intent)
+      ? `Updated target role intent: ${summarizeTargetIntent(intent)}.`
+      : "Target role intent still needs more detail.",
+    `Created ${draft.facts.length} draft claim(s), ${draft.skillClaims.length} skill claim(s), and ${draft.experienceSummaries.length} experience/project item(s).`,
+    "Kept all generated data unverified, private, and out of the public profile.",
+    `Queued ${draft.clarifyingQuestions.length} clarifying question(s) for applied AI and FDE positioning.`
+  ];
+
+  if (attachment) {
+    summary.push(`Recorded resume attachment metadata for ${attachment.name}; ${attachment.parseStatus}.`);
+  }
+
+  return summary;
+}
+
+function buildChangeHeadline(draft: MockProfileDraft, hasTargetIntent: boolean): string {
+  const intentSummary = hasTargetIntent ? "Updated target role intent." : "Target role intent still needs detail.";
+
+  return `${intentSummary} Created ${draft.facts.length} draft claim(s). Added ${draft.clarifyingQuestions.length} follow-up question(s).`;
+}
+
 function mentionsAny(text: string, keywords: string[]): boolean {
   return keywords.some((keyword) => text.includes(keyword));
+}
+
+function looksLikeResumeText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  const lines = normalized.split(/\r?\n/).filter(Boolean);
+  const resumeSignals = [
+    "experience",
+    "education",
+    "skills",
+    "projects",
+    "work history",
+    "employment",
+    "certifications",
+    "github",
+    "linkedin"
+  ];
+
+  return lines.length >= 3 || mentionsAny(normalized, resumeSignals);
+}
+
+function looksLikePastWorkText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  const pastWorkSignals = [
+    "i built",
+    "i shipped",
+    "i led",
+    "i created",
+    "i developed",
+    "i implemented",
+    "i launched",
+    "i maintained",
+    "i worked",
+    "built a",
+    "built an",
+    "shipped a",
+    "shipped an",
+    "led a",
+    "created a",
+    "developed a",
+    "implemented a",
+    "project:",
+    "open source",
+    "publication",
+    "certification",
+    "at "
+  ];
+
+  return mentionsAny(normalized, pastWorkSignals);
 }

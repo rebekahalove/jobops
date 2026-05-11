@@ -38,7 +38,7 @@ http://localhost:3002
 
 The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, AI calls, fit scoring, and material generation are intentionally deferred. The recommended next feature is the profile generator.
 
-The Profile workspace at `/profile` now includes a local-only intake shell with target-role intent fields, resume text paste, deterministic mock draft extraction, draft preview, and clarifying questions. It does not store resume text or call a live model.
+The Profile workspace at `/profile` includes a local-only conversation-first intake shell with an `I want to be a...` prompt, resume paste directly in chat, resume attachment affordance, deterministic mock draft extraction, change summary, draft preview, clarifying questions, and structured review below the conversation.
 
 ## Planning Docs
 
@@ -46,6 +46,7 @@ The Profile workspace at `/profile` now includes a local-only intake shell with 
 - [Initial Repo Structure](docs/repo-structure.md)
 - [Initial Data Model](docs/data-model.md)
 - [Candidate Profile Intake](docs/candidate-profile-intake.md)
+- [Conversation-First Profile Workspace](docs/profile-workspace-design.md)
 - [Model Connectors](docs/model-connectors.md)
 - [Environment Configuration](docs/environment.md)
 - [First Milestone](docs/milestone-01.md)

@@ -1,71 +1,242 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { type ChangeEvent, type FormEvent, useState } from "react";
 import {
-  createMockProfileDraft,
+  createMockIntakeTurn,
   emptyTargetRoleIntent,
+  initialProfilePrompt,
+  type MockIntakeTurn,
   type MockProfileDraft,
+  type MockResumeAttachment,
   type TargetRoleIntent
 } from "../lib/profile-intake";
 
 type IntentField = keyof TargetRoleIntent;
 
+type ChatMessage = {
+  id: string;
+  role: "agent" | "user";
+  text: string;
+  attachmentName?: string;
+};
+
+const initialMessages: ChatMessage[] = [
+  {
+    id: "agent-0",
+    role: "agent",
+    text: "Complete the sentence below with what you want to do next. After that, paste your resume into this same chat or attach it here, and I will turn it into draft profile data for review."
+  }
+];
+
 export function ProfileWorkspace() {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
-  const [resumeText, setResumeText] = useState("");
+  const [messageText, setMessageText] = useState(initialProfilePrompt);
+  const [attachedResumeText, setAttachedResumeText] = useState("");
+  const [attachment, setAttachment] = useState<MockResumeAttachment | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState<MockProfileDraft | null>(null);
+  const [lastTurn, setLastTurn] = useState<MockIntakeTurn | null>(null);
+  const [editedFields, setEditedFields] = useState<Set<IntentField>>(() => new Set());
+  const [isChangeExpanded, setIsChangeExpanded] = useState(false);
+  const [isReviewExpanded, setIsReviewExpanded] = useState(false);
+  const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
 
   function updateIntent(field: IntentField, value: string) {
     setIntent((current) => ({
       ...current,
       [field]: value
     }));
+    setEditedFields((current) => new Set(current).add(field));
   }
 
-  function generateDraftProfile() {
-    setDraft(createMockProfileDraft(resumeText, intent));
+  async function attachResume(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      setAttachment(null);
+      setAttachedResumeText("");
+      return;
+    }
+
+    const nextAttachment: MockResumeAttachment = {
+      name: file.name,
+      sizeLabel: formatFileSize(file.size),
+      parseStatus: canReadTextFile(file) ? "text_loaded" : "metadata_only"
+    };
+
+    setAttachment(nextAttachment);
+    setAttachedResumeText("");
+
+    if (canReadTextFile(file)) {
+      setAttachedResumeText((await file.text()).slice(0, 30_000));
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const turn = createMockIntakeTurn({
+      messageText,
+      attachedResumeText,
+      currentIntent: intent,
+      attachment
+    });
+    const turnNumber = messages.length + 1;
+
+    setIntent(turn.intent);
+    setDraft(turn.draft);
+    setLastTurn(turn);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `user-${turnNumber}`,
+        role: "user",
+        text: messageText.trim() || initialProfilePrompt,
+        attachmentName: attachment?.name
+      },
+      {
+        id: `agent-${turnNumber}`,
+        role: "agent",
+        text: turn.agentMessage
+      }
+    ]);
+    setMessageText("");
   }
 
   return (
     <main className="dashboard-main profile-workspace">
       <section className="page-heading" aria-labelledby="profile-title">
         <p className="eyebrow">Profile workspace</p>
-        <h1 id="profile-title">Your structured profile powers JobOps.</h1>
+        <h1 id="profile-title">Build your JobOps profile through conversation.</h1>
         <p>
-          This workspace will turn resume text and follow-up answers into draft career data for review. Nothing here is
-          verified, public, or persisted yet.
+          The conversation drafts profile data. The review area below is where draft claims become edited, verified,
+          private, public, or rejected later.
         </p>
       </section>
 
-      <section className="intake-grid" aria-label="Profile intake steps">
-        <article className="intake-panel">
+      <section className="chat-intake-panel" aria-labelledby="conversation-title">
+        <div className="chat-panel-header">
           <div>
-            <p className="eyebrow">Step 1</p>
-            <h2>Target role intent</h2>
-            <p>Start with what you want next so the extractor can look for the right evidence.</p>
+            <p className="eyebrow">Conversation-first intake</p>
+            <h2 id="conversation-title">Start with what you want to do next.</h2>
+          </div>
+          <span className="status-pill">Local mock agent</span>
+        </div>
+
+        <div className="chat-transcript" aria-label="Profile intake conversation">
+          {messages.map((message) => (
+            <article className={`chat-message ${message.role}`} key={message.id}>
+              <strong>{message.role === "agent" ? "JobOps intake" : "You"}</strong>
+              <p>{message.text}</p>
+              {message.attachmentName ? <small>Attached: {message.attachmentName}</small> : null}
+            </article>
+          ))}
+        </div>
+
+        <form className="chat-composer" onSubmit={handleSubmit}>
+          <label className="composer-label" htmlFor="profile-message">
+            Message
+          </label>
+          <textarea
+            id="profile-message"
+            onChange={(event) => setMessageText(event.target.value)}
+            placeholder="Complete the sentence, or paste your resume text here."
+            suppressHydrationWarning
+            value={messageText}
+          />
+
+          <div className="composer-actions">
+            <label className="attachment-button">
+              + Attach resume
+              <input
+                accept=".txt,.md,.pdf,.doc,.docx"
+                className="visually-hidden"
+                onChange={attachResume}
+                suppressHydrationWarning
+                type="file"
+              />
+            </label>
+            <button className="primary-action button-action" suppressHydrationWarning type="submit">
+              Send to mock agent
+            </button>
           </div>
 
-          <div className="intent-form" aria-label="Target role intent form">
+          <div className="attachment-state" aria-live="polite">
+            {attachment ? (
+              <span>
+                {attachment.name} ({attachment.sizeLabel}) / {attachment.parseStatus}
+              </span>
+            ) : (
+              <span>Paste resume text into the message box, or attach a resume file.</span>
+            )}
+          </div>
+        </form>
+      </section>
+
+      <CollapsiblePanel
+        eyebrow="Latest agent turn"
+        expanded={isChangeExpanded}
+        id="change-summary-title"
+        onToggle={() => setIsChangeExpanded((current) => !current)}
+        subtitle="Every generated change remains a private draft until reviewed."
+        title="What changed"
+      >
+        <ChangeSummary turn={lastTurn} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel
+        aside={
+          <div className="profile-status-bar" aria-label="Profile-level statuses">
+            <span>
+              <strong>Review</strong>
+              Needs verification
+            </span>
+            <span>
+              <strong>Visibility</strong>
+              Private
+            </span>
+            <span>
+              <strong>Publication</strong>
+              Not published
+            </span>
+          </div>
+        }
+        className="review-shell"
+        eyebrow="Structured review"
+        expanded={isReviewExpanded}
+        id="review-title"
+        onToggle={() => setIsReviewExpanded((current) => !current)}
+        subtitle="These fields are updated by the conversation and can be edited before verification."
+        title="Review & verify profile data"
+      >
+        <p className="status-context">
+          The status bar applies to the profile overall. Badges beside fields and draft items describe field-level
+          review state.
+        </p>
+
+        <section className="review-subsection" aria-labelledby="intent-review-title">
+          <div>
+            <h3 id="intent-review-title">Target role intent</h3>
+          </div>
+          <div className="intent-form review-form" aria-label="Target role intent review form">
+            <IntentFieldControl
+              editedFields={editedFields}
+              field="targetTitles"
+              label="Target titles"
+              onChange={updateIntent}
+              placeholder="Applied AI Engineer, Forward Deployed Engineer"
+              value={intent.targetTitles}
+            />
+            <IntentFieldControl
+              editedFields={editedFields}
+              field="roleFamilies"
+              label="Target role families"
+              onChange={updateIntent}
+              placeholder="LLM systems, product engineering, evals"
+              value={intent.roleFamilies}
+            />
             <label>
-              Target titles
-              <input
-                onChange={(event) => updateIntent("targetTitles", event.target.value)}
-                placeholder="Applied AI Engineer, Forward Deployed Engineer"
-                suppressHydrationWarning
-                value={intent.targetTitles}
-              />
-            </label>
-            <label>
-              Target role families
-              <input
-                onChange={(event) => updateIntent("roleFamilies", event.target.value)}
-                placeholder="LLM systems, product engineering, evals"
-                suppressHydrationWarning
-                value={intent.roleFamilies}
-              />
-            </label>
-            <label>
-              Preferred work mode
+              <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
               <select
                 onChange={(event) => updateIntent("preferredWorkMode", event.target.value)}
                 suppressHydrationWarning
@@ -77,26 +248,24 @@ export function ProfileWorkspace() {
                 <option value="onsite">Onsite</option>
               </select>
             </label>
+            <IntentFieldControl
+              editedFields={editedFields}
+              field="preferredLocations"
+              label="Preferred locations"
+              onChange={updateIntent}
+              placeholder="Remote US, Raleigh-Durham, NYC"
+              value={intent.preferredLocations}
+            />
+            <IntentFieldControl
+              editedFields={editedFields}
+              field="domainsOfInterest"
+              label="Domains or industries of interest"
+              onChange={updateIntent}
+              placeholder="Developer tools, education, healthcare, enterprise AI"
+              value={intent.domainsOfInterest}
+            />
             <label>
-              Preferred locations
-              <input
-                onChange={(event) => updateIntent("preferredLocations", event.target.value)}
-                placeholder="Remote US, Raleigh-Durham, NYC"
-                suppressHydrationWarning
-                value={intent.preferredLocations}
-              />
-            </label>
-            <label>
-              Domains or industries of interest
-              <input
-                onChange={(event) => updateIntent("domainsOfInterest", event.target.value)}
-                placeholder="Developer tools, education, healthcare, enterprise AI"
-                suppressHydrationWarning
-                value={intent.domainsOfInterest}
-              />
-            </label>
-            <label>
-              Dealbreakers or constraints
+              <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
               <textarea
                 className="small-textarea"
                 onChange={(event) => updateIntent("constraints", event.target.value)}
@@ -106,157 +275,327 @@ export function ProfileWorkspace() {
               />
             </label>
           </div>
-        </article>
+        </section>
 
-        <article className="intake-panel">
+        <section className="review-subsection" aria-labelledby="draft-preview-title">
           <div>
-            <p className="eyebrow">Step 2</p>
-            <h2>Resume intake</h2>
-            <p>Paste resume text for a deterministic local mock extraction. Raw resume text is not stored.</p>
+            <h3 id="draft-preview-title">Draft review queues</h3>
+            <p>Draft items are grouped by information type and need review before they become verified private data.</p>
           </div>
+          <DraftProfilePreview draft={draft} />
+        </section>
 
-          <label>
-            Resume text
-            <textarea
-              onChange={(event) => setResumeText(event.target.value)}
-              placeholder="Paste resume text here..."
-              suppressHydrationWarning
-              value={resumeText}
-            />
-          </label>
+      </CollapsiblePanel>
 
-          <label>
-            Resume file upload
-            <input disabled suppressHydrationWarning type="file" />
-            <span className="field-note">Upload will be added later. Paste text for this shell.</span>
-          </label>
+      <CollapsiblePanel
+        eyebrow="Follow-up queue"
+        expanded={isQuestionsExpanded}
+        id="questions-title"
+        onToggle={() => setIsQuestionsExpanded((current) => !current)}
+        subtitle="The conversation should pull these answers forward over time."
+        title="Clarifying questions"
+      >
+        <ClarifyingQuestions draft={draft} />
+      </CollapsiblePanel>
+    </main>
+  );
+}
 
+function CollapsiblePanel({
+  aside,
+  children,
+  className,
+  eyebrow,
+  expanded,
+  id,
+  onToggle,
+  subtitle,
+  title
+}: {
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  eyebrow: string;
+  expanded: boolean;
+  id: string;
+  onToggle: () => void;
+  subtitle: string;
+  title: string;
+}) {
+  return (
+    <section className={`collapsible-panel${className ? ` ${className}` : ""}`} aria-labelledby={id}>
+      <div className="collapsible-header">
+        <div className="collapsible-title">
+          <p className="eyebrow">{eyebrow}</p>
+          <h2 id={id}>{title}</h2>
+        </div>
+        <div className="collapsible-actions">
+          {aside}
           <button
-            className="primary-action button-action"
-            onClick={generateDraftProfile}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`}
+            className="collapse-button"
+            onClick={onToggle}
             suppressHydrationWarning
             type="button"
           >
-            Generate draft profile
+            {expanded ? "-" : "+"}
           </button>
-        </article>
-      </section>
-
-      <section className="intake-panel" aria-labelledby="draft-preview-title">
-        <div>
-          <p className="eyebrow">Step 3</p>
-          <h2 id="draft-preview-title">Draft profile preview</h2>
-          <p>Mock output is draft, resume-derived, not verified, private, and not published.</p>
         </div>
-        <DraftProfilePreview draft={draft} />
-      </section>
-
-      <section className="intake-panel" aria-labelledby="questions-title">
-        <div>
-          <p className="eyebrow">Step 4</p>
-          <h2 id="questions-title">Clarifying questions</h2>
-          <p>These questions will become the first profile generator follow-up loop.</p>
+      </div>
+      {expanded ? (
+        <div className="collapsible-body">
+          <p>{subtitle}</p>
+          {children}
         </div>
-        <ClarifyingQuestions draft={draft} />
-      </section>
-    </main>
+      ) : null}
+    </section>
+  );
+}
+
+function IntentFieldControl({
+  editedFields,
+  field,
+  label,
+  onChange,
+  placeholder,
+  value
+}: {
+  editedFields: Set<IntentField>;
+  field: IntentField;
+  label: string;
+  onChange: (field: IntentField, value: string) => void;
+  placeholder: string;
+  value: string;
+}) {
+  return (
+    <label>
+      <FieldLabel edited={editedFields.has(field)} label={label} />
+      <input
+        onChange={(event) => onChange(field, event.target.value)}
+        placeholder={placeholder}
+        suppressHydrationWarning
+        value={value}
+      />
+    </label>
+  );
+}
+
+function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
+  return (
+    <span className="field-label">
+      {label}
+      <span className="field-badges">
+        <span>{edited ? "Edited by you" : "Agent draft"}</span>
+        <span>Needs review</span>
+      </span>
+    </span>
+  );
+}
+
+function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
+  if (!turn) {
+    return (
+      <div className="empty-state-block">
+        <h3>No changes yet</h3>
+        <p>Send a message or attach a resume to generate the first local summary.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="change-summary">
+      <p>{turn.changeHeadline}</p>
+      <details>
+        <summary>View change notes</summary>
+        <ul className="change-list">
+          {turn.changeSummary.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </details>
+    </div>
   );
 }
 
 function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
   if (!draft) {
     return (
-      <div className="empty-state-block">
-        <h3>No draft yet</h3>
-        <p>Paste resume text and generate a draft profile to preview resume-derived claims.</p>
+      <div className="profile-preview-grid">
+        <PreviewColumn count={0} title="Experience & Projects">
+          <li>No work, project, or education items drafted yet.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Education">
+          <li>No education items drafted yet.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Certifications">
+          <li>No certification items drafted yet.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Skills">
+          <li>No skill claims detected yet.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Achievements / Outcomes">
+          <li>No achievement or outcome items drafted yet.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Facts / Claims">
+          <li>No draft yet. Use the conversation panel to draft profile facts.</li>
+        </PreviewColumn>
+        <PreviewColumn count={0} title="Evidence & Links">
+          <li>No links detected.</li>
+        </PreviewColumn>
       </div>
     );
   }
 
   return (
     <div className="profile-preview-grid">
-      <PreviewColumn title="Draft facts">
-        {draft.facts.map((fact) => (
-          <li key={fact.id}>
-            <strong>{fact.category}</strong>
-            <span>{fact.claim}</span>
-            <small>
-              {fact.reviewStatus} / {fact.source} / {fact.verificationStatus} / {fact.visibility}
-            </small>
-          </li>
-        ))}
+      <PreviewColumn count={draft.experienceSummaries.length} title="Experience & Projects">
+        {draft.experienceSummaries.length ? (
+          draft.experienceSummaries.slice(0, 2).map((experience) => (
+            <li key={experience.id}>
+              <strong>{experience.title}</strong>
+              <span>{experience.summary}</span>
+              <StatusBadges source={experience.source} />
+            </li>
+          ))
+        ) : (
+          <li>No past work, project, education, or artifact evidence detected yet.</li>
+        )}
+        <OverflowNote count={draft.experienceSummaries.length} noun="experience/project item" />
       </PreviewColumn>
 
-      <PreviewColumn title="Skill claims">
+      <PreviewColumn count={0} title="Education">
+        <li>No education items detected by the mock extractor.</li>
+      </PreviewColumn>
+
+      <PreviewColumn count={0} title="Certifications">
+        <li>No certification items detected by the mock extractor.</li>
+      </PreviewColumn>
+
+      <PreviewColumn count={draft.skillClaims.length} title="Skills">
         {draft.skillClaims.length ? (
-          draft.skillClaims.map((skill) => (
+          draft.skillClaims.slice(0, 2).map((skill) => (
             <li key={skill.id}>
               <strong>{skill.skill}</strong>
               <span>{skill.evidence}</span>
-              <small>
-                {skill.source} / {skill.verificationStatus}
-              </small>
+              <StatusBadges source={skill.source} />
             </li>
           ))
         ) : (
           <li>No skill claims detected by the mock extractor.</li>
         )}
+        <OverflowNote count={draft.skillClaims.length} noun="skill claim" />
       </PreviewColumn>
 
-      <PreviewColumn title="Experience summaries">
-        {draft.experienceSummaries.map((experience) => (
-          <li key={experience.id}>
-            <strong>{experience.title}</strong>
-            <span>{experience.summary}</span>
-            <small>
-              {experience.source} / {experience.verificationStatus}
-            </small>
+      <PreviewColumn count={0} title="Achievements / Outcomes">
+        <li>No achievement or outcome items detected by the mock extractor.</li>
+      </PreviewColumn>
+
+      <PreviewColumn count={draft.facts.length} title="Facts / Claims">
+        {draft.facts.slice(0, 2).map((fact) => (
+          <li key={fact.id}>
+            <strong>{fact.category}</strong>
+            <span>{fact.claim}</span>
+            <StatusBadges source={fact.source} />
           </li>
         ))}
+        <OverflowNote count={draft.facts.length} noun="draft fact" />
       </PreviewColumn>
 
-      <PreviewColumn title="Human-approved facts">
-        <li>Empty. Candidate review and approval are intentionally deferred.</li>
-      </PreviewColumn>
-
-      <PreviewColumn title="Public/published facts">
-        <li>Empty. Public candidate-agent facts must be explicitly approved and published later.</li>
-      </PreviewColumn>
-
-      <PreviewColumn title="Links">
-        {draft.links.length ? draft.links.map((link) => <li key={link}>{link}</li>) : <li>No links detected.</li>}
+      <PreviewColumn count={draft.links.length} title="Evidence & Links">
+        {draft.links.length ? (
+          draft.links.slice(0, 2).map((link) => (
+            <li key={link}>
+              <span>{link}</span>
+              <span className="badge-row">
+                <span>Needs review</span>
+                <span>Private</span>
+              </span>
+            </li>
+          ))
+        ) : (
+          <li>No links detected.</li>
+        )}
+        <OverflowNote count={draft.links.length} noun="evidence item" />
       </PreviewColumn>
     </div>
   );
 }
 
-function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
+export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
   if (!draft) {
     return (
       <div className="empty-state-block">
         <h3>No questions yet</h3>
-        <p>Generate a draft profile to see applied AI and FDE-oriented follow-up questions.</p>
+        <p>The mock agent will queue applied AI and FDE-oriented questions after the first turn.</p>
       </div>
     );
   }
 
   return (
-    <ol className="question-list">
+    <div>
+      <p className="compact-label">Suggested next questions</p>
+      <ol className="question-list compact-question-list">
       {draft.clarifyingQuestions.map((question) => (
-        <li key={question.id}>
-          <strong>{question.topic}</strong>
-          <span>{question.question}</span>
-        </li>
+        <li key={question.id}>{question.question}</li>
       ))}
-    </ol>
+      </ol>
+    </div>
   );
 }
 
-function PreviewColumn({ children, title }: { children: React.ReactNode; title: string }) {
+function PreviewColumn({ children, count, title }: { children: React.ReactNode; count: number; title: string }) {
   return (
     <section className="preview-column">
-      <h3>{title}</h3>
+      <div className="preview-column-header">
+        <h3>{title}</h3>
+        <span>{count}</span>
+      </div>
       <ul>{children}</ul>
     </section>
   );
+}
+
+function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["source"] }) {
+  const sourceLabel =
+    source === "resume_derived" ? "Source: Resume" : source === "model_drafted" ? "Source: Model" : "Source: Chat";
+
+  return (
+    <span className="badge-row">
+      <span>Needs review</span>
+      <span>Private</span>
+      <span>{sourceLabel}</span>
+    </span>
+  );
+}
+
+function OverflowNote({ count, noun }: { count: number; noun: string }) {
+  if (count <= 2) {
+    return null;
+  }
+
+  return (
+    <li className="overflow-note">
+      +{count - 2} more {noun}
+      {count - 2 === 1 ? "" : "s"} in this draft.
+    </li>
+  );
+}
+
+function canReadTextFile(file: File) {
+  return file.type.startsWith("text/") || /\.(txt|md)$/i.test(file.name);
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const kilobytes = bytes / 1024;
+
+  if (kilobytes < 1024) {
+    return `${kilobytes.toFixed(1)} KB`;
+  }
+
+  return `${(kilobytes / 1024).toFixed(1)} MB`;
 }

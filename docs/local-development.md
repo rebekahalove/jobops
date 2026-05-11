@@ -73,7 +73,9 @@ The stub includes placeholder workflow areas for:
 
 The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
 
-The `/profile` route now includes the first profile intake shell. It supports local target-role intent fields, resume text paste, deterministic mock extraction, a draft profile preview, and suggested clarifying questions. The extractor is intentionally mocked: it does not call Gemini or any live provider, does not persist raw resume text, and marks generated claims as draft, resume-derived, not verified, and private.
+The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, deterministic mock extraction, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface. The extractor is intentionally mocked: it does not call Gemini or any live provider, does not persist raw resume text, and marks generated claims as draft, source-labeled, not verified, and private.
+
+See [Conversation-First Profile Workspace](profile-workspace-design.md).
 
 Deferred profile work:
 
@@ -83,7 +85,7 @@ Deferred profile work:
 - Database persistence.
 - Human approval and publication workflow.
 
-Recommended next step: connect the mock extraction boundary to the model connector with structured validation while keeping tests on the mock adapter.
+Recommended next step: connect the mocked conversation turn boundary to the model connector with structured validation while keeping tests on the mock adapter.
 
 ## Run The API Scaffold
 

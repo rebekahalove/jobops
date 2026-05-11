@@ -14,23 +14,25 @@ http://localhost:3002
 
 ## Profile Workspace Shell
 
-The `/profile` page includes the first local-only profile intake shell:
+The `/profile` page includes the first local-only conversation-first profile intake shell:
 
-- Target role intent fields.
-- Resume text paste area.
-- Disabled resume upload placeholder.
-- Deterministic mock draft profile extraction.
-- Draft profile preview.
-- Clarifying questions for applied AI, forward-deployed, and LLM systems profiles.
+- Large chat/intake panel at the top of the page.
+- Message input prefilled with `I want to be a...`.
+- Resume attachment affordance with local metadata only.
+- Resume text paste directly inside the chat message box.
+- Mock agent turn that updates target role intent, draft facts, skill claims, experience summaries, change summaries, and clarifying questions.
+- Structured profile review/edit surface below the conversation.
 
 The mock extractor marks all generated facts as:
 
 - `draft`
-- `resume_derived`
+- `resume_derived` or `chat_derived`
 - `not_verified`
 - `private`
 
-Human-approved facts and public/published facts intentionally remain empty.
+Review queues are grouped by information type rather than status. Approval, public-ready, and publish controls are intentionally deferred.
+
+See [Conversation-First Profile Workspace](../../docs/profile-workspace-design.md).
 
 ## Intentionally Deferred
 
@@ -43,4 +45,4 @@ Human-approved facts and public/published facts intentionally remain empty.
 - Public fact publication.
 - Job intake, fit scoring, materials generation, and application tracking.
 
-Recommended next step: wire this mock extractor boundary to `@jobops/model-connector` using structured-output validation, still with the mock adapter first.
+Recommended next step: wire the mocked conversation turn boundary to `@jobops/model-connector` with structured-output validation while keeping tests on the mock adapter.
