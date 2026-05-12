@@ -162,6 +162,18 @@ describe("Profile intake workspace", () => {
     expect(source).toContain("applyProfileIntakeOutputToState");
   });
 
+  it("keeps the Next profile-intake route as a thin FastAPI proxy", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const routeSource = await readFile(new URL("../app/api/profile-intake/route.ts", import.meta.url), "utf-8");
+
+    expect(routeSource).toContain("/v1/profile-intake/extract");
+    expect(routeSource).not.toContain("@jobops/model-connector");
+    expect(routeSource).not.toContain("runProfileIntakeExtraction");
+    expect(routeSource).not.toContain("buildProfileIntakeUserPrompt");
+    expect(routeSource).not.toContain("generateProfileIntakeOutput");
+    expect(routeSource).not.toContain("saveProfileIntake");
+  });
+
   it("does not import server connector code into the client component", async () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");

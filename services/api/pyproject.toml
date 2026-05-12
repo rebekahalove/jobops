@@ -24,7 +24,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider --basetemp=.pytest-tmp"
 
 [tool.setuptools.packages.find]
 include = ["jobops_api*"]

@@ -1,8 +1,6 @@
-import { ModelConfigurationError, StructuredOutputValidationError } from "@jobops/model-connector/server";
 import { NextResponse } from "next/server";
-import { runProfileIntakeExtraction } from "../../../lib/profile-intake-model";
 import { validateProfileIntakeApiRequest } from "../../../lib/profile-intake-contract";
-import { buildProfileIntakeValidationErrorBody } from "../../../lib/profile-intake-api-errors";
+import { getJobOpsServerEnv } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
@@ -33,47 +31,31 @@ export async function POST(request: Request) {
     );
   }
 
+  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL"]);
+  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
+
   try {
-    return NextResponse.json({
-      ok: true,
-      result: await runProfileIntakeExtraction(validation.value)
+    const apiResponse = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/profile-intake/extract`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        latest_user_message: validation.value.latestUserMessage,
+        existing_draft: validation.value.existingDraft ?? null
+      })
     });
-  } catch (error) {
-    if (error instanceof ModelConfigurationError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            "Profile intake model is not configured. Set JOBOPS_LLM_PROVIDER=mock for deterministic local mode, or configure JOBOPS_LLM_PROVIDER=gemini with server-side GEMINI_API_KEY.",
-          code: error.code
-        },
-        { status: 503 }
-      );
-    }
+    const payload = await apiResponse.json();
 
-    if (isStructuredOutputValidationError(error)) {
-      return NextResponse.json(
-        buildProfileIntakeValidationErrorBody(error),
-        { status: 502 }
-      );
-    }
-
+    return NextResponse.json(payload, { status: apiResponse.status });
+  } catch {
     return NextResponse.json(
       {
         ok: false,
-        error: "Profile intake failed. No draft data was applied."
+        error:
+          "Profile intake API is unavailable. Start the FastAPI service on JOBOPS_API_BASE_URL or switch to mock mode there."
       },
-      { status: 500 }
+      { status: 503 }
     );
   }
-}
-
-function isStructuredOutputValidationError(error: unknown): error is StructuredOutputValidationError {
-  return (
-    error instanceof StructuredOutputValidationError ||
-    (typeof error === "object" &&
-      error !== null &&
-      "issues" in error &&
-      Array.isArray((error as { issues?: unknown }).issues))
-  );
 }

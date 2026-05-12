@@ -304,9 +304,9 @@ Revise the current Profile page in small steps:
 1. Convert the top of `/profile` into a large conversation-first intake panel.
 2. Prefill the message input with `I want to be a...`.
 3. Add a local resume attachment/upload affordance without real upload or persistence.
-4. Replace the current "Generate draft profile" form-first action with a mocked conversation turn processor.
-5. Keep all state local for now.
-6. Keep the current target role, resume, draft facts, skill claims, experience summaries, and clarifying questions as mocked data shapes.
+4. Replace the current "Generate draft profile" form-first action with a conversation turn processor.
+5. Keep all state local in the browser for now.
+6. Keep the current target role, draft facts, skill claims, experience summaries, and clarifying questions as local review shapes.
 7. Move structured fields below the chat as review/edit/verification sections.
 8. Add a "what changed" summary after each mocked agent turn.
 9. Add section-level, item-level, and whole-profile status badges using the review model above.
@@ -315,10 +315,11 @@ Revise the current Profile page in small steps:
 Do not add yet:
 
 - Database persistence.
-- Live model calls.
 - Real resume upload storage.
 - Authentication.
 - Full agent loop.
 - Job intake, fit scoring, materials generation, or application tracking.
 
-Current implementation status: the Profile shell now follows this conversation-first layout with a local mocked turn processor and information-type review queues. The recommended next implementation step is to introduce typed local status objects for core sections and review queue items, then render those statuses in the mock UI without adding approval/publish buttons yet. After that, connect the intake boundary to the model connector with structured-output validation while keeping tests deterministic on the mock adapter.
+Current implementation status: the Profile shell follows this conversation-first layout and calls the FastAPI profile-intake endpoint through a thin Next.js proxy. FastAPI owns prompt construction, provider selection, model calls, Pydantic validation, artifact saving, and debug logging. The UI still keeps draft profile state locally and renders information-type review queues without approval/publish controls.
+
+Recommended next implementation step: persist validated draft output in the FastAPI/database boundary as an intake session and draft profile change event, while keeping human verification and publication as explicit later actions.

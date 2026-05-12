@@ -98,12 +98,14 @@ export function ProfileWorkspace() {
       });
       const payload = (await response.json()) as
         | { ok: true; result: ProfileIntakeOutput }
-        | { ok: false; error: string; issues?: string[]; code?: string };
+        | { ok: false; error: string; issues?: string[]; code?: string; debug_run_id?: string; artifact_path?: string };
 
       if (!response.ok || !payload.ok) {
         const detail = !payload.ok && payload.issues?.length ? ` ${payload.issues.join(" ")}` : "";
         const hint = !payload.ok && payload.code?.startsWith("MODEL_CONFIG") ? ` ${modelConfigurationHint}` : "";
-        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}${hint}`);
+        const debug =
+          !payload.ok && payload.debug_run_id ? ` Debug run: ${payload.debug_run_id}${payload.artifact_path ? ` (${payload.artifact_path})` : ""}.` : "";
+        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}${hint}${debug}`);
       }
 
       const nextState = applyProfileIntakeOutputToState(intent, payload.result);

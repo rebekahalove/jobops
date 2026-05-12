@@ -112,7 +112,15 @@ The stub includes placeholder workflow areas for:
 
 The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
 
-The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, a server-side intake extraction boundary, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface.
+The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface.
+
+The active profile-intake backend lives in FastAPI at:
+
+```text
+POST http://localhost:8000/v1/profile-intake/extract
+```
+
+The Next.js app keeps only a thin `/api/profile-intake` proxy. It does not build prompts, call model providers, validate model output, or save artifacts.
 
 For deterministic local mode:
 
@@ -133,7 +141,7 @@ JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
 ```
 
-The server action boundary keeps the Gemini key server-side. The profile workspace does not persist raw resume text yet, and all generated claims are draft, source-labeled, private, unpublished, and marked needs review.
+The FastAPI boundary keeps the Gemini key server-side. The profile workspace does not persist raw resume text yet, and all generated claims are draft, source-labeled, private, unpublished, and marked needs review.
 
 See [Conversation-First Profile Workspace](profile-workspace-design.md).
 
@@ -146,7 +154,7 @@ JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
 JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
 ```
 
-With raw text disabled, JobOps writes local metadata and validation issues only. Artifacts are written under:
+With raw text disabled, JobOps writes local metadata, validation issues, and parsed structured output when parsing succeeds. Artifacts are written under:
 
 ```text
 artifacts/profile-intake/<timestamp>_<runId>/
@@ -165,7 +173,7 @@ JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
 JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true
 ```
 
-This may write `prompt.txt`, `raw-response.txt`, and `parsed-output.json`. These files may contain resume text, chat content, and model-derived profile data. Keep this mode local only. The `artifacts/` directory is gitignored and must not be committed.
+This may write `prompt.txt` and `raw-response.txt`. `parsed-output.json` is written when artifacts are enabled and parsing succeeds. These files may contain resume text, chat content, and model-derived profile data. Keep artifact mode local only. The `artifacts/` directory is gitignored and must not be committed.
 
 Suggested malformed JSON debugging flow:
 
@@ -186,7 +194,7 @@ Deferred profile work:
 - Full review controls.
 - Telemetry.
 
-Recommended next step: add persistence for validated draft profile intake output, keeping review and publication as explicit later actions.
+Recommended next step: add persistence for validated draft profile intake output in FastAPI, keeping review and publication as explicit later actions.
 
 ## Run The API Scaffold
 
@@ -220,7 +228,7 @@ For local dev:
 
 The backend database layer uses SQLAlchemy and Alembic. Keep the Neon connection string in `.env.dev`; it is ignored by Git and should never be committed.
 
-The portfolio app also reads the repo-root `.env` and `.env.<APP_ENV>` on the server so it can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
+The portfolio and JobOps apps also read the repo-root `.env` and `.env.<APP_ENV>` on the server so they can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
 
 ## Database Setup
 

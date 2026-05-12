@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .db.session import get_db_session
+from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by_hostname, get_candidate_profile_by_slug
 from .settings import load_settings
 
@@ -49,6 +51,12 @@ def get_profile_by_hostname(hostname: str, session: Session = Depends(get_db_ses
     if candidate_profile is None:
         raise HTTPException(status_code=404, detail="Profile not found.")
     return candidate_profile_to_public_dict(candidate_profile)
+
+
+@app.post("/v1/profile-intake/extract")
+def extract_profile_intake(request: ProfileIntakeExtractRequest) -> JSONResponse:
+    result = run_profile_intake_extraction(request, settings=settings)
+    return JSONResponse(content=result.body, status_code=result.status_code)
 
 
 @app.post("/v1/profiles/{slug}/questions")

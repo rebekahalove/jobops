@@ -105,13 +105,21 @@ The server export is intentionally separate so provider SDKs and secret-reading 
 
 ## Profile Intake Usage
 
-The JobOps dashboard profile workspace calls a server-side API route:
+The active profile-intake backend now lives in FastAPI, not in the Next.js dashboard app:
+
+```text
+POST /v1/profile-intake/extract
+```
+
+The JobOps dashboard profile workspace calls a thin Next.js proxy:
 
 ```text
 POST /api/profile-intake
 ```
 
-That route accepts the latest user message and existing local draft state, calls `@jobops/model-connector/server`, and validates the JSON response before the client applies any draft updates.
+That route accepts the latest user message and existing local draft state, forwards the request to FastAPI, and returns the FastAPI response. It does not build prompts, call model providers, validate model output, or save artifacts.
+
+FastAPI owns profile-intake prompt construction, provider selection, model calls, JSON parsing, Pydantic validation, concise server logging, and local artifact saving. The existing TypeScript connector package remains available for future TypeScript workflows, but it is no longer the active profile-intake backend path.
 
 Supported local modes:
 
@@ -135,6 +143,6 @@ Artifacts are written to:
 artifacts/profile-intake/<timestamp>_<runId>/
 ```
 
-With raw text disabled, artifacts contain metadata, input sizes/counts, run IDs, provider/model names, latency, finish reason, and validation issues. They do not contain full prompts, resume text, chat text, raw model responses, or API keys.
+With raw text disabled, artifacts contain metadata, input sizes/counts, run IDs, provider/model names, latency, finish reason, validation issues, and parsed structured output when parsing succeeds. They do not contain full prompts, raw resume/chat prompts, raw model responses, or API keys.
 
 Set `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` only for local debugging when you need `prompt.txt` and `raw-response.txt`. Raw artifacts may contain resume/chat content and must remain local. `artifacts/` is gitignored.

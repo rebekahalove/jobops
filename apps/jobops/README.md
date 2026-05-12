@@ -22,10 +22,10 @@ The `/profile` page includes the first conversation-first profile intake slice:
 - Message input prefilled with `I want to be a...`.
 - Resume attachment affordance with local metadata only.
 - Resume text paste directly inside the chat message box.
-- Server-side profile intake boundary that calls `@jobops/model-connector`.
-- Mock provider support for deterministic local/test behavior.
-- Live Gemini support when `JOBOPS_LLM_PROVIDER=gemini` and `GEMINI_API_KEY` are configured server-side.
-- Structured output validation before draft state is updated.
+- Thin Next.js API proxy to the FastAPI profile-intake endpoint.
+- Mock provider support in FastAPI for deterministic local/test behavior.
+- Live Gemini support in FastAPI when `JOBOPS_LLM_PROVIDER=gemini` and `GEMINI_API_KEY` are configured server-side.
+- Pydantic structured output validation before draft state is updated.
 - Structured profile review/edit surface below the conversation.
 
 Generated data is always treated as:
@@ -41,6 +41,9 @@ Review queues are grouped by information type rather than status. Approval, publ
 See [Conversation-First Profile Workspace](../../docs/profile-workspace-design.md).
 
 ## Profile Intake Model Modes
+
+The JobOps app expects the FastAPI service to be running at `JOBOPS_API_BASE_URL`, usually `http://localhost:8000`.
+Next.js owns the UI and proxy only; prompt construction, model calls, validation, debug logging, and local artifact saving live in `services/api`.
 
 Mock mode, recommended for local UI work and tests:
 

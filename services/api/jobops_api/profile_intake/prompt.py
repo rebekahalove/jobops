@@ -1,6 +1,17 @@
-import type { ProfileIntakeApiRequest } from "./profile-intake-contract";
+from __future__ import annotations
 
-export const profileIntakeSystemPrompt = `You are the JobOps Profile Intake Agent.
+import json
+from typing import Any
+
+from .models import ProfileIntakeExtractRequest
+
+
+PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v1"
+PROFILE_INTAKE_SCHEMA_NAME = "jobops_profile_intake"
+PROFILE_INTAKE_SCHEMA_VERSION = "profile-intake-output-v1"
+
+
+PROFILE_INTAKE_SYSTEM_PROMPT = """You are the JobOps Profile Intake Agent.
 
 Your job is to extract draft candidate profile data from the latest user message and existing draft state.
 
@@ -88,19 +99,58 @@ Return exactly this JSON shape, filling arrays with zero or more compact items:
   ],
   "clarifyingQuestions": ["One targeted question?"],
   "changeSummary": ["One concise change note."]
-}`;
+}"""
 
-export function buildProfileIntakeUserPrompt(input: ProfileIntakeApiRequest): string {
-  return JSON.stringify(
-    {
-      instruction:
-        "Extract a compact first-pass draft from latestUserMessage. Use existingDraft only as previous state context. Return only one valid JSON object.",
-      latestUserMessage: input.latestUserMessage,
-      existingDraft: input.existingDraft ?? null,
-      requiredOutput:
-        "Return only valid JSON matching the exact shape from the system prompt. Use bounded arrays and concise strings. Start with { and end with }."
-    },
-    null,
-    2
-  );
-}
+
+def build_profile_intake_user_prompt(request: ProfileIntakeExtractRequest) -> str:
+    return json.dumps(
+        {
+            "instruction": (
+                "Extract a compact first-pass draft from latest_user_message. "
+                "Use existing_draft only as previous state context. Return only one valid JSON object."
+            ),
+            "latest_user_message": request.latest_user_message,
+            "existing_draft": request.existing_draft,
+            "required_output": (
+                "Return only valid JSON matching the exact shape from the system prompt. "
+                "Use bounded arrays and concise strings. Start with { and end with }."
+            ),
+        },
+        indent=2,
+    )
+
+
+def build_prompt_artifact(system_prompt: str, user_prompt: str) -> str:
+    return f"## system\n\n{system_prompt}\n\n---\n\n## user\n\n{user_prompt}"
+
+
+def build_request_metadata(
+    *,
+    input_metrics: dict[str, int],
+    max_output_tokens: int,
+    model: str,
+    task: str,
+    temperature: float,
+    system_prompt: str,
+    user_prompt: str,
+) -> dict[str, Any]:
+    return {
+        "feature": "profile_intake",
+        "input": input_metrics,
+        "max_output_tokens": max_output_tokens,
+        "message_count": 2,
+        "messages": [
+            {"role": "system", "content_length": len(system_prompt)},
+            {"role": "user", "content_length": len(user_prompt)},
+        ],
+        "model": model,
+        "prompt_version": PROFILE_INTAKE_PROMPT_VERSION,
+        "response_format": {
+            "schema_name": PROFILE_INTAKE_SCHEMA_NAME,
+            "type": "json",
+        },
+        "schema_version": PROFILE_INTAKE_SCHEMA_VERSION,
+        "task": task,
+        "temperature": temperature,
+    }
+

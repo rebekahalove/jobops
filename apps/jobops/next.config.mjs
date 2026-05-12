@@ -1,6 +1,4 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  transpilePackages: ["@jobops/model-connector"]
-};
+const nextConfig = {};
 
 export default nextConfig;
