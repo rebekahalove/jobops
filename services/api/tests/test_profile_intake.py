@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import jobops_api.main as main_module
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
-from jobops_api.profile_intake.providers import ModelRequest, ModelResponse
+from jobops_api.profile_intake.providers import GeminiProfileIntakeProvider, ModelProviderError, ModelRequest, ModelResponse
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.settings import Settings
 
@@ -125,6 +126,12 @@ def test_metadata_artifacts_are_written_without_raw_text(tmp_path: Path) -> None
     assert metadata["input"]["existingSkillClaimCount"] == 1
     assert metadata["input"]["existingExperienceAndProjectCount"] == 1
 
+    request_metadata = (run_dir / "request-metadata.json").read_text(encoding="utf-8")
+    assert "I built a Python API" not in request_metadata
+    assert "Applied AI Engineer" not in request_metadata
+    assert "latest_user_message" not in request_metadata
+    assert "GEMINI_API_KEY" not in request_metadata
+
 
 def test_raw_artifacts_are_written_only_when_enabled(tmp_path: Path) -> None:
     result = run_profile_intake_extraction(
@@ -174,6 +181,26 @@ def test_artifacts_do_not_include_api_keys_or_secret_env_values(tmp_path: Path) 
     assert secret not in contents
 
 
+def test_gemini_invalid_json_response_is_wrapped_safely(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout: FakeHttpResponse("not json"),
+    )
+
+    with pytest.raises(ModelProviderError, match="not valid JSON"):
+        GeminiProfileIntakeProvider("test-key").generate(make_model_request())
+
+
+def test_gemini_unexpected_response_shape_is_wrapped_safely(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout: FakeHttpResponse("{}"),
+    )
+
+    with pytest.raises(ModelProviderError, match="did not include candidates"):
+        GeminiProfileIntakeProvider("test-key").generate(make_model_request())
+
+
 def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(main_module, "settings", make_settings(tmp_path))
     client = TestClient(main_module.app)
@@ -186,6 +213,33 @@ def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypat
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["result"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+
+
+class FakeHttpResponse:
+    def __init__(self, body: str) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body.encode("utf-8")
+
+
+def make_model_request() -> ModelRequest:
+    return ModelRequest(
+        existing_draft=None,
+        latest_user_message="I built an eval harness.",
+        max_output_tokens=4000,
+        model="gemini-test",
+        system_prompt="Return JSON.",
+        task="profile_extract",
+        temperature=0,
+        user_prompt="{}",
+    )
 
 
 def make_settings(
@@ -214,4 +268,3 @@ def only_run_dir(root: Path) -> Path:
     entries = list(profile_intake_root.iterdir())
     assert len(entries) == 1
     return entries[0]
-

@@ -102,16 +102,18 @@ class GeminiProfileIntakeProvider:
         except urllib.error.URLError as error:
             raise ModelProviderError(f"Gemini request failed: {error.reason}") from error
 
-        data = json.loads(response_body)
-        candidate = (data.get("candidates") or [{}])[0]
-        parts = ((candidate.get("content") or {}).get("parts") or [])
-        text = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
+        data = parse_gemini_response_json(response_body)
+        candidate = first_gemini_candidate(data)
+        parts = gemini_candidate_parts(candidate)
+        text = "\n".join(part["text"] for part in parts if isinstance(part.get("text"), str)).strip()
+        if not text:
+            raise ModelProviderError("Gemini response did not include text content.")
 
         return ModelResponse(
             text=text,
             provider="gemini",
             model=request.model,
-            finish_reason=candidate.get("finishReason"),
+            finish_reason=candidate.get("finishReason") if isinstance(candidate.get("finishReason"), str) else None,
         )
 
 
@@ -141,6 +143,42 @@ def build_model_request(
         latest_user_message=request.latest_user_message,
         existing_draft=request.existing_draft,
     )
+
+
+def parse_gemini_response_json(response_body: str) -> dict[str, Any]:
+    try:
+        data = json.loads(response_body)
+    except json.JSONDecodeError as error:
+        raise ModelProviderError("Gemini response was not valid JSON.") from error
+
+    if not isinstance(data, dict):
+        raise ModelProviderError("Gemini response was not a JSON object.")
+
+    return data
+
+
+def first_gemini_candidate(data: dict[str, Any]) -> dict[str, Any]:
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ModelProviderError("Gemini response did not include candidates.")
+
+    candidate = candidates[0]
+    if not isinstance(candidate, dict):
+        raise ModelProviderError("Gemini response candidate was not a JSON object.")
+
+    return candidate
+
+
+def gemini_candidate_parts(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    content = candidate.get("content")
+    if not isinstance(content, dict):
+        raise ModelProviderError("Gemini response candidate did not include content.")
+
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        raise ModelProviderError("Gemini response content did not include parts.")
+
+    return [part for part in parts if isinstance(part, dict)]
 
 
 def build_mock_profile_intake_output(message: str) -> dict[str, Any]:
@@ -274,7 +312,7 @@ def extract_target_title(message: str) -> str | None:
     if not match:
         return None
     title = match.group(1).strip()
-    if title in {"...", "…"}:
+    if title == "...":
         return None
     return title.rstrip(".!?").strip()
 
