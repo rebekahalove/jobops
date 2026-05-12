@@ -80,9 +80,16 @@ APP_ENV=dev
 ```text
 DATABASE_URL=...
 JOBOPS_LLM_PROVIDER=mock
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=false
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
 ```
 
 The real Neon connection string belongs in `.env.dev`, not in `.env.example`, docs, tests, or committed fixtures.
+
+Profile intake artifact flags are local debugging controls:
+
+- `JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true` writes metadata artifacts under `artifacts/profile-intake/`.
+- `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` also writes prompts and raw model responses. These may include resume or chat content and should stay local.
 
 ## Production
 

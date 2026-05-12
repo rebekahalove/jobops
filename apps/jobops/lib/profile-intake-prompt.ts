@@ -22,6 +22,8 @@ Extraction guidance:
 - Keep the response compact enough to fit comfortably in one JSON object.
 - Return at most 4 draftFacts, 6 skillClaims, 3 experienceAndProjects, 4 evidenceLinks, 3 clarifyingQuestions, and 3 changeSummary entries.
 - Keep assistantMessage under 240 characters.
+- Keep every targetRoleIntent field under 160 characters.
+- For targetTitles, use only exact titles stated by the user. Do not invent adjacent, seniority, alternate, or related title lists.
 - Keep each claim, evidence, title, organization, summary, label, question, and changeSummary string under 180 characters.
 - Do not copy large resume sections into the output.
 - Prefer a useful first-pass draft over exhaustive extraction.

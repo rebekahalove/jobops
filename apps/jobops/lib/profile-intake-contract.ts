@@ -64,6 +64,20 @@ export type ProfileIntakeApiRequest = {
   existingDraft?: unknown;
 };
 
+const MAX_ASSISTANT_MESSAGE_LENGTH = 400;
+const MAX_TARGET_FIELD_LENGTH = 200;
+const MAX_SHORT_FIELD_LENGTH = 120;
+const MAX_MEDIUM_FIELD_LENGTH = 240;
+const MAX_LONG_FIELD_LENGTH = 320;
+const MAX_URL_LENGTH = 1000;
+
+const MAX_DRAFT_FACTS = 4;
+const MAX_SKILL_CLAIMS = 6;
+const MAX_EXPERIENCE_AND_PROJECTS = 3;
+const MAX_EVIDENCE_LINKS = 4;
+const MAX_CLARIFYING_QUESTIONS = 3;
+const MAX_CHANGE_SUMMARY_ITEMS = 3;
+
 const metadataProperties: Record<string, JsonSchema> = {
   source: { type: "string", enum: [...profileIntakeSources] },
   status: { type: "string", enum: [...profileIntakeItemStatuses] },
@@ -85,84 +99,90 @@ export const profileIntakeJsonSchema: JsonSchema = {
     "changeSummary"
   ],
   properties: {
-    assistantMessage: { type: "string" },
+    assistantMessage: { type: "string", maxLength: MAX_ASSISTANT_MESSAGE_LENGTH },
     targetRoleIntent: {
       type: "object",
       additionalProperties: false,
       properties: {
-        targetTitles: { type: "string" },
-        targetRoleFamilies: { type: "string" },
+        targetTitles: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
+        targetRoleFamilies: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
         preferredWorkMode: { type: "string", enum: [...profileIntakeWorkModes] },
-        preferredLocations: { type: "string" },
-        domainsOrIndustries: { type: "string" },
-        constraints: { type: "string" }
+        preferredLocations: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
+        domainsOrIndustries: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
+        constraints: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH }
       }
     },
     draftFacts: {
       type: "array",
+      maxItems: MAX_DRAFT_FACTS,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["claim", "source", "status", "visibility", "published"],
         properties: {
-          id: { type: "string" },
-          claim: { type: "string" },
-          category: { type: "string" },
+          id: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          claim: { type: "string", maxLength: MAX_MEDIUM_FIELD_LENGTH },
+          category: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
           ...metadataProperties
         }
       }
     },
     skillClaims: {
       type: "array",
+      maxItems: MAX_SKILL_CLAIMS,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["skill", "source", "status", "visibility", "published"],
         properties: {
-          id: { type: "string" },
-          skill: { type: "string" },
-          category: { type: "string" },
-          evidence: { type: "string" },
+          id: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          skill: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          category: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          evidence: { type: "string", maxLength: MAX_MEDIUM_FIELD_LENGTH },
           ...metadataProperties
         }
       }
     },
     experienceAndProjects: {
       type: "array",
+      maxItems: MAX_EXPERIENCE_AND_PROJECTS,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["title", "summary", "source", "status", "visibility", "published"],
         properties: {
-          id: { type: "string" },
-          title: { type: "string" },
-          organization: { type: "string" },
-          summary: { type: "string" },
+          id: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          title: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
+          organization: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
+          summary: { type: "string", maxLength: MAX_LONG_FIELD_LENGTH },
           ...metadataProperties
         }
       }
     },
     evidenceLinks: {
       type: "array",
+      maxItems: MAX_EVIDENCE_LINKS,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["url", "source", "status", "visibility", "published"],
         properties: {
-          id: { type: "string" },
-          url: { type: "string" },
-          label: { type: "string" },
+          id: { type: "string", maxLength: MAX_SHORT_FIELD_LENGTH },
+          url: { type: "string", maxLength: MAX_URL_LENGTH },
+          label: { type: "string", maxLength: MAX_TARGET_FIELD_LENGTH },
           ...metadataProperties
         }
       }
     },
     clarifyingQuestions: {
       type: "array",
-      items: { type: "string" }
+      maxItems: MAX_CLARIFYING_QUESTIONS,
+      items: { type: "string", maxLength: MAX_MEDIUM_FIELD_LENGTH }
     },
     changeSummary: {
       type: "array",
-      items: { type: "string" }
+      maxItems: MAX_CHANGE_SUMMARY_ITEMS,
+      items: { type: "string", maxLength: MAX_MEDIUM_FIELD_LENGTH }
     }
   }
 };
@@ -196,19 +216,37 @@ export function validateProfileIntakeOutput(value: unknown): StructuredValidatio
   const issues: string[] = [];
   const output = objectResult.value;
 
-  const assistantMessage = requireString(output.assistantMessage, "assistantMessage", issues);
+  const assistantMessage = requireBoundedString(
+    output.assistantMessage,
+    "assistantMessage",
+    MAX_ASSISTANT_MESSAGE_LENGTH,
+    issues
+  );
   const targetRoleIntent = validateTargetRoleIntent(output.targetRoleIntent, issues);
-  const draftFacts = validateArray(output.draftFacts, "draftFacts", issues, validateDraftFact);
-  const skillClaims = validateArray(output.skillClaims, "skillClaims", issues, validateSkillClaim);
+  const draftFacts = validateArray(output.draftFacts, "draftFacts", issues, validateDraftFact, MAX_DRAFT_FACTS);
+  const skillClaims = validateArray(output.skillClaims, "skillClaims", issues, validateSkillClaim, MAX_SKILL_CLAIMS);
   const experienceAndProjects = validateArray(
     output.experienceAndProjects,
     "experienceAndProjects",
     issues,
-    validateExperienceAndProject
+    validateExperienceAndProject,
+    MAX_EXPERIENCE_AND_PROJECTS
   );
-  const evidenceLinks = validateArray(output.evidenceLinks, "evidenceLinks", issues, validateEvidenceLink);
-  const clarifyingQuestions = validateArray(output.clarifyingQuestions, "clarifyingQuestions", issues, validateStringItem);
-  const changeSummary = validateArray(output.changeSummary, "changeSummary", issues, validateStringItem);
+  const evidenceLinks = validateArray(output.evidenceLinks, "evidenceLinks", issues, validateEvidenceLink, MAX_EVIDENCE_LINKS);
+  const clarifyingQuestions = validateArray(
+    output.clarifyingQuestions,
+    "clarifyingQuestions",
+    issues,
+    validateMediumStringItem,
+    MAX_CLARIFYING_QUESTIONS
+  );
+  const changeSummary = validateArray(
+    output.changeSummary,
+    "changeSummary",
+    issues,
+    validateMediumStringItem,
+    MAX_CHANGE_SUMMARY_ITEMS
+  );
 
   if (issues.length > 0) {
     return { ok: false, issues };
@@ -241,10 +279,16 @@ function validateTargetRoleIntent(value: unknown, issues: string[]): ProfileInta
   }
 
   return {
-    targetTitles: optionalString(objectResult.value.targetTitles, "targetRoleIntent.targetTitles", issues),
-    targetRoleFamilies: optionalString(
+    targetTitles: optionalBoundedString(
+      objectResult.value.targetTitles,
+      "targetRoleIntent.targetTitles",
+      MAX_TARGET_FIELD_LENGTH,
+      issues
+    ),
+    targetRoleFamilies: optionalBoundedString(
       objectResult.value.targetRoleFamilies,
       "targetRoleIntent.targetRoleFamilies",
+      MAX_TARGET_FIELD_LENGTH,
       issues
     ),
     preferredWorkMode: optionalEnum(
@@ -253,26 +297,33 @@ function validateTargetRoleIntent(value: unknown, issues: string[]): ProfileInta
       profileIntakeWorkModes,
       issues
     ),
-    preferredLocations: optionalString(
+    preferredLocations: optionalBoundedString(
       objectResult.value.preferredLocations,
       "targetRoleIntent.preferredLocations",
+      MAX_TARGET_FIELD_LENGTH,
       issues
     ),
-    domainsOrIndustries: optionalString(
+    domainsOrIndustries: optionalBoundedString(
       objectResult.value.domainsOrIndustries,
       "targetRoleIntent.domainsOrIndustries",
+      MAX_TARGET_FIELD_LENGTH,
       issues
     ),
-    constraints: optionalString(objectResult.value.constraints, "targetRoleIntent.constraints", issues)
+    constraints: optionalBoundedString(
+      objectResult.value.constraints,
+      "targetRoleIntent.constraints",
+      MAX_TARGET_FIELD_LENGTH,
+      issues
+    )
   };
 }
 
 function validateDraftFact(value: unknown, path: string, issues: string[]) {
   const object = requireGeneratedItem(value, path, issues);
   return {
-    id: optionalString(object.id, `${path}.id`, issues),
-    claim: requireString(object.claim, `${path}.claim`, issues),
-    category: optionalString(object.category, `${path}.category`, issues),
+    id: optionalBoundedString(object.id, `${path}.id`, MAX_SHORT_FIELD_LENGTH, issues),
+    claim: requireBoundedString(object.claim, `${path}.claim`, MAX_MEDIUM_FIELD_LENGTH, issues),
+    category: optionalBoundedString(object.category, `${path}.category`, MAX_SHORT_FIELD_LENGTH, issues),
     ...readMetadata(object, path, issues)
   };
 }
@@ -280,10 +331,10 @@ function validateDraftFact(value: unknown, path: string, issues: string[]) {
 function validateSkillClaim(value: unknown, path: string, issues: string[]) {
   const object = requireGeneratedItem(value, path, issues);
   return {
-    id: optionalString(object.id, `${path}.id`, issues),
-    skill: requireString(object.skill, `${path}.skill`, issues),
-    category: optionalString(object.category, `${path}.category`, issues),
-    evidence: optionalString(object.evidence, `${path}.evidence`, issues),
+    id: optionalBoundedString(object.id, `${path}.id`, MAX_SHORT_FIELD_LENGTH, issues),
+    skill: requireBoundedString(object.skill, `${path}.skill`, MAX_SHORT_FIELD_LENGTH, issues),
+    category: optionalBoundedString(object.category, `${path}.category`, MAX_SHORT_FIELD_LENGTH, issues),
+    evidence: optionalBoundedString(object.evidence, `${path}.evidence`, MAX_MEDIUM_FIELD_LENGTH, issues),
     ...readMetadata(object, path, issues)
   };
 }
@@ -291,10 +342,10 @@ function validateSkillClaim(value: unknown, path: string, issues: string[]) {
 function validateExperienceAndProject(value: unknown, path: string, issues: string[]) {
   const object = requireGeneratedItem(value, path, issues);
   return {
-    id: optionalString(object.id, `${path}.id`, issues),
-    title: requireString(object.title, `${path}.title`, issues),
-    organization: optionalString(object.organization, `${path}.organization`, issues),
-    summary: requireString(object.summary, `${path}.summary`, issues),
+    id: optionalBoundedString(object.id, `${path}.id`, MAX_SHORT_FIELD_LENGTH, issues),
+    title: requireBoundedString(object.title, `${path}.title`, MAX_TARGET_FIELD_LENGTH, issues),
+    organization: optionalBoundedString(object.organization, `${path}.organization`, MAX_TARGET_FIELD_LENGTH, issues),
+    summary: requireBoundedString(object.summary, `${path}.summary`, MAX_LONG_FIELD_LENGTH, issues),
     ...readMetadata(object, path, issues)
   };
 }
@@ -302,15 +353,15 @@ function validateExperienceAndProject(value: unknown, path: string, issues: stri
 function validateEvidenceLink(value: unknown, path: string, issues: string[]) {
   const object = requireGeneratedItem(value, path, issues);
   return {
-    id: optionalString(object.id, `${path}.id`, issues),
-    url: requireString(object.url, `${path}.url`, issues),
-    label: optionalString(object.label, `${path}.label`, issues),
+    id: optionalBoundedString(object.id, `${path}.id`, MAX_SHORT_FIELD_LENGTH, issues),
+    url: requireBoundedString(object.url, `${path}.url`, MAX_URL_LENGTH, issues),
+    label: optionalBoundedString(object.label, `${path}.label`, MAX_TARGET_FIELD_LENGTH, issues),
     ...readMetadata(object, path, issues)
   };
 }
 
-function validateStringItem(value: unknown, path: string, issues: string[]) {
-  return requireString(value, path, issues);
+function validateMediumStringItem(value: unknown, path: string, issues: string[]) {
+  return requireBoundedString(value, path, MAX_MEDIUM_FIELD_LENGTH, issues);
 }
 
 function requireGeneratedItem(value: unknown, path: string, issues: string[]) {
@@ -345,14 +396,19 @@ function validateArray<T>(
   value: unknown,
   path: string,
   issues: string[],
-  validator: (item: unknown, path: string, issues: string[]) => T
+  validator: (item: unknown, path: string, issues: string[]) => T,
+  maxItems: number
 ): T[] {
   if (!Array.isArray(value)) {
     issues.push(`${path} must be an array.`);
     return [];
   }
 
-  return value.map((item, index) => validator(item, `${path}[${index}]`, issues));
+  if (value.length > maxItems) {
+    issues.push(`${path} must contain at most ${maxItems} item(s).`);
+  }
+
+  return value.slice(0, maxItems).map((item, index) => validator(item, `${path}[${index}]`, issues));
 }
 
 function requirePlainObject(
@@ -375,12 +431,27 @@ function requireString(value: unknown, path: string, issues: string[]): string {
   return value;
 }
 
-function optionalString(value: unknown, path: string, issues: string[]): string | undefined {
+function requireBoundedString(value: unknown, path: string, maxLength: number, issues: string[]): string {
+  const stringValue = requireString(value, path, issues);
+
+  if (stringValue.length > maxLength) {
+    issues.push(`${path} must be ${maxLength} characters or fewer.`);
+  }
+
+  return stringValue;
+}
+
+function optionalBoundedString(
+  value: unknown,
+  path: string,
+  maxLength: number,
+  issues: string[]
+): string | undefined {
   if (value === undefined) {
     return undefined;
   }
 
-  return requireString(value, path, issues);
+  return requireBoundedString(value, path, maxLength, issues);
 }
 
 function requireEnum<T extends readonly string[]>(

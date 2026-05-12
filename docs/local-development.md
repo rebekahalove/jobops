@@ -137,6 +137,47 @@ The server action boundary keeps the Gemini key server-side. The profile workspa
 
 See [Conversation-First Profile Workspace](profile-workspace-design.md).
 
+### Debug Profile Intake Model Runs
+
+Malformed JSON from a live provider should fail safely. To inspect those failures locally, enable profile-intake artifacts in `.env.dev`:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
+```
+
+With raw text disabled, JobOps writes local metadata and validation issues only. Artifacts are written under:
+
+```text
+artifacts/profile-intake/<timestamp>_<runId>/
+```
+
+Typical files:
+
+- `metadata.json`
+- `request-metadata.json`
+- `validation-error.json` when parsing or validation fails
+
+For deeper local debugging, you can also enable raw prompt and response capture:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true
+```
+
+This may write `prompt.txt`, `raw-response.txt`, and `parsed-output.json`. These files may contain resume text, chat content, and model-derived profile data. Keep this mode local only. The `artifacts/` directory is gitignored and must not be committed.
+
+Suggested malformed JSON debugging flow:
+
+1. Enable `JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true`.
+2. Reproduce the profile intake failure.
+3. Note the `debugRunId` returned by the API or shown in the chat error.
+4. Open the matching folder under `artifacts/profile-intake/`.
+5. Review `metadata.json` and `validation-error.json`.
+6. Enable `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` only if metadata is not enough.
+
+This is a local-only diagnostic layer, not the final system-wide observability design.
+
 Deferred profile work:
 
 - Database persistence.

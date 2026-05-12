@@ -1,25 +1,106 @@
 import {
   createModelConnector,
-  generateStructuredOutput,
   MockModelConnector,
   type ModelConnector,
   type ModelConnectorConfig,
   type ModelRequest
 } from "@jobops/model-connector/server";
-import { createDefaultRoutingConfig } from "@jobops/model-connector";
+import { createDefaultRoutingConfig, StructuredOutputValidationError, validateStructuredText } from "@jobops/model-connector";
+import {
+  buildProfileIntakeInputMetrics,
+  buildProfileIntakePromptArtifact,
+  buildProfileIntakeRequestMetadata,
+  createProfileIntakeArtifactRun,
+  saveProfileIntakeFailureArtifacts,
+  saveProfileIntakeSuccessArtifacts,
+  type ProfileIntakeArtifactOptions
+} from "./profile-intake-artifacts";
 import {
   profileIntakeJsonSchema,
   type ProfileIntakeApiRequest,
   type ProfileIntakeOutput,
   validateProfileIntakeOutput
 } from "./profile-intake-contract";
+import { ProfileIntakeValidationError } from "./profile-intake-errors";
 import { buildProfileIntakeUserPrompt, profileIntakeSystemPrompt } from "./profile-intake-prompt";
+
+export type GenerateProfileIntakeOutputOptions = {
+  artifacts?: ProfileIntakeArtifactOptions;
+};
 
 export async function generateProfileIntakeOutput(
   connector: ModelConnector,
-  input: ProfileIntakeApiRequest
+  input: ProfileIntakeApiRequest,
+  options: GenerateProfileIntakeOutputOptions = {}
 ): Promise<ProfileIntakeOutput> {
-  const request: ModelRequest = {
+  const request = buildProfileIntakeModelRequest(input);
+  const artifacts = createProfileIntakeArtifactRun(options.artifacts);
+  const inputMetrics = buildProfileIntakeInputMetrics(input);
+  const startedAt = Date.now();
+
+  await artifacts.writeJson("request-metadata.json", buildProfileIntakeRequestMetadata(request, inputMetrics));
+  await artifacts.writeText("prompt.txt", buildProfileIntakePromptArtifact(request), { rawText: true });
+
+  const response = await connector.generate(request);
+  const latencyMs = Date.now() - startedAt;
+
+  await artifacts.writeText("raw-response.txt", response.text, { rawText: true });
+
+  try {
+    const output = validateStructuredText(response.text, validateProfileIntakeOutput);
+    await saveProfileIntakeSuccessArtifacts({
+      artifacts,
+      inputMetrics,
+      latencyMs,
+      output,
+      request,
+      response
+    });
+
+    return output;
+  } catch (error) {
+    const issues = normalizeStructuredIssues(error, response.finishReason);
+
+    await saveProfileIntakeFailureArtifacts({
+      artifacts,
+      inputMetrics,
+      issues,
+      latencyMs,
+      request,
+      response
+    });
+
+    console.error("[profile_intake] structured output validation failed", {
+      artifactPath: artifacts.enabled ? artifacts.artifactPath : undefined,
+      feature: "profile_intake",
+      issues,
+      model: response.model,
+      provider: response.provider,
+      runId: artifacts.enabled ? artifacts.runId : undefined
+    });
+
+    throw new ProfileIntakeValidationError(issues, {
+      artifactPath: artifacts.artifactPath,
+      debugRunId: artifacts.enabled ? artifacts.runId : undefined
+    });
+  }
+}
+
+export function createProfileIntakeConnector(config: ModelConnectorConfig): ModelConnector {
+  if (config.provider === "mock") {
+    return new MockModelConnector({
+      ...createDefaultRoutingConfig(config),
+      responsesByTask: {
+        profile_extract: (request) => buildMockProfileIntakeResponse(request)
+      }
+    });
+  }
+
+  return createModelConnector(config);
+}
+
+export function buildProfileIntakeModelRequest(input: ProfileIntakeApiRequest): ModelRequest {
+  return {
     task: "profile_extract",
     temperature: 0,
     maxOutputTokens: 4000,
@@ -42,22 +123,17 @@ export async function generateProfileIntakeOutput(
       feature: "profile_intake_shell"
     }
   };
-
-  const response = await generateStructuredOutput(connector, request, validateProfileIntakeOutput);
-  return response.value;
 }
 
-export function createProfileIntakeConnector(config: ModelConnectorConfig): ModelConnector {
-  if (config.provider === "mock") {
-    return new MockModelConnector({
-      ...createDefaultRoutingConfig(config),
-      responsesByTask: {
-        profile_extract: (request) => buildMockProfileIntakeResponse(request)
-      }
-    });
+function normalizeStructuredIssues(error: unknown, finishReason: string | undefined): string[] {
+  const issues =
+    error instanceof StructuredOutputValidationError ? error.issues : ["Model output failed profile intake validation."];
+
+  if (typeof finishReason === "string" && /max|length|token/i.test(finishReason)) {
+    return [...issues, "Model response appears to have been truncated before valid JSON completed."];
   }
 
-  return createModelConnector(config);
+  return issues;
 }
 
 function buildMockProfileIntakeResponse(request: ModelRequest) {

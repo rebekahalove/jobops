@@ -63,6 +63,17 @@ JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
 
 Keep provider keys in ignored local files such as `.env.dev`; never prefix them with `NEXT_PUBLIC_`.
 
+## Local Intake Debug Artifacts
+
+To inspect malformed live model output locally:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
+```
+
+Artifacts are written to `artifacts/profile-intake/<timestamp>_<runId>/` and are gitignored. Raw prompt/response capture is off by default. Set `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` only when debugging locally, because raw artifacts may contain resume or chat content.
+
 ## Intentionally Deferred
 
 - Authentication.

@@ -119,3 +119,22 @@ Supported local modes:
 - `JOBOPS_LLM_PROVIDER=gemini`: live Gemini calls using server-side `GEMINI_API_KEY`.
 
 The profile intake contract requires generated facts, skill claims, experience/project items, and evidence links to remain private, unpublished, and marked for review. Model output cannot become verified, public, or published data through this boundary.
+
+## Local Profile Intake Artifacts
+
+Profile intake can save local debugging artifacts for malformed JSON or validation failures:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
+```
+
+Artifacts are written to:
+
+```text
+artifacts/profile-intake/<timestamp>_<runId>/
+```
+
+With raw text disabled, artifacts contain metadata, input sizes/counts, run IDs, provider/model names, latency, finish reason, and validation issues. They do not contain full prompts, resume text, chat text, raw model responses, or API keys.
+
+Set `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` only for local debugging when you need `prompt.txt` and `raw-response.txt`. Raw artifacts may contain resume/chat content and must remain local. `artifacts/` is gitignored.

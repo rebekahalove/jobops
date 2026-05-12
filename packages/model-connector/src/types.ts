@@ -26,6 +26,8 @@ export type JsonSchema = {
   enum?: string[];
   description?: string;
   additionalProperties?: boolean | JsonSchema;
+  maxItems?: number;
+  maxLength?: number;
 };
 
 export type ModelResponseFormat =

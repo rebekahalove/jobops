@@ -88,4 +88,36 @@ describe("profile intake contract", () => {
       expect(result.issues.join(" ")).toContain("draftFacts[0].published");
     }
   });
+
+  it("rejects runaway target title expansion", () => {
+    const result = validateProfileIntakeOutput({
+      ...validOutput,
+      targetRoleIntent: {
+        targetTitles: Array.from({ length: 30 }, (_, index) => `Invented Adjacent Title ${index + 1}`).join(", ")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toContain("targetRoleIntent.targetTitles must be 200 characters or fewer.");
+    }
+  });
+
+  it("rejects oversized arrays before applying draft output", () => {
+    const result = validateProfileIntakeOutput({
+      ...validOutput,
+      skillClaims: Array.from({ length: 7 }, (_, index) => ({
+        skill: `Skill ${index + 1}`,
+        source: "resume",
+        status: "needs_review",
+        visibility: "private",
+        published: false
+      }))
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toContain("skillClaims must contain at most 6 item(s).");
+    }
+  });
 });

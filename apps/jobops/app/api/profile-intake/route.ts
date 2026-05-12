@@ -2,6 +2,7 @@ import { ModelConfigurationError, StructuredOutputValidationError } from "@jobop
 import { NextResponse } from "next/server";
 import { runProfileIntakeExtraction } from "../../../lib/profile-intake-model";
 import { validateProfileIntakeApiRequest } from "../../../lib/profile-intake-contract";
+import { buildProfileIntakeValidationErrorBody } from "../../../lib/profile-intake-api-errors";
 
 export const runtime = "nodejs";
 
@@ -50,13 +51,9 @@ export async function POST(request: Request) {
       );
     }
 
-    if (error instanceof StructuredOutputValidationError) {
+    if (isStructuredOutputValidationError(error)) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: "The model returned malformed profile intake data. No draft data was applied.",
-          issues: error.issues
-        },
+        buildProfileIntakeValidationErrorBody(error),
         { status: 502 }
       );
     }
@@ -69,4 +66,14 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+function isStructuredOutputValidationError(error: unknown): error is StructuredOutputValidationError {
+  return (
+    error instanceof StructuredOutputValidationError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "issues" in error &&
+      Array.isArray((error as { issues?: unknown }).issues))
+  );
 }
