@@ -13,6 +13,11 @@ APP_ENV_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 class Settings:
     app_env: str
     model_provider: str
+    default_model: str
+    cheap_model: str
+    gemini_api_key: str | None
+    profile_intake_save_artifacts: bool
+    profile_intake_save_raw_text: bool
     database_url: str | None
     repo_root: Path
 
@@ -34,10 +39,19 @@ def load_settings(repo_root: Path | None = None) -> Settings:
 
     return Settings(
         app_env=app_env,
-        model_provider=merged.get("MODEL_PROVIDER", "mock"),
+        model_provider=merged.get("JOBOPS_LLM_PROVIDER") or merged.get("MODEL_PROVIDER", "mock"),
+        default_model=merged.get("JOBOPS_DEFAULT_MODEL", "gemini-2.5-flash"),
+        cheap_model=merged.get("JOBOPS_CHEAP_MODEL", "gemini-2.5-flash-lite"),
+        gemini_api_key=merged.get("GEMINI_API_KEY"),
+        profile_intake_save_artifacts=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS")),
+        profile_intake_save_raw_text=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT")),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root
     )
+
+
+def parse_bool(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def find_repo_root() -> Path:

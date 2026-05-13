@@ -79,10 +79,20 @@ APP_ENV=dev
 
 ```text
 DATABASE_URL=...
-MODEL_PROVIDER=mock
+JOBOPS_API_BASE_URL=http://localhost:8000
+JOBOPS_LLM_PROVIDER=mock
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=false
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
 ```
 
 The real Neon connection string belongs in `.env.dev`, not in `.env.example`, docs, tests, or committed fixtures.
+
+Profile intake artifact flags are local debugging controls:
+
+- `JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true` writes metadata artifacts under `artifacts/profile-intake/`.
+- `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` also writes prompts and raw model responses. These may include resume or chat content and should stay local.
+
+`JOBOPS_API_BASE_URL` points frontend server code at the FastAPI service. The JobOps dashboard uses it for the profile-intake proxy, and the portfolio app uses it for public profile reads when the API is running locally.
 
 ## Production
 
@@ -104,4 +114,3 @@ Tests should prefer isolated test configuration:
 - Mock model provider unless the test is explicitly a live-model eval.
 
 CI should not need the user's local `.env.dev` file.
-

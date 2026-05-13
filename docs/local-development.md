@@ -1,15 +1,11 @@
 # Local Development
 
-This first scaffold is intentionally small and local-only.
-
-It does not include:
+This first scaffold is intentionally small. It does not include:
 
 - Paid services.
 - Auth.
-- Database connection code.
 - Scraping.
 - Email integration.
-- Live model calls.
 
 ## Prerequisites
 
@@ -27,6 +23,49 @@ From the repo root:
 corepack enable
 corepack prepare pnpm@9.15.4 --activate
 corepack pnpm install
+```
+
+## Run Local Servers
+
+For day-to-day development on Windows, prefer long-lived visible terminals. This keeps each dev server attached to a real console and makes `Ctrl+C` shutdown predictable.
+
+Use one terminal per service:
+
+```powershell
+# Terminal 1: public portfolio at http://localhost:3000
+cd C:\Users\rasho\jobops
+corepack pnpm dev:portfolio
+```
+
+```powershell
+# Terminal 2: JobOps dashboard at http://localhost:3002
+cd C:\Users\rasho\jobops
+corepack pnpm dev:jobops
+```
+
+```powershell
+# Terminal 3: FastAPI service at http://localhost:8000
+cd C:\Users\rasho\jobops\services\api
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn jobops_api.main:app --reload --port 8000
+```
+
+If launching from a `cmd.exe` script or `cmd /k` command, use `call` before batch-style commands such as `corepack` or virtualenv shims:
+
+```cmd
+cd /d C:\Users\rasho\jobops
+call corepack pnpm dev:jobops
+```
+
+Without `call`, Windows can exit the parent command shell after the batch command returns control, which may also tear down child dev-server processes.
+
+When Codex starts servers for you, it may need to launch them outside the sandbox so they survive after the tool call finishes. If servers disappear immediately after starting, this is usually a process-lifetime issue rather than a Next.js or Uvicorn application error.
+
+To check or clear stuck local ports:
+
+```powershell
+netstat -ano | Select-String ":3000|:3002|:8000"
+Stop-Process -Id <PID> -Force
 ```
 
 ## Run The Portfolio App
@@ -51,7 +90,7 @@ The app uses local mock behavior until verified public profile facts and the rea
 
 ## Run The JobOps Dashboard Stub
 
-The dashboard shell is the private JobOps app scaffold. It does not include auth, database-backed workflows, job intake, fit scoring, material generation, or AI calls yet.
+The dashboard shell is the private JobOps app scaffold. It does not include auth, database-backed workflows, job intake, fit scoring, material generation, or persistence yet.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -72,6 +111,90 @@ The stub includes placeholder workflow areas for:
 - Applications.
 
 The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
+
+The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface.
+
+The active profile-intake backend lives in FastAPI at:
+
+```text
+POST http://localhost:8000/v1/profile-intake/extract
+```
+
+The Next.js app keeps only a thin `/api/profile-intake` proxy. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
+
+For deterministic local mode:
+
+```text
+APP_ENV=dev
+JOBOPS_LLM_PROVIDER=mock
+JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
+JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
+```
+
+For live Gemini mode:
+
+```text
+APP_ENV=dev
+JOBOPS_LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_local_key
+JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
+JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
+```
+
+The FastAPI boundary keeps the Gemini key server-side. The profile workspace does not persist raw resume text yet, and all generated claims are draft, source-labeled, private, unpublished, and marked needs review.
+
+See [Conversation-First Profile Workspace](profile-workspace-design.md).
+
+### Debug Profile Intake Model Runs
+
+Malformed JSON from a live provider should fail safely. To inspect those failures locally, enable profile-intake artifacts in `.env.dev`:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
+```
+
+With raw text disabled, JobOps writes local metadata, validation issues, and parsed structured output when parsing succeeds. Artifacts are written under:
+
+```text
+artifacts/profile-intake/<timestamp>_<runId>/
+```
+
+Typical files:
+
+- `metadata.json`
+- `request-metadata.json`
+- `validation-error.json` when parsing or validation fails
+
+For deeper local debugging, you can also enable raw prompt and response capture:
+
+```text
+JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true
+JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true
+```
+
+This may write `prompt.txt` and `raw-response.txt`. `parsed-output.json` is written when artifacts are enabled and parsing succeeds. These files may contain resume text, chat content, and model-derived profile data. Keep artifact mode local only. The `artifacts/` directory is gitignored and must not be committed.
+
+Suggested malformed JSON debugging flow:
+
+1. Enable `JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=true`.
+2. Reproduce the profile intake failure.
+3. Note the `debugRunId` returned by the API or shown in the chat error.
+4. Open the matching folder under `artifacts/profile-intake/`.
+5. Review `metadata.json` and `validation-error.json`.
+6. Enable `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` only if metadata is not enough.
+
+This is a local-only diagnostic layer, not the final system-wide observability design.
+
+Deferred profile work:
+
+- Database persistence.
+- Human approval and publication workflow.
+- Durable resume artifact handling.
+- Full review controls.
+- Telemetry.
+
+Recommended next step: add persistence for validated draft profile intake output in FastAPI, keeping review and publication as explicit later actions.
 
 ## Run The API Scaffold
 
@@ -105,7 +228,7 @@ For local dev:
 
 The backend database layer uses SQLAlchemy and Alembic. Keep the Neon connection string in `.env.dev`; it is ignored by Git and should never be committed.
 
-The portfolio app also reads the repo-root `.env` and `.env.<APP_ENV>` on the server so it can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
+The portfolio and JobOps apps also read the repo-root `.env` and `.env.<APP_ENV>` on the server so they can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
 
 ## Database Setup
 

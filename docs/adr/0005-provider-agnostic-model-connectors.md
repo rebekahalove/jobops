@@ -12,20 +12,21 @@ The next milestone is a resume-augmented Profile Intake Agent. Resume text, job 
 
 ## Decision
 
-Create a separate package:
+Create a shared Python connector in the FastAPI backend:
 
 ```text
-packages/model-connector
+services/api/jobops_api/model_connector/
 ```
 
-This package owns:
+This module owns:
 
 - Provider-neutral model request and response types.
 - Task-based model routing.
-- A deterministic mock adapter.
-- A Gemini adapter using `@google/genai`.
+- A deterministic mock provider.
+- A Gemini provider using server-side HTTP calls.
 - Server-side environment config helpers.
-- Structured-output parsing and validation hooks.
+
+Workflow-specific services, such as profile intake, own their own prompts, schema validation, and local artifact policy. They call the shared connector for model access.
 
 Initial model choices:
 
@@ -41,15 +42,16 @@ Positive:
 
 - Agents can depend on a stable connector interface instead of provider SDK details.
 - Tests and CI can use deterministic mock behavior with no live API calls.
-- Provider SDK imports and API-key reads stay isolated to server-side connector exports.
+- Provider HTTP calls and API-key reads stay isolated to FastAPI server-side code.
 - The same routing layer can support future profile intake, role-fit, eval, and safety harness workflows.
 - Structured-output validation becomes a first-class boundary before generated data is used.
+- React/Next.js stays focused on UI and thin proxy routes.
 
 Tradeoffs:
 
-- The repository adds one more internal package.
-- The connector adds `@google/genai` as a dependency before the first live workflow uses it.
-- App code must respect the server/client split and avoid importing `@jobops/model-connector/server` from browser-facing modules.
+- The FastAPI backend becomes the required boundary for model-backed workflows.
+- The earlier TypeScript connector spike was removed after its project-wide role moved to Python.
+- App code must respect the server/client split and avoid importing or implementing provider logic in browser-facing modules.
 
 ## Safety Notes
 
