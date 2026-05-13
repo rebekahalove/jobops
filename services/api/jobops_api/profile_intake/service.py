@@ -8,6 +8,16 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ..model_connector import (
+    ModelConfigurationError,
+    ModelConnector,
+    ModelMessage,
+    ModelProviderError,
+    ModelRequest,
+    create_model_connector,
+    read_model_connector_config_from_settings,
+    route_model_request,
+)
 from ..settings import Settings, load_settings
 from .artifacts import (
     build_profile_intake_input_metrics,
@@ -22,13 +32,7 @@ from .prompt import (
     build_request_metadata,
     PROFILE_INTAKE_SYSTEM_PROMPT,
 )
-from .providers import (
-    ModelConfigurationError,
-    ModelProviderError,
-    ProfileIntakeProvider,
-    build_model_request,
-    create_profile_intake_provider,
-)
+from .providers import build_mock_profile_intake_response
 
 
 logger = logging.getLogger(__name__)
@@ -43,44 +47,34 @@ class ProfileIntakeServiceResult:
 def run_profile_intake_extraction(
     request: ProfileIntakeExtractRequest,
     *,
-    provider: ProfileIntakeProvider | None = None,
+    connector: ModelConnector | None = None,
     settings: Settings | None = None,
 ) -> ProfileIntakeServiceResult:
     active_settings = settings or load_settings()
+    connector_config = read_model_connector_config_from_settings(active_settings)
     input_metrics = build_profile_intake_input_metrics(request.latest_user_message, request.existing_draft)
-    system_prompt = PROFILE_INTAKE_SYSTEM_PROMPT
-    user_prompt = build_profile_intake_user_prompt(request)
-    model_request = build_model_request(
-        request,
-        model=active_settings.default_model,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-    )
+    model_request = build_profile_intake_model_request(request)
+    routed_request = route_model_request(model_request, connector_config.routing)
     artifact_run = create_profile_intake_artifact_run(active_settings)
 
     artifact_run.write_json(
         "request-metadata.json",
-        build_request_metadata(
-            input_metrics=input_metrics.to_json(),
-            max_output_tokens=model_request.max_output_tokens,
-            model=model_request.model,
-            task=model_request.task,
-            temperature=model_request.temperature,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        ),
+        build_request_metadata(routed_request, input_metrics.to_json()),
     )
-    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(system_prompt, user_prompt))
+    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
 
     try:
-        active_provider = provider or create_profile_intake_provider(active_settings)
+        active_connector = connector or create_model_connector(
+            connector_config,
+            mock_responses_by_task={"profile_extract": build_mock_profile_intake_response},
+        )
     except ModelConfigurationError as error:
         _write_failure_metadata(
             artifact_run=artifact_run,
             input_metrics=input_metrics,
             issues=[str(error)],
             latency_ms=0,
-            model_request=model_request,
+            model_request=routed_request,
             response=None,
             validation_issue_count=0,
         )
@@ -100,7 +94,7 @@ def run_profile_intake_extraction(
     started_at = time.perf_counter()
     response = None
     try:
-        response = active_provider.generate(model_request)
+        response = active_connector.generate(routed_request)
         latency_ms = round((time.perf_counter() - started_at) * 1000)
     except ModelProviderError as error:
         latency_ms = round((time.perf_counter() - started_at) * 1000)
@@ -109,7 +103,7 @@ def run_profile_intake_extraction(
             input_metrics=input_metrics,
             issues=[str(error)],
             latency_ms=latency_ms,
-            model_request=model_request,
+            model_request=routed_request,
             response=None,
             validation_issue_count=0,
         )
@@ -143,7 +137,7 @@ def run_profile_intake_extraction(
             input_metrics=input_metrics,
             issues=issues,
             latency_ms=latency_ms,
-            model_request=model_request,
+            model_request=routed_request,
             response=response,
         )
     except ValidationError as error:
@@ -153,7 +147,7 @@ def run_profile_intake_extraction(
             input_metrics=input_metrics,
             issues=issues,
             latency_ms=latency_ms,
-            model_request=model_request,
+            model_request=routed_request,
             response=response,
         )
 
@@ -165,7 +159,7 @@ def run_profile_intake_extraction(
             build_run_metadata(
                 input_metrics=input_metrics,
                 latency_ms=latency_ms,
-                request=model_request,
+                request=routed_request,
                 response=response,
                 run_id=artifact_run.run_id,
                 status="success",
@@ -179,6 +173,20 @@ def run_profile_intake_extraction(
             "result": output_json,
         },
         status_code=200,
+    )
+
+
+def build_profile_intake_model_request(request: ProfileIntakeExtractRequest) -> ModelRequest:
+    return ModelRequest(
+        task="profile_extract",
+        temperature=0,
+        max_output_tokens=4000,
+        response_mime_type="application/json",
+        metadata={"feature": "profile_intake"},
+        messages=[
+            ModelMessage(role="system", content=PROFILE_INTAKE_SYSTEM_PROMPT),
+            ModelMessage(role="user", content=build_profile_intake_user_prompt(request)),
+        ],
     )
 
 
@@ -352,4 +360,3 @@ def add_truncation_hint(issues: list[str], finish_reason: str | None) -> list[st
     if finish_reason and ("max" in finish_reason.lower() or "length" in finish_reason.lower() or "token" in finish_reason.lower()):
         return [*issues, "Model response appears to have been truncated before valid JSON completed."]
     return issues
-

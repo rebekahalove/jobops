@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..model_connector import ModelRequest
 from .models import ProfileIntakeExtractRequest
 
 
@@ -120,37 +121,24 @@ def build_profile_intake_user_prompt(request: ProfileIntakeExtractRequest) -> st
     )
 
 
-def build_prompt_artifact(system_prompt: str, user_prompt: str) -> str:
-    return f"## system\n\n{system_prompt}\n\n---\n\n## user\n\n{user_prompt}"
+def build_prompt_artifact(request: ModelRequest) -> str:
+    return "\n\n---\n\n".join(f"## {message.role}\n\n{message.content}" for message in request.messages)
 
 
-def build_request_metadata(
-    *,
-    input_metrics: dict[str, int],
-    max_output_tokens: int,
-    model: str,
-    task: str,
-    temperature: float,
-    system_prompt: str,
-    user_prompt: str,
-) -> dict[str, Any]:
+def build_request_metadata(request: ModelRequest, input_metrics: dict[str, int]) -> dict[str, Any]:
     return {
         "feature": "profile_intake",
         "input": input_metrics,
-        "max_output_tokens": max_output_tokens,
+        "max_output_tokens": request.max_output_tokens,
         "message_count": 2,
-        "messages": [
-            {"role": "system", "content_length": len(system_prompt)},
-            {"role": "user", "content_length": len(user_prompt)},
-        ],
-        "model": model,
+        "messages": [{"role": message.role, "content_length": len(message.content)} for message in request.messages],
+        "model": request.model,
         "prompt_version": PROFILE_INTAKE_PROMPT_VERSION,
         "response_format": {
             "schema_name": PROFILE_INTAKE_SCHEMA_NAME,
-            "type": "json",
+            "type": request.response_mime_type,
         },
         "schema_version": PROFILE_INTAKE_SCHEMA_VERSION,
-        "task": task,
-        "temperature": temperature,
+        "task": request.task,
+        "temperature": request.temperature,
     }
-

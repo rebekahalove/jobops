@@ -2,183 +2,31 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
-from ..settings import Settings
-from .models import ProfileIntakeExtractRequest
+from ..model_connector import ModelRequest
 
 
-@dataclass(frozen=True)
-class ModelRequest:
-    task: str
-    model: str
-    system_prompt: str
-    user_prompt: str
-    temperature: float
-    max_output_tokens: int
-    latest_user_message: str
-    existing_draft: dict[str, Any] | None
+def build_mock_profile_intake_response(request: ModelRequest) -> str:
+    return json.dumps(build_mock_profile_intake_output(extract_latest_user_message(request)))
 
 
-@dataclass(frozen=True)
-class ModelResponse:
-    text: str
-    provider: str
-    model: str
-    finish_reason: str | None = None
-
-
-class ProfileIntakeProvider(Protocol):
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        ...
-
-
-class ModelConfigurationError(Exception):
-    code = "MODEL_CONFIG_ERROR"
-
-
-class ModelProviderError(Exception):
-    code = "MODEL_PROVIDER_ERROR"
-
-
-class MockProfileIntakeProvider:
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        return ModelResponse(
-            text=json.dumps(build_mock_profile_intake_output(request.latest_user_message)),
-            provider="mock",
-            model=request.model,
-            finish_reason="stop",
-        )
-
-
-class GeminiProfileIntakeProvider:
-    endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models"
-
-    def __init__(self, api_key: str | None) -> None:
-        if not api_key:
-            raise ModelConfigurationError("GEMINI_API_KEY is required when JOBOPS_LLM_PROVIDER=gemini.")
-        self._api_key = api_key
-
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        encoded_model = urllib.parse.quote(request.model, safe="")
-        url = f"{self.endpoint_base}/{encoded_model}:generateContent"
-        payload = {
-            "systemInstruction": {
-                "parts": [{"text": request.system_prompt}],
-            },
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": request.user_prompt}],
-                }
-            ],
-            "generationConfig": {
-                "temperature": request.temperature,
-                "maxOutputTokens": request.max_output_tokens,
-                "responseMimeType": "application/json",
-            },
-        }
-        body = json.dumps(payload).encode("utf-8")
-        http_request = urllib.request.Request(
-            url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": self._api_key,
-            },
-            method="POST",
-        )
-
+def extract_latest_user_message(request: ModelRequest) -> str:
+    for message in reversed(request.messages):
+        if message.role != "user":
+            continue
         try:
-            with urllib.request.urlopen(http_request, timeout=60) as response:
-                response_body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise ModelProviderError(f"Gemini request failed with HTTP {error.code}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise ModelProviderError(f"Gemini request failed: {error.reason}") from error
+            parsed = json.loads(message.content)
+        except json.JSONDecodeError:
+            return message.content
 
-        data = parse_gemini_response_json(response_body)
-        candidate = first_gemini_candidate(data)
-        parts = gemini_candidate_parts(candidate)
-        text = "\n".join(part["text"] for part in parts if isinstance(part.get("text"), str)).strip()
-        if not text:
-            raise ModelProviderError("Gemini response did not include text content.")
+        if isinstance(parsed, dict):
+            latest_user_message = parsed.get("latest_user_message") or parsed.get("latestUserMessage")
+            if isinstance(latest_user_message, str):
+                return latest_user_message
+        return message.content
 
-        return ModelResponse(
-            text=text,
-            provider="gemini",
-            model=request.model,
-            finish_reason=candidate.get("finishReason") if isinstance(candidate.get("finishReason"), str) else None,
-        )
-
-
-def create_profile_intake_provider(settings: Settings) -> ProfileIntakeProvider:
-    provider = settings.model_provider.strip().lower()
-    if provider == "mock":
-        return MockProfileIntakeProvider()
-    if provider == "gemini":
-        return GeminiProfileIntakeProvider(settings.gemini_api_key)
-    raise ModelConfigurationError(f"Unsupported JOBOPS_LLM_PROVIDER: {settings.model_provider}")
-
-
-def build_model_request(
-    request: ProfileIntakeExtractRequest,
-    *,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-) -> ModelRequest:
-    return ModelRequest(
-        task="profile_extract",
-        model=model,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        temperature=0,
-        max_output_tokens=4000,
-        latest_user_message=request.latest_user_message,
-        existing_draft=request.existing_draft,
-    )
-
-
-def parse_gemini_response_json(response_body: str) -> dict[str, Any]:
-    try:
-        data = json.loads(response_body)
-    except json.JSONDecodeError as error:
-        raise ModelProviderError("Gemini response was not valid JSON.") from error
-
-    if not isinstance(data, dict):
-        raise ModelProviderError("Gemini response was not a JSON object.")
-
-    return data
-
-
-def first_gemini_candidate(data: dict[str, Any]) -> dict[str, Any]:
-    candidates = data.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        raise ModelProviderError("Gemini response did not include candidates.")
-
-    candidate = candidates[0]
-    if not isinstance(candidate, dict):
-        raise ModelProviderError("Gemini response candidate was not a JSON object.")
-
-    return candidate
-
-
-def gemini_candidate_parts(candidate: dict[str, Any]) -> list[dict[str, Any]]:
-    content = candidate.get("content")
-    if not isinstance(content, dict):
-        raise ModelProviderError("Gemini response candidate did not include content.")
-
-    parts = content.get("parts")
-    if not isinstance(parts, list):
-        raise ModelProviderError("Gemini response content did not include parts.")
-
-    return [part for part in parts if isinstance(part, dict)]
+    return ""
 
 
 def build_mock_profile_intake_output(message: str) -> dict[str, Any]:

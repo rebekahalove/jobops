@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 import jobops_api.main as main_module
+from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, ModelRequest, ModelResponse, ModelRoutingConfig
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
-from jobops_api.profile_intake.providers import GeminiProfileIntakeProvider, ModelProviderError, ModelRequest, ModelResponse
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.settings import Settings
 
@@ -27,6 +26,16 @@ class StaticProvider:
         )
 
 
+class RecordingProvider(StaticProvider):
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.requests: list[ModelRequest] = []
+
+    def generate(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return super().generate(request)
+
+
 def test_fastapi_profile_intake_mock_success(tmp_path: Path) -> None:
     request = ProfileIntakeExtractRequest(latest_user_message="I want to be an Applied AI Engineer focused on remote LLM systems.")
 
@@ -43,7 +52,7 @@ def test_fastapi_profile_intake_mock_success(tmp_path: Path) -> None:
 def test_malformed_model_output_fails_safely(tmp_path: Path) -> None:
     result = run_profile_intake_extraction(
         ProfileIntakeExtractRequest(latest_user_message="I built an eval harness."),
-        provider=StaticProvider("not json"),
+        connector=make_connector(StaticProvider("not json")),
         settings=make_settings(tmp_path),
     )
 
@@ -57,28 +66,7 @@ def test_malformed_model_output_fails_safely(tmp_path: Path) -> None:
 def test_pydantic_validation_failure_rejects_unsafe_generated_metadata(tmp_path: Path) -> None:
     result = run_profile_intake_extraction(
         ProfileIntakeExtractRequest(latest_user_message="I built an eval harness."),
-        provider=StaticProvider(
-            json.dumps(
-                {
-                    "assistantMessage": "Bad output.",
-                    "targetRoleIntent": {},
-                    "draftFacts": [
-                        {
-                            "claim": "Unsafe publication attempt.",
-                            "source": "chat",
-                            "status": "verified",
-                            "visibility": "public",
-                            "published": True,
-                        }
-                    ],
-                    "skillClaims": [],
-                    "experienceAndProjects": [],
-                    "evidenceLinks": [],
-                    "clarifyingQuestions": [],
-                    "changeSummary": [],
-                }
-            )
-        ),
+        connector=make_connector(StaticProvider(json.dumps(unsafe_output()))),
         settings=make_settings(tmp_path),
     )
 
@@ -151,7 +139,7 @@ def test_raw_artifacts_are_written_only_when_enabled(tmp_path: Path) -> None:
 def test_validation_failure_writes_validation_error_artifact(tmp_path: Path) -> None:
     result = run_profile_intake_extraction(
         ProfileIntakeExtractRequest(latest_user_message="I built an eval harness."),
-        provider=StaticProvider("not json"),
+        connector=make_connector(StaticProvider("not json")),
         settings=make_settings(tmp_path, save_artifacts=True),
     )
 
@@ -181,24 +169,20 @@ def test_artifacts_do_not_include_api_keys_or_secret_env_values(tmp_path: Path) 
     assert secret not in contents
 
 
-def test_gemini_invalid_json_response_is_wrapped_safely(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda request, timeout: FakeHttpResponse("not json"),
+def test_profile_intake_uses_shared_model_connector(tmp_path: Path) -> None:
+    provider = RecordingProvider(json.dumps(valid_output()))
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message="I want to be an Applied AI Engineer."),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
     )
 
-    with pytest.raises(ModelProviderError, match="not valid JSON"):
-        GeminiProfileIntakeProvider("test-key").generate(make_model_request())
-
-
-def test_gemini_unexpected_response_shape_is_wrapped_safely(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda request, timeout: FakeHttpResponse("{}"),
-    )
-
-    with pytest.raises(ModelProviderError, match="did not include candidates"):
-        GeminiProfileIntakeProvider("test-key").generate(make_model_request())
+    assert result.status_code == 200
+    assert provider.requests
+    assert provider.requests[0].task == "profile_extract"
+    assert provider.requests[0].model == "mock-default"
+    assert provider.requests[0].messages[0].role == "system"
+    assert provider.requests[0].messages[1].role == "user"
 
 
 def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypatch) -> None:
@@ -215,31 +199,50 @@ def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypat
     assert response.json()["result"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
 
 
-class FakeHttpResponse:
-    def __init__(self, body: str) -> None:
-        self.body = body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self.body.encode("utf-8")
-
-
-def make_model_request() -> ModelRequest:
-    return ModelRequest(
-        existing_draft=None,
-        latest_user_message="I built an eval harness.",
-        max_output_tokens=4000,
-        model="gemini-test",
-        system_prompt="Return JSON.",
-        task="profile_extract",
-        temperature=0,
-        user_prompt="{}",
+def make_connector(provider: StaticProvider | RecordingProvider) -> ModelConnector:
+    return ModelConnector(
+        provider,
+        ModelConnectorConfig(
+            provider="test",
+            routing=ModelRoutingConfig(default_model="mock-default", cheap_model="mock-cheap"),
+        ),
     )
+
+
+def valid_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I drafted updates and kept them private.",
+        "targetRoleIntent": {
+            "targetTitles": "Applied AI Engineer",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": ["What production constraints did you handle?"],
+        "changeSummary": ["Updated target role intent."],
+    }
+
+
+def unsafe_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "Bad output.",
+        "targetRoleIntent": {},
+        "draftFacts": [
+            {
+                "claim": "Unsafe publication attempt.",
+                "source": "chat",
+                "status": "verified",
+                "visibility": "public",
+                "published": True,
+            }
+        ],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": [],
+    }
 
 
 def make_settings(

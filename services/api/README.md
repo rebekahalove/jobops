@@ -6,7 +6,8 @@ Initial scaffold status:
 
 - Local-only.
 - SQLAlchemy and Alembic database layer wired for Neon Postgres.
-- Profile-intake extraction endpoint with mock provider, optional Gemini provider, Pydantic validation, and local debug artifacts.
+- Shared Python model connector with mock and optional Gemini providers.
+- Profile-intake extraction endpoint with Pydantic validation and local debug artifacts.
 - No auth.
 - No scraping.
 - No email integration.
@@ -44,7 +45,7 @@ Request body:
 }
 ```
 
-The endpoint owns prompt construction, provider selection, model calls, JSON parsing, Pydantic validation, local artifact saving, and server-side debug logging. Next.js should call this endpoint directly or through its thin proxy.
+The endpoint owns prompt construction, JSON parsing, Pydantic validation, local artifact saving, and server-side debug logging. It calls the shared Python model connector in `jobops_api/model_connector/` for provider selection, model routing, and model calls. Next.js should call this endpoint directly or through its thin proxy.
 
 Mock mode:
 

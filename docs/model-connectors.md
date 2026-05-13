@@ -1,34 +1,55 @@
 # Model Connectors
 
-JobOps uses a provider-agnostic model connector layer so agent workflows do not depend directly on a single LLM provider SDK.
+JobOps uses a provider-agnostic model connector layer so model-backed workflows do not depend directly on a single LLM provider.
 
-The connector lives in:
+The project-wide connector now lives in FastAPI/Python:
 
 ```text
-packages/model-connector
+services/api/jobops_api/model_connector/
 ```
 
-Future packages such as `packages/agents`, `packages/evals`, and `packages/security-harness` should call this package instead of importing provider SDKs directly.
+The original TypeScript `packages/model-connector` spike has been superseded and removed. React/Next.js code should call FastAPI endpoints, not model providers directly. Thin Next.js proxy routes are allowed when they only forward requests and responses.
 
 ## Goals
 
-- Keep provider-specific SDKs isolated from app and agent code.
-- Support deterministic local tests with a mock adapter.
+- Keep provider-specific HTTP/API details isolated from workflow code.
+- Support deterministic local tests with a mock provider.
 - Support live local development with Gemini.
 - Route model calls by task type.
-- Parse and validate structured model output before use.
 - Keep API keys server-side.
+- Let each workflow own its own prompt, schema validation, and artifact policy.
+
+## Connector Structure
+
+```text
+services/api/jobops_api/model_connector/
+  config.py
+  errors.py
+  models.py
+  providers.py
+  routing.py
+```
+
+Core concepts:
+
+- `ModelMessage`: provider-neutral message with `system`, `user`, or `assistant` role.
+- `ModelRequest`: task, messages, optional model, temperature, token budget, response MIME type, and metadata.
+- `ModelResponse`: text, provider, resolved model, finish reason, optional usage, and metadata.
+- `ModelProvider`: provider protocol implemented by mock and Gemini providers.
+- `ModelConnector`: routes a request to the right model, then calls the configured provider.
 
 ## Providers
 
 Initial providers:
 
-- `mock`: deterministic adapter for tests, local workflows, and CI.
-- `gemini`: live adapter using `@google/genai`.
+- `mock`: deterministic provider for tests, local workflows, and CI.
+- `gemini`: live provider using Gemini's REST API from FastAPI server-side code.
 
-OpenAI remains a future provider option through the shared connector interface, but it is not implemented in this branch.
+OpenAI remains a future provider option through the shared Python connector interface, but it is not implemented yet.
 
-## Default Models
+## Task Routing
+
+Default model settings:
 
 ```text
 JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
@@ -46,8 +67,6 @@ Task routing:
 | `eval_harness` | cheap model |
 | `judge_or_second_pass` | default model |
 
-Task-specific overrides can be added through `taskModelOverrides` when a workflow needs a different model.
-
 ## Environment Variables
 
 Server-side values:
@@ -63,68 +82,23 @@ Rules:
 
 - `GEMINI_API_KEY` belongs only in ignored local files such as `.env.dev` or platform secret stores.
 - Do not prefix model secrets with `NEXT_PUBLIC_`.
-- Browser/client bundles must not import `@jobops/model-connector/server`.
-- Tests should use the mock adapter and should not require live API keys.
-
-## Safety Contract
-
-Model inputs may include resumes, job descriptions, chat messages, or recruiter-provided text. Treat all of that text as untrusted data, not instructions.
-
-Connector users should:
-
-- Keep system/developer instructions separate from user-provided content.
-- Never let model output directly become a verified or published profile fact.
-- Parse and validate structured output before use.
-- Preserve provenance for extracted claims.
-- Keep prompt-injection and regression tests close to workflows that use untrusted text.
-
-The connector includes `generateStructuredOutput` and validation helpers so agent workflows have a single place to enforce JSON parsing and schema-like validation.
-
-## Usage
-
-Deterministic test usage:
-
-```ts
-import { MockModelConnector, createDefaultRoutingConfig } from "@jobops/model-connector";
-
-const connector = new MockModelConnector({
-  ...createDefaultRoutingConfig(),
-  defaultResponse: "{\"facts\":[]}"
-});
-```
-
-Server-side live usage:
-
-```ts
-import { createModelConnector, readModelConnectorConfigFromEnv } from "@jobops/model-connector/server";
-
-const connector = createModelConnector(readModelConnectorConfigFromEnv());
-```
-
-The server export is intentionally separate so provider SDKs and secret-reading code stay away from client components and public browser bundles.
+- Browser/client bundles must not import model provider code.
+- Tests should use the mock provider and should not require live API keys.
 
 ## Profile Intake Usage
 
-The active profile-intake backend now lives in FastAPI, not in the Next.js dashboard app:
+The active profile-intake runtime path is:
 
 ```text
-POST /v1/profile-intake/extract
+Profile Workspace UI
+-> optional Next.js /api/profile-intake proxy
+-> FastAPI POST /v1/profile-intake/extract
+-> profile_intake service
+-> shared Python model_connector
+-> configured provider
 ```
 
-The JobOps dashboard profile workspace calls a thin Next.js proxy:
-
-```text
-POST /api/profile-intake
-```
-
-That route accepts the latest user message and existing local draft state, forwards the request to FastAPI, and returns the FastAPI response. It does not build prompts, call model providers, validate model output, or save artifacts.
-
-FastAPI owns profile-intake prompt construction, provider selection, model calls, JSON parsing, Pydantic validation, concise server logging, and local artifact saving. The existing TypeScript connector package remains available for future TypeScript workflows, but it is no longer the active profile-intake backend path.
-
-Supported local modes:
-
-- `JOBOPS_LLM_PROVIDER=mock`: deterministic local/test behavior with no live provider calls.
-- `JOBOPS_LLM_PROVIDER=gemini`: live Gemini calls using server-side `GEMINI_API_KEY`.
+Profile intake owns its prompt, Pydantic output schema, artifact saving, validation behavior, and profile-specific mock response. The shared connector owns provider-neutral request/response types, task routing, provider creation, mock provider behavior, and Gemini HTTP behavior.
 
 The profile intake contract requires generated facts, skill claims, experience/project items, and evidence links to remain private, unpublished, and marked for review. Model output cannot become verified, public, or published data through this boundary.
 

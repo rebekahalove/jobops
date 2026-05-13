@@ -43,7 +43,7 @@ See [Conversation-First Profile Workspace](../../docs/profile-workspace-design.m
 ## Profile Intake Model Modes
 
 The JobOps app expects the FastAPI service to be running at `JOBOPS_API_BASE_URL`, usually `http://localhost:8000`.
-Next.js owns the UI and proxy only; prompt construction, model calls, validation, debug logging, and local artifact saving live in `services/api`.
+Next.js owns the UI and proxy only; prompt construction, model calls, validation, debug logging, and local artifact saving live in `services/api`. Shared provider/model routing lives in the Python `jobops_api.model_connector` module.
 
 Mock mode, recommended for local UI work and tests:
 

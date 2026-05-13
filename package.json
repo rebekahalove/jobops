@@ -8,8 +8,8 @@
     "dev:jobops": "corepack pnpm --filter @jobops/jobops dev",
     "dev:portfolio": "corepack pnpm --filter @jobops/portfolio dev",
     "build": "corepack pnpm --filter @jobops/portfolio build && corepack pnpm --filter @jobops/jobops build",
-    "typecheck": "corepack pnpm --filter @jobops/portfolio typecheck && corepack pnpm --filter @jobops/jobops typecheck && corepack pnpm --filter @jobops/contracts typecheck && corepack pnpm --filter @jobops/profile typecheck && corepack pnpm --filter @jobops/model-connector typecheck",
-    "test": "corepack pnpm --filter @jobops/profile test && corepack pnpm --filter @jobops/model-connector test && corepack pnpm --filter @jobops/jobops test",
+    "typecheck": "corepack pnpm --filter @jobops/portfolio typecheck && corepack pnpm --filter @jobops/jobops typecheck && corepack pnpm --filter @jobops/contracts typecheck && corepack pnpm --filter @jobops/profile typecheck",
+    "test": "corepack pnpm --filter @jobops/profile test && corepack pnpm --filter @jobops/jobops test",
     "check": "corepack pnpm typecheck && corepack pnpm test"
   },
   "engines": {

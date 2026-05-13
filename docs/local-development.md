@@ -120,7 +120,7 @@ The active profile-intake backend lives in FastAPI at:
 POST http://localhost:8000/v1/profile-intake/extract
 ```
 
-The Next.js app keeps only a thin `/api/profile-intake` proxy. It does not build prompts, call model providers, validate model output, or save artifacts.
+The Next.js app keeps only a thin `/api/profile-intake` proxy. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
 
 For deterministic local mode:
 

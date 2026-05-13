@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from uuid import uuid4
 
+from ..model_connector import ModelRequest, ModelResponse
+from ..model_artifacts import ArtifactRun, create_artifact_run
 from ..settings import Settings
 from .prompt import PROFILE_INTAKE_PROMPT_VERSION, PROFILE_INTAKE_SCHEMA_NAME, PROFILE_INTAKE_SCHEMA_VERSION
-from .providers import ModelRequest, ModelResponse
 
 
 @dataclass(frozen=True)
@@ -28,42 +25,12 @@ class ProfileIntakeInputMetrics:
         }
 
 
-@dataclass
-class ProfileIntakeArtifactRun:
-    enabled: bool
-    save_raw_text: bool
-    run_id: str | None = None
-    run_dir: Path | None = None
-    artifact_path: str | None = None
-
-    def write_json(self, filename: str, value: object) -> None:
-        if not self.enabled or self.run_dir is None:
-            return
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        (self.run_dir / filename).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
-    def write_raw_text(self, filename: str, value: str) -> None:
-        if not self.enabled or not self.save_raw_text or self.run_dir is None:
-            return
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        (self.run_dir / filename).write_text(value, encoding="utf-8")
-
-
-def create_profile_intake_artifact_run(settings: Settings, run_id: str | None = None) -> ProfileIntakeArtifactRun:
-    if not settings.profile_intake_save_artifacts:
-        return ProfileIntakeArtifactRun(enabled=False, save_raw_text=settings.profile_intake_save_raw_text)
-
-    created_at = datetime.now(timezone.utc)
-    next_run_id = sanitize_path_segment(run_id or uuid4().hex[:8])
-    root = settings.repo_root / "artifacts" / "profile-intake"
-    run_dir = root / f"{format_timestamp(created_at)}_{next_run_id}"
-    artifact_path = str(run_dir.relative_to(settings.repo_root))
-
-    return ProfileIntakeArtifactRun(
-        artifact_path=artifact_path,
-        enabled=True,
-        run_dir=run_dir,
-        run_id=next_run_id,
+def create_profile_intake_artifact_run(settings: Settings, run_id: str | None = None) -> ArtifactRun:
+    return create_artifact_run(
+        artifact_subdirectory="profile-intake",
+        enabled=settings.profile_intake_save_artifacts,
+        repo_root=settings.repo_root,
+        run_id=run_id,
         save_raw_text=settings.profile_intake_save_raw_text,
     )
 
@@ -109,12 +76,3 @@ def build_run_metadata(
 
 def array_length(value: object) -> int:
     return len(value) if isinstance(value, list) else 0
-
-
-def format_timestamp(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S%fZ")
-
-
-def sanitize_path_segment(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]", "_", value)
-
