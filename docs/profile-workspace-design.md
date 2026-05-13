@@ -305,8 +305,8 @@ Revise the current Profile page in small steps:
 2. Prefill the message input with `I want to be a...`.
 3. Add a local resume attachment/upload affordance without real upload or persistence.
 4. Replace the current "Generate draft profile" form-first action with a conversation turn processor.
-5. Keep all state local in the browser for now.
-6. Keep the current target role, draft facts, skill claims, experience summaries, and clarifying questions as local review shapes.
+5. Keep the browser state as a display/cache layer while FastAPI returns the saved draft snapshot.
+6. Keep the current target role, draft facts, skill claims, experience summaries, and clarifying questions as review shapes.
 7. Move structured fields below the chat as review/edit/verification sections.
 8. Add a "what changed" summary after each mocked agent turn.
 9. Add section-level, item-level, and whole-profile status badges using the review model above.
@@ -314,12 +314,11 @@ Revise the current Profile page in small steps:
 
 Do not add yet:
 
-- Database persistence.
 - Real resume upload storage.
 - Authentication.
 - Full agent loop.
 - Job intake, fit scoring, materials generation, or application tracking.
 
-Current implementation status: the Profile shell follows this conversation-first layout and calls the FastAPI profile-intake endpoint through a thin Next.js proxy. FastAPI owns prompt construction, provider selection, model calls, Pydantic validation, artifact saving, and debug logging. The UI still keeps draft profile state locally and renders information-type review queues without approval/publish controls.
+Current implementation status: the Profile shell follows this conversation-first layout and calls the FastAPI profile-intake endpoint through a thin Next.js proxy. FastAPI owns prompt construction, provider selection, model calls, Pydantic validation, artifact saving, debug logging, and persistence of validated draft output. The UI keeps draft profile state locally as the display/cache layer and renders information-type review queues without approval/publish controls.
 
-Recommended next implementation step: persist validated draft output in the FastAPI/database boundary as an intake session and draft profile change event, while keeping human verification and publication as explicit later actions.
+Recommended next implementation step: add explicit approve/reject/edit review actions for persisted draft profile sections and items, while keeping public-ready and publication as separate later actions.

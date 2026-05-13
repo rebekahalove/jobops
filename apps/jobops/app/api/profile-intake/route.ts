@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL"]);
+  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
   const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
 
   try {
@@ -42,7 +42,9 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         latest_user_message: validation.value.latestUserMessage,
-        existing_draft: validation.value.existingDraft ?? null
+        existing_draft: validation.value.existingDraft ?? null,
+        candidate_profile_slug:
+          validation.value.candidateProfileSlug ?? env.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love"
       })
     });
     const payload = await apiResponse.json();

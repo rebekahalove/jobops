@@ -26,6 +26,7 @@ The `/profile` page includes the first conversation-first profile intake slice:
 - Mock provider support in FastAPI for deterministic local/test behavior.
 - Live Gemini support in FastAPI when `JOBOPS_LLM_PROVIDER=gemini` and `GEMINI_API_KEY` are configured server-side.
 - Pydantic structured output validation before draft state is updated.
+- DB-backed persistence for validated draft profile data and redacted intake events.
 - Structured profile review/edit surface below the conversation.
 
 Generated data is always treated as:
@@ -36,14 +37,14 @@ Generated data is always treated as:
 - `private`
 - `published: false`
 
-Review queues are grouped by information type rather than status. Approval, public-ready, and publish controls are intentionally deferred.
+Review queues are grouped by information type rather than status. The saved draft snapshot remains local-dev/profile-scoped until auth exists. Approval, public-ready, and publish controls are intentionally deferred.
 
 See [Conversation-First Profile Workspace](../../docs/profile-workspace-design.md).
 
 ## Profile Intake Model Modes
 
 The JobOps app expects the FastAPI service to be running at `JOBOPS_API_BASE_URL`, usually `http://localhost:8000`.
-Next.js owns the UI and proxy only; prompt construction, model calls, validation, debug logging, and local artifact saving live in `services/api`. Shared provider/model routing lives in the Python `jobops_api.model_connector` module.
+Next.js owns the UI and proxy only; prompt construction, model calls, validation, persistence, debug logging, and local artifact saving live in `services/api`. Shared provider/model routing lives in the Python `jobops_api.model_connector` module.
 
 Mock mode, recommended for local UI work and tests:
 
@@ -80,11 +81,10 @@ Artifacts are written to `artifacts/profile-intake/<timestamp>_<runId>/` and are
 ## Intentionally Deferred
 
 - Authentication.
-- Database persistence.
 - Permanent raw resume storage.
 - Full profile generator agent loop.
 - Human approval workflow.
 - Public fact publication.
 - Job intake, fit scoring, materials generation, and application tracking.
 
-Recommended next step: persist validated draft intake output behind the API/database boundary, with explicit review and verification actions.
+Recommended next step: add explicit review and verification actions for the persisted draft profile data.

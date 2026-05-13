@@ -19,6 +19,7 @@ class Settings:
     profile_intake_save_artifacts: bool
     profile_intake_save_raw_text: bool
     database_url: str | None
+    default_candidate_profile_slug: str
     repo_root: Path
 
 
@@ -46,6 +47,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         profile_intake_save_artifacts=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS")),
         profile_intake_save_raw_text=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT")),
         database_url=merged.get("DATABASE_URL"),
+        default_candidate_profile_slug=merged.get("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG", "rebekah-love"),
         repo_root=root
     )
 

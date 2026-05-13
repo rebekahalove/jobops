@@ -36,9 +36,9 @@ Then open:
 http://localhost:3002
 ```
 
-The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, AI calls, fit scoring, and material generation are intentionally deferred. The recommended next feature is the profile generator.
+The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, fit scoring, and material generation are intentionally deferred.
 
-The Profile workspace at `/profile` includes a local-only conversation-first intake shell with an `I want to be a...` prompt, resume paste directly in chat, resume attachment affordance, deterministic mock draft extraction, change summary, draft preview, clarifying questions, and structured review below the conversation.
+The Profile workspace at `/profile` includes a conversation-first intake flow with an `I want to be a...` prompt, resume paste directly in chat, model-assisted draft extraction through FastAPI, DB-backed draft persistence, redacted intake events, change summary, draft preview, clarifying questions, and structured review below the conversation.
 
 For local multi-service development, run the portfolio, dashboard, and API in separate terminals. See [Local Development](docs/local-development.md) for Windows-specific server startup and port cleanup notes.
 

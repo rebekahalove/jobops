@@ -54,8 +54,11 @@ def get_profile_by_hostname(hostname: str, session: Session = Depends(get_db_ses
 
 
 @app.post("/v1/profile-intake/extract")
-def extract_profile_intake(request: ProfileIntakeExtractRequest) -> JSONResponse:
-    result = run_profile_intake_extraction(request, settings=settings)
+def extract_profile_intake(
+    request: ProfileIntakeExtractRequest,
+    session: Session = Depends(get_db_session),
+) -> JSONResponse:
+    result = run_profile_intake_extraction(request, db_session=session, settings=settings)
     return JSONResponse(content=result.body, status_code=result.status_code)
 
 

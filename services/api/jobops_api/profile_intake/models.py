@@ -25,6 +25,12 @@ class ProfileIntakeExtractRequest(ApiModel):
         validation_alias=AliasChoices("existing_draft", "existingDraft"),
         serialization_alias="existing_draft",
     )
+    candidate_profile_slug: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("candidate_profile_slug", "candidateProfileSlug"),
+        serialization_alias="candidate_profile_slug",
+        max_length=120,
+    )
 
 
 class TargetRoleIntent(ApiModel):
