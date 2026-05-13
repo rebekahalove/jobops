@@ -1,5 +1,6 @@
-import { PlaceholderPage } from "../../components/placeholder-page";
+import React from "react";
+import { ApplicationsTracker } from "../../components/applications-tracker";
 
 export default function ApplicationsPage() {
-  return <PlaceholderPage workflowId="applications" />;
+  return <ApplicationsTracker />;
 }

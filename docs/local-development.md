@@ -114,6 +114,8 @@ The Profile area is emphasized as the recommended first step because the next pl
 
 The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface.
 
+The `/applications` route now includes the first manual Application Tracker MVP. It supports adding applications, listing saved applications, viewing status badges and next follow-up dates, keeping notes, and editing status. It intentionally does not scrape job posts, extract postings, score fit, generate cover letters, integrate Gmail/email, send reminders, or add auth.
+
 The active profile-intake backend lives in FastAPI at:
 
 ```text
@@ -206,6 +208,31 @@ Tables added for this slice:
 
 - `profile_intake_events`
 - `experience_project_drafts`
+
+Application tracker persistence flow:
+
+```text
+Applications UI -> Next thin proxy -> FastAPI /v1/applications
+  -> target_companies + job_roles + applications + application_events
+```
+
+Tables added for the manual Application Tracker MVP:
+
+- `target_companies`
+- `job_roles`
+- `applications`
+- `application_events`
+
+Application tracker endpoints:
+
+```text
+POST /v1/applications
+GET /v1/applications
+PATCH /v1/applications/{application_id}/status
+POST /v1/applications/{application_id}/events
+```
+
+See [Application Tracker MVP](application-tracker-mvp.md).
 
 By default JobOps stores message lengths, draft counts, model run IDs, artifact paths, and safe event metadata. It does not store raw chat/resume text in the database. If raw artifact saving is explicitly enabled, raw prompt/response files stay local under gitignored `artifacts/`.
 

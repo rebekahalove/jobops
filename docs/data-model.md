@@ -83,20 +83,25 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 
 - Private companies a tenant is tracking.
 - Not visible to public profile visitors.
+- Implemented for the manual Application Tracker MVP as candidate-profile-scoped company records.
 
 `job_roles`
 
 - Roles discovered, saved, or manually entered by a tenant.
 - May include source URL, company, title, location, level, and raw description storage policy.
+- Implemented for manual entry with source URL, company link, title, location, source, and status. Raw descriptions remain deferred.
 
 `applications`
 
 - Application records tied to candidate profiles and roles.
 - Tracks status, dates, next action, and human-approved materials.
+- Implemented with company name, job title, job URL, location, source, date applied, status, notes, next follow-up date, and timestamps.
+- Current statuses: `saved`, `applied`, `interviewing`, `rejected`, `offer`, `closed`, `withdrawn`.
 
 `application_events`
 
 - Timeline of application state changes, follow-ups, interviews, and notes.
+- Implemented with event type, event date, notes, and `metadata_json`.
 
 `role_fit_analyses`
 
