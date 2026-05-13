@@ -60,6 +60,7 @@ export type ProfileIntakeOutput = {
 export type ProfileIntakeApiRequest = {
   latestUserMessage: string;
   existingDraft?: unknown;
+  candidateProfileSlug?: string;
 };
 
 export type StructuredValidationResult<T> =
@@ -88,7 +89,11 @@ export function validateProfileIntakeApiRequest(value: unknown): StructuredValid
     ok: true,
     value: {
       latestUserMessage,
-      existingDraft: request.existingDraft
+      existingDraft: request.existingDraft,
+      candidateProfileSlug:
+        typeof request.candidateProfileSlug === "string" && request.candidateProfileSlug.trim().length > 0
+          ? request.candidateProfileSlug
+          : undefined
     }
   };
 }

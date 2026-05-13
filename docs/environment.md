@@ -80,6 +80,7 @@ APP_ENV=dev
 ```text
 DATABASE_URL=...
 JOBOPS_API_BASE_URL=http://localhost:8000
+JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG=rebekah-love
 JOBOPS_LLM_PROVIDER=mock
 JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=false
 JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
@@ -93,6 +94,8 @@ Profile intake artifact flags are local debugging controls:
 - `JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=true` also writes prompts and raw model responses. These may include resume or chat content and should stay local.
 
 `JOBOPS_API_BASE_URL` points frontend server code at the FastAPI service. The JobOps dashboard uses it for the profile-intake proxy, and the portfolio app uses it for public profile reads when the API is running locally.
+
+`JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG` is the local-dev profile context used before auth exists. Profile intake defaults to `rebekah-love` if it is not set.
 
 ## Production
 

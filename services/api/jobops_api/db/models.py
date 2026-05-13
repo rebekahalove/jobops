@@ -68,12 +68,17 @@ class RoleTarget(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    profile_intake_session_id: Mapped[str | None] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="SET NULL"), nullable=True)
     target_titles: Mapped[list[str]] = mapped_column(JSON, default=list)
     role_families: Mapped[list[str]] = mapped_column(JSON, default=list)
     seniority: Mapped[str | None] = mapped_column(String(80), nullable=True)
     preferred_locations: Mapped[list[str]] = mapped_column(JSON, default=list)
     work_modes: Mapped[list[str]] = mapped_column(JSON, default=list)
     constraints: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(40), default="model")
+    review_status: Mapped[str] = mapped_column(String(40), default="needs_review")
+    visibility: Mapped[str] = mapped_column(String(40), default="private")
+    publication_status: Mapped[str] = mapped_column(String(40), default="not_published")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -100,6 +105,7 @@ class ProfileFactDraft(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    profile_intake_session_id: Mapped[str | None] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="SET NULL"), nullable=True)
     claim: Mapped[str] = mapped_column(Text)
     fact_type: Mapped[str] = mapped_column(String(80))
     structured_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -117,15 +123,19 @@ class SkillClaim(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    profile_intake_session_id: Mapped[str | None] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="SET NULL"), nullable=True)
     skill_name: Mapped[str] = mapped_column(String(160))
     skill_category: Mapped[str] = mapped_column(String(120))
     years_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     years_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
     recency: Mapped[str | None] = mapped_column(String(80), nullable=True)
     proficiency: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    evidence_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_fact_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(40), default="model")
     visibility: Mapped[str] = mapped_column(String(40), default="private")
     verification_status: Mapped[str] = mapped_column(String(40), default="draft")
+    publication_status: Mapped[str] = mapped_column(String(40), default="not_published")
 
 
 class ResumeArtifact(Base):
@@ -148,6 +158,44 @@ class ProfileIntakeSession(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(40), default="active")
     target_role_summary: Mapped[str] = mapped_column(Text, default="")
     redacted_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_turn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProfileIntakeEvent(Base):
+    __tablename__ = "profile_intake_events"
+    __table_args__ = (
+        Index("ix_profile_intake_events_session_created", "session_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(String(40))
+    event_type: Mapped[str] = mapped_column(String(80))
+    redacted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_text_artifact_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_run_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExperienceProjectDraft(Base, TimestampMixin):
+    __tablename__ = "experience_project_drafts"
+    __table_args__ = (
+        Index("ix_experience_project_drafts_session", "profile_intake_session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    profile_intake_session_id: Mapped[str | None] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="SET NULL"), nullable=True)
+    title: Mapped[str] = mapped_column(String(200))
+    organization: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    summary: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(40), default="model")
+    visibility: Mapped[str] = mapped_column(String(40), default="private")
+    review_status: Mapped[str] = mapped_column(String(40), default="needs_review")
+    publication_status: Mapped[str] = mapped_column(String(40), default="not_published")
+    structured_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class EvidenceArtifact(Base):
@@ -155,10 +203,14 @@ class EvidenceArtifact(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    profile_intake_session_id: Mapped[str | None] = mapped_column(ForeignKey("profile_intake_sessions.id", ondelete="SET NULL"), nullable=True)
     artifact_type: Mapped[str] = mapped_column(String(80))
     label: Mapped[str] = mapped_column(String(255))
     uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(40), default="model")
     visibility: Mapped[str] = mapped_column(String(40), default="private")
+    review_status: Mapped[str] = mapped_column(String(40), default="needs_review")
+    publication_status: Mapped[str] = mapped_column(String(40), default="not_published")
     artifact_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 from ..model_connector import (
     ModelConfigurationError,
@@ -18,6 +19,7 @@ from ..model_connector import (
     read_model_connector_config_from_settings,
     route_model_request,
 )
+from ..profiles import get_candidate_profile_by_slug
 from ..settings import Settings, load_settings
 from .artifacts import (
     build_profile_intake_input_metrics,
@@ -25,6 +27,13 @@ from .artifacts import (
     create_profile_intake_artifact_run,
 )
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
+from .persistence import (
+    get_or_create_active_intake_session,
+    persist_profile_intake_output,
+    save_intake_assistant_event,
+    save_intake_user_event,
+    save_intake_validation_error_event,
+)
 from .prompt import (
     PROFILE_INTAKE_SCHEMA_NAME,
     build_profile_intake_user_prompt,
@@ -48,6 +57,7 @@ def run_profile_intake_extraction(
     request: ProfileIntakeExtractRequest,
     *,
     connector: ModelConnector | None = None,
+    db_session: Session | None = None,
     settings: Settings | None = None,
 ) -> ProfileIntakeServiceResult:
     active_settings = settings or load_settings()
@@ -63,12 +73,47 @@ def run_profile_intake_extraction(
     )
     artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
 
+    candidate_profile = None
+    intake_session = None
+    if db_session is not None:
+        candidate_slug = request.candidate_profile_slug or active_settings.default_candidate_profile_slug
+        candidate_profile = get_candidate_profile_by_slug(db_session, candidate_slug)
+        if candidate_profile is None:
+            return ProfileIntakeServiceResult(
+                body={
+                    "ok": False,
+                    "error": (
+                        "Candidate profile not found. Run migrations and seed the local candidate profile before "
+                        "using profile intake persistence."
+                    ),
+                    "code": "candidate_profile_not_found",
+                },
+                status_code=404,
+            )
+        intake_session = get_or_create_active_intake_session(db_session, candidate_profile.id)
+        save_intake_user_event(
+            db_session,
+            intake_session=intake_session,
+            candidate_profile_id=candidate_profile.id,
+            latest_user_message=request.latest_user_message,
+            artifact_path=artifact_run.artifact_path,
+            model_run_id=artifact_run.run_id,
+        )
+
     try:
         active_connector = connector or create_model_connector(
             connector_config,
             mock_responses_by_task={"profile_extract": build_mock_profile_intake_response},
         )
     except ModelConfigurationError as error:
+        _persist_failure_event(
+            db_session=db_session,
+            candidate_profile=candidate_profile,
+            intake_session=intake_session,
+            issues=[str(error)],
+            artifact_path=artifact_run.artifact_path,
+            model_run_id=artifact_run.run_id,
+        )
         _write_failure_metadata(
             artifact_run=artifact_run,
             input_metrics=input_metrics,
@@ -98,6 +143,14 @@ def run_profile_intake_extraction(
         latency_ms = round((time.perf_counter() - started_at) * 1000)
     except ModelProviderError as error:
         latency_ms = round((time.perf_counter() - started_at) * 1000)
+        _persist_failure_event(
+            db_session=db_session,
+            candidate_profile=candidate_profile,
+            intake_session=intake_session,
+            issues=[str(error)],
+            artifact_path=artifact_run.artifact_path,
+            model_run_id=artifact_run.run_id,
+        )
         _write_failure_metadata(
             artifact_run=artifact_run,
             input_metrics=input_metrics,
@@ -134,6 +187,9 @@ def run_profile_intake_extraction(
         issues = add_truncation_hint(error.issues, response.finish_reason)
         return validation_failure_result(
             artifact_run=artifact_run,
+            candidate_profile=candidate_profile,
+            db_session=db_session,
+            intake_session=intake_session,
             input_metrics=input_metrics,
             issues=issues,
             latency_ms=latency_ms,
@@ -144,6 +200,9 @@ def run_profile_intake_extraction(
         issues = add_truncation_hint(format_validation_issues(error), response.finish_reason)
         return validation_failure_result(
             artifact_run=artifact_run,
+            candidate_profile=candidate_profile,
+            db_session=db_session,
+            intake_session=intake_session,
             input_metrics=input_metrics,
             issues=issues,
             latency_ms=latency_ms,
@@ -166,6 +225,26 @@ def run_profile_intake_extraction(
                 validation_issue_count=0,
             ),
         )
+
+    if db_session is not None and candidate_profile is not None and intake_session is not None:
+        save_intake_assistant_event(
+            db_session,
+            intake_session=intake_session,
+            candidate_profile_id=candidate_profile.id,
+            output=output,
+            artifact_path=artifact_run.artifact_path,
+            model_run_id=artifact_run.run_id,
+        )
+        output_json = persist_profile_intake_output(
+            db_session,
+            candidate_profile=candidate_profile,
+            intake_session=intake_session,
+            output=output,
+            input_metrics=input_metrics,
+            artifact_path=artifact_run.artifact_path,
+            model_run_id=artifact_run.run_id,
+        )
+        db_session.commit()
 
     return ProfileIntakeServiceResult(
         body={
@@ -252,6 +331,9 @@ def extract_first_json_object(text: str) -> str | None:
 def validation_failure_result(
     *,
     artifact_run,
+    candidate_profile,
+    db_session: Session | None,
+    intake_session,
     input_metrics,
     issues: list[str],
     latency_ms: int,
@@ -281,6 +363,15 @@ def validation_failure_result(
                 validation_issue_count=len(issues),
             ),
         )
+
+    _persist_failure_event(
+        db_session=db_session,
+        candidate_profile=candidate_profile,
+        intake_session=intake_session,
+        issues=issues,
+        artifact_path=artifact_run.artifact_path,
+        model_run_id=artifact_run.run_id,
+    )
 
     logger.warning(
         "[profile_intake] structured output validation failed run_id=%s provider=%s model=%s issues=%s artifact_path=%s",
@@ -336,6 +427,29 @@ def _write_failure_metadata(
             "validationIssueCount": validation_issue_count,
         },
     )
+
+
+def _persist_failure_event(
+    *,
+    db_session: Session | None,
+    candidate_profile,
+    intake_session,
+    issues: list[str],
+    artifact_path: str | None,
+    model_run_id: str | None,
+) -> None:
+    if db_session is None or candidate_profile is None or intake_session is None:
+        return
+
+    save_intake_validation_error_event(
+        db_session,
+        intake_session=intake_session,
+        candidate_profile_id=candidate_profile.id,
+        issues=issues,
+        artifact_path=artifact_path,
+        model_run_id=model_run_id,
+    )
+    db_session.commit()
 
 
 def debug_fields(artifact_run) -> dict[str, str]:

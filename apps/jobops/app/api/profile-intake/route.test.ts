@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../lib/server-env", () => ({
   getJobOpsServerEnv: vi.fn(async () => ({
-    JOBOPS_API_BASE_URL: "http://fastapi.test/"
+    JOBOPS_API_BASE_URL: "http://fastapi.test/",
+    JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
   }))
 }));
 
@@ -61,7 +62,8 @@ describe("profile-intake API proxy", () => {
       latest_user_message: "I want to be an Applied AI Engineer.",
       existing_draft: {
         facts: []
-      }
+      },
+      candidate_profile_slug: "rebekah-love"
     });
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });

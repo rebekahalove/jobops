@@ -90,7 +90,7 @@ The app uses local mock behavior until verified public profile facts and the rea
 
 ## Run The JobOps Dashboard Stub
 
-The dashboard shell is the private JobOps app scaffold. It does not include auth, database-backed workflows, job intake, fit scoring, material generation, or persistence yet.
+The dashboard shell is the private JobOps app scaffold. It does not include auth, job intake, fit scoring, material generation, or review-management workflows yet. The Profile workspace does persist validated draft intake output through FastAPI.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -141,7 +141,7 @@ JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
 ```
 
-The FastAPI boundary keeps the Gemini key server-side. The profile workspace does not persist raw resume text yet, and all generated claims are draft, source-labeled, private, unpublished, and marked needs review.
+The FastAPI boundary keeps the Gemini key server-side. The profile workspace now persists validated draft profile data to Postgres through FastAPI, but it still does not store raw resume/chat text by default. All generated claims are draft or needs review, source-labeled, private, unpublished, and unverified.
 
 See [Conversation-First Profile Workspace](profile-workspace-design.md).
 
@@ -186,15 +186,37 @@ Suggested malformed JSON debugging flow:
 
 This is a local-only diagnostic layer, not the final system-wide observability design.
 
+Profile intake persistence flow:
+
+```text
+Profile UI -> Next thin proxy -> FastAPI /v1/profile-intake/extract
+  -> model connector -> Pydantic validation
+  -> profile_intake_sessions + draft tables + redacted events
+```
+
+Tables reused:
+
+- `profile_intake_sessions`
+- `role_targets`
+- `profile_fact_drafts`
+- `skill_claims`
+- `evidence_artifacts`
+
+Tables added for this slice:
+
+- `profile_intake_events`
+- `experience_project_drafts`
+
+By default JobOps stores message lengths, draft counts, model run IDs, artifact paths, and safe event metadata. It does not store raw chat/resume text in the database. If raw artifact saving is explicitly enabled, raw prompt/response files stay local under gitignored `artifacts/`.
+
 Deferred profile work:
 
-- Database persistence.
 - Human approval and publication workflow.
 - Durable resume artifact handling.
 - Full review controls.
 - Telemetry.
 
-Recommended next step: add persistence for validated draft profile intake output in FastAPI, keeping review and publication as explicit later actions.
+Recommended next step: add explicit review actions for approving/rejecting persisted draft profile sections and items, keeping publication as a separate later action.
 
 ## Run The API Scaffold
 

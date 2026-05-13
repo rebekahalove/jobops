@@ -12,7 +12,7 @@ def test_load_settings_uses_app_env_file(tmp_path: Path, monkeypatch: pytest.Mon
 
     (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
     (tmp_path / ".env.dev").write_text(
-        "MODEL_PROVIDER=mock\nDATABASE_URL=postgresql://example\n",
+        "MODEL_PROVIDER=mock\nDATABASE_URL=postgresql://example\nJOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG=rebekah-love\n",
         encoding="utf-8"
     )
 
@@ -21,6 +21,7 @@ def test_load_settings_uses_app_env_file(tmp_path: Path, monkeypatch: pytest.Mon
     assert settings.app_env == "dev"
     assert settings.model_provider == "mock"
     assert settings.database_url == "postgresql://example"
+    assert settings.default_candidate_profile_slug == "rebekah-love"
 
 
 def test_load_settings_rejects_path_like_app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

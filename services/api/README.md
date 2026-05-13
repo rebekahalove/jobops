@@ -7,7 +7,7 @@ Initial scaffold status:
 - Local-only.
 - SQLAlchemy and Alembic database layer wired for Neon Postgres.
 - Shared Python model connector with mock and optional Gemini providers.
-- Profile-intake extraction endpoint with Pydantic validation and local debug artifacts.
+- Profile-intake extraction endpoint with Pydantic validation, local debug artifacts, and DB-backed draft persistence.
 - No auth.
 - No scraping.
 - No email integration.
@@ -41,11 +41,12 @@ Request body:
 ```json
 {
   "latest_user_message": "I want to be an Applied AI Engineer...",
-  "existing_draft": null
+  "existing_draft": null,
+  "candidate_profile_slug": "rebekah-love"
 }
 ```
 
-The endpoint owns prompt construction, JSON parsing, Pydantic validation, local artifact saving, and server-side debug logging. It calls the shared Python model connector in `jobops_api/model_connector/` for provider selection, model routing, and model calls. Next.js should call this endpoint directly or through its thin proxy.
+The endpoint owns prompt construction, JSON parsing, Pydantic validation, local artifact saving, server-side debug logging, and persistence of validated draft data. It calls the shared Python model connector in `jobops_api/model_connector/` for provider selection, model routing, and model calls. Next.js should call this endpoint directly or through its thin proxy.
 
 Mock mode:
 
@@ -61,7 +62,7 @@ GEMINI_API_KEY=your_local_key
 JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 ```
 
-All extracted data remains draft, private, unpublished, and unverified. The endpoint does not persist raw resume text or generated draft profile data yet.
+All extracted data remains draft or needs review, private, unpublished, and unverified. The endpoint persists only validated draft profile data and safe/redacted intake events. It does not store raw resume or chat text by default.
 
 Local debug artifacts:
 
@@ -89,3 +90,18 @@ python -m jobops_api.cli seed-public-profile --hostname rebekahalove.dev
 ```
 
 The seed command creates the tenant, candidate profile, and optional domain mapping. It does not create private facts or publish unreviewed facts.
+
+Profile intake persistence uses these existing tables where practical:
+
+- `profile_intake_sessions`
+- `role_targets`
+- `profile_fact_drafts`
+- `skill_claims`
+- `evidence_artifacts`
+
+This slice also adds:
+
+- `profile_intake_events` for redacted user/assistant/model events.
+- `experience_project_drafts` for draft experience and project items.
+
+The active session uses replacement behavior for now: each successful model turn replaces the current draft facts, skills, experience/projects, evidence, and target role intent for that intake session. Review controls, approval/rejection, publication, auth, and durable raw resume storage are deferred.
