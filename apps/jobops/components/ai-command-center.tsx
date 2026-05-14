@@ -105,6 +105,10 @@ export function AiCommandCenter({
           text: payload.result.assistant_message
         }
       ]);
+
+      if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
+        window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
+      }
     } catch (error) {
       const fallbackAction = createPlannedAction(submittedCommand, `action-${Date.now()}`);
       const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";

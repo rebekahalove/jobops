@@ -31,7 +31,7 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("Resume text for local mock extraction");
   });
 
-  it("keeps structured fields as review/edit surfaces below chat", () => {
+  it("keeps structured fields as review/edit surfaces", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("Structured review");
@@ -60,6 +60,17 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("aria-label=\"Collapse Clarifying questions\"");
     expect(html).toContain("Target role intent");
     expect(html).toContain("No questions yet");
+  });
+
+  it("points empty profile states to command-center intake instead of stale page chat copy", () => {
+    const html = renderToStaticMarkup(<ProfileWorkspace />);
+
+    expect(html).toContain("Use the JobOps command center above to update your profile draft.");
+    expect(html).toContain("Command-center profile intake will draft profile facts for review.");
+    expect(html).toContain("Command-center profile intake should pull these answers forward over time.");
+    expect(html).not.toContain("Send a message or attach a resume");
+    expect(html).not.toContain("Use the conversation panel");
+    expect(html).not.toContain("local summary");
   });
 
   it("marks mock extracted facts as draft, resume-derived, and not verified", () => {
@@ -163,6 +174,7 @@ describe("Profile intake workspace", () => {
     const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain('fetch("/api/profile-draft"');
+    expect(source).toContain('addEventListener("jobops:profile-draft-updated"');
     expect(source).not.toContain('fetch("/api/profile-intake"');
     expect(source).toContain("applyProfileIntakeOutputToState");
   });

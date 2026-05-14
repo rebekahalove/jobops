@@ -53,10 +53,16 @@ export function ProfileWorkspace() {
       }
     }
 
+    function refreshLatestDraft() {
+      void loadLatestDraft();
+    }
+
     void loadLatestDraft();
+    window.addEventListener("jobops:profile-draft-updated", refreshLatestDraft);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("jobops:profile-draft-updated", refreshLatestDraft);
     };
   }, []);
 
@@ -206,7 +212,7 @@ export function ProfileWorkspace() {
         expanded={isQuestionsExpanded}
         id="questions-title"
         onToggle={() => setIsQuestionsExpanded((current) => !current)}
-        subtitle="The conversation should pull these answers forward over time."
+        subtitle="Command-center profile intake should pull these answers forward over time."
         title="Clarifying questions"
       >
         <ClarifyingQuestions draft={draft} />
@@ -312,7 +318,7 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
     return (
       <div className="empty-state-block">
         <h3>No changes yet</h3>
-        <p>Send a message or attach a resume to generate the first local summary.</p>
+        <p>Use the JobOps command center above to update your profile draft.</p>
       </div>
     );
   }
@@ -352,7 +358,7 @@ function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
           <li>No achievement or outcome items drafted yet.</li>
         </PreviewColumn>
         <PreviewColumn count={0} title="Facts / Claims">
-          <li>No draft yet. Use the conversation panel to draft profile facts.</li>
+          <li>No draft yet. Command-center profile intake will draft profile facts for review.</li>
         </PreviewColumn>
         <PreviewColumn count={0} title="Evidence & Links">
           <li>No links detected.</li>

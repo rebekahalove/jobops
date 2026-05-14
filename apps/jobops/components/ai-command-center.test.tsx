@@ -37,6 +37,35 @@ describe("AI command center", () => {
     expect(html).toContain("Jobs");
   });
 
+  it("renders a completed profile-intake action card", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-profile",
+            type: "profile_intake",
+            title: "Update profile",
+            summary: "Updated the saved profile draft.",
+            status: "completed",
+            targetWorkspace: "profile"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Update profile");
+    expect(html).toContain("profile_intake");
+    expect(html).toContain("completed");
+    expect(html).toContain("href=\"/profile\"");
+  });
+
+  it("notifies the profile workspace after completed profile-intake commands", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('action.type === "profile_intake"');
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"');
+  });
+
   it("links planned action CTAs to the expected workspace routes", () => {
     const workspaces = Object.keys(workspaceRoutes) as WorkspaceTab[];
 
