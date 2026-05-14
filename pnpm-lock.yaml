@@ -10,6 +10,9 @@ importers:
 
   apps/jobops:
     dependencies:
+      '-':
+        specifier: ^0.0.1
+        version: 0.0.1
       next:
         specifier: 15.1.6
         version: 15.1.6(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -87,6 +90,9 @@ importers:
         version: 3.0.4(@types/node@22.10.10)
 
 packages:
+
+  '-@0.0.1':
+    resolution: {integrity: sha512-3HfneK3DGAm05fpyj20sT3apkNcvPpCuccOThOPdzz8sY7GgQGe0l93XH9bt+YzibcTIgUAIMoyVJI740RtgyQ==}
 
   '@emnapi/runtime@1.10.0':
     resolution: {integrity: sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==}
@@ -907,6 +913,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '-@0.0.1': {}
 
   '@emnapi/runtime@1.10.0':
     dependencies:
