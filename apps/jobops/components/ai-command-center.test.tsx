@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AiCommandCenter, starterPrompts } from "./ai-command-center";
-import { classifyCommand, createPlannedAction } from "../lib/command-center-actions";
+import {
+  classifyCommand,
+  createPlannedAction,
+  workspaceRoutes,
+  type PlannedCommandAction,
+  type WorkspaceTab
+} from "../lib/command-center-actions";
 
 describe("AI command center", () => {
   it("renders prominently with starter prompts", () => {
@@ -31,6 +37,46 @@ describe("AI command center", () => {
     expect(html).toContain("Jobs");
   });
 
+  it("links planned action CTAs to the expected workspace routes", () => {
+    const workspaces = Object.keys(workspaceRoutes) as WorkspaceTab[];
+
+    for (const workspace of workspaces) {
+      const route = workspaceRoutes[workspace];
+      const action: PlannedCommandAction = {
+        id: `action-${workspace}`,
+        type: "unknown",
+        title: `Open ${workspace}`,
+        summary: `Planned action for ${workspace}.`,
+        status: "planned",
+        targetWorkspace: workspace,
+        ctaLabel: `Open ${workspace}`
+      };
+      const html = renderToStaticMarkup(<AiCommandCenter initialActions={[action]} />);
+
+      expect(html).toContain(`href="${route}"`);
+      expect(html).toContain(`Open ${workspace}`);
+    }
+  });
+
+  it("shows a non-action affordance when no target workspace exists", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-unknown",
+            type: "unknown",
+            title: "Review command",
+            summary: "JobOps needs more information before routing.",
+            status: "planned"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Planned");
+    expect(html).not.toContain("href=");
+  });
+
   it("classifies common command examples into planned action types", () => {
     expect(classifyCommand("Here's a job URL. Add it to my jobs list.").type).toBe("add_job_from_url");
     expect(classifyCommand("Follow this company.").type).toBe("follow_company");
@@ -49,6 +95,8 @@ describe("AI command center", () => {
     const combinedSource = `${source}\n${actionSource}`;
 
     expect(combinedSource).not.toContain("fetch(");
+    expect(combinedSource).not.toContain("/api/command");
+    expect(combinedSource).not.toContain("/v1/command");
     expect(combinedSource).not.toContain("GEMINI_API_KEY");
     expect(combinedSource).not.toContain("@jobops/model-connector");
     expect(combinedSource).not.toContain("generateContent");

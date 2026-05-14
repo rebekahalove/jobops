@@ -27,6 +27,15 @@ export type PlannedCommandAction = {
   ctaLabel?: string;
 };
 
+export const workspaceRoutes: Record<WorkspaceTab, string> = {
+  profile: "/profile",
+  companies: "/companies",
+  jobs: "/jobs",
+  applications: "/applications",
+  materials: "/materials",
+  "follow-ups": "/follow-ups"
+};
+
 export type ClassifiedCommand = {
   type: CommandCenterActionType;
   targetWorkspace?: WorkspaceTab;

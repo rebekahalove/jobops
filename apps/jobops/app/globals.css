@@ -268,9 +268,14 @@ textarea {
 }
 
 .workspace-tab:hover,
-.workspace-tab:focus-visible {
+.workspace-tab:focus-visible,
+.workspace-tab.active {
   border-color: rgba(15, 118, 110, 0.3);
   background: var(--surface-strong);
+}
+
+.workspace-tab.active {
+  color: var(--ink);
 }
 
 .dashboard-main {
@@ -1027,12 +1032,32 @@ input:disabled {
 }
 
 .secondary-action {
+  display: inline-flex;
   min-height: 42px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
   color: var(--accent-strong);
   cursor: pointer;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.agent-action-link {
+  text-decoration: none;
+}
+
+.planned-affordance {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  color: var(--muted);
   font-weight: 800;
   padding: 9px 12px;
 }

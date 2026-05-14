@@ -1,8 +1,12 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DashboardHome } from "./dashboard-home";
 import { DashboardShell } from "./dashboard-shell";
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/applications"
+}));
 
 describe("JobOps dashboard shell", () => {
   it("renders the dashboard app shell", () => {
@@ -43,6 +47,18 @@ describe("JobOps dashboard shell", () => {
 
     expect(html).toContain('href="/profile"');
     expect(html).toContain('href="/applications"');
+  });
+
+  it("marks the current workspace tab as active", () => {
+    const html = renderToStaticMarkup(
+      <DashboardShell>
+        <DashboardHome />
+      </DashboardShell>
+    );
+
+    expect(html).toContain('href="/applications"');
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain('class="workspace-tab active"');
   });
 
   it("presents the command-center plus workspace model", () => {

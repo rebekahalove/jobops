@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import React, { useMemo, useState } from "react";
 import {
   createPlannedAction,
   formatWorkspaceLabel,
+  workspaceRoutes,
   type PlannedCommandAction
 } from "../lib/command-center-actions";
 
@@ -142,11 +144,15 @@ function AgentActionCard({ action }: { action: PlannedCommandAction }) {
         <span>{action.type}</span>
         {action.targetWorkspace ? <span>{formatWorkspaceLabel(action.targetWorkspace)}</span> : null}
       </div>
-      {action.ctaLabel ? (
-        <button className="secondary-action" type="button">
-          {action.ctaLabel}
-        </button>
-      ) : null}
+      {action.targetWorkspace ? (
+        <Link className="secondary-action agent-action-link" href={workspaceRoutes[action.targetWorkspace]}>
+          {action.ctaLabel ?? `Open ${formatWorkspaceLabel(action.targetWorkspace)}`}
+        </Link>
+      ) : (
+        <span className="planned-affordance" aria-disabled="true">
+          Planned
+        </span>
+      )}
     </article>
   );
 }
