@@ -3,8 +3,8 @@ import { DashboardShell } from "../components/dashboard-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "JobOps Dashboard",
-  description: "Job-search operations dashboard shell for profile and application workflows."
+  title: "JobOps Command Center",
+  description: "AI-first command center shell for private job-search operations."
 };
 
 export default function RootLayout({

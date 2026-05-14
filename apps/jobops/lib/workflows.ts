@@ -1,9 +1,10 @@
 export type DashboardWorkflowId =
   | "profile"
+  | "companies"
   | "jobs"
-  | "fit-scoring"
+  | "applications"
   | "materials"
-  | "applications";
+  | "follow-ups";
 
 export type DashboardWorkflow = {
   id: DashboardWorkflowId;
@@ -25,25 +26,20 @@ export const dashboardWorkflows: DashboardWorkflow[] = [
     recommendedStep: true
   },
   {
+    id: "companies",
+    label: "Companies",
+    href: "/companies",
+    purpose: "Follow target companies and keep AI-ready notes, career links, and outreach context together.",
+    emptyState:
+      "Watched companies, AI suggestions, careers links, and company notes will live here after command execution exists."
+  },
+  {
     id: "jobs",
     label: "Jobs",
     href: "/jobs",
-    purpose: "Ingest and track job postings worth evaluating.",
-    emptyState: "Job posting intake comes after the first structured profile is ready."
-  },
-  {
-    id: "fit-scoring",
-    label: "Fit Scoring",
-    href: "/fit-scoring",
-    purpose: "Compare jobs against the structured user profile.",
-    emptyState: "Fit scoring depends on both an approved profile and saved job records."
-  },
-  {
-    id: "materials",
-    label: "Materials",
-    href: "/materials",
-    purpose: "Draft tailored resumes, cover letters, outreach notes, and follow-up messages.",
-    emptyState: "Application materials depend on the profile and a selected job."
+    purpose: "Collect job leads and route saved roles into prioritization, applications, and materials.",
+    emptyState:
+      "The job inbox, saved jobs, AI-discovered jobs, and selected job workbench will live here after job intake exists."
   },
   {
     id: "applications",
@@ -51,6 +47,22 @@ export const dashboardWorkflows: DashboardWorkflow[] = [
     href: "/applications",
     purpose: "Track application status, follow-ups, interviews, and outcomes.",
     emptyState: "Manual application tracking is available now; job intake can attach richer records later."
+  },
+  {
+    id: "materials",
+    label: "Materials",
+    href: "/materials",
+    purpose: "Draft tailored resumes, cover letters, outreach notes, and follow-up messages.",
+    emptyState:
+      "Generated cover letters, resume variants, short-answer snippets, and downloads will live here after materials generation exists."
+  },
+  {
+    id: "follow-ups",
+    label: "Follow-ups",
+    href: "/follow-ups",
+    purpose: "Review reminders, application events, recruiter touchpoints, and next actions.",
+    emptyState:
+      "Reminders, application events, and recruiter follow-ups will live here after follow-up planning exists."
   }
 ];
 

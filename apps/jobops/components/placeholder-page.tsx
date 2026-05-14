@@ -10,13 +10,13 @@ export function PlaceholderPage({ workflowId }: { workflowId: DashboardWorkflowI
     <main className="dashboard-main">
       <section className="placeholder-panel" aria-labelledby={`${workflow.id}-title`}>
         <Link className="back-link" href="/">
-          Back to dashboard
+          Back to command center
         </Link>
-        <p className="eyebrow">{workflow.recommendedStep ? "Recommended first step" : "Planned workflow"}</p>
+        <p className="eyebrow">{workflow.recommendedStep ? "Recommended first step" : "Command-center workspace"}</p>
         <h1 id={`${workflow.id}-title`}>{workflow.label}</h1>
         <p>{workflow.purpose}</p>
         <div className="empty-state-block">
-          <h2>Empty State</h2>
+          <h2>Coming into focus</h2>
           <p>{workflow.emptyState}</p>
         </div>
       </section>

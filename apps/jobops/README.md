@@ -1,6 +1,6 @@
 # JobOps Dashboard
 
-Private JobOps dashboard shell for profile setup and future job-search workflows.
+Private JobOps dashboard shell for an AI-first job-search command center.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -13,6 +13,23 @@ http://localhost:3002
 ```
 
 On Windows, run long-lived dev servers in a dedicated terminal. If starting this command from `cmd.exe` or a script, use `call corepack pnpm dev:jobops` so the parent shell stays alive. See [Local Development](../../docs/local-development.md) for the full local server checklist.
+
+## AI Command Center Shell
+
+The private app now centers on one JobOps command panel at the top of the shell, with workspace tabs below it:
+
+- Profile
+- Companies
+- Jobs
+- Applications
+- Materials
+- Follow-ups
+
+For this branch, the command center is intentionally local and mocked. It classifies commands into planned action cards but does not execute tools, fetch job URLs, call models, scrape pages, generate materials, or automate a browser.
+
+Real command handling should go through FastAPI. FastAPI owns agent command routing, tool execution, model calls, job URL intake, company follow, fit analysis, materials generation, and persistence. Next.js remains UI and thin proxy only.
+
+See [AI Command Center Shell](../../docs/ai-command-center-shell.md).
 
 ## Profile Workspace Shell
 
@@ -85,6 +102,12 @@ Artifacts are written to `artifacts/profile-intake/<timestamp>_<runId>/` and are
 - Full profile generator agent loop.
 - Human approval workflow.
 - Public fact publication.
-- Job intake, fit scoring, materials generation, and application tracking.
+- Real command execution.
+- Job URL fetching/extraction.
+- Company discovery/search.
+- Job prioritization.
+- Fit analysis.
+- Materials generation.
+- Browser automation.
 
-Recommended next step: add explicit review and verification actions for the persisted draft profile data.
+Recommended next step: add a FastAPI command-routing endpoint that returns typed planned actions without executing external tools.
