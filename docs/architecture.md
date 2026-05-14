@@ -63,6 +63,7 @@ The browser should never receive secrets, raw environment variables, private not
 
 `apps/jobops` owns the private operations dashboard:
 
+- An AI command center shell where the user can ask one JobOps agent to plan work across Profile, Companies, Jobs, Applications, Materials, and Follow-ups.
 - Candidate profile setup via optional resume upload and Q&A interface with an agent, with human review before facts become verified or public.
 - Target-company and role tracking.
 - Application history.
