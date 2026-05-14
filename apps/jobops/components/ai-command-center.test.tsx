@@ -17,9 +17,9 @@ describe("AI command center", () => {
 
     expect(html).toContain("AI command center");
     expect(html).toContain("Ask JobOps to work across your search.");
-    expect(html).toContain("Here&#x27;s a job URL. Add it to my jobs list.");
+    expect(html).toContain("I want to be an Applied AI Engineer.");
     for (const prompt of starterPrompts.slice(1)) {
-      expect(html).toContain(prompt);
+      expect(html).toContain(prompt.replace("'", "&#x27;"));
     }
   });
 
@@ -84,22 +84,30 @@ describe("AI command center", () => {
     expect(classifyCommand("Prioritize my saved jobs.").type).toBe("prioritize_jobs");
     expect(classifyCommand("Generate application materials for this role.").type).toBe("generate_materials");
     expect(classifyCommand("Mark this job as applied.").type).toBe("mark_applied");
-    expect(classifyCommand("Update my profile with this project.").type).toBe("update_profile");
+    expect(classifyCommand("I want to be an Applied AI Engineer.").type).toBe("profile_intake");
+    expect(classifyCommand("Update my profile with this project.").type).toBe("profile_intake");
     expect(classifyCommand("What should I follow up on this week?").type).toBe("follow_up_review");
     expect(classifyCommand("Make something happen.").type).toBe("unknown");
   });
 
-  it("keeps command handling local and avoids live model calls in Next.js", async () => {
+  it("submits commands only to the thin Next.js command-center proxy", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
-    const actionSource = await readFile(new URL("../lib/command-center-actions.ts", import.meta.url), "utf-8");
-    const combinedSource = `${source}\n${actionSource}`;
 
-    expect(combinedSource).not.toContain("fetch(");
-    expect(combinedSource).not.toContain("/api/command");
-    expect(combinedSource).not.toContain("/v1/command");
-    expect(combinedSource).not.toContain("GEMINI_API_KEY");
+    expect(source).toContain('fetch("/api/command-center"');
+    expect(source).not.toContain("/v1/command");
+    expect(source).not.toContain("GEMINI_API_KEY");
+    expect(source).not.toContain("@jobops/model-connector");
+    expect(source).not.toContain("generateContent");
+  });
+
+  it("keeps model calls out of Next.js command-center code", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+    const routeSource = await readFile(new URL("../app/api/command-center/route.ts", import.meta.url), "utf-8");
+    const combinedSource = `${source}\n${routeSource}`;
+
     expect(combinedSource).not.toContain("@jobops/model-connector");
+    expect(combinedSource).not.toContain("runProfileIntakeExtraction");
+    expect(combinedSource).not.toContain("buildProfileIntakeUserPrompt");
     expect(combinedSource).not.toContain("generateContent");
-    expect(combinedSource).toContain("Real command handling should go through FastAPI");
   });
 });

@@ -141,6 +141,15 @@ def persist_profile_intake_output(
     saved_experiences = save_experience_projects(session, candidate_profile, intake_session, output)
     saved_evidence = save_evidence_links(session, candidate_profile, intake_session, output)
 
+    saved_snapshot = build_saved_profile_draft_snapshot(
+        output=output,
+        role_target=saved_role_target,
+        facts=saved_facts,
+        skills=saved_skills,
+        experiences=saved_experiences,
+        evidence=saved_evidence,
+    )
+
     intake_session.last_turn_at = datetime.now(timezone.utc)
     intake_session.target_role_summary = role_target_summary(output)
     intake_session.redacted_state = {
@@ -149,18 +158,165 @@ def persist_profile_intake_output(
         "input": input_metrics.to_json(),
         "lastChangeSummaryCount": len(output.change_summary),
         "lastClarifyingQuestionCount": len(output.clarifying_questions),
+        "latestDraftSnapshot": saved_snapshot,
         "modelRunId": model_run_id,
     }
 
     session.flush()
-    return build_saved_profile_draft_snapshot(
-        output=output,
-        role_target=saved_role_target,
-        facts=saved_facts,
-        skills=saved_skills,
-        experiences=saved_experiences,
-        evidence=saved_evidence,
+    return saved_snapshot
+
+
+def get_latest_profile_draft_snapshot(session: Session, candidate_profile: CandidateProfile) -> dict[str, Any]:
+    intake_session = session.scalar(
+        select(ProfileIntakeSession)
+        .where(ProfileIntakeSession.candidate_profile_id == candidate_profile.id)
+        .order_by(ProfileIntakeSession.last_turn_at.desc().nullslast(), ProfileIntakeSession.created_at.desc())
     )
+
+    if intake_session is None:
+        return empty_profile_draft_snapshot()
+
+    redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
+    latest_snapshot = redacted_state.get("latestDraftSnapshot")
+    if isinstance(latest_snapshot, dict):
+        return {
+            **empty_profile_draft_snapshot(),
+            **latest_snapshot,
+            "statusSummary": build_intake_status_summary(intake_session, redacted_state),
+        }
+
+    return {
+        **build_profile_draft_snapshot_from_rows(session, intake_session),
+        "statusSummary": build_intake_status_summary(intake_session, redacted_state),
+    }
+
+
+def build_profile_draft_snapshot_from_rows(session: Session, intake_session: ProfileIntakeSession) -> dict[str, Any]:
+    role_target = session.scalar(
+        select(RoleTarget)
+        .where(RoleTarget.profile_intake_session_id == intake_session.id, RoleTarget.is_active.is_(True))
+        .order_by(RoleTarget.updated_at.desc())
+    )
+    facts = session.scalars(
+        select(ProfileFactDraft)
+        .where(ProfileFactDraft.profile_intake_session_id == intake_session.id)
+        .order_by(ProfileFactDraft.created_at.asc())
+    ).all()
+    skills = session.scalars(
+        select(SkillClaim)
+        .where(SkillClaim.profile_intake_session_id == intake_session.id)
+        .order_by(SkillClaim.created_at.asc())
+    ).all()
+    experiences = session.scalars(
+        select(ExperienceProjectDraft)
+        .where(ExperienceProjectDraft.profile_intake_session_id == intake_session.id)
+        .order_by(ExperienceProjectDraft.created_at.asc())
+    ).all()
+    evidence = session.scalars(
+        select(EvidenceArtifact)
+        .where(EvidenceArtifact.profile_intake_session_id == intake_session.id)
+        .order_by(EvidenceArtifact.created_at.asc())
+    ).all()
+
+    return {
+        "assistantMessage": "",
+        "targetRoleIntent": serialize_role_target_from_row(role_target),
+        "draftFacts": [
+            {
+                "id": fact.id,
+                "claim": fact.claim,
+                "category": fact.fact_type,
+                "source": normalize_source(fact.source),
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+            for fact in facts
+        ],
+        "skillClaims": [
+            {
+                "id": skill.id,
+                "skill": skill.skill_name,
+                "category": skill.skill_category,
+                "evidence": skill.evidence_summary,
+                "source": normalize_source(skill.source),
+                "status": "draft",
+                "visibility": "private",
+                "published": False,
+            }
+            for skill in skills
+        ],
+        "experienceAndProjects": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "organization": item.organization,
+                "summary": item.summary,
+                "source": normalize_source(item.source),
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+            for item in experiences
+        ],
+        "evidenceLinks": [
+            {
+                "id": item.id,
+                "url": item.uri or "",
+                "label": item.label,
+                "source": normalize_source(item.source),
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+            for item in evidence
+        ],
+        "clarifyingQuestions": [],
+        "changeSummary": [],
+    }
+
+
+def empty_profile_draft_snapshot() -> dict[str, Any]:
+    return {
+        "assistantMessage": "",
+        "targetRoleIntent": {},
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": [],
+        "statusSummary": "No profile intake draft has been saved yet.",
+    }
+
+
+def build_intake_status_summary(intake_session: ProfileIntakeSession, redacted_state: dict[str, Any]) -> str:
+    counts = redacted_state.get("draftCounts") if isinstance(redacted_state.get("draftCounts"), dict) else {}
+    fact_count = counts.get("draftFactCount", 0)
+    skill_count = counts.get("skillClaimCount", 0)
+    experience_count = counts.get("experienceAndProjectCount", 0)
+    if intake_session.last_turn_at is None:
+        return "Profile intake session is active, but no completed turn has been saved yet."
+    return (
+        f"Latest saved intake turn created {fact_count} draft fact(s), {skill_count} skill claim(s), "
+        f"and {experience_count} experience/project item(s)."
+    )
+
+
+def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, Any]:
+    if role_target is None:
+        return {}
+
+    constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
+    payload = {
+        "targetTitles": join_text_list(role_target.target_titles),
+        "targetRoleFamilies": join_text_list(role_target.role_families),
+        "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
+        "preferredLocations": join_text_list(role_target.preferred_locations),
+        "domainsOrIndustries": constraints.get("domainsOrIndustries"),
+        "constraints": constraints.get("constraints"),
+    }
+    return {key: value for key, value in payload.items() if value}
 
 
 def replace_current_session_drafts(session: Session, intake_session_id: str) -> None:

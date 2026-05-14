@@ -90,13 +90,15 @@ Rules:
 The active profile-intake runtime path is:
 
 ```text
-Profile Workspace UI
--> optional Next.js /api/profile-intake proxy
--> FastAPI POST /v1/profile-intake/extract
+AI Command Center UI
+-> Next.js /api/command-center proxy
+-> FastAPI POST /v1/command-center/commands
 -> profile_intake service
 -> shared Python model_connector
 -> configured provider
 ```
+
+The older `/api/profile-intake` and `/v1/profile-intake/extract` boundaries remain available as a direct workflow endpoint, but the primary JobOps product flow is command center -> FastAPI command routing -> `profile_intake`.
 
 Profile intake owns its prompt, Pydantic output schema, artifact saving, validation behavior, and profile-specific mock response. The shared connector owns provider-neutral request/response types, task routing, provider creation, mock provider behavior, and Gemini HTTP behavior.
 

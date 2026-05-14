@@ -90,7 +90,7 @@ The app uses local mock behavior until verified public profile facts and the rea
 
 ## Run The JobOps Dashboard Stub
 
-The dashboard shell is the private JobOps app scaffold. It does not include auth, job intake, fit scoring, material generation, or review-management workflows yet. The Profile workspace does persist validated draft intake output through FastAPI.
+The dashboard shell is the private JobOps app scaffold. It does not include auth, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -110,19 +110,25 @@ The stub includes placeholder workflow areas for:
 - Materials.
 - Applications.
 
-The Profile area is emphasized as the recommended first step because the next planned feature is the profile generator: resume upload or paste, LLM extraction into draft structured data, and clarifying questions to fill gaps.
+The Profile area is emphasized as the recommended first step because the first real command-center tool is profile intake: natural-language profile updates, LLM extraction into draft structured data, and clarifying questions to fill gaps.
 
-The `/profile` route now includes a conversation-first profile intake shell. It opens with a large chat/intake panel, a prefilled `I want to be a...` message input, a prompt to paste resume text directly into the chat, a resume attachment affordance, a change summary, a draft profile preview, and suggested clarifying questions. Structured target-role fields remain below the chat as a review/edit surface.
+The `/profile` route is now a structured review/display surface. It no longer has its own chat composer. Use the AI Command Center above the workspace tabs to enter profile commands such as `I want to be an Applied AI Engineer.` The Profile route loads the latest saved draft snapshot, change summary, draft profile preview, evidence links, and clarifying questions.
 
 The `/applications` route now includes the first manual Application Tracker MVP. It supports adding applications, listing saved applications, viewing status badges and next follow-up dates, keeping notes, and editing status. It intentionally does not scrape job posts, extract postings, score fit, generate cover letters, integrate Gmail/email, send reminders, or add auth.
 
-The active profile-intake backend lives in FastAPI at:
+The active command-center profile-intake backend lives in FastAPI at:
 
 ```text
-POST http://localhost:8000/v1/profile-intake/extract
+POST http://localhost:8000/v1/command-center/commands
 ```
 
-The Next.js app keeps only a thin `/api/profile-intake` proxy. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
+The Profile tab loads saved draft state from:
+
+```text
+GET http://localhost:8000/v1/command-center/profile-draft/{slug}
+```
+
+The Next.js app keeps only thin proxies such as `/api/command-center` and `/api/profile-draft`. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
 
 For deterministic local mode:
 
@@ -145,7 +151,7 @@ JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
 
 The FastAPI boundary keeps the Gemini key server-side. The profile workspace now persists validated draft profile data to Postgres through FastAPI, but it still does not store raw resume/chat text by default. All generated claims are draft or needs review, source-labeled, private, unpublished, and unverified.
 
-See [Conversation-First Profile Workspace](profile-workspace-design.md).
+See [Command-Center Profile Workspace](profile-workspace-design.md).
 
 ### Debug Profile Intake Model Runs
 
@@ -188,10 +194,10 @@ Suggested malformed JSON debugging flow:
 
 This is a local-only diagnostic layer, not the final system-wide observability design.
 
-Profile intake persistence flow:
+Command-center profile intake persistence flow:
 
 ```text
-Profile UI -> Next thin proxy -> FastAPI /v1/profile-intake/extract
+AI Command Center UI -> Next thin proxy -> FastAPI /v1/command-center/commands
   -> model connector -> Pydantic validation
   -> profile_intake_sessions + draft tables + redacted events
 ```

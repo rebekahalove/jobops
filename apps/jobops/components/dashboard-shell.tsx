@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { AiCommandCenter } from "./ai-command-center";
 import { dashboardWorkflows } from "../lib/workflows";
+import type { WorkspaceTab } from "../lib/command-center-actions";
 
 export function DashboardShell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
@@ -18,7 +19,7 @@ export function DashboardShell({ children }: Readonly<{ children: React.ReactNod
         </Link>
       </header>
       <div className="command-shell">
-        <AiCommandCenter />
+        <AiCommandCenter activeWorkspace={activeWorkspaceFromPathname(pathname)} />
         <nav className="workspace-tabs" aria-label="Workspace tabs">
           {dashboardWorkflows.map((workflow) => (
             <Link
@@ -45,4 +46,13 @@ export function isActiveWorkspace(pathname: string | null, href: string) {
   }
 
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function activeWorkspaceFromPathname(pathname: string | null): WorkspaceTab | undefined {
+  if (!pathname) {
+    return undefined;
+  }
+
+  const workflow = dashboardWorkflows.find((item) => isActiveWorkspace(pathname, item.href));
+  return workflow?.id as WorkspaceTab | undefined;
 }

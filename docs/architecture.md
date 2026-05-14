@@ -63,8 +63,8 @@ The browser should never receive secrets, raw environment variables, private not
 
 `apps/jobops` owns the private operations dashboard:
 
-- An AI command center shell where the user can ask one JobOps agent to plan work across Profile, Companies, Jobs, Applications, Materials, and Follow-ups.
-- Candidate profile setup via optional resume upload and Q&A interface with an agent, with human review before facts become verified or public.
+- An AI command center where the user can ask one JobOps agent to execute or plan work across Profile, Companies, Jobs, Applications, Materials, and Follow-ups.
+- Candidate profile setup through the command center's `profile_intake` tool, with the Profile tab acting as a structured review surface before facts become verified or public.
 - Target-company and role tracking.
 - Application history.
 - Follow-up management.
@@ -73,6 +73,8 @@ The browser should never receive secrets, raw environment variables, private not
 
 `services/api` owns platform behavior and data access:
 
+- Command interpretation and tool routing for the private JobOps command center.
+- Profile intake execution through the Python model connector.
 - Tenant and candidate profile resolution.
 - Domain mapping.
 - Profile fact storage and publication.
