@@ -722,9 +722,157 @@ input:disabled {
   color: var(--ink);
 }
 
+.application-workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.application-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.82fr) minmax(0, 1.18fr);
+  gap: 18px;
+}
+
+.application-form,
+.application-list {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 24px;
+}
+
+.application-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.application-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.application-list-header h2 {
+  margin-bottom: 0;
+}
+
+.application-list-header > span {
+  display: inline-flex;
+  min-width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.application-table-wrap {
+  overflow-x: auto;
+}
+
+.application-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.application-table th,
+.application-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.application-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.application-table td:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.application-table td:first-child span {
+  color: var(--muted);
+}
+
+.application-table td:first-child a {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.application-status {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.application-status-rejected,
+.application-status-closed,
+.application-status-withdrawn {
+  border-color: #e4caca;
+  background: #fff5f5;
+  color: #8f2f2f;
+}
+
+.application-status-offer {
+  border-color: #c9dcbf;
+  background: #f2f8ef;
+  color: #2f6c38;
+}
+
+.application-message {
+  margin: 0;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.status-edit {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 8px;
+}
+
+.secondary-action {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.secondary-action:hover,
+.secondary-action:focus-visible {
+  border-color: rgba(15, 118, 110, 0.42);
+  background: var(--surface-strong);
+}
+
 @media (max-width: 980px) {
   .workflow-grid,
-  .profile-preview-grid {
+  .profile-preview-grid,
+  .application-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -763,7 +911,10 @@ input:disabled {
 
   .workflow-grid,
   .intent-form,
-  .profile-preview-grid {
+  .profile-preview-grid,
+  .application-layout,
+  .application-form-grid,
+  .status-edit {
     grid-template-columns: 1fr;
   }
 

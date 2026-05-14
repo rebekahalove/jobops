@@ -50,7 +50,7 @@ export const dashboardWorkflows: DashboardWorkflow[] = [
     label: "Applications",
     href: "/applications",
     purpose: "Track application status, follow-ups, interviews, and outcomes.",
-    emptyState: "Application tracking comes after job intake."
+    emptyState: "Manual application tracking is available now; job intake can attach richer records later."
   }
 ];
 

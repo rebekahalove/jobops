@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -48,6 +48,7 @@ class CandidateProfile(Base, TimestampMixin):
 
     tenant: Mapped[Tenant] = relationship(back_populates="candidate_profiles")
     facts: Mapped[list[ProfileFact]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    applications: Mapped[list[Application]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -80,6 +81,88 @@ class RoleTarget(Base, TimestampMixin):
     visibility: Mapped[str] = mapped_column(String(40), default="private")
     publication_status: Mapped[str] = mapped_column(String(40), default="not_published")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TargetCompany(Base, TimestampMixin):
+    __tablename__ = "target_companies"
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "name", name="uq_target_companies_profile_name"),
+        Index("ix_target_companies_profile_name", "candidate_profile_id", "name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(240))
+    website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    job_roles: Mapped[list[JobRole]] = relationship(back_populates="target_company", cascade="all, delete-orphan")
+    applications: Mapped[list[Application]] = relationship(back_populates="target_company")
+
+
+class JobRole(Base, TimestampMixin):
+    __tablename__ = "job_roles"
+    __table_args__ = (
+        Index("ix_job_roles_profile_status", "candidate_profile_id", "status"),
+        Index("ix_job_roles_company_title", "target_company_id", "title"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    target_company_id: Mapped[str | None] = mapped_column(ForeignKey("target_companies.id", ondelete="SET NULL"), nullable=True)
+    title: Mapped[str] = mapped_column(String(240))
+    job_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="saved")
+    raw_description_artifact_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    target_company: Mapped[TargetCompany | None] = relationship(back_populates="job_roles")
+    applications: Mapped[list[Application]] = relationship(back_populates="job_role")
+
+
+class Application(Base, TimestampMixin):
+    __tablename__ = "applications"
+    __table_args__ = (
+        Index("ix_applications_profile_status", "candidate_profile_id", "status"),
+        Index("ix_applications_next_follow_up", "candidate_profile_id", "next_follow_up_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    target_company_id: Mapped[str | None] = mapped_column(ForeignKey("target_companies.id", ondelete="SET NULL"), nullable=True)
+    job_role_id: Mapped[str | None] = mapped_column(ForeignKey("job_roles.id", ondelete="SET NULL"), nullable=True)
+    company_name: Mapped[str] = mapped_column(String(240))
+    job_title: Mapped[str] = mapped_column(String(240))
+    job_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    date_applied: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="saved")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    next_follow_up_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="applications")
+    target_company: Mapped[TargetCompany | None] = relationship(back_populates="applications")
+    job_role: Mapped[JobRole | None] = relationship(back_populates="applications")
+    events: Mapped[list[ApplicationEvent]] = relationship(back_populates="application", cascade="all, delete-orphan")
+
+
+class ApplicationEvent(Base):
+    __tablename__ = "application_events"
+    __table_args__ = (
+        Index("ix_application_events_application_date", "application_id", "event_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(80))
+    event_date: Mapped[date] = mapped_column(Date)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    application: Mapped[Application] = relationship(back_populates="events")
 
 
 class ProfileFact(Base, TimestampMixin):

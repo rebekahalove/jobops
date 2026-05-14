@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .applications import router as applications_router
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by_hostname, get_candidate_profile_by_slug
@@ -20,6 +21,7 @@ app = FastAPI(
     version="0.0.0",
     description="Local-first JobOps API scaffold with mock agent behavior."
 )
+app.include_router(applications_router)
 
 
 class CandidateQuestionRequest(BaseModel):
