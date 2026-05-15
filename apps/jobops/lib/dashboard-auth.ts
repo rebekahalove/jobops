@@ -1,5 +1,3 @@
-import { NextResponse, type NextRequest } from "next/server";
-
 export const DASHBOARD_AUTH_COOKIE_NAME = "jobops_dashboard_auth";
 export const DASHBOARD_AUTH_COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60;
 
@@ -50,9 +48,10 @@ export function isDashboardAuthConfigured(env = getDashboardAuthEnvironment()) {
   return Boolean(env.password && env.cookieSecret);
 }
 
-export async function gateDashboardRequest(request: NextRequest, options: DashboardGateOptions) {
+export async function gateDashboardRequest(request: Request, options: DashboardGateOptions) {
   const { dashboardBasePath, loginPath } = options;
-  const pathname = request.nextUrl.pathname;
+  const requestUrl = new URL(request.url);
+  const pathname = requestUrl.pathname;
   const isProtectedApiPath = isProtectedDashboardApiProxyPath(pathname, dashboardBasePath);
   const isProtectedUiPath = isProtectedDashboardUiPath(pathname, dashboardBasePath);
 
@@ -62,40 +61,40 @@ export async function gateDashboardRequest(request: NextRequest, options: Dashbo
     isDashboardAuthRoute(pathname, dashboardBasePath) ||
     (!isProtectedApiPath && !isProtectedUiPath)
   ) {
-    return NextResponse.next();
+    return undefined;
   }
 
   const env = options.env ?? getDashboardAuthEnvironment();
 
   if (env.authDisabled) {
-    return NextResponse.next();
+    return undefined;
   }
 
   if (!isDashboardAuthConfigured(env)) {
     return failClosedResponse(isProtectedApiPath);
   }
 
-  const cookieValue = request.cookies.get(DASHBOARD_AUTH_COOKIE_NAME)?.value;
+  const cookieValue = readCookie(request.headers.get("cookie"), DASHBOARD_AUTH_COOKIE_NAME);
   if (cookieValue && (await verifyDashboardAuthToken(cookieValue, env.cookieSecret ?? ""))) {
-    return NextResponse.next();
+    return undefined;
   }
 
   if (isProtectedApiPath) {
-    return NextResponse.json(
+    return jsonResponse(
       {
         ok: false,
         error: "JobOps dashboard authentication is required."
       },
-      { status: 401 }
+      401
     );
   }
 
-  const loginUrl = request.nextUrl.clone();
+  const loginUrl = new URL(request.url);
   loginUrl.pathname = loginPath;
   loginUrl.search = "";
-  loginUrl.searchParams.set("returnTo", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+  loginUrl.searchParams.set("returnTo", `${requestUrl.pathname}${requestUrl.search}`);
 
-  return NextResponse.redirect(loginUrl);
+  return Response.redirect(loginUrl, 307);
 }
 
 export function isProtectedDashboardUiPath(pathname: string, dashboardBasePath: "" | "/jobops") {
@@ -174,22 +173,22 @@ export async function constantTimeEqualText(left: string, right: string) {
   return timingSafeEqualBytes(new Uint8Array(leftDigest), new Uint8Array(rightDigest));
 }
 
-export function setDashboardAuthCookie(response: NextResponse, token: string, env = getDashboardAuthEnvironment()) {
-  response.cookies.set(DASHBOARD_AUTH_COOKIE_NAME, token, {
+export function createDashboardAuthSetCookieHeader(token: string, env = getDashboardAuthEnvironment()) {
+  return serializeCookie(DASHBOARD_AUTH_COOKIE_NAME, token, {
     httpOnly: true,
     maxAge: DASHBOARD_AUTH_COOKIE_MAX_AGE_SECONDS,
     path: "/",
-    sameSite: "lax",
+    sameSite: "Lax",
     secure: env.isProduction
   });
 }
 
-export function clearDashboardAuthCookie(response: NextResponse, env = getDashboardAuthEnvironment()) {
-  response.cookies.set(DASHBOARD_AUTH_COOKIE_NAME, "", {
+export function createDashboardAuthClearCookieHeader(env = getDashboardAuthEnvironment()) {
+  return serializeCookie(DASHBOARD_AUTH_COOKIE_NAME, "", {
     httpOnly: true,
     maxAge: 0,
     path: "/",
-    sameSite: "lax",
+    sameSite: "Lax",
     secure: env.isProduction
   });
 }
@@ -202,10 +201,10 @@ function failClosedResponse(isApiPath: boolean) {
   const error = "JobOps private preview access is not configured.";
 
   if (isApiPath) {
-    return NextResponse.json({ ok: false, error }, { status: 503 });
+    return jsonResponse({ ok: false, error }, 503);
   }
 
-  return new NextResponse(error, {
+  return new Response(error, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8"
     },
@@ -300,6 +299,54 @@ function base64UrlToBytes(value: string) {
   } catch {
     return new Uint8Array();
   }
+}
+
+function jsonResponse(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    headers: {
+      "Content-Type": "application/json"
+    },
+    status
+  });
+}
+
+function readCookie(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) {
+    return undefined;
+  }
+
+  for (const item of cookieHeader.split(";")) {
+    const [rawKey, ...rawValueParts] = item.trim().split("=");
+    if (rawKey === name) {
+      return rawValueParts.join("=");
+    }
+  }
+
+  return undefined;
+}
+
+function serializeCookie(
+  name: string,
+  value: string,
+  options: {
+    httpOnly: boolean;
+    maxAge: number;
+    path: string;
+    sameSite: "Lax";
+    secure: boolean;
+  }
+) {
+  const parts = [`${name}=${value}`, `Max-Age=${options.maxAge}`, `Path=${options.path}`, `SameSite=${options.sameSite}`];
+
+  if (options.httpOnly) {
+    parts.push("HttpOnly");
+  }
+
+  if (options.secure) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
 }
 
 function encodeText(value: string) {

@@ -30,7 +30,7 @@ describe("dashboard auth login route", () => {
     expect(response.headers.get("location")).toBe("http://next.test/jobops/applications");
     expect(setCookie).toContain(`${DASHBOARD_AUTH_COOKIE_NAME}=`);
     expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("SameSite=lax");
+    expect(setCookie).toContain("SameSite=Lax");
     expect(setCookie).toContain("Secure");
     expect(setCookie).not.toContain("correct-password");
   });

@@ -22,6 +22,9 @@ describe("dashboard auth gate", () => {
       loginPath: "/jobops/login"
     });
 
+    if (!response) {
+      throw new Error("Expected dashboard gate response.");
+    }
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("http://next.test/jobops/login?returnTo=%2Fjobops%2Fapplications");
   });
@@ -33,6 +36,9 @@ describe("dashboard auth gate", () => {
       loginPath: "/jobops/login"
     });
 
+    if (!response) {
+      throw new Error("Expected dashboard gate response.");
+    }
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({
       ok: false,
@@ -55,7 +61,7 @@ describe("dashboard auth gate", () => {
       }
     );
 
-    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(response).toBeUndefined();
   });
 
   it("leaves public portfolio paths unaffected", async () => {
@@ -65,6 +71,6 @@ describe("dashboard auth gate", () => {
       loginPath: "/jobops/login"
     });
 
-    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(response).toBeUndefined();
   });
 });

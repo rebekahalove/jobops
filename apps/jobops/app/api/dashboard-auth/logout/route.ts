@@ -1,6 +1,5 @@
-import { NextResponse } from "next/server";
 import {
-  clearDashboardAuthCookie,
+  createDashboardAuthClearCookieHeader,
   getDashboardAuthEnvironment,
   getDashboardBasePathFromRequestPath
 } from "../../../../lib/dashboard-auth";
@@ -18,8 +17,11 @@ export function POST(request: Request) {
 function clearCookieAndRedirect(request: Request) {
   const requestUrl = new URL(request.url);
   const basePath = getDashboardBasePathFromRequestPath(requestUrl.pathname);
-  const response = NextResponse.redirect(new URL(`${basePath}/login` || "/login", requestUrl), { status: 303 });
-  clearDashboardAuthCookie(response, getDashboardAuthEnvironment());
-
-  return response;
+  return new Response(null, {
+    headers: {
+      Location: new URL(`${basePath}/login` || "/login", requestUrl).toString(),
+      "Set-Cookie": createDashboardAuthClearCookieHeader(getDashboardAuthEnvironment())
+    },
+    status: 303
+  });
 }
