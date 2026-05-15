@@ -83,6 +83,8 @@ APP_ENV=dev
 DATABASE_URL=...
 JOBOPS_API_BASE_URL=http://localhost:8000
 JOBOPS_INTERNAL_API_KEY=replace-with-local-dev-secret
+JOBOPS_DASHBOARD_PASSWORD=replace-with-local-preview-password
+JOBOPS_DASHBOARD_COOKIE_SECRET=replace-with-long-local-random-secret
 JOBOPS_CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:3002
 JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG=rebekah-love
 JOBOPS_LLM_PROVIDER=mock
@@ -100,6 +102,12 @@ Profile intake artifact flags are local debugging controls:
 `JOBOPS_API_BASE_URL` points frontend server code at the FastAPI service. The JobOps dashboard uses it for the profile-intake proxy, and the portfolio app uses it for public profile reads when the API is running locally.
 
 `JOBOPS_INTERNAL_API_KEY` is read only by server-side code. It must never be prefixed with `NEXT_PUBLIC_` or passed to client components. In local development, protected FastAPI endpoints are open when no internal key is configured; once the key is configured, calls must include `X-JobOps-Internal-Key`.
+
+`JOBOPS_DASHBOARD_PASSWORD` and `JOBOPS_DASHBOARD_COOKIE_SECRET` are read only by Next.js server code. They protect the private JobOps dashboard and its thin API proxy routes with a temporary private-preview gate. They must never be prefixed with `NEXT_PUBLIC_`. The gate sets a signed HttpOnly cookie and does not store the raw password in the browser.
+
+For local development only, `JOBOPS_DASHBOARD_AUTH_DISABLED=true` may bypass the dashboard gate. The default is fail closed when the password or cookie secret is missing, and the bypass is ignored in production.
+
+This dashboard gate is not full authentication. It does not support users, roles, password reset, account recovery, tenant isolation, audit trails, or per-user authorization. It is acceptable while the project is not intentionally shared, but it must be upgraded before publicly sharing the JobOps dashboard, onboarding other users, storing other people's private data, or using JobOps as a real multi-tenant product. The future replacement should be proper user authentication and authorization, likely owner-only auth first, then tenant/user auth later.
 
 `JOBOPS_CORS_ORIGINS` is a comma-separated allowlist of browser origins allowed to call the FastAPI backend. Values are trimmed and empty items are ignored.
 
@@ -124,16 +132,20 @@ JOBOPS_INTERNAL_API_KEY=<long random secret>
 JOBOPS_CORS_ORIGINS=https://rebekahalove.dev,https://www.rebekahalove.dev,https://jobops.rebekahalove.dev
 ```
 
-Existing production `DATABASE_URL`, model provider, and model API key settings remain unchanged. In `APP_ENV=prod`, `/docs`, `/redoc`, and `/openapi.json` are disabled by default. Set `JOBOPS_ENABLE_API_DOCS=true` only when intentionally exposing FastAPI docs.
+No Render change is required for the dashboard gate. Existing backend security variables, `DATABASE_URL`, model provider, and model API key settings remain unchanged. In `APP_ENV=prod`, `/docs`, `/redoc`, and `/openapi.json` are disabled by default. Set `JOBOPS_ENABLE_API_DOCS=true` only when intentionally exposing FastAPI docs.
 
 Required Netlify frontend server values:
 
 ```text
 JOBOPS_API_BASE_URL=https://api.rebekahalove.dev
 JOBOPS_INTERNAL_API_KEY=<same long random secret as Render>
+JOBOPS_DASHBOARD_PASSWORD=<temporary private-preview password>
+JOBOPS_DASHBOARD_COOKIE_SECRET=<long random secret>
 ```
 
 `JOBOPS_INTERNAL_API_KEY` must be identical on Netlify and Render. It is a temporary server-to-server protection layer for private/write/model/draft endpoints, not a replacement for future user auth.
+
+`JOBOPS_DASHBOARD_PASSWORD` and `JOBOPS_DASHBOARD_COOKIE_SECRET` are Netlify-only for the current dashboard gate. They do not replace the Render `JOBOPS_INTERNAL_API_KEY`; both layers are required until proper product authentication replaces the temporary private-preview gate.
 
 ## Testing
 

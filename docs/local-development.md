@@ -90,7 +90,7 @@ The app uses local mock behavior until verified public profile facts and the rea
 
 ## Run The JobOps Dashboard Stub
 
-The dashboard shell is the private JobOps app scaffold. It does not include auth, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
+The dashboard shell is the private JobOps app scaffold. It has only a temporary private-preview password gate, not full product auth. It does not include user accounts, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -101,6 +101,21 @@ Then open:
 ```text
 http://localhost:3002
 ```
+
+Set the local dashboard gate values in `.env.dev`:
+
+```text
+JOBOPS_DASHBOARD_PASSWORD=<temporary local preview password>
+JOBOPS_DASHBOARD_COOKIE_SECRET=<long random local secret>
+```
+
+The default is fail closed when those values are missing. For local development only, you may set:
+
+```text
+JOBOPS_DASHBOARD_AUTH_DISABLED=true
+```
+
+Do not set that bypass in production.
 
 The stub includes placeholder workflow areas for:
 
@@ -129,6 +144,8 @@ GET http://localhost:8000/v1/command-center/profile-draft/{slug}
 ```
 
 The Next.js app keeps only thin proxies such as `/api/command-center` and `/api/profile-draft`. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
+
+The temporary dashboard gate also protects the thin proxy routes used by the dashboard. It is a construction curtain, not full authentication: it does not support users, roles, password reset, account recovery, tenant isolation, audit trails, or per-user authorization. It is acceptable while the project is not intentionally shared, but it must be upgraded before publicly sharing the JobOps dashboard, onboarding other users, storing other people's private data, or using JobOps as a real multi-tenant product. Future replacement should be proper user authentication and authorization, likely owner-only auth first, then tenant/user auth later.
 
 For deterministic local mode:
 
@@ -327,6 +344,17 @@ For local dev:
 The backend database layer uses SQLAlchemy and Alembic. Keep the Neon connection string in `.env.dev`; it is ignored by Git and should never be committed.
 
 The portfolio and JobOps apps also read the repo-root `.env` and `.env.<APP_ENV>` on the server so they can find `JOBOPS_API_BASE_URL` during local development. Do not prefix private values with `NEXT_PUBLIC_`.
+
+The local Next.js `dev` and `start` scripts load these files before starting Next so middleware can see the same private server-side values as route handlers.
+
+The dashboard gate variables are also server-only:
+
+```text
+JOBOPS_DASHBOARD_PASSWORD=<temporary private-preview password>
+JOBOPS_DASHBOARD_COOKIE_SECRET=<long random secret>
+```
+
+Do not prefix them with `NEXT_PUBLIC_`.
 
 ## Database Setup
 

@@ -19,6 +19,10 @@ export function DashboardShell({
 }>) {
   const pathname = usePathname();
 
+  if (pathname === `${basePath}/login` || (!basePath && pathname === "/login")) {
+    return <>{children}</>;
+  }
+
   return (
     <div className="dashboard-shell">
       <header className="top-bar">
