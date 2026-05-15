@@ -8,7 +8,7 @@ export const commandCenterActionTypes = [
   "prioritize_jobs",
   "generate_materials",
   "mark_applied",
-  "update_profile",
+  "profile_intake",
   "follow_up_review",
   "unknown"
 ] as const;
@@ -25,6 +25,7 @@ export type PlannedCommandAction = {
   status: PlannedActionStatus;
   targetWorkspace?: WorkspaceTab;
   ctaLabel?: string;
+  resultPayload?: unknown;
 };
 
 export const workspaceRoutes: Record<WorkspaceTab, string> = {
@@ -74,8 +75,8 @@ const actionDetails: Record<CommandCenterActionType, ClassifiedCommand> = {
     title: "Mark job as applied",
     ctaLabel: "Open Applications"
   },
-  update_profile: {
-    type: "update_profile",
+  profile_intake: {
+    type: "profile_intake",
     targetWorkspace: "profile",
     title: "Update profile",
     ctaLabel: "Open Profile"
@@ -108,8 +109,16 @@ export function classifyCommand(command: string): ClassifiedCommand {
     return actionDetails.mark_applied;
   }
 
-  if (normalized.includes("update my profile") || normalized.includes("add this project") || normalized.includes("with this project")) {
-    return actionDetails.update_profile;
+  if (
+    normalized.includes("i want to be") ||
+    normalized.includes("update my profile") ||
+    normalized.includes("add this project") ||
+    normalized.includes("with this project") ||
+    normalized.includes("my experience") ||
+    normalized.includes("my skills") ||
+    normalized.includes("resume")
+  ) {
+    return actionDetails.profile_intake;
   }
 
   if (normalized.includes("prioritize") || normalized.includes("which jobs") || normalized.includes("apply to today")) {

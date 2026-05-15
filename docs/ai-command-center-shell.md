@@ -8,7 +8,7 @@ The product model is:
 2. The agent plans or executes actions across the private job-search workspace.
 3. Tabs keep the underlying workspaces inspectable and editable.
 
-The shell currently supports these workspace tabs:
+The shell supports these workspace tabs:
 
 - Profile
 - Companies
@@ -32,37 +32,66 @@ Example future commands:
 - "Update my profile with this project."
 - "What should I follow up on this week?"
 
-## Planned Agent Actions
+## Command Execution Boundary
 
-The current UI uses local TypeScript action plans only. Supported action types are:
+Next.js remains a UI and thin proxy layer. It posts command-center submissions to FastAPI through:
+
+- `POST /api/command-center` in Next.js
+- `POST /v1/command-center/commands` in FastAPI
+
+FastAPI owns:
+
+- Command interpretation.
+- Tool routing.
+- Profile intake execution.
+- Model calls.
+- Draft persistence.
+
+The command center now has one real tool:
+
+- `profile_intake` -> Profile
+
+Profile intake reuses the existing FastAPI profile intake workflow, including the Python model connector, Pydantic output validation, artifacts, redacted intake events, and DB-backed draft persistence. The command response includes an assistant message, action card data, `target_workspace = profile`, and the saved profile draft snapshot.
+
+## Action Types
+
+Supported and planned action types are:
 
 - `add_job_from_url` -> Jobs
 - `follow_company` -> Companies
 - `prioritize_jobs` -> Jobs
 - `generate_materials` -> Materials
 - `mark_applied` -> Applications
-- `update_profile` -> Profile
+- `profile_intake` -> Profile
 - `follow_up_review` -> Follow-ups
 - `unknown` -> command center review
 
 Each planned action includes an id, type, title, summary, status, target workspace when known, and optional CTA label.
 
-## Backend Ownership Boundary
+For unavailable APIs and tests, the UI can still fall back to local TypeScript action planning:
 
-Do not call models directly from Next.js.
+- The UI echoes what JobOps understood locally.
+- The UI classifies the command into a fallback action type.
+- The UI shows a fallback action card.
 
-TODO: real command handling should go through FastAPI. FastAPI will own agent command routing, tool execution, model calls, job URL intake, company follow, fit analysis, materials generation, and persistence. Next.js remains the UI and thin proxy layer.
+The fallback does not call a model and does not persist data.
 
-For this branch, command handling is local and mocked:
+## Profile Workspace
 
-- The UI echoes what JobOps understood.
-- The UI classifies the command into a planned action type.
-- The UI shows a planned action card.
-- No job URL fetching, scraping, browser automation, or generated materials are performed.
+The Profile tab is no longer a separate chat experience. It is a structured review surface for saved profile draft state:
+
+- Target role intent.
+- Draft facts and claims.
+- Skills.
+- Experience and projects.
+- Evidence links.
+- Clarifying questions.
+- Latest profile intake status.
+
+The Profile tab loads the latest saved draft through the thin Next.js proxy at `/api/profile-draft`, backed by FastAPI's `/v1/command-center/profile-draft/{slug}`.
 
 ## Deferred Features
 
-- Real command execution.
 - Job URL fetching and extraction.
 - Company discovery and search.
 - Job prioritization.

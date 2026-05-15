@@ -25,26 +25,29 @@ The private app now centers on one JobOps command panel at the top of the shell,
 - Materials
 - Follow-ups
 
-For this branch, the command center is intentionally local and mocked. It classifies commands into planned action cards but does not execute tools, fetch job URLs, call models, scrape pages, generate materials, or automate a browser.
+The command center posts through the thin Next.js `/api/command-center` proxy to FastAPI. FastAPI owns agent command routing, tool execution, model calls, job URL intake, company follow, fit analysis, materials generation, and persistence. Next.js remains UI and thin proxy only.
 
-Real command handling should go through FastAPI. FastAPI owns agent command routing, tool execution, model calls, job URL intake, company follow, fit analysis, materials generation, and persistence. Next.js remains UI and thin proxy only.
+The first real command-center tool is `profile_intake`. Other action cards remain planned/fallback behavior until their tools are implemented.
 
 See [AI Command Center Shell](../../docs/ai-command-center-shell.md).
 
 ## Profile Workspace Shell
 
-The `/profile` page includes the first conversation-first profile intake slice:
+The `/profile` page is now a structured review surface for saved profile draft state:
 
-- Large chat/intake panel at the top of the page.
-- Message input prefilled with `I want to be a...`.
-- Resume attachment affordance with local metadata only.
-- Resume text paste directly inside the chat message box.
-- Thin Next.js API proxy to the FastAPI profile-intake endpoint.
+- Guidance to use the JobOps command center above.
+- Latest saved profile-intake status.
+- Target role intent.
+- Draft facts and claims.
+- Skills.
+- Experience and projects.
+- Evidence links.
+- Clarifying questions.
+- Thin Next.js API proxy to the FastAPI profile draft endpoint.
 - Mock provider support in FastAPI for deterministic local/test behavior.
 - Live Gemini support in FastAPI when `JOBOPS_LLM_PROVIDER=gemini` and `GEMINI_API_KEY` are configured server-side.
 - Pydantic structured output validation before draft state is updated.
 - DB-backed persistence for validated draft profile data and redacted intake events.
-- Structured profile review/edit surface below the conversation.
 
 Generated data is always treated as:
 
@@ -56,7 +59,7 @@ Generated data is always treated as:
 
 Review queues are grouped by information type rather than status. The saved draft snapshot remains local-dev/profile-scoped until auth exists. Approval, public-ready, and publish controls are intentionally deferred.
 
-See [Conversation-First Profile Workspace](../../docs/profile-workspace-design.md).
+See [Command-Center Profile Workspace](../../docs/profile-workspace-design.md).
 
 ## Profile Intake Model Modes
 
@@ -99,10 +102,9 @@ Artifacts are written to `artifacts/profile-intake/<timestamp>_<runId>/` and are
 
 - Authentication.
 - Permanent raw resume storage.
-- Full profile generator agent loop.
+- Full profile generator agent loop beyond the first command-center tool.
 - Human approval workflow.
 - Public fact publication.
-- Real command execution.
 - Job URL fetching/extraction.
 - Company discovery/search.
 - Job prioritization.
@@ -110,4 +112,4 @@ Artifacts are written to `artifacts/profile-intake/<timestamp>_<runId>/` and are
 - Materials generation.
 - Browser automation.
 
-Recommended next step: add a FastAPI command-routing endpoint that returns typed planned actions without executing external tools.
+Recommended next step: add explicit review actions for approving/rejecting persisted draft profile sections and items.

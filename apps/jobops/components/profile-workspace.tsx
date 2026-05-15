@@ -1,47 +1,70 @@
 "use client";
 
-import React, { type ChangeEvent, type FormEvent, useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { ProfileIntakeOutput } from "../lib/profile-intake-contract";
 import {
   applyProfileIntakeOutputToState,
   emptyTargetRoleIntent,
-  initialProfilePrompt,
   type MockIntakeTurn,
   type MockProfileDraft,
-  type MockResumeAttachment,
   type TargetRoleIntent
 } from "../lib/profile-intake";
 
 type IntentField = keyof TargetRoleIntent;
 
-type ChatMessage = {
-  id: string;
-  role: "agent" | "user";
-  text: string;
-  attachmentName?: string;
-};
-
-const initialMessages: ChatMessage[] = [
-  {
-    id: "agent-0",
-    role: "agent",
-    text: "Complete the sentence below with what you want to do next. After that, paste your resume into this same chat or attach it here, and I will turn it into draft profile data for review."
-  }
-];
-
 export function ProfileWorkspace() {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
-  const [messageText, setMessageText] = useState(initialProfilePrompt);
-  const [attachedResumeText, setAttachedResumeText] = useState("");
-  const [attachment, setAttachment] = useState<MockResumeAttachment | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState<MockProfileDraft | null>(null);
   const [lastTurn, setLastTurn] = useState<MockIntakeTurn | null>(null);
   const [editedFields, setEditedFields] = useState<Set<IntentField>>(() => new Set());
-  const [isChangeExpanded, setIsChangeExpanded] = useState(false);
-  const [isReviewExpanded, setIsReviewExpanded] = useState(false);
-  const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isChangeExpanded, setIsChangeExpanded] = useState(true);
+  const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+  const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(true);
+  const [statusSummary, setStatusSummary] = useState("Loading saved profile draft...");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLatestDraft() {
+      try {
+        const response = await fetch("/api/profile-draft");
+        const payload = (await response.json()) as
+          | { ok: true; result: ProfileIntakeOutput & { statusSummary?: string } }
+          | { ok: false; error: string };
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!response.ok || !payload.ok) {
+          setStatusSummary(payload.ok ? "Saved profile draft could not be loaded." : payload.error);
+          return;
+        }
+
+        const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, payload.result);
+        setIntent(nextState.intent);
+        setDraft(nextState.draft);
+        setLastTurn(nextState.turn);
+        setStatusSummary(payload.result.statusSummary || "Latest saved profile draft loaded.");
+      } catch {
+        if (!cancelled) {
+          setStatusSummary("Saved profile draft is unavailable until the FastAPI service is running.");
+        }
+      }
+    }
+
+    function refreshLatestDraft() {
+      void loadLatestDraft();
+    }
+
+    void loadLatestDraft();
+    window.addEventListener("jobops:profile-draft-updated", refreshLatestDraft);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("jobops:profile-draft-updated", refreshLatestDraft);
+    };
+  }, []);
 
   function updateIntent(field: IntentField, value: string) {
     setIntent((current) => ({
@@ -51,173 +74,23 @@ export function ProfileWorkspace() {
     setEditedFields((current) => new Set(current).add(field));
   }
 
-  async function attachResume(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      setAttachment(null);
-      setAttachedResumeText("");
-      return;
-    }
-
-    const nextAttachment: MockResumeAttachment = {
-      name: file.name,
-      sizeLabel: formatFileSize(file.size),
-      parseStatus: canReadTextFile(file) ? "text_loaded" : "metadata_only"
-    };
-
-    setAttachment(nextAttachment);
-    setAttachedResumeText("");
-
-    if (canReadTextFile(file)) {
-      setAttachedResumeText((await file.text()).slice(0, 30_000));
-    }
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const submittedMessage = messageText.trim() || initialProfilePrompt;
-    const modelMessage = [submittedMessage, attachedResumeText ? `Attached resume text:\n${attachedResumeText}` : ""]
-      .filter(Boolean)
-      .join("\n\n");
-    const turnNumber = messages.length + 1;
-
-    setIsSubmitting(true);
-
-    try {
-      const response = await fetch("/api/profile-intake", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          latestUserMessage: modelMessage,
-          existingDraft: draft
-        })
-      });
-      const payload = (await response.json()) as
-        | { ok: true; result: ProfileIntakeOutput }
-        | { ok: false; error: string; issues?: string[]; code?: string; debug_run_id?: string; artifact_path?: string };
-
-      if (!response.ok || !payload.ok) {
-        const detail = !payload.ok && payload.issues?.length ? ` ${payload.issues.join(" ")}` : "";
-        const hint = !payload.ok && payload.code?.startsWith("MODEL_CONFIG") ? ` ${modelConfigurationHint}` : "";
-        const debug =
-          !payload.ok && payload.debug_run_id ? ` Debug run: ${payload.debug_run_id}${payload.artifact_path ? ` (${payload.artifact_path})` : ""}.` : "";
-        throw new Error(`${payload.ok ? "Profile intake failed." : payload.error}${detail}${hint}${debug}`);
-      }
-
-      const nextState = applyProfileIntakeOutputToState(intent, payload.result);
-
-      setIntent(nextState.intent);
-      setDraft(nextState.draft);
-      setLastTurn(nextState.turn);
-      setMessages((current) => [
-        ...current,
-        {
-          id: `user-${turnNumber}`,
-          role: "user",
-          text: submittedMessage,
-          attachmentName: attachment?.name
-        },
-        {
-          id: `agent-${turnNumber}`,
-          role: "agent",
-          text: nextState.turn.agentMessage
-        }
-      ]);
-      setMessageText("");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Profile intake failed.";
-      setMessages((current) => [
-        ...current,
-        {
-          id: `user-${turnNumber}`,
-          role: "user",
-          text: submittedMessage,
-          attachmentName: attachment?.name
-        },
-        {
-          id: `agent-${turnNumber}`,
-          role: "agent",
-          text: message
-        }
-      ]);
-      setMessageText("");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
   return (
     <main className="dashboard-main profile-workspace">
       <section className="page-heading" aria-labelledby="profile-title">
         <p className="eyebrow">Profile workspace</p>
-        <h1 id="profile-title">Build your JobOps profile through conversation.</h1>
+        <h1 id="profile-title">Review your JobOps profile draft.</h1>
         <p>
-          The conversation drafts profile data. The review area below is where draft claims become edited, verified,
-          private, public, or rejected later.
+          Use the JobOps command center above to update your profile. This workspace shows the saved draft profile state
+          for review, correction, and later verification.
         </p>
       </section>
 
-      <section className="chat-intake-panel" aria-labelledby="conversation-title">
-        <div className="chat-panel-header">
-          <div>
-            <p className="eyebrow">Conversation-first intake</p>
-            <h2 id="conversation-title">Start with what you want to do next.</h2>
-          </div>
-          <span className="status-pill">Server model intake</span>
+      <section className="profile-status-panel" aria-labelledby="profile-status-title">
+        <div>
+          <p className="eyebrow">Latest profile intake</p>
+          <h2 id="profile-status-title">Saved draft status</h2>
         </div>
-
-        <div className="chat-transcript" aria-label="Profile intake conversation">
-          {messages.map((message) => (
-            <article className={`chat-message ${message.role}`} key={message.id}>
-              <strong>{message.role === "agent" ? "JobOps intake" : "You"}</strong>
-              <p>{message.text}</p>
-              {message.attachmentName ? <small>Attached: {message.attachmentName}</small> : null}
-            </article>
-          ))}
-        </div>
-
-        <form className="chat-composer" onSubmit={handleSubmit}>
-          <label className="composer-label" htmlFor="profile-message">
-            Message
-          </label>
-          <textarea
-            id="profile-message"
-            onChange={(event) => setMessageText(event.target.value)}
-            placeholder="Complete the sentence, or paste your resume text here."
-            suppressHydrationWarning
-            value={messageText}
-          />
-
-          <div className="composer-actions">
-            <label className="attachment-button">
-              + Attach resume
-              <input
-                accept=".txt,.md,.pdf,.doc,.docx"
-                className="visually-hidden"
-                onChange={attachResume}
-                suppressHydrationWarning
-                type="file"
-              />
-            </label>
-            <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
-              {isSubmitting ? "Reading..." : "Send to intake agent"}
-            </button>
-          </div>
-
-          <div className="attachment-state" aria-live="polite">
-            {attachment ? (
-              <span>
-                {attachment.name} ({attachment.sizeLabel}) / {attachment.parseStatus}
-              </span>
-            ) : (
-              <span>Paste resume text into the message box, or attach a resume file.</span>
-            )}
-          </div>
-        </form>
+        <p>{statusSummary}</p>
       </section>
 
       <CollapsiblePanel
@@ -253,7 +126,7 @@ export function ProfileWorkspace() {
         expanded={isReviewExpanded}
         id="review-title"
         onToggle={() => setIsReviewExpanded((current) => !current)}
-        subtitle="These fields are updated by the conversation and can be edited before verification."
+        subtitle="These fields are updated from command-center profile intake and can be edited before verification."
         title="Review & verify profile data"
       >
         <p className="status-context">
@@ -339,7 +212,7 @@ export function ProfileWorkspace() {
         expanded={isQuestionsExpanded}
         id="questions-title"
         onToggle={() => setIsQuestionsExpanded((current) => !current)}
-        subtitle="The conversation should pull these answers forward over time."
+        subtitle="Command-center profile intake should pull these answers forward over time."
         title="Clarifying questions"
       >
         <ClarifyingQuestions draft={draft} />
@@ -347,9 +220,6 @@ export function ProfileWorkspace() {
     </main>
   );
 }
-
-const modelConfigurationHint =
-  "Switch to JOBOPS_LLM_PROVIDER=mock for deterministic local mode, or configure GEMINI_API_KEY for live Gemini mode.";
 
 function CollapsiblePanel({
   aside,
@@ -448,7 +318,7 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
     return (
       <div className="empty-state-block">
         <h3>No changes yet</h3>
-        <p>Send a message or attach a resume to generate the first local summary.</p>
+        <p>Use the JobOps command center above to update your profile draft.</p>
       </div>
     );
   }
@@ -488,7 +358,7 @@ function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
           <li>No achievement or outcome items drafted yet.</li>
         </PreviewColumn>
         <PreviewColumn count={0} title="Facts / Claims">
-          <li>No draft yet. Use the conversation panel to draft profile facts.</li>
+          <li>No draft yet. Command-center profile intake will draft profile facts for review.</li>
         </PreviewColumn>
         <PreviewColumn count={0} title="Evidence & Links">
           <li>No links detected.</li>
@@ -632,22 +502,4 @@ function OverflowNote({ count, noun }: { count: number; noun: string }) {
       {count - 2 === 1 ? "" : "s"} in this draft.
     </li>
   );
-}
-
-function canReadTextFile(file: File) {
-  return file.type.startsWith("text/") || /\.(txt|md)$/i.test(file.name);
-}
-
-function formatFileSize(bytes: number) {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-
-  const kilobytes = bytes / 1024;
-
-  if (kilobytes < 1024) {
-    return `${kilobytes.toFixed(1)} KB`;
-  }
-
-  return `${(kilobytes / 1024).toFixed(1)} MB`;
 }

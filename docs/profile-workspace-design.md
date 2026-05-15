@@ -1,36 +1,44 @@
-# Conversation-First Profile Workspace Design
+# Command-Center Profile Workspace Design
 
-This document defines the revised direction for the JobOps Profile workspace. The current form-first prototype is useful for testing profile concepts, but the intended product experience is conversation-first: the user should talk to an intake agent, optionally attach a resume, and review structured profile data below the conversation.
+This document defines the revised direction for the JobOps Profile workspace. Profile intake is conversational, but the conversation belongs to the primary AI Command Center at the top of JobOps. The Profile workspace is the review/display surface for saved structured profile data.
 
-## 1. Conversation-First Profile Workspace UX
+## 1. Command-Center-First Profile Workspace UX
 
-The Profile workspace should open with a large intake/chat panel at the top of the page.
+The Profile workspace should not open with its own chat panel or composer.
 
-The primary input should be prefilled with:
+The command center accepts profile-related commands such as:
 
 ```text
-I want to be a...
+I want to be an Applied AI Engineer.
+Update my profile with this project.
+My experience includes Python, FastAPI, LLM evals, and customer workflows.
 ```
 
-The user can complete that sentence, add more context, paste resume text directly into the chat, or attach a resume using an upload affordance similar to ChatGPT: a compact attachment button near the message input, clear file state, and no separate form-first upload workflow.
+The Profile tab should tell the user:
 
-After each message or resume attachment, the agent should:
+```text
+Use the JobOps command center above to update your profile.
+```
+
+After each profile-related command, FastAPI should:
 
 - Extract target role intent from the conversation.
 - Update structured profile draft data.
 - Create draft facts, skill claims, and experience summaries.
 - Ask targeted clarifying questions.
 - Summarize what changed in the profile draft.
+- Persist the saved draft snapshot.
 
-The structured profile review area should remain below the chat, but it is a review, edit, and verification surface. It should not be the primary intake method.
+The Profile workspace is a review, edit, and verification surface. It should not be the primary intake method.
 
 Recommended page order:
 
-1. Conversation and resume intake panel.
-2. "What changed" summary from the latest agent turn.
-3. Structured profile review sections.
-4. Review queues grouped by information type.
-5. Clarifying questions and suggested next prompts.
+1. Saved draft status.
+2. Guidance to use the command center.
+3. "What changed" summary from the latest agent turn.
+4. Structured profile review sections.
+5. Review queues grouped by information type.
+6. Clarifying questions and suggested next prompts.
 
 ## 2. Profile Data Model
 
@@ -299,18 +307,16 @@ To avoid a giant unusable form, the UI should not render every fact as a permane
 
 ## 6. Implementation Plan
 
-Revise the current Profile page in small steps:
+Revise the Profile experience in small steps:
 
-1. Convert the top of `/profile` into a large conversation-first intake panel.
-2. Prefill the message input with `I want to be a...`.
-3. Add a local resume attachment/upload affordance without real upload or persistence.
-4. Replace the current "Generate draft profile" form-first action with a conversation turn processor.
-5. Keep the browser state as a display/cache layer while FastAPI returns the saved draft snapshot.
-6. Keep the current target role, draft facts, skill claims, experience summaries, and clarifying questions as review shapes.
-7. Move structured fields below the chat as review/edit/verification sections.
-8. Add a "what changed" summary after each mocked agent turn.
-9. Add section-level, item-level, and whole-profile status badges using the review model above.
-10. Update tests to cover the chat-first panel, prefilled input, attachment affordance, mocked extraction, and structured review sections.
+1. Route profile-related command-center submissions to FastAPI.
+2. Execute the existing `profile_intake` workflow as a command-center tool.
+3. Return assistant message, action result, target workspace, and saved draft snapshot.
+4. Remove the Profile page standalone composer.
+5. Load the latest saved profile draft into `/profile`.
+6. Keep the current target role, draft facts, skill claims, experience summaries, evidence links, and clarifying questions as review shapes.
+7. Add section-level, item-level, and whole-profile status badges using the review model above.
+8. Update tests to cover command-center routing, profile-intake execution, no separate Profile composer, and structured review sections.
 
 Do not add yet:
 
@@ -319,6 +325,6 @@ Do not add yet:
 - Full agent loop.
 - Job intake, fit scoring, materials generation, or application tracking.
 
-Current implementation status: the Profile shell follows this conversation-first layout and calls the FastAPI profile-intake endpoint through a thin Next.js proxy. FastAPI owns prompt construction, provider selection, model calls, Pydantic validation, artifact saving, debug logging, and persistence of validated draft output. The UI keeps draft profile state locally as the display/cache layer and renders information-type review queues without approval/publish controls.
+Current implementation status: the primary AI Command Center calls the FastAPI command-center endpoint through a thin Next.js proxy. FastAPI interprets profile-related commands, calls the existing profile-intake workflow, and returns the saved draft snapshot. The Profile tab loads the latest saved draft and renders information-type review queues without its own chat composer or approval/publish controls.
 
 Recommended next implementation step: add explicit approve/reject/edit review actions for persisted draft profile sections and items, while keeping public-ready and publication as separate later actions.

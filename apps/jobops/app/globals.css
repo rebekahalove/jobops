@@ -422,6 +422,7 @@ p {
 }
 
 .chat-intake-panel,
+.profile-status-panel,
 .collapsible-panel {
   display: grid;
   gap: 18px;
@@ -434,6 +435,14 @@ p {
 .chat-intake-panel {
   border-color: rgba(15, 118, 110, 0.38);
   background: #fbfefd;
+}
+
+.profile-status-panel {
+  background: var(--surface);
+}
+
+.profile-status-panel p {
+  margin-bottom: 0;
 }
 
 .chat-panel-header,

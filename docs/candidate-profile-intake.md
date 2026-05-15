@@ -229,11 +229,31 @@ Recommended levels:
 
 The public portfolio agent can use only facts that are both human-approved and public.
 
+## Command-Center Tooling
+
+Profile intake is now the first real JobOps command-center tool.
+
+The primary flow is:
+
+1. The user enters natural language in the AI Command Center.
+2. Next.js sends the command through a thin proxy.
+3. FastAPI interprets the command.
+4. Profile-related commands route to `profile_intake`.
+5. FastAPI executes the existing profile intake workflow.
+6. FastAPI returns the assistant message, action result, target workspace, and saved draft snapshot.
+7. The Profile tab displays the updated saved draft as a review surface.
+
+The Profile tab should not own a separate chat composer. It should tell the user:
+
+> Use the JobOps command center above to update your profile.
+
+FastAPI remains responsible for model calls, Pydantic validation, artifacts, draft persistence, and tool routing. Next.js must not call the model directly.
+
 ## Intake Workflow
 
 ### 1. Start With Intent
 
-The intake agent starts with:
+The intake agent starts from the command center with:
 
 > What do you want to do next?
 

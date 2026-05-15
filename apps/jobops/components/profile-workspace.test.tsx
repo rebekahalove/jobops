@@ -15,32 +15,36 @@ describe("Profile intake workspace", () => {
   it("renders the profile page", () => {
     const html = renderToStaticMarkup(<ProfilePage />);
 
-    expect(html).toContain("Build your JobOps profile through conversation.");
+    expect(html).toContain("Review your JobOps profile draft.");
   });
 
-  it("renders the conversation-first intake panel", () => {
+  it("does not render a standalone chat composer", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("Conversation-first intake");
-    expect(html).toContain(initialProfilePrompt);
-    expect(html).toContain("Attach resume");
-    expect(html).toContain("Send to intake agent");
-    expect(html).toContain("paste your resume into this same chat");
+    expect(html).toContain("Saved draft status");
+    expect(html).not.toContain("Single command surface");
+    expect(html).not.toContain(initialProfilePrompt);
+    expect(html).not.toContain("Attach resume");
+    expect(html).not.toContain("Send to intake agent");
+    expect(html).not.toContain("Profile intake conversation");
+    expect(html).not.toContain("chat-composer");
     expect(html).not.toContain("Resume text for local mock extraction");
   });
 
-  it("keeps structured fields as review/edit surfaces below chat", () => {
+  it("keeps structured fields as review/edit surfaces", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("Structured review");
     expect(html).toContain("Review &amp; verify profile data");
+    expect(html).toContain("Target role intent");
+    expect(html).toContain("Draft review queues");
+    expect(html).toContain("Experience &amp; Projects");
+    expect(html).toContain("Skills");
+    expect(html).toContain("Evidence &amp; Links");
     expect(html).toContain("Review");
     expect(html).toContain("Needs verification");
     expect(html).toContain("Visibility");
     expect(html).toContain("Publication");
-    expect(html).not.toContain("These fields are updated by the conversation and can be edited before verification.");
-    expect(html).not.toContain("The status bar applies to the profile overall.");
-    expect(html).not.toContain("Draft review queues");
     expect(html).not.toContain("Review section");
     expect(html).not.toContain("Human-approved facts");
     expect(html).not.toContain("Public facts");
@@ -48,14 +52,25 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("experience containers");
   });
 
-  it("rolls lower sections into collapsible panels", () => {
+  it("keeps review sections in collapsible panels", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("aria-label=\"Expand What changed\"");
-    expect(html).toContain("aria-label=\"Expand Review &amp; verify profile data\"");
-    expect(html).toContain("aria-label=\"Expand Clarifying questions\"");
-    expect(html).not.toContain("Target role intent");
-    expect(html).not.toContain("No questions yet");
+    expect(html).toContain("aria-label=\"Collapse What changed\"");
+    expect(html).toContain("aria-label=\"Collapse Review &amp; verify profile data\"");
+    expect(html).toContain("aria-label=\"Collapse Clarifying questions\"");
+    expect(html).toContain("Target role intent");
+    expect(html).toContain("No questions yet");
+  });
+
+  it("points empty profile states to command-center intake instead of stale page chat copy", () => {
+    const html = renderToStaticMarkup(<ProfileWorkspace />);
+
+    expect(html).toContain("Use the JobOps command center above to update your profile draft.");
+    expect(html).toContain("Command-center profile intake will draft profile facts for review.");
+    expect(html).toContain("Command-center profile intake should pull these answers forward over time.");
+    expect(html).not.toContain("Send a message or attach a resume");
+    expect(html).not.toContain("Use the conversation panel");
+    expect(html).not.toContain("local summary");
   });
 
   it("marks mock extracted facts as draft, resume-derived, and not verified", () => {
@@ -154,11 +169,13 @@ describe("Profile intake workspace", () => {
     expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
   });
 
-  it("wires the client submit flow to the server profile-intake boundary", async () => {
+  it("loads saved draft state from the profile-draft proxy", async () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain('fetch("/api/profile-intake"');
+    expect(source).toContain('fetch("/api/profile-draft"');
+    expect(source).toContain('addEventListener("jobops:profile-draft-updated"');
+    expect(source).not.toContain('fetch("/api/profile-intake"');
     expect(source).toContain("applyProfileIntakeOutputToState");
   });
 

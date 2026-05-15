@@ -6,8 +6,10 @@ import {
   createPlannedAction,
   formatWorkspaceLabel,
   workspaceRoutes,
-  type PlannedCommandAction
+  type PlannedCommandAction,
+  type WorkspaceTab
 } from "../lib/command-center-actions";
+import type { CommandCenterProxyResponse } from "../lib/command-center-contract";
 
 type CommandMessage = {
   id: string;
@@ -16,26 +18,33 @@ type CommandMessage = {
 };
 
 const starterPrompts = [
+  "I want to be an Applied AI Engineer.",
+  "Update my profile with this project.",
   "Here's a job URL. Add it to my jobs list.",
   "Follow this company.",
   "Which jobs should I apply to today?",
-  "Prioritize my saved jobs.",
-  "Generate materials for this application.",
-  "What should I follow up on this week?"
+  "Generate materials for this application."
 ];
 
 const initialMessages: CommandMessage[] = [
   {
     id: "agent-0",
     role: "agent",
-    text: "Tell JobOps what you want to move forward. I will plan the action and route it to the right workspace."
+    text: "Tell JobOps what you want to move forward. I can update your profile draft now and route future tools to the right workspace."
   }
 ];
 
-export function AiCommandCenter({ initialActions = [] }: { initialActions?: PlannedCommandAction[] }) {
+export function AiCommandCenter({
+  activeWorkspace,
+  initialActions = []
+}: {
+  activeWorkspace?: WorkspaceTab;
+  initialActions?: PlannedCommandAction[];
+}) {
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<CommandMessage[]>(initialMessages);
   const [actions, setActions] = useState<PlannedCommandAction[]>(initialActions);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const latestAction = actions[0];
   const transcriptLabel = useMemo(
@@ -43,7 +52,7 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
     [latestAction]
   );
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const submittedCommand = command.trim();
@@ -51,26 +60,72 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
       return;
     }
 
-    // TODO: Real command handling should go through FastAPI. FastAPI owns agent routing,
-    // tool execution, model calls, job URL intake, company follow, fit analysis, and materials generation.
-    const action = createPlannedAction(submittedCommand, `action-${Date.now()}`);
-    const workspace = action.targetWorkspace ? formatWorkspaceLabel(action.targetWorkspace) : "Command Center";
-
-    setActions((current) => [action, ...current]);
     setMessages((current) => [
       ...current,
       {
         id: `user-${current.length + 1}`,
         role: "user",
         text: submittedCommand
-      },
-      {
-        id: `agent-${current.length + 2}`,
-        role: "agent",
-        text: `${action.title} planned for ${workspace}. Execution is mocked in this shell branch.`
       }
     ]);
     setCommand("");
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch("/api/command-center", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          command: submittedCommand,
+          activeWorkspace
+        })
+      });
+      const payload = (await response.json()) as CommandCenterProxyResponse;
+
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.ok ? "Command-center request failed." : payload.error);
+      }
+
+      const nextActions = payload.result.actions.map((action, index) => ({
+        ...action,
+        id: action.id ?? `action-${Date.now()}-${index}`,
+        ctaLabel:
+          action.ctaLabel ??
+          (action.targetWorkspace ? `Open ${formatWorkspaceLabel(action.targetWorkspace)}` : undefined)
+      }));
+
+      setActions((current) => [...nextActions, ...current]);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `agent-${current.length + 1}`,
+          role: "agent",
+          text: payload.result.assistant_message
+        }
+      ]);
+
+      if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
+        window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
+      }
+    } catch (error) {
+      const fallbackAction = createPlannedAction(submittedCommand, `action-${Date.now()}`);
+      const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
+      const message = error instanceof Error ? error.message : "Command-center API is unavailable.";
+
+      setActions((current) => [fallbackAction, ...current]);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `agent-${current.length + 1}`,
+          role: "agent",
+          text: `${message} I kept a local fallback action for ${workspace}.`
+        }
+      ]);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -80,7 +135,7 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
           <p className="eyebrow">AI command center</p>
           <h1 id="ai-command-center-title">Ask JobOps to work across your search.</h1>
         </div>
-        <span className="status-pill">Local planning mock</span>
+        <span className="status-pill">FastAPI tool routing</span>
       </div>
 
       <div className="command-center-grid">
@@ -99,7 +154,7 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
           ) : (
             <div className="agent-action-empty">
               <h2>Planned actions</h2>
-              <p>Submitted commands will appear here as local action cards before backend execution exists.</p>
+              <p>Submitted commands appear here as action cards after FastAPI routes or executes a tool.</p>
             </div>
           )}
         </aside>
@@ -107,7 +162,7 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
 
       <div className="starter-prompts" aria-label="Starter prompts">
         {starterPrompts.map((prompt) => (
-          <button className="starter-prompt" key={prompt} onClick={() => setCommand(prompt)} type="button">
+          <button className="starter-prompt" key={prompt} onClick={() => setCommand(prompt)} suppressHydrationWarning type="button">
             {prompt}
           </button>
         ))}
@@ -120,12 +175,12 @@ export function AiCommandCenter({ initialActions = [] }: { initialActions?: Plan
         <textarea
           id="jobops-command"
           onChange={(event) => setCommand(event.target.value)}
-          placeholder="Paste a job URL, ask what to prioritize, or tell JobOps what changed."
+          placeholder="Tell JobOps what changed, paste resume text, or ask what to prioritize."
           suppressHydrationWarning
           value={command}
         />
-        <button className="primary-action button-action" suppressHydrationWarning type="submit">
-          Plan action
+        <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
+          {isSubmitting ? "Working..." : "Run command"}
         </button>
       </form>
     </section>

@@ -170,29 +170,52 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
               <span className="field-label">Company</span>
               <input
                 required
+                suppressHydrationWarning
                 value={form.companyName}
                 onChange={(event) => setForm({ ...form, companyName: event.target.value })}
               />
             </label>
             <label>
               <span className="field-label">Job title</span>
-              <input required value={form.jobTitle} onChange={(event) => setForm({ ...form, jobTitle: event.target.value })} />
+              <input
+                required
+                suppressHydrationWarning
+                value={form.jobTitle}
+                onChange={(event) => setForm({ ...form, jobTitle: event.target.value })}
+              />
             </label>
             <label>
               <span className="field-label">Job URL</span>
-              <input type="url" value={form.jobUrl} onChange={(event) => setForm({ ...form, jobUrl: event.target.value })} />
+              <input
+                suppressHydrationWarning
+                type="url"
+                value={form.jobUrl}
+                onChange={(event) => setForm({ ...form, jobUrl: event.target.value })}
+              />
             </label>
             <label>
               <span className="field-label">Location</span>
-              <input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} />
+              <input
+                suppressHydrationWarning
+                value={form.location}
+                onChange={(event) => setForm({ ...form, location: event.target.value })}
+              />
             </label>
             <label>
               <span className="field-label">Source</span>
-              <input value={form.source} onChange={(event) => setForm({ ...form, source: event.target.value })} />
+              <input
+                suppressHydrationWarning
+                value={form.source}
+                onChange={(event) => setForm({ ...form, source: event.target.value })}
+              />
             </label>
             <label>
               <span className="field-label">Status</span>
-              <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ApplicationStatus })}>
+              <select
+                suppressHydrationWarning
+                value={form.status}
+                onChange={(event) => setForm({ ...form, status: event.target.value as ApplicationStatus })}
+              >
                 {applicationStatuses.map((status) => (
                   <option key={status} value={status}>
                     {formatStatus(status)}
@@ -202,11 +225,17 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
             </label>
             <label>
               <span className="field-label">Date applied</span>
-              <input type="date" value={form.dateApplied} onChange={(event) => setForm({ ...form, dateApplied: event.target.value })} />
+              <input
+                suppressHydrationWarning
+                type="date"
+                value={form.dateApplied}
+                onChange={(event) => setForm({ ...form, dateApplied: event.target.value })}
+              />
             </label>
             <label>
               <span className="field-label">Next follow-up</span>
               <input
+                suppressHydrationWarning
                 type="date"
                 value={form.nextFollowUpDate}
                 onChange={(event) => setForm({ ...form, nextFollowUpDate: event.target.value })}
@@ -217,11 +246,12 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
             <span className="field-label">Notes</span>
             <textarea
               className="small-textarea"
+              suppressHydrationWarning
               value={form.notes}
               onChange={(event) => setForm({ ...form, notes: event.target.value })}
             />
           </label>
-          <button className="primary-action button-action" disabled={isSubmitting} type="submit">
+          <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
             {isSubmitting ? "Saving..." : "Save application"}
           </button>
           {message ? <p className="application-message">{message}</p> : null}
@@ -266,6 +296,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
                         <div className="status-edit">
                           <select
                             aria-label={`Status for ${application.company_name} ${application.job_title}`}
+                            suppressHydrationWarning
                             value={statusDrafts[application.id] ?? application.status}
                             onChange={(event) =>
                               setStatusDrafts({
@@ -280,7 +311,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
                               </option>
                             ))}
                           </select>
-                          <button className="secondary-action" type="button" onClick={() => updateStatus(application)}>
+                          <button className="secondary-action" suppressHydrationWarning type="button" onClick={() => updateStatus(application)}>
                             Save
                           </button>
                         </div>
