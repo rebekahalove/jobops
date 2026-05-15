@@ -5,6 +5,7 @@ import {
   getDashboardAuthEnvironment,
   getDashboardBasePathFromRequestPath,
   isDashboardAuthConfigured,
+  redirectResponse,
   resolveSafeDashboardReturnTo
 } from "../../../../lib/dashboard-auth";
 
@@ -20,7 +21,7 @@ export async function POST(request: Request) {
   const env = getDashboardAuthEnvironment();
 
   if (env.authDisabled) {
-    return Response.redirect(new URL(returnTo, requestUrl), 303);
+    return redirectResponse(returnTo, 303);
   }
 
   if (!isDashboardAuthConfigured(env)) {
@@ -38,16 +39,16 @@ export async function POST(request: Request) {
     typeof submittedPassword === "string" && (await constantTimeEqualText(submittedPassword, env.password ?? ""));
 
   if (!passwordMatches) {
-    const loginUrl = new URL(loginPath, requestUrl);
+    const loginUrl = new URL(loginPath, "https://jobops.local");
     loginUrl.searchParams.set("error", "1");
     loginUrl.searchParams.set("returnTo", returnTo);
 
-    return Response.redirect(loginUrl, 303);
+    return redirectResponse(`${loginUrl.pathname}${loginUrl.search}`, 303);
   }
 
   return new Response(null, {
     headers: {
-      Location: new URL(returnTo, requestUrl).toString(),
+      Location: returnTo,
       "Set-Cookie": createDashboardAuthSetCookieHeader(await createDashboardAuthToken(env.cookieSecret ?? ""), env)
     },
     status: 303

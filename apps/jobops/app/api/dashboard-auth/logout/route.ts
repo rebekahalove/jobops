@@ -1,7 +1,8 @@
 import {
   createDashboardAuthClearCookieHeader,
   getDashboardAuthEnvironment,
-  getDashboardBasePathFromRequestPath
+  getDashboardBasePathFromRequestPath,
+  redirectResponse
 } from "../../../../lib/dashboard-auth";
 
 export const runtime = "nodejs";
@@ -17,11 +18,8 @@ export function POST(request: Request) {
 function clearCookieAndRedirect(request: Request) {
   const requestUrl = new URL(request.url);
   const basePath = getDashboardBasePathFromRequestPath(requestUrl.pathname);
-  return new Response(null, {
-    headers: {
-      Location: new URL(`${basePath}/login` || "/login", requestUrl).toString(),
-      "Set-Cookie": createDashboardAuthClearCookieHeader(getDashboardAuthEnvironment())
-    },
-    status: 303
-  });
+  const loginPath = basePath ? `${basePath}/login` : "/login";
+  const response = redirectResponse(loginPath, 303);
+  response.headers.set("Set-Cookie", createDashboardAuthClearCookieHeader(getDashboardAuthEnvironment()));
+  return response;
 }

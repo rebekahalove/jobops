@@ -310,6 +310,15 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
+export function redirectResponse(location: string, status: 303 | 307) {
+  return new Response(null, {
+    headers: {
+      Location: location
+    },
+    status
+  });
+}
+
 function readCookie(cookieHeader: string | null, name: string) {
   if (!cookieHeader) {
     return undefined;
