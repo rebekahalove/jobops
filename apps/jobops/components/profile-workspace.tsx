@@ -12,7 +12,7 @@ import {
 
 type IntentField = keyof TargetRoleIntent;
 
-export function ProfileWorkspace() {
+export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
   const [draft, setDraft] = useState<MockProfileDraft | null>(null);
   const [lastTurn, setLastTurn] = useState<MockIntakeTurn | null>(null);
@@ -27,7 +27,7 @@ export function ProfileWorkspace() {
 
     async function loadLatestDraft() {
       try {
-        const response = await fetch("/api/profile-draft");
+        const response = await fetch(`${apiBasePath}/profile-draft`);
         const payload = (await response.json()) as
           | { ok: true; result: ProfileIntakeOutput & { statusSummary?: string } }
           | { ok: false; error: string };
@@ -64,7 +64,7 @@ export function ProfileWorkspace() {
       cancelled = true;
       window.removeEventListener("jobops:profile-draft-updated", refreshLatestDraft);
     };
-  }, []);
+  }, [apiBasePath]);
 
   function updateIntent(field: IntentField, value: string) {
     setIntent((current) => ({

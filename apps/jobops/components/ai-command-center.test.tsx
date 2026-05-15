@@ -122,7 +122,8 @@ describe("AI command center", () => {
   it("submits commands only to the thin Next.js command-center proxy", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain('fetch("/api/command-center"');
+    expect(source).toContain('apiBasePath = "/api"');
+    expect(source).toContain('fetch(`${apiBasePath}/command-center`');
     expect(source).not.toContain("/v1/command");
     expect(source).not.toContain("GEMINI_API_KEY");
     expect(source).not.toContain("@jobops/model-connector");

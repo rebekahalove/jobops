@@ -173,7 +173,8 @@ describe("Profile intake workspace", () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain('fetch("/api/profile-draft"');
+    expect(source).toContain('apiBasePath = "/api"');
+    expect(source).toContain('fetch(`${apiBasePath}/profile-draft`)');
     expect(source).toContain('addEventListener("jobops:profile-draft-updated"');
     expect(source).not.toContain('fetch("/api/profile-intake"');
     expect(source).toContain("applyProfileIntakeOutputToState");

@@ -1,8 +1,9 @@
 import React from "react";
 import Link from "next/link";
+import { getWorkspaceRoute } from "../lib/command-center-actions";
 import { dashboardWorkflows } from "../lib/workflows";
 
-export function DashboardHome() {
+export function DashboardHome({ basePath = "" }: { basePath?: string }) {
   return (
     <main className="dashboard-main">
       <section className="page-heading" aria-labelledby="dashboard-title">
@@ -22,7 +23,7 @@ export function DashboardHome() {
               <p>{workflow.purpose}</p>
             </div>
             <p className="empty-state">{workflow.emptyState}</p>
-            <Link href={workflow.href}>Open workspace</Link>
+            <Link href={getWorkspaceRoute(workflow.id, basePath)}>Open workspace</Link>
           </article>
         ))}
       </section>

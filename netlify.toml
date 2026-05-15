@@ -1,8 +1,6 @@
 [build]
-  base = "apps/portfolio"
-  command = "pnpm build"
-  publish = ".next"
+  command = "corepack pnpm --filter @jobops/portfolio build"
+  publish = "apps/portfolio/.next"
 
 [build.environment]
   NODE_VERSION = "22"
-

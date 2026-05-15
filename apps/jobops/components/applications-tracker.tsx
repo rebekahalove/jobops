@@ -45,7 +45,13 @@ const emptyForm: ApplicationFormState = {
   nextFollowUpDate: ""
 };
 
-export function ApplicationsTracker({ initialApplications = [] }: { initialApplications?: TrackedApplication[] }) {
+export function ApplicationsTracker({
+  apiBasePath = "/api",
+  initialApplications = []
+}: {
+  apiBasePath?: string;
+  initialApplications?: TrackedApplication[];
+}) {
   const [applications, setApplications] = useState(initialApplications);
   const [form, setForm] = useState<ApplicationFormState>(emptyForm);
   const [statusDrafts, setStatusDrafts] = useState<Record<string, ApplicationStatus>>({});
@@ -57,7 +63,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
 
     async function loadApplications() {
       try {
-        const response = await fetch("/api/applications", { cache: "no-store" });
+        const response = await fetch(`${apiBasePath}/applications`, { cache: "no-store" });
         if (!response.ok) {
           return;
         }
@@ -76,7 +82,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
     return () => {
       active = false;
     };
-  }, []);
+  }, [apiBasePath]);
 
   const sortedApplications = useMemo(
     () =>
@@ -94,7 +100,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
     setMessage("");
 
     try {
-      const response = await fetch("/api/applications", {
+      const response = await fetch(`${apiBasePath}/applications`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -132,7 +138,7 @@ export function ApplicationsTracker({ initialApplications = [] }: { initialAppli
     setMessage("");
 
     try {
-      const response = await fetch(`/api/applications/${application.id}/status`, {
+      const response = await fetch(`${apiBasePath}/applications/${application.id}/status`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json"

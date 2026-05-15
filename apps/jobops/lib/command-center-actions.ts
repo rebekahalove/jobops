@@ -37,6 +37,10 @@ export const workspaceRoutes: Record<WorkspaceTab, string> = {
   "follow-ups": "/follow-ups"
 };
 
+export function getWorkspaceRoute(workspace: WorkspaceTab, basePath = "") {
+  return `${basePath}${workspaceRoutes[workspace]}`;
+}
+
 export type ClassifiedCommand = {
   type: CommandCenterActionType;
   targetWorkspace?: WorkspaceTab;

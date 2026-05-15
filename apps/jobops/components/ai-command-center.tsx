@@ -5,7 +5,7 @@ import React, { useMemo, useState } from "react";
 import {
   createPlannedAction,
   formatWorkspaceLabel,
-  workspaceRoutes,
+  getWorkspaceRoute,
   type PlannedCommandAction,
   type WorkspaceTab
 } from "../lib/command-center-actions";
@@ -36,10 +36,14 @@ const initialMessages: CommandMessage[] = [
 
 export function AiCommandCenter({
   activeWorkspace,
-  initialActions = []
+  apiBasePath = "/api",
+  initialActions = [],
+  workspaceBasePath = ""
 }: {
   activeWorkspace?: WorkspaceTab;
+  apiBasePath?: string;
   initialActions?: PlannedCommandAction[];
+  workspaceBasePath?: string;
 }) {
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<CommandMessage[]>(initialMessages);
@@ -72,7 +76,7 @@ export function AiCommandCenter({
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/command-center", {
+      const response = await fetch(`${apiBasePath}/command-center`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -150,7 +154,7 @@ export function AiCommandCenter({
 
         <aside className="agent-action-rail" aria-label="Agent action cards">
           {actions.length > 0 ? (
-            actions.slice(0, 3).map((action) => <AgentActionCard action={action} key={action.id} />)
+            actions.slice(0, 3).map((action) => <AgentActionCard action={action} key={action.id} workspaceBasePath={workspaceBasePath} />)
           ) : (
             <div className="agent-action-empty">
               <h2>Planned actions</h2>
@@ -187,7 +191,7 @@ export function AiCommandCenter({
   );
 }
 
-function AgentActionCard({ action }: { action: PlannedCommandAction }) {
+function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {
   return (
     <article className="agent-action-card">
       <div>
@@ -200,7 +204,7 @@ function AgentActionCard({ action }: { action: PlannedCommandAction }) {
         {action.targetWorkspace ? <span>{formatWorkspaceLabel(action.targetWorkspace)}</span> : null}
       </div>
       {action.targetWorkspace ? (
-        <Link className="secondary-action agent-action-link" href={workspaceRoutes[action.targetWorkspace]}>
+        <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(action.targetWorkspace, workspaceBasePath)}>
           {action.ctaLabel ?? `Open ${formatWorkspaceLabel(action.targetWorkspace)}`}
         </Link>
       ) : (
