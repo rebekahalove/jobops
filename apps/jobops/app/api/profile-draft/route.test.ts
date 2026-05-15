@@ -1,13 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsServerEnv: vi.fn(async () => ({
-    JOBOPS_API_BASE_URL: "http://fastapi.test/",
-    JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
-  }))
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
 }));
 
 describe("profile-draft API proxy", () => {
+  beforeEach(() => {
+    getJobOpsApiServerConfigMock.mockResolvedValue({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret",
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+    });
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
@@ -29,12 +38,21 @@ describe("profile-draft API proxy", () => {
         statusSummary: "No profile intake draft has been saved yet."
       }
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => Response.json(fastApiPayload, { status: 200 }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json(fastApiPayload, { status: 200 })
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await GET(new Request("http://next.test/api/profile-draft"));
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/rebekah-love");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-JobOps-Internal-Key": "test-secret"
+        })
+      })
+    );
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });
 });

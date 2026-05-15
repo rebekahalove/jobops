@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session
 from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, JobRole, TargetCompany
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
+from jobops_api.security import require_internal_api_key
 
 
 ApplicationStatus = Literal["saved", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"]
 
-router = APIRouter(prefix="/v1", tags=["applications"])
+router = APIRouter(prefix="/v1", tags=["applications"], dependencies=[Depends(require_internal_api_key)])
 
 
 class ApplicationCreateRequest(BaseModel):

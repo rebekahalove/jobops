@@ -8,7 +8,8 @@ Initial scaffold status:
 - SQLAlchemy and Alembic database layer wired for Neon Postgres.
 - Shared Python model connector with mock and optional Gemini providers.
 - Profile-intake extraction endpoint with Pydantic validation, local debug artifacts, and DB-backed draft persistence.
-- No auth.
+- Temporary internal API key protection for private/write/model/draft endpoints.
+- No full user auth.
 - No scraping.
 - No email integration.
 - Mock public profile, Q&A, and role-fit endpoints.
@@ -27,6 +28,34 @@ Health check:
 ```text
 http://localhost:8000/health
 ```
+
+## Internal API Key
+
+The backend keeps public read endpoints open:
+
+```text
+GET /health
+GET /v1/profiles/{slug}
+GET /v1/profile-by-hostname/{hostname}
+```
+
+Private, write, model, draft, command-center, and application-tracking endpoints require:
+
+```text
+X-JobOps-Internal-Key: <JOBOPS_INTERNAL_API_KEY>
+```
+
+In `APP_ENV=prod`, `JOBOPS_INTERNAL_API_KEY` is required and protected endpoints fail closed if it is missing. In local development, protected endpoints remain open when no key is configured; once a key is configured, local callers must send it too.
+
+For Render production:
+
+```text
+APP_ENV=prod
+JOBOPS_INTERNAL_API_KEY=<long random secret>
+JOBOPS_CORS_ORIGINS=https://rebekahalove.dev,https://www.rebekahalove.dev,https://jobops.rebekahalove.dev
+```
+
+The same `JOBOPS_INTERNAL_API_KEY` must be configured in Netlify for server-side Next.js proxy routes. Do not use a `NEXT_PUBLIC_*` variable for this key.
 
 ## Docker
 

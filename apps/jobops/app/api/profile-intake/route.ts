@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { validateProfileIntakeApiRequest } from "../../../lib/profile-intake-contract";
-import { getJobOpsServerEnv } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
@@ -31,20 +31,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
+  let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
+  try {
+    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
+  } catch {
+    return missingInternalApiKeyResponse();
+  }
 
   try {
-    const apiResponse = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/profile-intake/extract`, {
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/profile-intake/extract`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-JobOps-Internal-Key": config.internalApiKey
       },
       body: JSON.stringify({
         latest_user_message: validation.value.latestUserMessage,
         existing_draft: validation.value.existingDraft ?? null,
         candidate_profile_slug:
-          validation.value.candidateProfileSlug ?? env.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love"
+          validation.value.candidateProfileSlug ?? config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love"
       })
     });
     const payload = await apiResponse.json();
@@ -60,4 +65,14 @@ export async function POST(request: Request) {
       { status: 503 }
     );
   }
+}
+
+function missingInternalApiKeyResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "JobOps internal API key is not configured on the server."
+    },
+    { status: 503 }
+  );
 }

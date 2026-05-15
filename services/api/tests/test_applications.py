@@ -11,9 +11,12 @@ from jobops_api.db.models import Base, CandidateProfile
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
+from jobops_api.security import INTERNAL_API_KEY_HEADER
 
 
-def test_application_tracker_crud_endpoints() -> None:
+def test_application_tracker_crud_endpoints(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -45,6 +48,7 @@ def test_application_tracker_crud_endpoints() -> None:
 
         create_response = client.post(
             "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={
                 "candidate_profile_id": profile_id,
                 "company_name": "Acme AI",
@@ -64,7 +68,10 @@ def test_application_tracker_crud_endpoints() -> None:
         assert created["job_title"] == "Applied AI Engineer"
         assert created["status"] == "applied"
 
-        list_response = client.get(f"/v1/applications?candidate_profile_id={profile_id}")
+        list_response = client.get(
+            f"/v1/applications?candidate_profile_id={profile_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+        )
         assert list_response.status_code == 200
         applications = list_response.json()
         assert len(applications) == 1
@@ -72,6 +79,7 @@ def test_application_tracker_crud_endpoints() -> None:
 
         status_response = client.patch(
             f"/v1/applications/{created['id']}/status",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={"status": "interviewing"},
         )
         assert status_response.status_code == 200
@@ -79,6 +87,7 @@ def test_application_tracker_crud_endpoints() -> None:
 
         event_response = client.post(
             f"/v1/applications/{created['id']}/events",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={
                 "event_type": "recruiter_screen_scheduled",
                 "event_date": "2026-05-21",
@@ -94,7 +103,9 @@ def test_application_tracker_crud_endpoints() -> None:
         app.dependency_overrides.clear()
 
 
-def test_application_create_can_resolve_candidate_profile_slug() -> None:
+def test_application_create_can_resolve_candidate_profile_slug(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -124,6 +135,7 @@ def test_application_create_can_resolve_candidate_profile_slug() -> None:
         client = TestClient(app)
         response = client.post(
             "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={
                 "candidate_profile_slug": "rebekah-love",
                 "company_name": "Example Robotics",

@@ -1,13 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsServerEnv: vi.fn(async () => ({
-    JOBOPS_API_BASE_URL: "http://fastapi.test/",
-    JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
-  }))
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
 }));
 
 describe("command-center API proxy", () => {
+  beforeEach(() => {
+    getJobOpsApiServerConfigMock.mockResolvedValue({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret",
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+    });
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
@@ -63,6 +72,12 @@ describe("command-center API proxy", () => {
     const firstCall = fetchMock.mock.calls[0];
     expect(firstCall?.[0]).toBe("http://fastapi.test/v1/command-center/commands");
     const init = firstCall?.[1] as RequestInit | undefined;
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        "Content-Type": "application/json",
+        "X-JobOps-Internal-Key": "test-secret"
+      })
+    );
     expect(JSON.parse(String(init?.body))).toEqual({
       command: "I want to be an Applied AI Engineer.",
       candidate_profile_slug: "rebekah-love",

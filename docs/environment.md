@@ -21,6 +21,8 @@ For local development, that means:
 .env.dev  -> contains the dev Neon connection string and other local secrets
 ```
 
+The deployed FastAPI API has a temporary server-to-server protection layer for private endpoints. It is an internal API key shared only by the frontend server environment and the backend API environment. It is not full user authentication.
+
 ## Files
 
 Committed examples:
@@ -80,6 +82,8 @@ APP_ENV=dev
 ```text
 DATABASE_URL=...
 JOBOPS_API_BASE_URL=http://localhost:8000
+JOBOPS_INTERNAL_API_KEY=replace-with-local-dev-secret
+JOBOPS_CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:3002
 JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG=rebekah-love
 JOBOPS_LLM_PROVIDER=mock
 JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS=false
@@ -95,6 +99,10 @@ Profile intake artifact flags are local debugging controls:
 
 `JOBOPS_API_BASE_URL` points frontend server code at the FastAPI service. The JobOps dashboard uses it for the profile-intake proxy, and the portfolio app uses it for public profile reads when the API is running locally.
 
+`JOBOPS_INTERNAL_API_KEY` is read only by server-side code. It must never be prefixed with `NEXT_PUBLIC_` or passed to client components. In local development, protected FastAPI endpoints are open when no internal key is configured; once the key is configured, calls must include `X-JobOps-Internal-Key`.
+
+`JOBOPS_CORS_ORIGINS` is a comma-separated allowlist of browser origins allowed to call the FastAPI backend. Values are trimmed and empty items are ignored.
+
 `JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG` is the local-dev profile context used before auth exists. Profile intake defaults to `rebekah-love` if it is not set.
 
 ## Production
@@ -107,6 +115,25 @@ Production secrets should be configured in platform environment variables:
 - Neon for database credentials and connection details.
 
 Production should not rely on a committed `.env.prod` file. A local `.env.prod` may exist for controlled testing, but it must remain ignored.
+
+Required Render backend values:
+
+```text
+APP_ENV=prod
+JOBOPS_INTERNAL_API_KEY=<long random secret>
+JOBOPS_CORS_ORIGINS=https://rebekahalove.dev,https://www.rebekahalove.dev,https://jobops.rebekahalove.dev
+```
+
+Existing production `DATABASE_URL`, model provider, and model API key settings remain unchanged. In `APP_ENV=prod`, `/docs`, `/redoc`, and `/openapi.json` are disabled by default. Set `JOBOPS_ENABLE_API_DOCS=true` only when intentionally exposing FastAPI docs.
+
+Required Netlify frontend server values:
+
+```text
+JOBOPS_API_BASE_URL=https://api.rebekahalove.dev
+JOBOPS_INTERNAL_API_KEY=<same long random secret as Render>
+```
+
+`JOBOPS_INTERNAL_API_KEY` must be identical on Netlify and Render. It is a temporary server-to-server protection layer for private/write/model/draft endpoints, not a replacement for future user auth.
 
 ## Testing
 

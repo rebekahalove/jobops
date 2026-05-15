@@ -12,6 +12,7 @@ Recommended first deployment target:
 - Dashboard domain: `jobops.rebekahalove.dev`.
 - Preview deployments for pull requests.
 - Server-side model calls only through the backend.
+- Private/write/model/draft API calls protected by a shared server-side internal API key until full user auth exists.
 - `.env.example` committed, real secrets configured in Netlify, Render, GitHub Actions, or Neon.
 
 This keeps the first public surface lightweight while avoiding a throwaway data architecture.
@@ -40,6 +41,12 @@ Render is preferred over Fly.io for the first API host because it is a lower-ope
 ## Private JobOps Dashboard
 
 `jobops.rebekahalove.dev` should start as a private dashboard shell and grow only through approved increments.
+
+Before full auth, configure the pragmatic internal API key layer:
+
+- Render backend: `APP_ENV=prod`, `JOBOPS_INTERNAL_API_KEY=<long random secret>`, and `JOBOPS_CORS_ORIGINS=https://rebekahalove.dev,https://www.rebekahalove.dev,https://jobops.rebekahalove.dev`.
+- Netlify frontend server routes: `JOBOPS_API_BASE_URL=https://api.rebekahalove.dev` or the current Render URL, plus the same `JOBOPS_INTERNAL_API_KEY`.
+- Do not expose the key as `NEXT_PUBLIC_*`.
 
 When private workflows begin, add:
 
