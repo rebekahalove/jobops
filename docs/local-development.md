@@ -259,6 +259,8 @@ See [Application Tracker MVP](application-tracker-mvp.md).
 
 By default JobOps stores message lengths, draft counts, model run IDs, artifact paths, and safe event metadata. It does not store raw chat/resume text in the database. If raw artifact saving is explicitly enabled, raw prompt/response files stay local under gitignored `artifacts/`.
 
+Profile-intake draft persistence now merges each model turn into the active saved draft. Empty arrays, empty strings, nulls, and omitted optional sections are treated as no-change patches, not delete instructions. Explicit clear/reset behavior is deferred until there is an intentional user action and a dedicated backend path for it.
+
 Deferred profile work:
 
 - Human approval and publication workflow.
