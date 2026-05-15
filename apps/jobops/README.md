@@ -14,6 +14,23 @@ http://localhost:3002
 
 On Windows, run long-lived dev servers in a dedicated terminal. If starting this command from `cmd.exe` or a script, use `call corepack pnpm dev:jobops` so the parent shell stays alive. See [Local Development](../../docs/local-development.md) for the full local server checklist.
 
+## Temporary Private-Preview Gate
+
+The dashboard has a lightweight password gate for the private preview. Configure these in ignored local files or Netlify environment variables:
+
+```text
+JOBOPS_DASHBOARD_PASSWORD=<temporary private-preview password>
+JOBOPS_DASHBOARD_COOKIE_SECRET=<long random secret>
+```
+
+This is a construction gate, not full authentication. It does not support users, roles, password reset, account recovery, tenant isolation, audit trails, or per-user authorization. It is acceptable while the project is not intentionally shared, and it must be upgraded before publicly sharing the dashboard, onboarding other users, storing other people's private data, or using JobOps as a real multi-tenant product.
+
+Future replacement should be proper user authentication and authorization, likely owner-only auth first, then tenant/user auth later. Do not prefix either dashboard gate value with `NEXT_PUBLIC_*`.
+
+For local development only, `JOBOPS_DASHBOARD_AUTH_DISABLED=true` can bypass the gate. Production fails closed when the password or cookie secret is missing.
+
+The local `dev` and `start` scripts load the repo-root `.env` and `.env.<APP_ENV>` files before starting Next so middleware and server routes use the same private values.
+
 ## AI Command Center Shell
 
 The private app now centers on one JobOps command panel at the top of the shell, with workspace tabs below it:

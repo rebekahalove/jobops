@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "dev": "next dev --port 3000",
+    "dev": "node ../../scripts/run-with-jobops-env.mjs next dev --port 3000",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "node ../../scripts/run-with-jobops-env.mjs next start --port 3000",
     "typecheck": "tsc --noEmit --incremental false"
   },
   "dependencies": {
