@@ -1,0 +1,41 @@
+# Python environments and package metadata
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.pytest-system-temp/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local logs and debug artifacts
+*.log
+artifacts/
+
+# Node/frontend artifacts are not needed for the API image.
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+.pnpm-store/
+*.tsbuildinfo
+
+# VCS/editor state
+.git/
+.github/
+.vscode/
+.idea/

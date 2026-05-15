@@ -270,6 +270,49 @@ Then open:
 http://localhost:8000/health
 ```
 
+## Run The API With Docker
+
+The API can also run as a local container without changing the accepted architecture. This builds only `services/api`; the Next.js frontends remain separate and are still hosted/developed outside the API image.
+
+Make sure the usual local environment files exist first:
+
+```text
+.env      -> APP_ENV=dev
+.env.dev  -> DATABASE_URL and local-only API/model settings
+```
+
+Build the image from the repo root:
+
+```powershell
+docker build -t jobops-api:local -f services/api/Dockerfile services/api
+```
+
+Run the API container directly:
+
+```powershell
+docker run --rm --env-file .env --env-file .env.dev -p 8000:8000 jobops-api:local
+```
+
+Or run through Docker Compose:
+
+```powershell
+docker compose up --build api
+```
+
+Smoke-test the API:
+
+```powershell
+Invoke-WebRequest -Uri http://localhost:8000/health -UseBasicParsing
+```
+
+Run migrations intentionally rather than as part of container startup:
+
+```powershell
+docker compose run --rm api python -m alembic upgrade head
+```
+
+This uses the same `DATABASE_URL` as local Python development, so Neon remains the default database path. A local Postgres container is not included because it would create a second default database workflow; add one later only if local-offline database work becomes a regular need.
+
 ## Environment Files
 
 The local env loader reads `.env`, then `.env.<APP_ENV>`.
