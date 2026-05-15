@@ -27,7 +27,7 @@ describe("dashboard auth login route", () => {
 
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("http://next.test/jobops/applications");
+    expect(response.headers.get("location")).toBe("/jobops/applications");
     expect(setCookie).toContain(`${DASHBOARD_AUTH_COOKIE_NAME}=`);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Lax");
@@ -54,9 +54,7 @@ describe("dashboard auth login route", () => {
     );
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(
-      "http://next.test/jobops/login?error=1&returnTo=%2Fjobops%2Fapplications"
-    );
+    expect(response.headers.get("location")).toBe("/jobops/login?error=1&returnTo=%2Fjobops%2Fapplications");
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 });
