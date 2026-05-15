@@ -24,6 +24,7 @@ from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, Mod
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
 from jobops_api.profile_intake.service import run_profile_intake_extraction
+from jobops_api.security import INTERNAL_API_KEY_HEADER
 from jobops_api.settings import Settings
 
 
@@ -201,6 +202,8 @@ def test_profile_intake_uses_shared_model_connector(tmp_path: Path) -> None:
 
 
 def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     monkeypatch.setattr(main_module, "settings", make_settings(tmp_path))
     session_factory = make_seeded_session_factory()
     main_module.app.dependency_overrides[get_db_session] = override_session_dependency(session_factory)
@@ -209,6 +212,7 @@ def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypat
     try:
         response = client.post(
             "/v1/profile-intake/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={"latest_user_message": "I want to be an Applied AI Engineer."},
         )
     finally:

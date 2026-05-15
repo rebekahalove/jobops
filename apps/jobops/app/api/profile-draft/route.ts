@@ -1,16 +1,25 @@
 import { NextResponse } from "next/server";
-import { getJobOpsServerEnv } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
+  let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
+  try {
+    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
+  } catch {
+    return missingInternalApiKeyResponse();
+  }
+
   const requestUrl = new URL(request.url);
-  const slug = requestUrl.searchParams.get("candidateProfileSlug") ?? env.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love";
+  const slug = requestUrl.searchParams.get("candidateProfileSlug") ?? config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love";
 
   try {
-    const apiResponse = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/${slug}`);
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/${slug}`, {
+      headers: {
+        "X-JobOps-Internal-Key": config.internalApiKey
+      }
+    });
     const payload = await apiResponse.json();
 
     return NextResponse.json(payload, { status: apiResponse.status });
@@ -23,4 +32,14 @@ export async function GET(request: Request) {
       { status: 503 }
     );
   }
+}
+
+function missingInternalApiKeyResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "JobOps internal API key is not configured on the server."
+    },
+    { status: 503 }
+  );
 }

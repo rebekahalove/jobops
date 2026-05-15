@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getJobOpsServerEnv } from "../../../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../../../lib/server-env";
 
 export const runtime = "nodejs";
 
@@ -23,14 +23,19 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const { applicationId } = await context.params;
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL"]);
-  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
+  let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
+  try {
+    config = await getJobOpsApiServerConfig();
+  } catch {
+    return missingInternalApiKeyResponse();
+  }
 
   try {
-    const apiResponse = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/applications/${applicationId}/status`, {
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/applications/${applicationId}/status`, {
       method: "PATCH",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-JobOps-Internal-Key": config.internalApiKey
       },
       body: JSON.stringify(body)
     });
@@ -45,4 +50,14 @@ export async function PATCH(request: Request, context: RouteContext) {
       { status: 503 }
     );
   }
+}
+
+function missingInternalApiKeyResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "JobOps internal API key is not configured on the server."
+    },
+    { status: 503 }
+  );
 }

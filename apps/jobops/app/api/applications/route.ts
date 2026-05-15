@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
-import { getJobOpsServerEnv } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
-  const slug = env.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love";
-  const url = new URL(`${apiBaseUrl.replace(/\/$/, "")}/v1/applications`);
+  let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
+  try {
+    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
+  } catch {
+    return missingInternalApiKeyResponse();
+  }
+
+  const slug = config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love";
+  const url = new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/applications`);
   url.searchParams.set("candidate_profile_slug", slug);
 
   try {
-    const apiResponse = await fetch(url, { cache: "no-store" });
+    const apiResponse = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        "X-JobOps-Internal-Key": config.internalApiKey
+      }
+    });
     const payload = await apiResponse.json();
     return NextResponse.json(payload, { status: apiResponse.status });
   } catch {
@@ -40,18 +50,24 @@ export async function POST(request: Request) {
     );
   }
 
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  const apiBaseUrl = env.JOBOPS_API_BASE_URL ?? "http://localhost:8000";
+  let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
+  try {
+    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
+  } catch {
+    return missingInternalApiKeyResponse();
+  }
+
   const payload = {
-    candidate_profile_slug: env.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love",
+    candidate_profile_slug: config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love",
     ...body
   };
 
   try {
-    const apiResponse = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/applications`, {
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/applications`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-JobOps-Internal-Key": config.internalApiKey
       },
       body: JSON.stringify(payload)
     });
@@ -66,4 +82,14 @@ export async function POST(request: Request) {
       { status: 503 }
     );
   }
+}
+
+function missingInternalApiKeyResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "JobOps internal API key is not configured on the server."
+    },
+    { status: 503 }
+  );
 }

@@ -13,6 +13,7 @@ from jobops_api.db.models import Base
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
+from jobops_api.security import INTERNAL_API_KEY_HEADER
 from jobops_api.settings import Settings
 
 
@@ -25,6 +26,8 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
 
 
 def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()
 
@@ -37,6 +40,7 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
         client = TestClient(app)
         response = client.post(
             "/v1/command-center/commands",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={
                 "command": "I want to be an Applied AI Engineer.",
                 "active_workspace": "profile",
@@ -56,6 +60,8 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
 
 
 def test_latest_profile_draft_endpoint_returns_saved_snapshot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()
 
@@ -68,9 +74,13 @@ def test_latest_profile_draft_endpoint_returns_saved_snapshot(tmp_path: Path, mo
         client = TestClient(app)
         client.post(
             "/v1/command-center/commands",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             json={"command": "I want to be an Applied AI Engineer."},
         )
-        response = client.get("/v1/command-center/profile-draft/rebekah-love")
+        response = client.get(
+            "/v1/command-center/profile-draft/rebekah-love",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+        )
     finally:
         app.dependency_overrides.clear()
 

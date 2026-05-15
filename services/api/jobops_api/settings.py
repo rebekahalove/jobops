@@ -21,6 +21,9 @@ class Settings:
     database_url: str | None
     default_candidate_profile_slug: str
     repo_root: Path
+    internal_api_key: str | None = None
+    cors_origins: tuple[str, ...] = ()
+    enable_api_docs: bool = True
 
 
 def load_settings(repo_root: Path | None = None) -> Settings:
@@ -48,12 +51,23 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         profile_intake_save_raw_text=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT")),
         database_url=merged.get("DATABASE_URL"),
         default_candidate_profile_slug=merged.get("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG", "rebekah-love"),
-        repo_root=root
+        repo_root=root,
+        internal_api_key=merged.get("JOBOPS_INTERNAL_API_KEY"),
+        cors_origins=parse_csv_list(merged.get("JOBOPS_CORS_ORIGINS")),
+        enable_api_docs=parse_bool(merged.get("JOBOPS_ENABLE_API_DOCS"), default=app_env.lower() != "prod"),
     )
 
 
-def parse_bool(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+def parse_bool(value: str | None, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_csv_list(value: str | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def find_repo_root() -> Path:

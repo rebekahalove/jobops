@@ -10,6 +10,7 @@ from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
 from .profiles import get_candidate_profile_by_slug
+from .security import require_internal_api_key
 from .settings import load_settings
 
 
@@ -27,7 +28,7 @@ CommandActionType = Literal[
 ActionStatus = Literal["planned", "needs_confirmation", "completed", "failed"]
 
 
-router = APIRouter(prefix="/v1/command-center", tags=["command-center"])
+router = APIRouter(prefix="/v1/command-center", tags=["command-center"], dependencies=[Depends(require_internal_api_key)])
 
 
 class ApiModel(BaseModel):
