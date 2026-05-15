@@ -1,12 +1,11 @@
-import { NextResponse } from "next/server";
 import {
   constantTimeEqualText,
+  createDashboardAuthSetCookieHeader,
   createDashboardAuthToken,
   getDashboardAuthEnvironment,
   getDashboardBasePathFromRequestPath,
   isDashboardAuthConfigured,
-  resolveSafeDashboardReturnTo,
-  setDashboardAuthCookie
+  resolveSafeDashboardReturnTo
 } from "../../../../lib/dashboard-auth";
 
 export const runtime = "nodejs";
@@ -21,11 +20,11 @@ export async function POST(request: Request) {
   const env = getDashboardAuthEnvironment();
 
   if (env.authDisabled) {
-    return NextResponse.redirect(new URL(returnTo, requestUrl), { status: 303 });
+    return Response.redirect(new URL(returnTo, requestUrl), 303);
   }
 
   if (!isDashboardAuthConfigured(env)) {
-    return NextResponse.json(
+    return Response.json(
       {
         ok: false,
         error: "JobOps private preview access is not configured."
@@ -43,11 +42,14 @@ export async function POST(request: Request) {
     loginUrl.searchParams.set("error", "1");
     loginUrl.searchParams.set("returnTo", returnTo);
 
-    return NextResponse.redirect(loginUrl, { status: 303 });
+    return Response.redirect(loginUrl, 303);
   }
 
-  const response = NextResponse.redirect(new URL(returnTo, requestUrl), { status: 303 });
-  setDashboardAuthCookie(response, await createDashboardAuthToken(env.cookieSecret ?? ""), env);
-
-  return response;
+  return new Response(null, {
+    headers: {
+      Location: new URL(returnTo, requestUrl).toString(),
+      "Set-Cookie": createDashboardAuthSetCookieHeader(await createDashboardAuthToken(env.cookieSecret ?? ""), env)
+    },
+    status: 303
+  });
 }
