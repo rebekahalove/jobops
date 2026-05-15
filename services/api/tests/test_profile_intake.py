@@ -16,6 +16,7 @@ from jobops_api.db.models import (
     ProfileFactDraft,
     ProfileIntakeEvent,
     ProfileIntakeSession,
+    RoleTarget,
     SkillClaim,
 )
 from jobops_api.db.seed_profile import seed_public_profile
@@ -295,6 +296,132 @@ def test_persisted_evidence_links_remain_private_and_unpublished(tmp_path: Path)
         assert evidence.publication_status == "not_published"
 
 
+def test_profile_intake_second_empty_turn_preserves_merged_saved_draft(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        first_result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I target applied AI roles and shipped JobOps."),
+            connector=make_connector(StaticProvider(json.dumps(full_profile_intake_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert first_result.status_code == 200
+    assert first_result.body["result"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert len(first_result.body["result"]["draftFacts"]) == 1
+    assert len(first_result.body["result"]["skillClaims"]) == 1
+    assert len(first_result.body["result"]["experienceAndProjects"]) == 1
+    assert len(first_result.body["result"]["evidenceLinks"]) == 1
+
+    with session_factory() as session:
+        role_target = session.scalars(select(RoleTarget)).one()
+        fact = session.scalars(select(ProfileFactDraft)).one()
+        skill = session.scalars(select(SkillClaim)).one()
+        experience = session.scalars(select(ExperienceProjectDraft)).one()
+        evidence = session.scalars(select(EvidenceArtifact)).one()
+        role_target_id = role_target.id
+
+        role_target.review_status = "approved"
+        role_target.visibility = "public"
+        role_target.publication_status = "published"
+        fact.review_status = "approved"
+        fact.suggested_visibility = "public"
+        fact.structured_value = {"published": True, "sourceStatus": "needs_review"}
+        skill.verification_status = "approved"
+        skill.visibility = "public"
+        skill.publication_status = "published"
+        experience.review_status = "approved"
+        experience.visibility = "public"
+        experience.publication_status = "published"
+        experience.structured_value = {"published": True, "sourceStatus": "needs_review"}
+        evidence.review_status = "approved"
+        evidence.visibility = "public"
+        evidence.publication_status = "published"
+        evidence.artifact_metadata = {"published": True, "sourceStatus": "needs_review"}
+        session.commit()
+
+    with session_factory() as session:
+        second_result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Anything else?"),
+            connector=make_connector(StaticProvider(json.dumps(empty_patch_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert second_result.status_code == 200
+    snapshot = second_result.body["result"]
+    assert snapshot["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert snapshot["targetRoleIntent"]["preferredWorkMode"] == "remote"
+    assert snapshot["draftFacts"][0]["claim"] == "Built a production FastAPI service for JobOps."
+    assert snapshot["draftFacts"][0]["status"] == "approved"
+    assert snapshot["draftFacts"][0]["visibility"] == "public"
+    assert snapshot["draftFacts"][0]["published"] is True
+    assert snapshot["skillClaims"][0]["evidence"] == "Used Python and FastAPI in the JobOps backend."
+    assert snapshot["skillClaims"][0]["published"] is True
+    assert snapshot["experienceAndProjects"][0]["summary"] == "Built the profile intake persistence path."
+    assert snapshot["experienceAndProjects"][0]["published"] is True
+    assert snapshot["evidenceLinks"][0]["url"] == "https://example.com/jobops"
+    assert snapshot["evidenceLinks"][0]["published"] is True
+
+    with session_factory() as session:
+        intake_session = session.scalars(select(ProfileIntakeSession)).one()
+        counts = intake_session.redacted_state["draftCounts"]
+        assert counts == {
+            "draftFactCount": 1,
+            "skillClaimCount": 1,
+            "experienceAndProjectCount": 1,
+            "evidenceLinkCount": 1,
+        }
+        assert {row.id for row in session.scalars(select(RoleTarget)).all()} == {role_target_id}
+        assert len(session.scalars(select(ProfileFactDraft)).all()) == 1
+        assert len(session.scalars(select(SkillClaim)).all()) == 1
+        assert len(session.scalars(select(ExperienceProjectDraft)).all()) == 1
+        assert len(session.scalars(select(EvidenceArtifact)).all()) == 1
+
+
+def test_profile_intake_merge_adds_new_facts_and_dedupes_without_clearing_fields(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I built JobOps with Python."),
+            connector=make_connector(StaticProvider(json.dumps(dedupe_initial_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I also created LLM evals."),
+            connector=make_connector(StaticProvider(json.dumps(dedupe_patch_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    snapshot = result.body["result"]
+    assert [fact["claim"] for fact in snapshot["draftFacts"]] == [
+        "Built a production FastAPI service for JobOps.",
+        "Created LLM regression evals for profile intake.",
+    ]
+    assert len(snapshot["skillClaims"]) == 1
+    assert snapshot["skillClaims"][0]["evidence"] == "Used Python and FastAPI in the JobOps backend."
+    assert len(snapshot["experienceAndProjects"]) == 1
+    assert snapshot["experienceAndProjects"][0]["organization"] == "Independent"
+    assert snapshot["experienceAndProjects"][0]["summary"] == "Built the profile intake persistence path."
+    assert len(snapshot["evidenceLinks"]) == 1
+
+    with session_factory() as session:
+        assert len(session.scalars(select(ProfileFactDraft)).all()) == 2
+        assert len(session.scalars(select(SkillClaim)).all()) == 1
+        assert len(session.scalars(select(ExperienceProjectDraft)).all()) == 1
+        assert len(session.scalars(select(EvidenceArtifact)).all()) == 1
+        intake_session = session.scalars(select(ProfileIntakeSession)).one()
+        assert intake_session.redacted_state["latestDraftSnapshot"]["draftFacts"] == snapshot["draftFacts"]
+        assert intake_session.redacted_state["draftCounts"]["draftFactCount"] == 2
+
+
 def test_malformed_model_output_does_not_persist_drafts(tmp_path: Path) -> None:
     session_factory = make_seeded_session_factory()
 
@@ -391,6 +518,170 @@ def valid_output_with_evidence() -> dict[str, object]:
         }
     ]
     return output
+
+
+def full_profile_intake_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I saved a merged draft.",
+        "targetRoleIntent": {
+            "targetTitles": "Applied AI Engineer",
+            "targetRoleFamilies": "Applied AI",
+            "preferredWorkMode": "remote",
+            "preferredLocations": "New York",
+            "domainsOrIndustries": "developer tools",
+            "constraints": "No onsite-only roles",
+        },
+        "draftFacts": [
+            {
+                "claim": "Built a production FastAPI service for JobOps.",
+                "category": "backend",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "skillClaims": [
+            {
+                "skill": "Python",
+                "category": "programming language",
+                "evidence": "Used Python and FastAPI in the JobOps backend.",
+                "source": "chat",
+                "status": "draft",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "experienceAndProjects": [
+            {
+                "title": "JobOps",
+                "organization": "Independent",
+                "summary": "Built the profile intake persistence path.",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "evidenceLinks": [
+            {
+                "url": "https://example.com/jobops",
+                "label": "JobOps project",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "clarifyingQuestions": ["What outcomes can we quantify?"],
+        "changeSummary": ["Saved initial profile draft."],
+    }
+
+
+def empty_patch_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I do not have new profile details yet.",
+        "targetRoleIntent": {
+            "targetTitles": "",
+            "targetRoleFamilies": "",
+            "preferredLocations": "",
+            "domainsOrIndustries": "",
+            "constraints": "",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": ["What else should I add?"],
+        "changeSummary": [],
+    }
+
+
+def dedupe_initial_output() -> dict[str, object]:
+    output = full_profile_intake_output()
+    output["targetRoleIntent"] = {"targetTitles": "Applied AI Engineer"}
+    output["skillClaims"] = [
+        {
+            "skill": "Python",
+            "category": "programming language",
+            "evidence": "Used Python and FastAPI in the JobOps backend.",
+            "source": "chat",
+            "status": "draft",
+            "visibility": "private",
+            "published": False,
+        }
+    ]
+    output["experienceAndProjects"] = [
+        {
+            "title": "JobOps",
+            "organization": None,
+            "summary": "Built the profile intake persistence path.",
+            "source": "chat",
+            "status": "needs_review",
+            "visibility": "private",
+            "published": False,
+        }
+    ]
+    return output
+
+
+def dedupe_patch_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I added the evals fact.",
+        "targetRoleIntent": {},
+        "draftFacts": [
+            {
+                "claim": "  built a production fastapi service for jobops.  ",
+                "category": "Backend",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            },
+            {
+                "claim": "Created LLM regression evals for profile intake.",
+                "category": "evals",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            },
+        ],
+        "skillClaims": [
+            {
+                "skill": "python",
+                "category": "Programming Language",
+                "evidence": "",
+                "source": "chat",
+                "status": "draft",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "experienceAndProjects": [
+            {
+                "title": "jobops",
+                "organization": "Independent",
+                "summary": "",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "evidenceLinks": [
+            {
+                "url": "https://example.com/jobops/",
+                "label": "",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ],
+        "clarifyingQuestions": [],
+        "changeSummary": ["Added evals fact."],
+    }
 
 
 def create_sqlite_engine():

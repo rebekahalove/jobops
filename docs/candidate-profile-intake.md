@@ -249,6 +249,10 @@ The Profile tab should not own a separate chat composer. It should tell the user
 
 FastAPI remains responsible for model calls, Pydantic validation, artifacts, draft persistence, and tool routing. Next.js must not call the model directly.
 
+Profile-intake persistence is merge-based. Each successful model turn is treated as a patch to the active saved draft, not as a complete replacement. Empty model sections such as `draftFacts: []`, empty strings, null fields, or omitted optional role-target values mean "no change" for existing saved data. They must not clear previously saved role intent, draft facts, skills, experience/project drafts, evidence links, review state, visibility, or publication state.
+
+Explicit delete, clear, or reset behavior is deferred. It should require intentional user action and a separate persistence path so the system can distinguish "the model found nothing new" from "the user deliberately removed saved profile data."
+
 ## Intake Workflow
 
 ### 1. Start With Intent
