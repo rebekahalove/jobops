@@ -10,6 +10,7 @@ from jobops_api.db.models import (
     CandidateProfile,
     EvidenceArtifact,
     ExperienceProjectDraft,
+    ProfileFact,
     ProfileFactDraft,
     ProfileIntakeEvent,
     ProfileIntakeSession,
@@ -41,6 +42,64 @@ def get_or_create_active_intake_session(session: Session, candidate_profile_id: 
     session.add(intake_session)
     session.flush()
     return intake_session
+
+
+def ensure_editable_profile_intake_draft(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+) -> bool:
+    """Seed a private draft from published profile rows without editing published rows."""
+    if has_profile_intake_draft_rows(session, intake_session.id) or has_saved_draft_snapshot(intake_session):
+        return False
+
+    seeded_any = False
+    published_role_target = get_latest_published_role_target(session, candidate_profile.id)
+    if published_role_target is not None:
+        session.add(
+            RoleTarget(
+                candidate_profile_id=candidate_profile.id,
+                profile_intake_session_id=intake_session.id,
+                target_titles=list(published_role_target.target_titles or []),
+                role_families=list(published_role_target.role_families or []),
+                seniority=published_role_target.seniority,
+                preferred_locations=list(published_role_target.preferred_locations or []),
+                work_modes=list(published_role_target.work_modes or []),
+                constraints=dict(published_role_target.constraints or {}),
+                source=published_role_target.source,
+                review_status="needs_review",
+                visibility="private",
+                publication_status="not_published",
+                is_active=True,
+            )
+        )
+        seeded_any = True
+
+    for fact in get_published_profile_facts(session, candidate_profile.id):
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=candidate_profile.id,
+                profile_intake_session_id=intake_session.id,
+                claim=fact.claim,
+                fact_type=fact.fact_type,
+                structured_value={
+                    "derivedFromPublishedFactId": fact.id,
+                    "published": False,
+                    "sourceStatus": "needs_review",
+                },
+                source=fact.source,
+                confidence="unknown",
+                suggested_visibility="private",
+                review_status="needs_review",
+            )
+        )
+        seeded_any = True
+
+    if seeded_any:
+        session.flush()
+
+    return seeded_any
 
 
 def save_intake_user_event(
@@ -183,6 +242,10 @@ def get_latest_profile_draft_snapshot(session: Session, candidate_profile: Candi
     if intake_session is None:
         return empty_profile_draft_snapshot()
 
+    return get_profile_draft_snapshot_for_session(session, intake_session)
+
+
+def get_profile_draft_snapshot_for_session(session: Session, intake_session: ProfileIntakeSession) -> dict[str, Any]:
     redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
     latest_snapshot = redacted_state.get("latestDraftSnapshot")
     if isinstance(latest_snapshot, dict):
@@ -253,11 +316,60 @@ def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, 
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
         "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
-        "preferredLocations": join_text_list(role_target.preferred_locations),
+        "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
     }
     return {key: value for key, value in payload.items() if value}
+
+
+def has_profile_intake_draft_rows(session: Session, intake_session_id: str) -> bool:
+    return any(
+        session.scalar(select(model.id).where(model.profile_intake_session_id == intake_session_id).limit(1))
+        is not None
+        for model in (RoleTarget, ProfileFactDraft, SkillClaim, ExperienceProjectDraft, EvidenceArtifact)
+    )
+
+
+def has_saved_draft_snapshot(intake_session: ProfileIntakeSession) -> bool:
+    redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
+    snapshot = redacted_state.get("latestDraftSnapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    target_role_intent = snapshot.get("targetRoleIntent")
+    return bool(
+        (isinstance(target_role_intent, dict) and any(target_role_intent.values()))
+        or snapshot.get("draftFacts")
+        or snapshot.get("skillClaims")
+        or snapshot.get("experienceAndProjects")
+        or snapshot.get("evidenceLinks")
+    )
+
+
+def get_latest_published_role_target(session: Session, candidate_profile_id: str) -> RoleTarget | None:
+    return session.scalar(
+        select(RoleTarget)
+        .where(
+            RoleTarget.candidate_profile_id == candidate_profile_id,
+            RoleTarget.publication_status == "published",
+            RoleTarget.is_active.is_(True),
+        )
+        .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
+    )
+
+
+def get_published_profile_facts(session: Session, candidate_profile_id: str) -> list[ProfileFact]:
+    return list(
+        session.scalars(
+            select(ProfileFact)
+            .where(
+                ProfileFact.candidate_profile_id == candidate_profile_id,
+                ProfileFact.visibility == "public",
+                ProfileFact.verification_status == "published",
+            )
+            .order_by(ProfileFact.created_at.asc())
+        )
+    )
 
 
 def replace_current_session_drafts(session: Session, intake_session_id: str) -> None:
@@ -275,7 +387,7 @@ def merge_role_target(
     existing = get_active_role_target(session, intake_session.id)
     target_titles = split_text_list(intent.target_titles)
     role_families = split_text_list(intent.target_role_families)
-    preferred_locations = split_text_list(intent.preferred_locations)
+    preferred_locations = split_location_text_list(intent.preferred_locations)
     work_modes = [intent.preferred_work_mode] if meaningful_text(intent.preferred_work_mode) else []
     domains_or_industries = meaningful_text(intent.domains_or_industries)
     constraints_text = meaningful_text(intent.constraints)
@@ -508,7 +620,7 @@ def serialize_role_target(role_target: RoleTarget | None, output: ProfileIntakeO
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
         "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
-        "preferredLocations": join_text_list(role_target.preferred_locations),
+        "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
     }
@@ -537,7 +649,7 @@ def role_target_summary_from_row(role_target: RoleTarget | None) -> str:
         join_text_list(role_target.target_titles),
         join_text_list(role_target.role_families),
         join_text_list(role_target.work_modes),
-        join_text_list(role_target.preferred_locations),
+        join_location_list(role_target.preferred_locations),
         constraints.get("domainsOrIndustries"),
         constraints.get("constraints"),
     ]
@@ -550,10 +662,25 @@ def split_text_list(value: str | None) -> list[str]:
     return [part.strip() for part in value.replace("|", ",").replace(";", ",").split(",") if part.strip()]
 
 
+def split_location_text_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    if ";" in value or "|" in value or "\n" in value:
+        normalized = value.replace("|", ";").replace("\n", ";")
+        return [part.strip() for part in normalized.split(";") if part.strip()]
+    return [value.strip()] if value.strip() else []
+
+
 def join_text_list(value: list[str] | None) -> str | None:
     if not value:
         return None
     return ", ".join(value)
+
+
+def join_location_list(value: list[str] | None) -> str | None:
+    if not value:
+        return None
+    return "; ".join(value)
 
 
 def normalize_source(value: str | None) -> str:

@@ -13,6 +13,7 @@ from jobops_api.db.models import (
     Base,
     EvidenceArtifact,
     ExperienceProjectDraft,
+    ProfileFact,
     ProfileFactDraft,
     ProfileIntakeEvent,
     ProfileIntakeSession,
@@ -51,6 +52,23 @@ class RecordingProvider(StaticProvider):
     def generate(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
         return super().generate(request)
+
+
+class RecordingSequenceProvider:
+    def __init__(self, texts: list[str], finish_reason: str | None = "stop") -> None:
+        self.texts = texts
+        self.finish_reason = finish_reason
+        self.requests: list[ModelRequest] = []
+
+    def generate(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        text_index = min(len(self.requests) - 1, len(self.texts) - 1)
+        return ModelResponse(
+            finish_reason=self.finish_reason,
+            model=request.model,
+            provider="test",
+            text=self.texts[text_index],
+        )
 
 
 def test_fastapi_profile_intake_mock_success(tmp_path: Path) -> None:
@@ -422,6 +440,253 @@ def test_profile_intake_merge_adds_new_facts_and_dedupes_without_clearing_fields
         assert intake_session.redacted_state["draftCounts"]["draftFactCount"] == 2
 
 
+def test_profile_intake_model_receives_authoritative_saved_draft_for_additive_turn(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    provider = RecordingSequenceProvider(
+        [
+            json.dumps(louisville_target_role_output()),
+            json.dumps(london_additive_target_role_output()),
+        ]
+    )
+
+    with session_factory() as session:
+        first_result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(
+                latest_user_message="I want to be an Applied AI Engineer, remote or on-location/hybrid from Louisville, KY"
+            ),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert first_result.status_code == 200
+    assert first_result.body["result"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert first_result.body["result"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+
+    with session_factory() as session:
+        second_result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(
+                latest_user_message="or maybe on location in London, UK as well",
+                existing_draft={"targetRoleIntent": {"preferredLocations": "Paris, France"}},
+            ),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert second_result.status_code == 200
+    snapshot = second_result.body["result"]
+    assert snapshot["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert snapshot["targetRoleIntent"]["preferredLocations"] == "Louisville, KY; London, UK"
+
+    second_prompt = json.loads(provider.requests[1].messages[1].content)
+    assert second_prompt["authoritative_current_draft_source"] == "database"
+    assert second_prompt["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+    assert second_prompt["client_existing_draft"]["targetRoleIntent"]["preferredLocations"] == "Paris, France"
+    assert second_prompt["update_semantics"]["empty_output_fields_mean"] == "no_change_not_clear"
+    assert second_prompt["update_semantics"]["backend_interprets_additive_or_replacement_language"] is False
+    assert (
+        second_prompt["update_semantics"]["examples"][0]["expected_output_preferredLocations"]
+        == "London, UK; NYC; San Francisco Bay"
+    )
+    assert provider.requests[1].metadata["authoritative_current_draft_source"] == "database"
+    assert provider.requests[1].metadata["client_existing_draft_included"] is True
+
+    with session_factory() as session:
+        role_target = session.scalars(select(RoleTarget)).one()
+        assert role_target.preferred_locations == ["Louisville, KY", "London, UK"]
+        intake_session = session.scalars(select(ProfileIntakeSession)).one()
+        assert intake_session.redacted_state["input"]["currentDraftFactCount"] == 0
+        assert intake_session.redacted_state["input"]["currentSkillClaimCount"] == 0
+        assert intake_session.redacted_state["input"]["currentExperienceAndProjectCount"] == 0
+        assert intake_session.redacted_state["input"]["currentEvidenceLinkCount"] == 0
+
+
+def test_profile_intake_client_existing_draft_cannot_override_database_state(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I want Louisville in my target locations."),
+            connector=make_connector(StaticProvider(json.dumps(louisville_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    provider = RecordingProvider(json.dumps(empty_patch_output()))
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(
+                latest_user_message="Anything else?",
+                existing_draft={"targetRoleIntent": {"preferredLocations": "Paris, France"}},
+            ),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+    prompt_payload = json.loads(provider.requests[0].messages[1].content)
+    assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+    assert prompt_payload["client_existing_draft"]["targetRoleIntent"]["preferredLocations"] == "Paris, France"
+
+
+def test_profile_intake_replacement_language_can_update_target_role_field(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I want Louisville in my target locations."),
+            connector=make_connector(StaticProvider(json.dumps(louisville_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Actually, change the location to London, UK instead."),
+            connector=make_connector(StaticProvider(json.dumps(london_replacement_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"]["preferredLocations"] == "London, UK"
+
+    with session_factory() as session:
+        role_target = session.scalars(select(RoleTarget)).one()
+        assert role_target.preferred_locations == ["London, UK"]
+
+
+def test_profile_intake_additive_language_preserves_list_like_role_intent_fields(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I want to be an Applied AI Engineer in developer tools."),
+            connector=make_connector(StaticProvider(json.dumps(louisville_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(
+                latest_user_message="I'd also consider AI Product Engineer roles in healthcare."
+            ),
+            connector=make_connector(StaticProvider(json.dumps(additive_role_intent_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    intent = result.body["result"]["targetRoleIntent"]
+    assert "Applied AI Engineer" in intent["targetTitles"]
+    assert "AI Product Engineer" in intent["targetTitles"]
+    assert intent["domainsOrIndustries"] == "developer tools; healthcare"
+
+
+def test_profile_intake_model_final_state_handles_terse_location_alternatives(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I want to work onsite in London, UK."),
+            connector=make_connector(StaticProvider(json.dumps(london_replacement_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    provider = RecordingProvider(json.dumps(london_nyc_sf_final_state_output()))
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="or NYC or San Francisco Bay"),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"]["preferredLocations"] == "London, UK; NYC; San Francisco Bay"
+    prompt_payload = json.loads(provider.requests[0].messages[1].content)
+    assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "London, UK"
+    assert (
+        prompt_payload["update_semantics"]["target_role_intent_update_contract"]
+        .startswith("Persistence treats non-empty targetRoleIntent fields as final values")
+    )
+
+
+def test_profile_intake_seeds_editable_draft_from_published_role_target_without_mutating_published(
+    tmp_path: Path,
+) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                profile_intake_session_id=None,
+                target_titles=["Applied AI Engineer"],
+                role_families=["Applied AI"],
+                preferred_locations=["Louisville, KY"],
+                work_modes=["remote"],
+                constraints={"domainsOrIndustries": "developer tools"},
+                source="chat",
+                review_status="approved",
+                visibility="public",
+                publication_status="published",
+                is_active=True,
+            )
+        )
+        session.add(
+            ProfileFact(
+                candidate_profile_id=profile.id,
+                fact_type="general",
+                claim="Published profile fact stays immutable.",
+                structured_value={},
+                source="seed",
+                visibility="public",
+                verification_status="published",
+            )
+        )
+        session.commit()
+
+    provider = RecordingProvider(json.dumps(london_additive_target_role_output()))
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="or maybe on location in London, UK as well"),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY; London, UK"
+    prompt_payload = json.loads(provider.requests[0].messages[1].content)
+    assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+    assert provider.requests[0].metadata["seeded_editable_draft_from_published"] is True
+
+    with session_factory() as session:
+        published_role_target = session.scalar(select(RoleTarget).where(RoleTarget.publication_status == "published"))
+        draft_role_target = session.scalar(select(RoleTarget).where(RoleTarget.publication_status == "not_published"))
+        assert published_role_target is not None
+        assert published_role_target.profile_intake_session_id is None
+        assert published_role_target.preferred_locations == ["Louisville, KY"]
+        assert published_role_target.visibility == "public"
+        assert draft_role_target is not None
+        assert draft_role_target.profile_intake_session_id is not None
+        assert draft_role_target.preferred_locations == ["Louisville, KY", "London, UK"]
+        assert draft_role_target.visibility == "private"
+        published_fact = session.scalars(select(ProfileFact)).one()
+        draft_fact = session.scalars(select(ProfileFactDraft)).one()
+        assert published_fact.verification_status == "published"
+        assert published_fact.visibility == "public"
+        assert draft_fact.claim == published_fact.claim
+        assert draft_fact.structured_value["derivedFromPublishedFactId"] == published_fact.id
+
+
 def test_malformed_model_output_does_not_persist_drafts(tmp_path: Path) -> None:
     session_factory = make_seeded_session_factory()
 
@@ -575,6 +840,93 @@ def full_profile_intake_output() -> dict[str, object]:
         ],
         "clarifyingQuestions": ["What outcomes can we quantify?"],
         "changeSummary": ["Saved initial profile draft."],
+    }
+
+
+def louisville_target_role_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I saved your target role direction.",
+        "targetRoleIntent": {
+            "targetTitles": "Applied AI Engineer",
+            "targetRoleFamilies": "Applied AI",
+            "preferredWorkMode": "flexible",
+            "preferredLocations": "Louisville, KY",
+            "domainsOrIndustries": "developer tools",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": ["What projects best show this direction?"],
+        "changeSummary": ["Saved target role intent."],
+    }
+
+
+def london_additive_target_role_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I added London while preserving Louisville.",
+        "targetRoleIntent": {
+            "targetTitles": "Applied AI Engineer",
+            "targetRoleFamilies": "Applied AI",
+            "preferredWorkMode": "flexible",
+            "preferredLocations": "Louisville, KY; London, UK",
+            "domainsOrIndustries": "developer tools",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": ["Added London as a target location."],
+    }
+
+
+def london_replacement_target_role_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I changed the target location to London.",
+        "targetRoleIntent": {
+            "preferredLocations": "London, UK",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": ["Changed target location to London."],
+    }
+
+
+def london_nyc_sf_final_state_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I added NYC and San Francisco Bay as onsite options.",
+        "targetRoleIntent": {
+            "preferredLocations": "London, UK; NYC; San Francisco Bay",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": ["Added NYC and San Francisco Bay to preferred locations."],
+    }
+
+
+def additive_role_intent_output() -> dict[str, object]:
+    return {
+        "assistantMessage": "I added the product AI option.",
+        "targetRoleIntent": {
+            "targetTitles": "Applied AI Engineer; AI Product Engineer",
+            "targetRoleFamilies": "Applied AI; AI Product",
+            "preferredWorkMode": "flexible",
+            "preferredLocations": "Louisville, KY",
+            "domainsOrIndustries": "developer tools; healthcare",
+        },
+        "draftFacts": [],
+        "skillClaims": [],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+        "clarifyingQuestions": [],
+        "changeSummary": ["Added AI Product Engineer and healthcare as target options."],
     }
 
 

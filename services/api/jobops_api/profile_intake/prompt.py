@@ -7,14 +7,14 @@ from ..model_connector import ModelRequest
 from .models import ProfileIntakeExtractRequest
 
 
-PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v1"
+PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v3-final-state-role-intent"
 PROFILE_INTAKE_SCHEMA_NAME = "jobops_profile_intake"
 PROFILE_INTAKE_SCHEMA_VERSION = "profile-intake-output-v1"
 
 
 PROFILE_INTAKE_SYSTEM_PROMPT = """You are the JobOps Profile Intake Agent.
 
-Your job is to extract draft candidate profile data from the latest user message and existing draft state.
+Your job is to update draft candidate profile data from the latest user message and the authoritative current saved draft state.
 
 You are not a chatty assistant in this task. You are a strict JSON extraction function.
 
@@ -28,6 +28,25 @@ Safety and trust rules:
 - Every generated item must have status "draft" or "needs_review".
 - Use source "resume" when the user appears to paste resume/work-history text, source "chat" for conversational claims, and source "model" only for cautious model-suggested structuring.
 - Target role intent text such as "I want to be..." should update targetRoleIntent only. It should not create experience/project items unless the user describes actual past work, projects, education, certifications, publications, open-source work, or similar evidence.
+
+Stateful update rules:
+- Treat authoritative_current_draft as the current saved profile draft. It is the source of truth for this turn.
+- Treat client_existing_draft as optional, non-authoritative UI/debug context only. Never let it override authoritative_current_draft.
+- Apply latest_user_message as an incremental update to authoritative_current_draft, not as a replacement profile.
+- Preserve existing values unless the latest user message explicitly asks to change, remove, clear, or replace them.
+- You are responsible for semantic merging. Do not rely on the backend to infer whether a phrase is additive or replacement.
+- For targetRoleIntent, any non-empty field you output is treated as the final saved value for that field after applying latest_user_message.
+- Therefore, when updating targetRoleIntent list-like strings, copy the existing values from authoritative_current_draft and include the new values in the same output field.
+- Do not output only the newly mentioned item for an additive/broadening update.
+- For list-like fields such as preferred locations, target titles, role families, domains/industries, skills, evidence links, and projects, wording that broadens acceptable options should append or merge with existing values.
+- Broadening examples include terse alternatives like "or NYC or San Francisco Bay", "also", "as well", "or maybe", "include", "I'd also consider", "another", and similar wording.
+- Replacement examples include "instead", "not X anymore", "change X to Y", "remove X", "clear X", and similar explicit wording.
+- Do not drop existing list-like values just because the latest message only mentions new values.
+- For scalar-ish fields such as preferredWorkMode, update only if the user expresses a new preference. If wording expands options, preserve flexibility where appropriate.
+- Empty output fields mean "no new change", not "clear current state", unless an explicit clear/remove operation is represented.
+- When updating targetRoleIntent, return the merged desired value for changed fields. For example, current preferredLocations "Louisville, KY" plus latest "or maybe on location in London, UK as well" should return preferredLocations "Louisville, KY; London, UK".
+- Another example: current preferredLocations "London, UK" plus latest "or NYC or San Francisco Bay" should return preferredLocations "London, UK; NYC; San Francisco Bay".
+- TODO: list-like targetRoleIntent fields should eventually become structured arrays instead of semicolon/comma-delimited strings.
 
 Extraction guidance:
 - Prefer Applied AI, Forward Deployed Engineering, LLM systems, evals, reliability, production constraints, customer/stakeholder work, and measurable outcomes when relevant.
@@ -103,22 +122,80 @@ Return exactly this JSON shape, filling arrays with zero or more compact items:
 }"""
 
 
-def build_profile_intake_user_prompt(request: ProfileIntakeExtractRequest) -> str:
-    return json.dumps(
-        {
-            "instruction": (
-                "Extract a compact first-pass draft from latest_user_message. "
-                "Use existing_draft only as previous state context. Return only one valid JSON object."
+def build_profile_intake_user_prompt(
+    request: ProfileIntakeExtractRequest,
+    *,
+    authoritative_current_draft: dict[str, Any] | None = None,
+    authoritative_current_draft_source: str = "database",
+) -> str:
+    prompt_payload: dict[str, Any] = {
+        "instruction": (
+            "Update the saved profile draft from latest_user_message. Use authoritative_current_draft as "
+            "the current saved state and return only one valid JSON object."
+        ),
+        "latest_user_message": request.latest_user_message,
+        "authoritative_current_draft_source": authoritative_current_draft_source,
+        "authoritative_current_draft": authoritative_current_draft or {},
+        "update_semantics": {
+            "default": "incremental_patch",
+            "backend_interprets_additive_or_replacement_language": False,
+            "preserve_existing_values": True,
+            "empty_output_fields_mean": "no_change_not_clear",
+            "model_responsibility": (
+                "Decide semantic merge vs replacement from latest_user_message. For targetRoleIntent, output the "
+                "final post-update value for every non-empty field you return."
             ),
-            "latest_user_message": request.latest_user_message,
-            "existing_draft": request.existing_draft,
-            "required_output": (
-                "Return only valid JSON matching the exact shape from the system prompt. "
-                "Use bounded arrays and concise strings. Start with { and end with }."
+            "broadening_examples": [
+                "or NYC or San Francisco Bay",
+                "also",
+                "as well",
+                "or maybe",
+                "include",
+                "I'd also consider",
+                "another",
+            ],
+            "replacement_examples": ["instead", "not X anymore", "change X to Y", "remove X", "clear X"],
+            "list_like_fields": [
+                "targetRoleIntent.targetTitles",
+                "targetRoleIntent.targetRoleFamilies",
+                "targetRoleIntent.preferredLocations",
+                "targetRoleIntent.domainsOrIndustries",
+                "skillClaims",
+                "evidenceLinks",
+                "experienceAndProjects",
+                "draftFacts",
+            ],
+            "target_role_intent_update_contract": (
+                "Persistence treats non-empty targetRoleIntent fields as final values, not deltas. "
+                "If the latest message broadens a list-like preference, include both existing and new values. "
+                "Prefer semicolon separators for locations that contain commas."
             ),
+            "examples": [
+                {
+                    "current_preferredLocations": "London, UK",
+                    "latest_user_message": "or NYC or San Francisco Bay",
+                    "expected_output_preferredLocations": "London, UK; NYC; San Francisco Bay",
+                },
+                {
+                    "current_preferredLocations": "London, UK; NYC",
+                    "latest_user_message": "change that to San Francisco Bay instead",
+                    "expected_output_preferredLocations": "San Francisco Bay",
+                },
+            ],
         },
-        indent=2,
-    )
+        "required_output": (
+            "Return only valid JSON matching the exact shape from the system prompt. "
+            "Use bounded arrays and concise strings. Start with { and end with }."
+        ),
+    }
+    if request.existing_draft is not None:
+        prompt_payload["client_existing_draft_note"] = (
+            "Non-authoritative UI context. Use only for debugging comparison; do not prefer it over "
+            "authoritative_current_draft."
+        )
+        prompt_payload["client_existing_draft"] = request.existing_draft
+
+    return json.dumps(prompt_payload, indent=2)
 
 
 def build_prompt_artifact(request: ModelRequest) -> str:
@@ -132,6 +209,7 @@ def build_request_metadata(request: ModelRequest, input_metrics: dict[str, int])
         "max_output_tokens": request.max_output_tokens,
         "message_count": 2,
         "messages": [{"role": message.role, "content_length": len(message.content)} for message in request.messages],
+        "model_request_metadata": request.metadata,
         "model": request.model,
         "prompt_version": PROFILE_INTAKE_PROMPT_VERSION,
         "response_format": {

@@ -15,6 +15,10 @@ class ProfileIntakeInputMetrics:
     existing_draft_fact_count: int
     existing_skill_claim_count: int
     existing_experience_and_project_count: int
+    current_draft_fact_count: int = 0
+    current_skill_claim_count: int = 0
+    current_experience_and_project_count: int = 0
+    current_evidence_link_count: int = 0
 
     def to_json(self) -> dict[str, int]:
         return {
@@ -22,6 +26,10 @@ class ProfileIntakeInputMetrics:
             "existingDraftFactCount": self.existing_draft_fact_count,
             "existingSkillClaimCount": self.existing_skill_claim_count,
             "existingExperienceAndProjectCount": self.existing_experience_and_project_count,
+            "currentDraftFactCount": self.current_draft_fact_count,
+            "currentSkillClaimCount": self.current_skill_claim_count,
+            "currentExperienceAndProjectCount": self.current_experience_and_project_count,
+            "currentEvidenceLinkCount": self.current_evidence_link_count,
         }
 
 
@@ -35,14 +43,23 @@ def create_profile_intake_artifact_run(settings: Settings, run_id: str | None = 
     )
 
 
-def build_profile_intake_input_metrics(latest_user_message: str, existing_draft: object) -> ProfileIntakeInputMetrics:
+def build_profile_intake_input_metrics(
+    latest_user_message: str,
+    existing_draft: object,
+    authoritative_current_draft: object = None,
+) -> ProfileIntakeInputMetrics:
     draft = existing_draft if isinstance(existing_draft, dict) else {}
+    current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
     return ProfileIntakeInputMetrics(
         latest_user_message_length=len(latest_user_message),
         existing_draft_fact_count=array_length(draft.get("draftFacts")) + array_length(draft.get("facts")),
         existing_skill_claim_count=array_length(draft.get("skillClaims")),
         existing_experience_and_project_count=array_length(draft.get("experienceAndProjects"))
         + array_length(draft.get("experienceSummaries")),
+        current_draft_fact_count=array_length(current_draft.get("draftFacts")),
+        current_skill_claim_count=array_length(current_draft.get("skillClaims")),
+        current_experience_and_project_count=array_length(current_draft.get("experienceAndProjects")),
+        current_evidence_link_count=array_length(current_draft.get("evidenceLinks")),
     )
 
 

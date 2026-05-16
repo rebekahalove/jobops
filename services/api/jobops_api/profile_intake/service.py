@@ -28,7 +28,9 @@ from .artifacts import (
 )
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
 from .persistence import (
+    ensure_editable_profile_intake_draft,
     get_or_create_active_intake_session,
+    get_profile_draft_snapshot_for_session,
     persist_profile_intake_output,
     save_intake_assistant_event,
     save_intake_user_event,
@@ -62,19 +64,13 @@ def run_profile_intake_extraction(
 ) -> ProfileIntakeServiceResult:
     active_settings = settings or load_settings()
     connector_config = read_model_connector_config_from_settings(active_settings)
-    input_metrics = build_profile_intake_input_metrics(request.latest_user_message, request.existing_draft)
-    model_request = build_profile_intake_model_request(request)
-    routed_request = route_model_request(model_request, connector_config.routing)
     artifact_run = create_profile_intake_artifact_run(active_settings)
-
-    artifact_run.write_json(
-        "request-metadata.json",
-        build_request_metadata(routed_request, input_metrics.to_json()),
-    )
-    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
 
     candidate_profile = None
     intake_session = None
+    authoritative_current_draft = None
+    authoritative_current_draft_source = "none_no_database_session"
+    seeded_editable_draft_from_published = False
     if db_session is not None:
         candidate_slug = request.candidate_profile_slug or active_settings.default_candidate_profile_slug
         candidate_profile = get_candidate_profile_by_slug(db_session, candidate_slug)
@@ -91,6 +87,13 @@ def run_profile_intake_extraction(
                 status_code=404,
             )
         intake_session = get_or_create_active_intake_session(db_session, candidate_profile.id)
+        seeded_editable_draft_from_published = ensure_editable_profile_intake_draft(
+            db_session,
+            candidate_profile=candidate_profile,
+            intake_session=intake_session,
+        )
+        authoritative_current_draft = get_profile_draft_snapshot_for_session(db_session, intake_session)
+        authoritative_current_draft_source = "database"
         save_intake_user_event(
             db_session,
             intake_session=intake_session,
@@ -99,6 +102,25 @@ def run_profile_intake_extraction(
             artifact_path=artifact_run.artifact_path,
             model_run_id=artifact_run.run_id,
         )
+
+    input_metrics = build_profile_intake_input_metrics(
+        request.latest_user_message,
+        request.existing_draft,
+        authoritative_current_draft,
+    )
+    model_request = build_profile_intake_model_request(
+        request,
+        authoritative_current_draft=authoritative_current_draft,
+        authoritative_current_draft_source=authoritative_current_draft_source,
+        seeded_editable_draft_from_published=seeded_editable_draft_from_published,
+    )
+    routed_request = route_model_request(model_request, connector_config.routing)
+
+    artifact_run.write_json(
+        "request-metadata.json",
+        build_request_metadata(routed_request, input_metrics.to_json()),
+    )
+    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
 
     try:
         active_connector = connector or create_model_connector(
@@ -255,16 +277,36 @@ def run_profile_intake_extraction(
     )
 
 
-def build_profile_intake_model_request(request: ProfileIntakeExtractRequest) -> ModelRequest:
+def build_profile_intake_model_request(
+    request: ProfileIntakeExtractRequest,
+    *,
+    authoritative_current_draft: dict[str, Any] | None = None,
+    authoritative_current_draft_source: str = "database",
+    seeded_editable_draft_from_published: bool = False,
+) -> ModelRequest:
+    current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
     return ModelRequest(
         task="profile_extract",
         temperature=0,
         max_output_tokens=4000,
         response_mime_type="application/json",
-        metadata={"feature": "profile_intake"},
+        metadata={
+            "authoritative_current_draft_included": bool(current_draft),
+            "authoritative_current_draft_source": authoritative_current_draft_source,
+            "client_existing_draft_included": request.existing_draft is not None,
+            "feature": "profile_intake",
+            "seeded_editable_draft_from_published": seeded_editable_draft_from_published,
+        },
         messages=[
             ModelMessage(role="system", content=PROFILE_INTAKE_SYSTEM_PROMPT),
-            ModelMessage(role="user", content=build_profile_intake_user_prompt(request)),
+            ModelMessage(
+                role="user",
+                content=build_profile_intake_user_prompt(
+                    request,
+                    authoritative_current_draft=current_draft,
+                    authoritative_current_draft_source=authoritative_current_draft_source,
+                ),
+            ),
         ],
     )
 

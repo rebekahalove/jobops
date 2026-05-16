@@ -121,6 +121,12 @@ Request body:
 
 The endpoint owns prompt construction, JSON parsing, Pydantic validation, local artifact saving, server-side debug logging, and persistence of validated draft data. It calls the shared Python model connector in `jobops_api/model_connector/` for provider selection, model routing, and model calls. Next.js should call this endpoint directly or through its thin proxy.
 
+Profile intake is stateful from the backend's perspective. When a database session is available, FastAPI resolves the candidate profile and active intake session, loads the authoritative saved draft snapshot from Postgres, and injects it into the model prompt as `authoritative_current_draft`. The request field `existing_draft` is still accepted for compatibility and UI/debug context, but it is labeled non-authoritative and must not override the database-loaded draft.
+
+Each model turn should be treated as an incremental update to the saved draft, not a replacement profile. The model, not the persistence layer, is responsible for semantically merging the latest message into `authoritative_current_draft`. For `targetRoleIntent`, any non-empty field the model returns is treated as the final post-update value for that field. If the user broadens a preference, including terse wording like "or NYC or San Francisco Bay", the model should copy existing values and include the new values in the same output field. Explicit replacement language such as "instead", "not X anymore", "change X to Y", "remove X", or "clear X" may update or remove values only when that intent is clear. Empty model output fields mean "no change" for existing saved data, not "clear this field".
+
+Location-like target role fields remain string-backed for now. The model should return merged strings such as `Louisville, KY; London, UK` when updating semicolon-delimited location lists. TODO: list-like target role fields should become structured arrays once the DB/UI contract can support that cleanly.
+
 Mock mode:
 
 ```text
@@ -177,4 +183,6 @@ This slice also adds:
 - `profile_intake_events` for redacted user/assistant/model events.
 - `experience_project_drafts` for draft experience and project items.
 
-The active session uses replacement behavior for now: each successful model turn replaces the current draft facts, skills, experience/projects, evidence, and target role intent for that intake session. Review controls, approval/rejection, publication, auth, and durable raw resume storage are deferred.
+The active session uses merge behavior: each successful model turn applies a patch to the current draft facts, skills, experience/projects, evidence, and target role intent for that intake session. Review controls, approval/rejection, publication, auth, and durable raw resume storage are deferred.
+
+Published profile rows must not be mutated directly by profile intake. When no active draft exists but a published role target or published profile facts exist, the backend seeds a private, unpublished intake draft copy before applying new model-generated changes. Broader published-profile edit UX, including asking whether to start from scratch or from the previous published profile, remains deferred.
