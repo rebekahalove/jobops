@@ -193,6 +193,7 @@ export function AiCommandCenter({
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {
   const modelRequest = getModelRequestDebugPayload(action.resultPayload);
+  const modelResponse = getModelResponseDebugPayload(action.resultPayload);
 
   return (
     <article className="agent-action-card">
@@ -209,6 +210,12 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
         <details className="model-request-debug">
           <summary>Sent to model</summary>
           <pre>{formatModelRequestDebugPayload(modelRequest)}</pre>
+        </details>
+      ) : null}
+      {modelResponse ? (
+        <details className="model-request-debug">
+          <summary>Model response</summary>
+          <pre>{formatModelRequestDebugPayload(modelResponse)}</pre>
         </details>
       ) : null}
       {action.targetWorkspace ? (
@@ -231,6 +238,15 @@ function getModelRequestDebugPayload(resultPayload: unknown) {
 
   const payload = resultPayload as { modelRequest?: unknown };
   return payload.modelRequest ?? null;
+}
+
+function getModelResponseDebugPayload(resultPayload: unknown) {
+  if (!resultPayload || typeof resultPayload !== "object" || Array.isArray(resultPayload)) {
+    return null;
+  }
+
+  const payload = resultPayload as { modelResponse?: unknown };
+  return payload.modelResponse ?? null;
 }
 
 function formatModelRequestDebugPayload(modelRequest: unknown) {

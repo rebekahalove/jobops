@@ -62,7 +62,7 @@ Update guidance:
 - Return the complete updated draft, while keeping each item concise enough to fit comfortably in one JSON object.
 - The user prompt includes detected_intake_mode and capacity_guidance. Follow that guidance.
 - For detected_intake_mode "chat_update", extract compact incremental updates: up to 4 draftFacts, 6 skillClaims, 3 experienceAndProjects, 4 evidenceLinks, 1-3 clarifyingQuestions, and up to 3 changeSummary entries.
-- For detected_intake_mode "resume_intake", extract a fuller structured draft suitable for a normal 2-3 page resume: up to 20 draftFacts, 35 skillClaims, 12 experienceAndProjects, 12 evidenceLinks, 3-5 clarifyingQuestions, and up to 8 changeSummary entries.
+- For detected_intake_mode "resume_intake", extract a fuller structured draft suitable for a normal 2-3 page resume: up to 32 draftFacts, 50 skillClaims, 18 experienceAndProjects, 20 evidenceLinks, 3-6 clarifyingQuestions, and up to 12 changeSummary entries.
 - These are total output caps for the complete updated draft. Do not exceed the resume caps even if the resume is longer.
 - Keep assistantMessage under 240 characters.
 - Keep every targetRoleIntent field under 160 characters.
@@ -70,7 +70,7 @@ Update guidance:
 - Keep each claim, evidence, title, organization, summary, label, question, and changeSummary string under 180 characters.
 - Do not copy large resume sections into the output.
 - Prefer a useful, deduplicated draft over exhaustive extraction.
-- Ask at most 1-3 targeted next questions.
+- Ask at most 1-3 targeted next questions in chat update mode, and at most 3-6 in resume intake mode.
 - In resume intake mode, choose the most representative roles, projects, skills, education, certifications, outcomes, and links instead of compressing the resume into a tiny first-pass subset.
 - In chat update mode, keep newly extracted items compact unless preserving a previously saved draft requires returning existing items.
 - Return JSON only. The first character must be "{" and the last character must be "}".

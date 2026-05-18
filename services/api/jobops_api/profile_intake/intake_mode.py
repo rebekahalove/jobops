@@ -38,16 +38,16 @@ CHAT_UPDATE_CAPACITY = IntakeCapacity(
 )
 
 RESUME_INTAKE_CAPACITY = IntakeCapacity(
-    draft_facts=20,
-    skill_claims=35,
-    experience_and_projects=12,
-    evidence_links=12,
-    clarifying_questions=5,
-    change_summary=8,
+    draft_facts=32,
+    skill_claims=50,
+    experience_and_projects=18,
+    evidence_links=20,
+    clarifying_questions=6,
+    change_summary=12,
 )
 
 CHAT_UPDATE_MAX_OUTPUT_TOKENS = 5000
-RESUME_INTAKE_MAX_OUTPUT_TOKENS = 10000
+RESUME_INTAKE_MAX_OUTPUT_TOKENS = 16000
 
 SECTION_HEADING_PATTERN = re.compile(
     r"(?im)^\s*(experience|work history|employment|education|skills|technical skills|projects|"
@@ -107,8 +107,8 @@ def max_output_tokens_for_mode(mode: ProfileIntakeMode, current_draft: dict[str,
         return (
             RESUME_INTAKE_MAX_OUTPUT_TOKENS,
             (
-                "Resume intake may emit up to 20 facts, 35 skills, 12 experiences, and 12 evidence links; "
-                "10000 tokens gives concise JSON room to complete without opening an unbounded response."
+                "Resume intake may emit up to 32 facts, 50 skills, 18 experiences, and 20 evidence links; "
+                "16000 tokens gives concise JSON room to complete without opening an unbounded response."
             ),
         )
     if draft_needs_resume_token_budget(current_draft):

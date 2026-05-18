@@ -156,6 +156,7 @@ def execute_command_center_command(
     result_payload = {
         "profileDraft": profile_draft,
         **({"modelRequest": intake_result.body["modelRequest"]} if intake_result.body.get("modelRequest") else {}),
+        **({"modelResponse": intake_result.body["modelResponse"]} if intake_result.body.get("modelResponse") else {}),
     }
     assistant_message = profile_draft.get("assistantMessage") or "I updated your profile draft and kept it private for review."
 

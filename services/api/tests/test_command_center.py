@@ -61,6 +61,8 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
     assert payload["result_payload"]["modelRequest"]["task"] == "profile_draft_update"
     assert payload["result_payload"]["modelRequest"]["messages"][1]["role"] == "user"
     assert "I want to be an Applied AI Engineer." in payload["result_payload"]["modelRequest"]["messages"][1]["content"]
+    assert payload["result_payload"]["modelResponse"]["provider"] == "mock"
+    assert "assistantMessage" in payload["result_payload"]["modelResponse"]["text"]
 
 
 def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp_path: Path, monkeypatch) -> None:
@@ -105,6 +107,10 @@ def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp
                         {"role": "user", "content": "current draft with Louisville, KY"},
                     ],
                 },
+                "modelResponse": {
+                    "provider": "test",
+                    "text": "{\"assistantMessage\":\"Updated.\"}",
+                },
                 "result": {
                     "assistantMessage": "Updated.",
                     "targetRoleIntent": request.existing_draft["targetRoleIntent"],
@@ -137,6 +143,7 @@ def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp
     assert request.existing_draft["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
     assert response.result_payload is not None
     assert response.result_payload["modelRequest"]["messages"][1]["content"] == "current draft with Louisville, KY"
+    assert response.result_payload["modelResponse"]["text"] == "{\"assistantMessage\":\"Updated.\"}"
 
 
 def test_profile_intake_command_missing_candidate_profile_returns_clear_error(tmp_path: Path, monkeypatch) -> None:

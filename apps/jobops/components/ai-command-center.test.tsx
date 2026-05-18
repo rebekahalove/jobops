@@ -59,7 +59,7 @@ describe("AI command center", () => {
     expect(html).toContain("href=\"/profile\"");
   });
 
-  it("prints the model request debug payload on profile-intake action cards", () => {
+  it("prints model request and response debug payloads on profile-intake action cards", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter
         initialActions={[
@@ -77,6 +77,10 @@ describe("AI command center", () => {
                   { role: "system", content: "System prompt" },
                   { role: "user", content: "Louisville, KY is in the current draft" }
                 ]
+              },
+              modelResponse: {
+                finishReason: "STOP",
+                text: "{\"assistantMessage\":\"Drafted.\"}"
               }
             }
           }
@@ -87,6 +91,8 @@ describe("AI command center", () => {
     expect(html).toContain("Sent to model");
     expect(html).toContain("profile_draft_update");
     expect(html).toContain("Louisville, KY is in the current draft");
+    expect(html).toContain("Model response");
+    expect(html).toContain("Drafted.");
   });
 
   it("notifies the profile workspace after completed profile-intake commands", async () => {

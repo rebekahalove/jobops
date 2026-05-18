@@ -282,6 +282,7 @@ def run_profile_intake_extraction(
             "ok": True,
             "result": output_json,
             **model_request_debug_fields(active_settings, routed_request),
+            **model_response_debug_fields(active_settings, response),
         },
         status_code=200,
     )
@@ -462,6 +463,7 @@ def validation_failure_result(
     )
 
     is_truncation = validation_issues_indicate_truncation(issues)
+    is_capacity_error = validation_issues_indicate_capacity_overflow(issues)
 
     return ProfileIntakeServiceResult(
         body={
@@ -469,11 +471,20 @@ def validation_failure_result(
             "error": (
                 "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
                 if is_truncation
+                else "Profile intake model returned more structured items than the current schema allows. No draft data was applied."
+                if is_capacity_error
                 else SAFE_VALIDATION_ERROR
             ),
-            "code": "model_response_truncated" if is_truncation else "model_output_invalid",
+            "code": (
+                "model_response_truncated"
+                if is_truncation
+                else "model_output_exceeded_schema_capacity"
+                if is_capacity_error
+                else "model_output_invalid"
+            ),
             "issues": issues,
             **model_request_debug_fields(settings, model_request),
+            **model_response_debug_fields(settings, response),
             **debug_fields(artifact_run),
         },
         status_code=502,
@@ -572,6 +583,22 @@ def model_request_debug_fields(settings: Settings, request: ModelRequest) -> dic
     }
 
 
+def model_response_debug_fields(settings: Settings, response) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"} or response is None:
+        return {}
+
+    return {
+        "modelResponse": {
+            "provider": response.provider,
+            "model": response.model,
+            "finishReason": response.finish_reason,
+            "text": response.text,
+            "usage": response.usage.__dict__ if response.usage else None,
+            "metadata": response.metadata,
+        }
+    }
+
+
 def format_validation_issues(error: ValidationError) -> list[str]:
     issues = []
     for item in error.errors():
@@ -588,3 +615,7 @@ def add_truncation_hint(issues: list[str], finish_reason: str | None) -> list[st
 
 def validation_issues_indicate_truncation(issues: list[str]) -> bool:
     return any("truncated" in issue.lower() for issue in issues)
+
+
+def validation_issues_indicate_capacity_overflow(issues: list[str]) -> bool:
+    return any("list should have at most" in issue.lower() for issue in issues)

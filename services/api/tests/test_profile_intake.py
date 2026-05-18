@@ -97,7 +97,29 @@ def test_malformed_model_output_fails_safely(tmp_path: Path) -> None:
     assert result.body["issues"] == ["Output is not valid JSON."]
     assert result.body["modelRequest"]["task"] == "profile_draft_update"
     assert result.body["modelRequest"]["messages"][1]["role"] == "user"
+    assert result.body["modelResponse"]["text"] == "not json"
     assert "debug_run_id" not in result.body
+
+
+def test_capacity_validation_failure_returns_specific_error_and_raw_response(tmp_path: Path) -> None:
+    over_capacity_output = realistic_resume_output()
+    over_capacity_output["changeSummary"] = [f"Change {index}" for index in range(13)]
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(StaticProvider(json.dumps(over_capacity_output))),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 502
+    assert result.body["ok"] is False
+    assert result.body["code"] == "model_output_exceeded_schema_capacity"
+    assert result.body["error"] == (
+        "Profile intake model returned more structured items than the current schema allows. No draft data was applied."
+    )
+    assert "changeSummary: List should have at most 12 items" in " ".join(result.body["issues"])
+    assert result.body["modelResponse"]["finishReason"] == "stop"
+    assert "Change 12" in result.body["modelResponse"]["text"]
 
 
 def test_pydantic_validation_failure_rejects_unsafe_generated_metadata(tmp_path: Path) -> None:
@@ -234,17 +256,17 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
     assert result.status_code == 200
     request = provider.requests[0]
     prompt_payload = json.loads(request.messages[1].content)
-    assert request.max_output_tokens == 10000
+    assert request.max_output_tokens == 16000
     assert request.metadata["intake_mode"] == "resume_intake"
-    assert "20 facts, 35 skills, 12 experiences, and 12 evidence links" in request.metadata["output_token_budget_reason"]
+    assert "32 facts, 50 skills, 18 experiences, and 20 evidence links" in request.metadata["output_token_budget_reason"]
     assert prompt_payload["detected_intake_mode"] == "resume_intake"
     assert prompt_payload["capacity_guidance"]["active"] == {
-        "draftFacts": 20,
-        "skillClaims": 35,
-        "experienceAndProjects": 12,
-        "evidenceLinks": 12,
-        "clarifyingQuestions": 5,
-        "changeSummary": 8,
+        "draftFacts": 32,
+        "skillClaims": 50,
+        "experienceAndProjects": 18,
+        "evidenceLinks": 20,
+        "clarifyingQuestions": 6,
+        "changeSummary": 12,
     }
 
 
@@ -290,7 +312,8 @@ def test_truncated_resume_response_returns_specific_actionable_error(tmp_path: P
         "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
     )
     assert "Model response appears to have been truncated before valid JSON completed." in result.body["issues"]
-    assert result.body["modelRequest"]["maxOutputTokens"] == 10000
+    assert result.body["modelRequest"]["maxOutputTokens"] == 16000
+    assert result.body["modelResponse"]["finishReason"] == "MAX_TOKENS"
     run_dir = only_run_dir(tmp_path)
     validation_error = json.loads((run_dir / "validation-error.json").read_text(encoding="utf-8"))
     assert "truncated" in " ".join(validation_error["issues"]).lower()
