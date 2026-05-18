@@ -268,6 +268,10 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
         "clarifyingQuestions": 6,
         "changeSummary": 12,
     }
+    system_prompt = request.messages[0].content
+    assert "Put education and certifications in experienceAndProjects, not draftFacts." in system_prompt
+    assert 'Use itemType "education"' in system_prompt
+    assert 'Use itemType "certification"' in system_prompt
 
 
 def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> None:

@@ -202,7 +202,7 @@ describe("Profile intake workspace", () => {
     expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
   });
 
-  it("shows education and certification rows even when stored item type defaulted to experience", () => {
+  it("shows education and certification rows only when they are structured with matching item types", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
       targetRoleIntent: {},
@@ -210,7 +210,7 @@ describe("Profile intake workspace", () => {
       skillClaims: [],
       experienceAndProjects: [
         {
-          itemType: "experience",
+          itemType: "education",
           title: "B.A., Fine Arts",
           organization: "Indiana University",
           summary: "Degree listed in resume education section.",
@@ -220,7 +220,7 @@ describe("Profile intake workspace", () => {
           published: false
         },
         {
-          itemType: "experience",
+          itemType: "certification",
           title: "Certificate - Supervised Machine Learning",
           organization: "Stanford Online (Coursera)",
           summary: "Credential listed in resume certification section.",
@@ -248,7 +248,7 @@ describe("Profile intake workspace", () => {
     expect(certificationHtml).toContain("Stanford Online (Coursera)");
   });
 
-  it("moves credential-like facts into education and certification tabs instead of generic facts", () => {
+  it("does not reroute credential-like facts into education and certification tabs", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
       targetRoleIntent: {},
@@ -295,11 +295,11 @@ describe("Profile intake workspace", () => {
       <ReviewTabbedList activeTab="facts" draft={nextState.draft} onTabChange={() => undefined} />
     );
 
-    expect(educationHtml).toContain("B.A., Fine Arts - Indiana University.");
-    expect(certificationHtml).toContain("Certificate - Stanford Online (Coursera)");
+    expect(educationHtml).not.toContain("B.A., Fine Arts - Indiana University.");
+    expect(certificationHtml).not.toContain("Certificate - Stanford Online (Coursera)");
     expect(factsHtml).toContain("Built a production AI reporting platform.");
-    expect(factsHtml).not.toContain("B.A., Fine Arts - Indiana University.");
-    expect(factsHtml).not.toContain("Certificate - Stanford Online (Coursera)");
+    expect(factsHtml).toContain("B.A., Fine Arts - Indiana University.");
+    expect(factsHtml).toContain("Certificate - Stanford Online (Coursera)");
   });
 
   it("loads saved draft state from the profile-draft proxy", async () => {

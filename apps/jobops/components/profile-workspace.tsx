@@ -440,31 +440,24 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
   }
 
   if (activeTab === "experience") {
-    const items = draft.experienceSummaries.filter((item) => {
-      const itemType = getReviewItemType(item);
-      return itemType === "experience" || itemType === "project";
-    });
+    const items = draft.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project");
     return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} />;
   }
 
   if (activeTab === "education") {
-    const educationFacts = draft.facts.filter((fact) => getFactCredentialType(fact) === "education");
     return (
-      <CredentialList
+      <ExperienceList
         emptyLabel="No education items drafted yet."
-        facts={educationFacts}
-        items={draft.experienceSummaries.filter((item) => getReviewItemType(item) === "education")}
+        items={draft.experienceSummaries.filter((item) => item.itemType === "education")}
       />
     );
   }
 
   if (activeTab === "certifications") {
-    const certificationFacts = draft.facts.filter((fact) => getFactCredentialType(fact) === "certification");
     return (
-      <CredentialList
+      <ExperienceList
         emptyLabel="No certification items drafted yet."
-        facts={certificationFacts}
-        items={draft.experienceSummaries.filter((item) => getReviewItemType(item) === "certification")}
+        items={draft.experienceSummaries.filter((item) => item.itemType === "certification")}
       />
     );
   }
@@ -494,15 +487,12 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
   }
 
   if (activeTab === "achievements") {
-    const achievements = draft.facts.filter(
-      (fact) => !getFactCredentialType(fact) && looksLikeAchievement(fact.claim, fact.category)
-    );
+    const achievements = draft.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
     return achievements.length ? <FactList facts={achievements} /> : <EmptyMessage>No achievement or outcome items drafted yet.</EmptyMessage>;
   }
 
   if (activeTab === "facts") {
-    const facts = draft.facts.filter((fact) => !getFactCredentialType(fact));
-    return facts.length ? <FactList facts={facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
+    return draft.facts.length ? <FactList facts={draft.facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
   }
 
   return draft.links.length ? (
@@ -541,7 +531,7 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
             items={[
               ["Dates", formatDateRange(experience.startDate, experience.endDate)],
               ["Location", experience.location],
-              ["Type", getReviewItemType(experience)]
+              ["Type", experience.itemType]
             ]}
           />
           <p>{experience.summary}</p>
@@ -553,58 +543,6 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
             </ul>
           ) : null}
           <StatusBadges source={experience.source} />
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function CredentialList({
-  emptyLabel,
-  facts,
-  items
-}: {
-  emptyLabel: string;
-  facts: MockProfileDraft["facts"];
-  items: MockProfileDraft["experienceSummaries"];
-}) {
-  if (!items.length && !facts.length) {
-    return <EmptyMessage>{emptyLabel}</EmptyMessage>;
-  }
-
-  return (
-    <ul className="profile-review-list">
-      {items.map((experience) => (
-        <li className="profile-review-item" key={experience.id}>
-          <div className="profile-review-primary">
-            <strong>{experience.title}</strong>
-            <span>{experience.organization}</span>
-          </div>
-          <DetailGrid
-            items={[
-              ["Dates", formatDateRange(experience.startDate, experience.endDate)],
-              ["Location", experience.location],
-              ["Type", getReviewItemType(experience)]
-            ]}
-          />
-          <p>{experience.summary}</p>
-          {experience.bullets.length ? (
-            <ul className="profile-review-bullets">
-              {experience.bullets.map((bullet) => (
-                <li key={bullet}>{bullet}</li>
-              ))}
-            </ul>
-          ) : null}
-          <StatusBadges source={experience.source} />
-        </li>
-      ))}
-      {facts.map((fact) => (
-        <li className="profile-review-item profile-review-row" key={fact.id}>
-          <div className="profile-review-primary">
-            <strong>{fact.claim}</strong>
-            <span>{fact.category}</span>
-          </div>
-          <StatusBadges source={fact.source} />
         </li>
       ))}
     </ul>
@@ -675,22 +613,14 @@ function EmptyMessage({ children }: { children: React.ReactNode }) {
 function buildReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, number> {
   return {
     experience:
-      draft?.experienceSummaries.filter((item) => {
-        const itemType = getReviewItemType(item);
-        return itemType === "experience" || itemType === "project";
-      }).length ?? 0,
-    skills: draft?.skillClaims.length ?? 0,
-    achievements:
-      draft?.facts.filter((fact) => !getFactCredentialType(fact) && looksLikeAchievement(fact.claim, fact.category))
+      draft?.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project")
         .length ?? 0,
-    facts: draft?.facts.filter((fact) => !getFactCredentialType(fact)).length ?? 0,
+    skills: draft?.skillClaims.length ?? 0,
+    achievements: draft?.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length ?? 0,
+    facts: draft?.facts.length ?? 0,
     evidence: draft?.links.length ?? 0,
-    education:
-      (draft?.experienceSummaries.filter((item) => getReviewItemType(item) === "education").length ?? 0) +
-      (draft?.facts.filter((fact) => getFactCredentialType(fact) === "education").length ?? 0),
-    certifications:
-      (draft?.experienceSummaries.filter((item) => getReviewItemType(item) === "certification").length ?? 0) +
-      (draft?.facts.filter((fact) => getFactCredentialType(fact) === "certification").length ?? 0)
+    education: draft?.experienceSummaries.filter((item) => item.itemType === "education").length ?? 0,
+    certifications: draft?.experienceSummaries.filter((item) => item.itemType === "certification").length ?? 0
   };
 }
 
@@ -728,32 +658,6 @@ function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["s
 
 function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
   return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
-}
-
-function getReviewItemType(item: MockProfileDraft["experienceSummaries"][number]) {
-  if (item.itemType === "education" || item.itemType === "certification") {
-    return item.itemType;
-  }
-
-  const normalized = `${item.title} ${item.organization} ${item.summary} ${item.bullets.join(" ")}`.toLowerCase();
-  if (/certificate|certification|coursera|credential/.test(normalized)) {
-    return "certification";
-  }
-  if (/university|college|b\.a\.|b\.s\.|degree|stanford|bachelor|master/.test(normalized)) {
-    return "education";
-  }
-  return item.itemType;
-}
-
-function getFactCredentialType(fact: MockProfileDraft["facts"][number]) {
-  const normalized = `${fact.category} ${fact.claim}`.toLowerCase();
-  if (/certificate|certification|credential|coursera/.test(normalized)) {
-    return "certification";
-  }
-  if (/education|university|college|b\.a\.|b\.s\.|degree|bachelor|master/.test(normalized)) {
-    return "education";
-  }
-  return "";
 }
 
 function formatYears(yearsMin?: number, yearsMax?: number) {

@@ -66,6 +66,10 @@ Update guidance:
 - These are total output caps for the complete updated draft. Do not exceed the resume caps even if the resume is longer.
 - For skillClaims, include yearsMin and yearsMax when the resume clearly states duration or when it can be conservatively inferred from dated roles; otherwise use null or omit them.
 - For experienceAndProjects, include itemType as "experience", "project", "education", or "certification". Preserve role/project dates in startDate and endDate when stated, include location when stated, and preserve concise resume bullets in bullets.
+- Put education and certifications in experienceAndProjects, not draftFacts. Use itemType "education" for degrees, schools, universities, colleges, coursework programs, and training entries. Use itemType "certification" for certificates, credentials, licenses, Coursera/online certificates, and similar completed credentials.
+- For education entries, use title for the degree/program/course name, organization for the school/provider, startDate/endDate when stated, and summary for field of study or relevant context.
+- For certification entries, use title for the certificate or credential name, organization for the issuer/provider, endDate for completion date when stated, and summary for the credential context.
+- draftFacts should contain broader claims and outcomes, not standalone degree/certificate records.
 - Keep assistantMessage under 240 characters.
 - Keep every targetRoleIntent field under 160 characters.
 - For targetTitles, use only exact titles stated by the user. Do not invent adjacent, seniority, alternate, or related title lists.
@@ -129,6 +133,36 @@ Return exactly this JSON shape:
         "location": "Remote",
         "summary": "Concise summary.",
         "bullets": ["Concise resume bullet."],
+        "source": "resume",
+        "status": "needs_review",
+        "visibility": "private",
+        "published": false
+      },
+      {
+        "id": "Preserve existing id; omit id for new items.",
+        "itemType": "education",
+        "title": "B.A., Fine Arts",
+        "organization": "Indiana University",
+        "startDate": "",
+        "endDate": "",
+        "location": "",
+        "summary": "Degree listed in education section.",
+        "bullets": [],
+        "source": "resume",
+        "status": "needs_review",
+        "visibility": "private",
+        "published": false
+      },
+      {
+        "id": "Preserve existing id; omit id for new items.",
+        "itemType": "certification",
+        "title": "Supervised Machine Learning: Regression & Classification",
+        "organization": "Stanford Online (Coursera)",
+        "startDate": "",
+        "endDate": "",
+        "location": "",
+        "summary": "Certificate listed in certification section.",
+        "bullets": [],
         "source": "resume",
         "status": "needs_review",
         "visibility": "private",
