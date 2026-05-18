@@ -243,6 +243,35 @@ textarea {
   padding: 4px 8px;
 }
 
+.model-request-debug {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.model-request-debug summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.model-request-debug pre {
+  max-height: 340px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #17212f;
+  color: #f7fbfa;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .workspace-tabs {
   display: flex;
   gap: 8px;

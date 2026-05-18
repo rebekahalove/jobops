@@ -59,6 +59,36 @@ describe("AI command center", () => {
     expect(html).toContain("href=\"/profile\"");
   });
 
+  it("prints the model request debug payload on profile-intake action cards", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-profile-debug",
+            type: "profile_intake",
+            title: "Update profile",
+            summary: "Updated the saved profile draft.",
+            status: "completed",
+            targetWorkspace: "profile",
+            resultPayload: {
+              modelRequest: {
+                task: "profile_draft_update",
+                messages: [
+                  { role: "system", content: "System prompt" },
+                  { role: "user", content: "Louisville, KY is in the current draft" }
+                ]
+              }
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Sent to model");
+    expect(html).toContain("profile_draft_update");
+    expect(html).toContain("Louisville, KY is in the current draft");
+  });
+
   it("notifies the profile workspace after completed profile-intake commands", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 

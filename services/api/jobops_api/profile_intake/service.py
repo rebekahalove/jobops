@@ -156,6 +156,7 @@ def run_profile_intake_extraction(
                     "mode, or configure JOBOPS_LLM_PROVIDER=gemini with server-side GEMINI_API_KEY."
                 ),
                 "code": error.code,
+                **model_request_debug_fields(active_settings, routed_request),
                 **debug_fields(artifact_run),
             },
             status_code=503,
@@ -198,6 +199,7 @@ def run_profile_intake_extraction(
                 "ok": False,
                 "error": "Profile intake model call failed. No draft data was applied.",
                 "code": error.code,
+                **model_request_debug_fields(active_settings, routed_request),
                 **debug_fields(artifact_run),
             },
             status_code=502,
@@ -220,6 +222,7 @@ def run_profile_intake_extraction(
             latency_ms=latency_ms,
             model_request=routed_request,
             response=response,
+            settings=active_settings,
         )
     except ValidationError as error:
         issues = add_truncation_hint(format_validation_issues(error), response.finish_reason)
@@ -233,6 +236,7 @@ def run_profile_intake_extraction(
             latency_ms=latency_ms,
             model_request=routed_request,
             response=response,
+            settings=active_settings,
         )
 
     parsed_output_json = output.model_dump(by_alias=True, exclude_none=True)
@@ -276,6 +280,7 @@ def run_profile_intake_extraction(
         body={
             "ok": True,
             "result": output_json,
+            **model_request_debug_fields(active_settings, routed_request),
         },
         status_code=200,
     )
@@ -406,6 +411,7 @@ def validation_failure_result(
     latency_ms: int,
     model_request,
     response,
+    settings: Settings,
 ) -> ProfileIntakeServiceResult:
     if artifact_run.enabled and artifact_run.run_id:
         artifact_run.write_json(
@@ -454,6 +460,7 @@ def validation_failure_result(
             "ok": False,
             "error": SAFE_VALIDATION_ERROR,
             "issues": issues,
+            **model_request_debug_fields(settings, model_request),
             **debug_fields(artifact_run),
         },
         status_code=502,
@@ -526,6 +533,29 @@ def debug_fields(artifact_run) -> dict[str, str]:
     return {
         **({"debug_run_id": artifact_run.run_id} if artifact_run.run_id else {}),
         **({"artifact_path": artifact_run.artifact_path} if artifact_run.artifact_path else {}),
+    }
+
+
+def model_request_debug_fields(settings: Settings, request: ModelRequest) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return {}
+
+    return {
+        "modelRequest": {
+            "task": request.task,
+            "model": request.model,
+            "temperature": request.temperature,
+            "maxOutputTokens": request.max_output_tokens,
+            "responseMimeType": request.response_mime_type,
+            "metadata": request.metadata,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in request.messages
+            ],
+        }
     }
 
 

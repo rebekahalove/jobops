@@ -95,6 +95,8 @@ def test_malformed_model_output_fails_safely(tmp_path: Path) -> None:
     assert result.body["ok"] is False
     assert result.body["error"] == "The model returned malformed profile intake data. No draft data was applied."
     assert result.body["issues"] == ["Output is not valid JSON."]
+    assert result.body["modelRequest"]["task"] == "profile_draft_update"
+    assert result.body["modelRequest"]["messages"][1]["role"] == "user"
     assert "debug_run_id" not in result.body
 
 

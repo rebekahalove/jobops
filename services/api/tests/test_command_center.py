@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
-from jobops_api.db.models import Base
+from jobops_api.db.models import Base, ProfileIntakeSession, RoleTarget
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -57,6 +58,133 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
     assert payload["actions"][0]["status"] == "completed"
     assert payload["actions"][0]["targetWorkspace"] == "profile"
     assert payload["result_payload"]["profileDraft"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert payload["result_payload"]["modelRequest"]["task"] == "profile_draft_update"
+    assert payload["result_payload"]["modelRequest"]["messages"][1]["role"] == "user"
+    assert "I want to be an Applied AI Engineer." in payload["result_payload"]["modelRequest"]["messages"][1]["content"]
+
+
+def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+    captured = {}
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        intake_session = ProfileIntakeSession(candidate_profile_id=profile.id, status="active", redacted_state={})
+        session.add(intake_session)
+        session.flush()
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                profile_intake_session_id=intake_session.id,
+                target_titles=["Applied AI Engineer"],
+                role_families=["Applied AI"],
+                preferred_locations=["Louisville, KY"],
+                work_modes=["flexible"],
+                constraints={"domainsOrIndustries": "developer tools"},
+                source="model",
+                review_status="needs_review",
+                visibility="private",
+                publication_status="not_published",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+    def fake_run_profile_intake_extraction(request, *, db_session, settings):
+        captured["request"] = request
+        return SimpleNamespace(
+            status_code=200,
+            body={
+                "ok": True,
+                "modelRequest": {
+                    "task": "profile_draft_update",
+                    "messages": [
+                        {"role": "system", "content": "system prompt"},
+                        {"role": "user", "content": "current draft with Louisville, KY"},
+                    ],
+                },
+                "result": {
+                    "assistantMessage": "Updated.",
+                    "targetRoleIntent": request.existing_draft["targetRoleIntent"],
+                    "draftFacts": [],
+                    "skillClaims": [],
+                    "experienceAndProjects": [],
+                    "evidenceLinks": [],
+                    "clarifyingQuestions": [],
+                    "changeSummary": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fake_run_profile_intake_extraction)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="or maybe on location in London, UK as well",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    request = captured["request"]
+    assert response.actions[0].status == "completed"
+    assert request.latest_user_message == "or maybe on location in London, UK as well"
+    assert request.candidate_profile_slug == "rebekah-love"
+    assert request.existing_draft["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert request.existing_draft["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
+    assert response.result_payload is not None
+    assert response.result_payload["modelRequest"]["messages"][1]["content"] == "current draft with Louisville, KY"
+
+
+def test_profile_intake_command_missing_candidate_profile_returns_clear_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("profile intake should not run for a missing candidate profile")
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fail_if_called)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="I want to be an Applied AI Engineer.",
+                candidate_profile_slug="missing-profile",
+            ),
+            session=session,
+        )
+
+    assert response.assistant_message == "Candidate profile not found."
+    assert response.actions[0].type == "profile_intake"
+    assert response.actions[0].status == "failed"
+    assert response.result_payload == {
+        "ok": False,
+        "error": "Candidate profile not found.",
+        "code": "candidate_profile_not_found",
+    }
+
+
+def test_non_profile_command_returns_planned_action_without_profile_intake(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("profile intake should not run for planned non-profile commands")
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fail_if_called)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(command="Prioritize my saved jobs for today."),
+            session=session,
+        )
+
+    assert response.actions[0].type == "prioritize_jobs"
+    assert response.actions[0].status == "planned"
+    assert response.target_workspace == "jobs"
 
 
 def test_latest_profile_draft_endpoint_returns_saved_snapshot(tmp_path: Path, monkeypatch) -> None:
