@@ -127,6 +127,10 @@ Each model turn returns `updatedDraftProfile`, the complete updated draft after 
 
 The backend validates the full updated draft and synchronizes editable draft rows to match it. Existing items are matched by ID first; editable content fields may be updated, but review status, visibility, publication status, and published/approved metadata are preserved. New items omit IDs and are created as private unpublished drafts. Existing draft items omitted from `updatedDraftProfile` are preserved unless their IDs appear in `removedItems`, which keeps malformed or incomplete model output from deleting saved profile data.
 
+Profile intake detects compact chat updates separately from resume-like input. Resume-like signals include explicit resume/CV wording, long pasted text with resume section headings, multiple role/date patterns, and section sets such as Experience, Education, Skills, Projects, or Certifications. Compact chat turns are prompted to stay small, while resume intake may use up to 20 facts, 35 skill claims, 12 experience/project items, 12 evidence links, 5 clarifying questions, and 8 change-summary entries. The Pydantic schema enforces those resume-mode caps.
+
+Model requests use `max_output_tokens=5000` for compact chat updates and `max_output_tokens=10000` for resume intake or already-rich saved drafts. The 10000-token budget is intentionally practical rather than open-ended: it gives concise JSON enough room for the resume-mode caps while still bounding provider cost and response size. If a provider still truncates output, the API returns `code: "model_response_truncated"` with a specific error and no draft data is applied.
+
 Location-like target role fields remain string-backed for now. The model should return merged strings such as `Louisville, KY; London, UK` when updating semicolon-delimited location lists. TODO: list-like target role fields should become structured arrays once the DB/UI contract can support that cleanly.
 
 Mock mode:

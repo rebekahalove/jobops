@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from ..model_connector import ModelRequest
+from .intake_mode import CHAT_UPDATE_CAPACITY, RESUME_INTAKE_CAPACITY
 
 
 def build_mock_profile_intake_response(request: ModelRequest) -> str:
@@ -59,6 +60,7 @@ def build_mock_profile_intake_output(message: str, current_draft: object = None)
     is_resume_like = looks_like_resume_or_work_history(message)
     is_past_work_like = looks_like_past_work(message)
     should_extract_profile_items = is_resume_like or is_past_work_like
+    capacity = RESUME_INTAKE_CAPACITY if is_resume_like else CHAT_UPDATE_CAPACITY
     source = "resume" if is_resume_like else "chat" if is_past_work_like else "model"
     title = extract_target_title(message)
     mentions_ai = mentions_any(lower, ["ai", "llm", "agent", "automation", "machine learning", "rag", "eval"])
@@ -98,29 +100,28 @@ def build_mock_profile_intake_output(message: str, current_draft: object = None)
                     }
                 )
             )
+        draft_facts.extend(extract_resume_fact_items(message, source, capacity.draft_facts - len(draft_facts)))
 
     skill_claims = []
     if should_extract_profile_items:
-        skill_claims.extend(skill_if(lower, "Python", "programming", ["python"], source))
-        skill_claims.extend(skill_if(lower, "FastAPI", "backend", ["fastapi"], source))
-        skill_claims.extend(skill_if(lower, "LLM systems", "ai_systems", ["llm", "agent", "rag", "prompt"], source))
-        skill_claims.extend(
-            skill_if(lower, "Evals and reliability", "quality", ["eval", "monitor", "observability", "test"], source)
-        )
-        skill_claims.extend(skill_if(lower, "Postgres", "data", ["postgres", "postgresql", "sql"], source))
+        skill_claims.extend(extract_skill_claims(lower, source))
 
     experience_and_projects = []
     if should_extract_profile_items:
-        experience_and_projects.append(
-            generated_item(
-                {
-                    "title": first_interesting_line(message) or "Experience or project draft",
-                    "organization": "Needs review",
-                    "summary": "Potential work, project, education, or artifact evidence detected from intake text.",
-                    "source": source,
-                }
-            )
+        experience_and_projects.extend(
+            extract_resume_experience_items(message, source, capacity.experience_and_projects)
         )
+        if not experience_and_projects:
+            experience_and_projects.append(
+                generated_item(
+                    {
+                        "title": first_interesting_line(message) or "Experience or project draft",
+                        "organization": "Needs review",
+                        "summary": "Potential work, project, education, or artifact evidence detected from intake text.",
+                        "source": source,
+                    }
+                )
+            )
 
     target_role_intent = {
         **(updated_draft.get("targetRoleIntent") if isinstance(updated_draft.get("targetRoleIntent"), dict) else {}),
@@ -133,14 +134,18 @@ def build_mock_profile_intake_output(message: str, current_draft: object = None)
 
     updated_draft = {
         "targetRoleIntent": {key: value for key, value in target_role_intent.items() if value},
-        "draftFacts": append_unique_items(updated_draft.get("draftFacts"), draft_facts[:4], "claim"),
-        "skillClaims": append_unique_items(updated_draft.get("skillClaims"), skill_claims[:6], "skill"),
+        "draftFacts": append_unique_items(updated_draft.get("draftFacts"), draft_facts[: capacity.draft_facts], "claim"),
+        "skillClaims": append_unique_items(updated_draft.get("skillClaims"), skill_claims[: capacity.skill_claims], "skill"),
         "experienceAndProjects": append_unique_items(
             updated_draft.get("experienceAndProjects"),
-            experience_and_projects[:3],
+            experience_and_projects[: capacity.experience_and_projects],
             "title",
         ),
-        "evidenceLinks": append_unique_items(updated_draft.get("evidenceLinks"), [generated_item({"url": url, "label": url, "source": source}) for url in links[:4]], "url"),
+        "evidenceLinks": append_unique_items(
+            updated_draft.get("evidenceLinks"),
+            [generated_item({"url": url, "label": url, "source": source}) for url in links[: capacity.evidence_links]],
+            "url",
+        ),
     }
 
     return {
@@ -159,8 +164,10 @@ def build_mock_profile_intake_output(message: str, current_draft: object = None)
         "changeSummary": [
             "Updated target role intent." if title else "Target role intent still needs detail.",
             (
-                f"Created {len(draft_facts[:4])} draft claim(s), {len(skill_claims[:6])} skill claim(s), "
-                f"and {len(experience_and_projects[:3])} experience/project item(s)."
+                f"Created {len(draft_facts[: capacity.draft_facts])} draft claim(s), "
+                f"{len(skill_claims[: capacity.skill_claims])} skill claim(s), "
+                f"and {len(experience_and_projects[: capacity.experience_and_projects])} "
+                "experience/project item(s)."
             ),
             "Kept all generated data private, unpublished, and marked for review.",
         ],
@@ -221,6 +228,108 @@ def skill_if(lower_text: str, skill: str, category: str, keywords: list[str], so
             }
         )
     ]
+
+
+def extract_skill_claims(lower_text: str, source: str) -> list[dict[str, Any]]:
+    skill_specs = [
+        ("Python", "programming", ["python"]),
+        ("TypeScript", "programming", ["typescript"]),
+        ("JavaScript", "programming", ["javascript"]),
+        ("React", "frontend", ["react"]),
+        ("Next.js", "frontend", ["next.js", "nextjs"]),
+        ("FastAPI", "backend", ["fastapi"]),
+        ("Django", "backend", ["django"]),
+        ("Node.js", "backend", ["node.js", "nodejs"]),
+        ("Postgres", "data", ["postgres", "postgresql"]),
+        ("SQL", "data", ["sql"]),
+        ("Data pipelines", "data", ["pipeline", "etl"]),
+        ("LLM systems", "ai_systems", ["llm", "agent", "rag", "prompt"]),
+        ("RAG", "ai_systems", ["rag", "retrieval"]),
+        ("Evals and reliability", "quality", ["eval", "monitor", "observability", "test"]),
+        ("Observability", "quality", ["observability", "monitoring", "tracing"]),
+        ("Docker", "platform", ["docker"]),
+        ("Kubernetes", "platform", ["kubernetes", "k8s"]),
+        ("AWS", "cloud", ["aws"]),
+        ("GCP", "cloud", ["gcp", "google cloud"]),
+        ("Azure", "cloud", ["azure"]),
+        ("Stakeholder collaboration", "collaboration", ["stakeholder", "customer", "cross-functional"]),
+        ("Technical leadership", "leadership", ["led", "lead", "mentored", "managed"]),
+        ("Product analytics", "product", ["analytics", "metrics", "experimentation"]),
+        ("Security", "security", ["security", "auth", "compliance"]),
+        ("CI/CD", "platform", ["ci/cd", "github actions", "deployment"]),
+    ]
+    skills: list[dict[str, Any]] = []
+    for skill, category, keywords in skill_specs:
+        skills.extend(skill_if(lower_text, skill, category, keywords, source))
+    return skills
+
+
+def extract_resume_fact_items(message: str, source: str, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    facts: list[dict[str, Any]] = []
+    for line in clean_resume_lines(message):
+        if len(facts) >= limit:
+            break
+        if len(line) < 24:
+            continue
+        if not mentions_any(
+            line.lower(),
+            ["built", "shipped", "led", "owned", "improved", "reduced", "launched", "designed", "implemented"],
+        ):
+            continue
+        facts.append(
+            generated_item(
+                {
+                    "claim": line[:220],
+                    "category": "resume_evidence",
+                    "source": source,
+                }
+            )
+        )
+    return facts
+
+
+def extract_resume_experience_items(message: str, source: str, limit: int) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for line in clean_resume_lines(message):
+        if len(items) >= limit:
+            break
+        lower = line.lower()
+        if not mentions_any(
+            lower,
+            ["engineer", "developer", "architect", "manager", "consultant", "project", "education", "certification"],
+        ):
+            continue
+        title, organization = split_resume_title_and_org(line)
+        items.append(
+            generated_item(
+                {
+                    "title": title[:180],
+                    "organization": organization[:180] if organization else "Needs review",
+                    "summary": "Resume-like experience, project, education, or certification item detected.",
+                    "source": source,
+                }
+            )
+        )
+    return items
+
+
+def clean_resume_lines(message: str) -> list[str]:
+    return [
+        re.sub(r"\s+", " ", line.strip(" -\t*")).strip()
+        for line in message.splitlines()
+        if line.strip(" -\t*")
+    ]
+
+
+def split_resume_title_and_org(line: str) -> tuple[str, str | None]:
+    for separator in (" | ", " - ", " at "):
+        if separator in line:
+            first, second = line.split(separator, 1)
+            return first.strip(), second.strip() or None
+    return line.strip(), None
 
 
 def extract_target_title(message: str) -> str | None:

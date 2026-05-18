@@ -4,10 +4,11 @@ import json
 from typing import Any
 
 from ..model_connector import ModelRequest
+from .intake_mode import CHAT_UPDATE_CAPACITY, ProfileIntakeMode, RESUME_INTAKE_CAPACITY, capacity_for_mode
 from .models import ProfileIntakeExtractRequest
 
 
-PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v4-full-draft-update"
+PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v5-mode-aware-resume-capacity"
 PROFILE_INTAKE_SCHEMA_NAME = "jobops_profile_intake"
 PROFILE_INTAKE_SCHEMA_VERSION = "profile-intake-output-v1"
 
@@ -59,14 +60,19 @@ Full-draft update rules:
 Update guidance:
 - Prefer Applied AI, Forward Deployed Engineering, LLM systems, evals, reliability, production constraints, customer/stakeholder work, and measurable outcomes when relevant.
 - Return the complete updated draft, while keeping each item concise enough to fit comfortably in one JSON object.
-- Keep reasonable bounds: at most 40 draftFacts, 80 skillClaims, 40 experienceAndProjects, 80 evidenceLinks, 10 clarifyingQuestions, and 20 changeSummary entries.
+- The user prompt includes detected_intake_mode and capacity_guidance. Follow that guidance.
+- For detected_intake_mode "chat_update", extract compact incremental updates: up to 4 draftFacts, 6 skillClaims, 3 experienceAndProjects, 4 evidenceLinks, 1-3 clarifyingQuestions, and up to 3 changeSummary entries.
+- For detected_intake_mode "resume_intake", extract a fuller structured draft suitable for a normal 2-3 page resume: up to 20 draftFacts, 35 skillClaims, 12 experienceAndProjects, 12 evidenceLinks, 3-5 clarifyingQuestions, and up to 8 changeSummary entries.
+- These are total output caps for the complete updated draft. Do not exceed the resume caps even if the resume is longer.
 - Keep assistantMessage under 240 characters.
 - Keep every targetRoleIntent field under 160 characters.
 - For targetTitles, use only exact titles stated by the user. Do not invent adjacent, seniority, alternate, or related title lists.
 - Keep each claim, evidence, title, organization, summary, label, question, and changeSummary string under 180 characters.
 - Do not copy large resume sections into the output.
-- Prefer a useful draft over exhaustive extraction.
+- Prefer a useful, deduplicated draft over exhaustive extraction.
 - Ask at most 1-3 targeted next questions.
+- In resume intake mode, choose the most representative roles, projects, skills, education, certifications, outcomes, and links instead of compressing the resume into a tiny first-pass subset.
+- In chat update mode, keep newly extracted items compact unless preserving a previously saved draft requires returning existing items.
 - Return JSON only. The first character must be "{" and the last character must be "}".
 - Do not include markdown, prose wrappers, comments, code fences, or trailing commas.
 - Use double quotes for every JSON key and string value.
@@ -149,10 +155,24 @@ def build_profile_intake_user_prompt(
     *,
     authoritative_current_draft: dict[str, Any] | None = None,
     authoritative_current_draft_source: str = "database",
+    detected_intake_mode: ProfileIntakeMode = "chat_update",
 ) -> str:
+    capacity = capacity_for_mode(detected_intake_mode)
     prompt_payload: dict[str, Any] = {
         "task": "update_profile_draft",
         "instruction": "Return the complete updated draft profile after applying latest_user_message.",
+        "detected_intake_mode": detected_intake_mode,
+        "capacity_guidance": {
+            "active": capacity.to_json(),
+            "chat_update": CHAT_UPDATE_CAPACITY.to_json(),
+            "resume_intake": RESUME_INTAKE_CAPACITY.to_json(),
+            "mode_rules": {
+                "chat_update": "Use compact extraction for short conversational updates; preserve existing draft items.",
+                "resume_intake": (
+                    "Use fuller extraction for normal 2-3 page resumes while deduplicating and staying within caps."
+                ),
+            },
+        },
         "latest_user_message": request.latest_user_message,
         "authoritative_current_draft_source": authoritative_current_draft_source,
         "authoritative_current_draft": authoritative_current_draft or {},
