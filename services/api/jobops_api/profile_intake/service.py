@@ -28,7 +28,9 @@ from .artifacts import (
 )
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
 from .persistence import (
+    ensure_editable_profile_intake_draft,
     get_or_create_active_intake_session,
+    get_profile_draft_snapshot_for_session,
     persist_profile_intake_output,
     save_intake_assistant_event,
     save_intake_user_event,
@@ -62,19 +64,13 @@ def run_profile_intake_extraction(
 ) -> ProfileIntakeServiceResult:
     active_settings = settings or load_settings()
     connector_config = read_model_connector_config_from_settings(active_settings)
-    input_metrics = build_profile_intake_input_metrics(request.latest_user_message, request.existing_draft)
-    model_request = build_profile_intake_model_request(request)
-    routed_request = route_model_request(model_request, connector_config.routing)
     artifact_run = create_profile_intake_artifact_run(active_settings)
-
-    artifact_run.write_json(
-        "request-metadata.json",
-        build_request_metadata(routed_request, input_metrics.to_json()),
-    )
-    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
 
     candidate_profile = None
     intake_session = None
+    authoritative_current_draft = None
+    authoritative_current_draft_source = "none_no_database_session"
+    seeded_editable_draft_from_published = False
     if db_session is not None:
         candidate_slug = request.candidate_profile_slug or active_settings.default_candidate_profile_slug
         candidate_profile = get_candidate_profile_by_slug(db_session, candidate_slug)
@@ -91,6 +87,13 @@ def run_profile_intake_extraction(
                 status_code=404,
             )
         intake_session = get_or_create_active_intake_session(db_session, candidate_profile.id)
+        seeded_editable_draft_from_published = ensure_editable_profile_intake_draft(
+            db_session,
+            candidate_profile=candidate_profile,
+            intake_session=intake_session,
+        )
+        authoritative_current_draft = get_profile_draft_snapshot_for_session(db_session, intake_session)
+        authoritative_current_draft_source = "database"
         save_intake_user_event(
             db_session,
             intake_session=intake_session,
@@ -100,10 +103,32 @@ def run_profile_intake_extraction(
             model_run_id=artifact_run.run_id,
         )
 
+    input_metrics = build_profile_intake_input_metrics(
+        request.latest_user_message,
+        request.existing_draft,
+        authoritative_current_draft,
+    )
+    model_request = build_profile_intake_model_request(
+        request,
+        authoritative_current_draft=authoritative_current_draft,
+        authoritative_current_draft_source=authoritative_current_draft_source,
+        seeded_editable_draft_from_published=seeded_editable_draft_from_published,
+    )
+    routed_request = route_model_request(model_request, connector_config.routing)
+
+    artifact_run.write_json(
+        "request-metadata.json",
+        build_request_metadata(routed_request, input_metrics.to_json()),
+    )
+    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
+
     try:
         active_connector = connector or create_model_connector(
             connector_config,
-            mock_responses_by_task={"profile_extract": build_mock_profile_intake_response},
+            mock_responses_by_task={
+                "profile_draft_update": build_mock_profile_intake_response,
+                "profile_extract": build_mock_profile_intake_response,
+            },
         )
     except ModelConfigurationError as error:
         _persist_failure_event(
@@ -131,6 +156,7 @@ def run_profile_intake_extraction(
                     "mode, or configure JOBOPS_LLM_PROVIDER=gemini with server-side GEMINI_API_KEY."
                 ),
                 "code": error.code,
+                **model_request_debug_fields(active_settings, routed_request),
                 **debug_fields(artifact_run),
             },
             status_code=503,
@@ -173,6 +199,7 @@ def run_profile_intake_extraction(
                 "ok": False,
                 "error": "Profile intake model call failed. No draft data was applied.",
                 "code": error.code,
+                **model_request_debug_fields(active_settings, routed_request),
                 **debug_fields(artifact_run),
             },
             status_code=502,
@@ -195,6 +222,7 @@ def run_profile_intake_extraction(
             latency_ms=latency_ms,
             model_request=routed_request,
             response=response,
+            settings=active_settings,
         )
     except ValidationError as error:
         issues = add_truncation_hint(format_validation_issues(error), response.finish_reason)
@@ -208,11 +236,13 @@ def run_profile_intake_extraction(
             latency_ms=latency_ms,
             model_request=routed_request,
             response=response,
+            settings=active_settings,
         )
 
-    output_json = output.model_dump(by_alias=True, exclude_none=True)
+    parsed_output_json = output.model_dump(by_alias=True, exclude_none=True)
+    output_json = profile_intake_output_to_result(output)
     if artifact_run.enabled and artifact_run.run_id:
-        artifact_run.write_json("parsed-output.json", output_json)
+        artifact_run.write_json("parsed-output.json", parsed_output_json)
         artifact_run.write_json(
             "metadata.json",
             build_run_metadata(
@@ -250,23 +280,65 @@ def run_profile_intake_extraction(
         body={
             "ok": True,
             "result": output_json,
+            **model_request_debug_fields(active_settings, routed_request),
         },
         status_code=200,
     )
 
 
-def build_profile_intake_model_request(request: ProfileIntakeExtractRequest) -> ModelRequest:
+def build_profile_intake_model_request(
+    request: ProfileIntakeExtractRequest,
+    *,
+    authoritative_current_draft: dict[str, Any] | None = None,
+    authoritative_current_draft_source: str = "database",
+    seeded_editable_draft_from_published: bool = False,
+) -> ModelRequest:
+    current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
+    current_draft_status = (
+        "initialized_from_published_profile"
+        if seeded_editable_draft_from_published
+        else "loaded_from_database"
+        if authoritative_current_draft_source == "database"
+        else "empty_no_database_session"
+    )
     return ModelRequest(
-        task="profile_extract",
+        task="profile_draft_update",
         temperature=0,
         max_output_tokens=4000,
         response_mime_type="application/json",
-        metadata={"feature": "profile_intake"},
+        metadata={
+            "authoritative_current_draft_included": bool(current_draft),
+            "authoritative_current_draft_source": authoritative_current_draft_source,
+            "authoritative_current_draft_status": current_draft_status,
+            "client_existing_draft_included": request.existing_draft is not None,
+            "client_existing_draft_authoritative": False,
+            "feature": "profile_intake",
+            "profile_intake_contract": "full_draft_update",
+            "seeded_editable_draft_from_published": seeded_editable_draft_from_published,
+        },
         messages=[
             ModelMessage(role="system", content=PROFILE_INTAKE_SYSTEM_PROMPT),
-            ModelMessage(role="user", content=build_profile_intake_user_prompt(request)),
+            ModelMessage(
+                role="user",
+                content=build_profile_intake_user_prompt(
+                    request,
+                    authoritative_current_draft=current_draft,
+                    authoritative_current_draft_source=authoritative_current_draft_source,
+                ),
+            ),
         ],
     )
+
+
+def profile_intake_output_to_result(output: ProfileIntakeOutput) -> dict[str, Any]:
+    draft = output.updated_draft_profile.model_dump(by_alias=True, exclude_none=True)
+    return {
+        "assistantMessage": output.assistant_message,
+        **draft,
+        "clarifyingQuestions": output.clarifying_questions,
+        "changeSummary": output.change_summary,
+        **({"noChangeReason": output.no_change_reason} if output.no_change_reason else {}),
+    }
 
 
 class ProfileIntakeValidationFailure(Exception):
@@ -339,6 +411,7 @@ def validation_failure_result(
     latency_ms: int,
     model_request,
     response,
+    settings: Settings,
 ) -> ProfileIntakeServiceResult:
     if artifact_run.enabled and artifact_run.run_id:
         artifact_run.write_json(
@@ -387,6 +460,7 @@ def validation_failure_result(
             "ok": False,
             "error": SAFE_VALIDATION_ERROR,
             "issues": issues,
+            **model_request_debug_fields(settings, model_request),
             **debug_fields(artifact_run),
         },
         status_code=502,
@@ -459,6 +533,29 @@ def debug_fields(artifact_run) -> dict[str, str]:
     return {
         **({"debug_run_id": artifact_run.run_id} if artifact_run.run_id else {}),
         **({"artifact_path": artifact_run.artifact_path} if artifact_run.artifact_path else {}),
+    }
+
+
+def model_request_debug_fields(settings: Settings, request: ModelRequest) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return {}
+
+    return {
+        "modelRequest": {
+            "task": request.task,
+            "model": request.model,
+            "temperature": request.temperature,
+            "maxOutputTokens": request.max_output_tokens,
+            "responseMimeType": request.response_mime_type,
+            "metadata": request.metadata,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in request.messages
+            ],
+        }
     }
 
 

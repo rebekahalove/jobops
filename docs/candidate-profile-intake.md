@@ -249,9 +249,17 @@ The Profile tab should not own a separate chat composer. It should tell the user
 
 FastAPI remains responsible for model calls, Pydantic validation, artifacts, draft persistence, and tool routing. Next.js must not call the model directly.
 
-Profile-intake persistence is merge-based. Each successful model turn is treated as a patch to the active saved draft, not as a complete replacement. Empty model sections such as `draftFacts: []`, empty strings, null fields, or omitted optional role-target values mean "no change" for existing saved data. They must not clear previously saved role intent, draft facts, skills, experience/project drafts, evidence links, review state, visibility, or publication state.
+Profile-intake uses a full-draft update contract. Each model call receives the database-loaded saved draft as `authoritative_current_draft`; browser-provided `existing_draft` is optional UI/debug context and is not authoritative. The durable memory for intake is the saved draft/profile state in Postgres, not client state and not LLM chat history.
 
-Explicit delete, clear, or reset behavior is deferred. It should require intentional user action and a separate persistence path so the system can distinguish "the model found nothing new" from "the user deliberately removed saved profile data."
+The model receives the current draft profile and returns `updatedDraftProfile`, the complete updated draft after applying the latest user instruction. The backend validates that full draft and synchronizes editable draft rows to match it. For existing item IDs, persistence updates editable content fields while preserving review status, visibility, publication status, and other safety metadata. New items omit IDs and become private, unpublished draft rows.
+
+The model should preserve existing values unless the latest user message explicitly changes or removes them. The model, not the persistence layer, is responsible for semantically merging the latest user message into the authoritative current draft. If the user broadens a preference, including terse wording like "or NYC or San Francisco Bay", the model should return the full updated target role intent and include both existing and new values. Replacement language such as "instead", "not X anymore", "change X to Y", "remove X", and "clear X" may update or remove values only when explicit.
+
+For now, some list-like target role fields remain strings. A location update may be represented as `Louisville, KY; London, UK` rather than a JSON array. TODO: move list-like target role intent fields to structured arrays once the database and UI can support that cleanly.
+
+If the user instruction is ambiguous, the model should return the draft unchanged, include a clarifying question, and set `noChangeReason`. Existing draft items omitted from `updatedDraftProfile` are preserved unless the model also includes their IDs in `removedItems`, which prevents accidental deletion from a malformed or incomplete model response.
+
+Published profile rows must not be edited directly by profile intake. If profile changes are requested after the most recent profile state has been published and no active draft exists, JobOps should start a new private draft based on the published profile by default, or eventually ask whether to start from scratch versus from previous published values. The current backend seeds an unpublished draft copy for published role targets and published profile facts; broader published-profile edit semantics and UI choice remain deferred.
 
 ## Intake Workflow
 

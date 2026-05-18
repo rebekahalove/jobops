@@ -121,6 +121,14 @@ Request body:
 
 The endpoint owns prompt construction, JSON parsing, Pydantic validation, local artifact saving, server-side debug logging, and persistence of validated draft data. It calls the shared Python model connector in `jobops_api/model_connector/` for provider selection, model routing, and model calls. Next.js should call this endpoint directly or through its thin proxy.
 
+Profile intake uses a full-draft update contract. When a database session is available, FastAPI resolves the candidate profile and active intake session, loads the authoritative saved draft snapshot from Postgres, and injects it into the model prompt as `authoritative_current_draft`. The request field `existing_draft` is still accepted for compatibility and UI/debug context, but it is labeled non-authoritative and must not override the database-loaded draft.
+
+Each model turn returns `updatedDraftProfile`, the complete updated draft after applying the latest user instruction. The model, not the persistence layer, is responsible for semantically merging the latest message into `authoritative_current_draft`. If the user broadens a preference, including terse wording like "or NYC or San Francisco Bay", the model should copy existing values and include the new values in the returned full draft. If the instruction is ambiguous, the model should return the draft unchanged, include clarifying questions, and set `noChangeReason`.
+
+The backend validates the full updated draft and synchronizes editable draft rows to match it. Existing items are matched by ID first; editable content fields may be updated, but review status, visibility, publication status, and published/approved metadata are preserved. New items omit IDs and are created as private unpublished drafts. Existing draft items omitted from `updatedDraftProfile` are preserved unless their IDs appear in `removedItems`, which keeps malformed or incomplete model output from deleting saved profile data.
+
+Location-like target role fields remain string-backed for now. The model should return merged strings such as `Louisville, KY; London, UK` when updating semicolon-delimited location lists. TODO: list-like target role fields should become structured arrays once the DB/UI contract can support that cleanly.
+
 Mock mode:
 
 ```text
@@ -135,7 +143,7 @@ GEMINI_API_KEY=your_local_key
 JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 ```
 
-All extracted data remains draft or needs review, private, unpublished, and unverified. The endpoint persists only validated draft profile data and safe/redacted intake events. It does not store raw resume or chat text by default.
+All model-generated data remains draft or needs review, private, unpublished, and unverified. The endpoint persists only validated draft profile data and safe/redacted intake events. It does not store raw resume or chat text by default.
 
 Local debug artifacts:
 
@@ -177,4 +185,6 @@ This slice also adds:
 - `profile_intake_events` for redacted user/assistant/model events.
 - `experience_project_drafts` for draft experience and project items.
 
-The active session uses replacement behavior for now: each successful model turn replaces the current draft facts, skills, experience/projects, evidence, and target role intent for that intake session. Review controls, approval/rejection, publication, auth, and durable raw resume storage are deferred.
+The active session synchronizes the editable draft to the model-returned full `updatedDraftProfile`. Review controls, approval/rejection, publication, auth, and durable raw resume storage are deferred.
+
+Published profile rows must not be mutated directly by profile intake. When no active draft exists but a published role target or published profile facts exist, the backend seeds a private, unpublished intake draft copy before applying new model-generated changes. Broader published-profile edit UX, including asking whether to start from scratch or from the previous published profile, remains deferred.

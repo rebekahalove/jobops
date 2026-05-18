@@ -7,6 +7,7 @@ from .models import ModelRequest, ModelTask
 
 DEFAULT_MODEL_TASKS: set[ModelTask] = {
     "profile_extract",
+    "profile_draft_update",
     "intake_followup",
     "role_fit",
     "judge_or_second_pass",

@@ -99,9 +99,35 @@ def execute_command_center_command(
             target_workspace=target_workspace_for_action(interpreted_action),
         )
 
+    candidate_profile = get_candidate_profile_by_slug(session, candidate_slug)
+    if candidate_profile is None:
+        error_body = {
+            "ok": False,
+            "error": "Candidate profile not found.",
+            "code": "candidate_profile_not_found",
+        }
+        return CommandCenterCommandResponse(
+            assistant_message=error_body["error"],
+            actions=[
+                CommandCenterActionResult(
+                    type="profile_intake",
+                    status="failed",
+                    targetWorkspace="profile",
+                    title="Update profile",
+                    summary=error_body["error"],
+                    resultPayload=error_body,
+                )
+            ],
+            target_workspace="profile",
+            result_payload=error_body,
+        )
+
+    current_draft = get_latest_profile_draft_snapshot(session, candidate_profile)
+
     intake_result = run_profile_intake_extraction(
         ProfileIntakeExtractRequest(
             latest_user_message=request.command,
+            existing_draft=current_draft,
             candidate_profile_slug=candidate_slug,
         ),
         db_session=session,
@@ -127,6 +153,10 @@ def execute_command_center_command(
         )
 
     profile_draft = intake_result.body["result"]
+    result_payload = {
+        "profileDraft": profile_draft,
+        **({"modelRequest": intake_result.body["modelRequest"]} if intake_result.body.get("modelRequest") else {}),
+    }
     assistant_message = profile_draft.get("assistantMessage") or "I updated your profile draft and kept it private for review."
 
     return CommandCenterCommandResponse(
@@ -138,11 +168,11 @@ def execute_command_center_command(
                 targetWorkspace="profile",
                 title="Update profile",
                 summary=build_profile_action_summary(profile_draft),
-                resultPayload={"profileDraft": profile_draft},
+                resultPayload=result_payload,
             )
         ],
         target_workspace="profile",
-        result_payload={"profileDraft": profile_draft},
+        result_payload=result_payload,
     )
 
 

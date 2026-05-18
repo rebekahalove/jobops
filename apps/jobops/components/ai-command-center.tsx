@@ -192,6 +192,8 @@ export function AiCommandCenter({
 }
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {
+  const modelRequest = getModelRequestDebugPayload(action.resultPayload);
+
   return (
     <article className="agent-action-card">
       <div>
@@ -203,6 +205,12 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
         <span>{action.type}</span>
         {action.targetWorkspace ? <span>{formatWorkspaceLabel(action.targetWorkspace)}</span> : null}
       </div>
+      {modelRequest ? (
+        <details className="model-request-debug">
+          <summary>Sent to model</summary>
+          <pre>{formatModelRequestDebugPayload(modelRequest)}</pre>
+        </details>
+      ) : null}
       {action.targetWorkspace ? (
         <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(action.targetWorkspace, workspaceBasePath)}>
           {action.ctaLabel ?? `Open ${formatWorkspaceLabel(action.targetWorkspace)}`}
@@ -214,6 +222,23 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
       )}
     </article>
   );
+}
+
+function getModelRequestDebugPayload(resultPayload: unknown) {
+  if (!resultPayload || typeof resultPayload !== "object" || Array.isArray(resultPayload)) {
+    return null;
+  }
+
+  const payload = resultPayload as { modelRequest?: unknown };
+  return payload.modelRequest ?? null;
+}
+
+function formatModelRequestDebugPayload(modelRequest: unknown) {
+  try {
+    return JSON.stringify(modelRequest, null, 2);
+  } catch {
+    return String(modelRequest);
+  }
 }
 
 export { starterPrompts };

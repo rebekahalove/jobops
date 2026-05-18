@@ -48,6 +48,7 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 
 - The candidate's target roles, seniority, domains, locations, work mode preferences, constraints, and positioning goals.
 - Used to guide profile intake, role-fit analysis, and application packet generation.
+- Current implementation still stores list-like target role values as JSON arrays in the table but exposes several fields as compact strings in the profile-intake model schema. Location strings should use semicolon separators when city/state commas are present, such as `Louisville, KY; London, UK`. A future schema pass should expose these fields as structured arrays end to end.
 
 `resume_artifacts`
 
@@ -61,6 +62,9 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 - Agent-assisted Q&A sessions for profile setup.
 - Starts from target role intent and optional resume upload.
 - Should store structured state and redacted events by default.
+- The active intake prompt is hydrated from the database-loaded saved draft snapshot. Client-provided draft state is compatibility/debug context only and is not authoritative.
+- The model returns a full `updatedDraftProfile`, and persistence synchronizes editable draft rows to that returned full draft while preserving status, visibility, publication, and published/approved metadata by item ID.
+- When no active draft exists after publication, intake should create a new private, unpublished draft copy from published profile values before applying changes. The backend currently seeds published role targets and published profile facts into editable draft rows; full published-profile edit UX remains deferred.
 
 `profile_fact_drafts`
 

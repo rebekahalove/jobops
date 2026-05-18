@@ -61,6 +61,7 @@ Task routing:
 | Task | Model |
 | --- | --- |
 | `profile_extract` | default model |
+| `profile_draft_update` | default model |
 | `intake_followup` | default model |
 | `role_fit` | default model |
 | `bulk_triage` | cheap model |
