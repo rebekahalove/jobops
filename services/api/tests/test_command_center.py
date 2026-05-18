@@ -194,6 +194,28 @@ def test_non_profile_command_returns_planned_action_without_profile_intake(tmp_p
     assert response.target_workspace == "jobs"
 
 
+def test_executable_command_without_candidate_slug_or_default_fails_clearly(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path, default_slug=None))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(command="I want to be an Applied AI Engineer."),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_intake"
+    assert response.actions[0].status == "failed"
+    assert response.result_payload == {
+        "ok": False,
+        "error": (
+            "Candidate profile slug is required. Provide candidate_profile_slug in the request or configure "
+            "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+        ),
+        "code": "candidate_profile_slug_required",
+    }
+
+
 def test_latest_profile_draft_endpoint_returns_saved_snapshot(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -251,14 +273,14 @@ def create_seeded_engine():
     return engine
 
 
-def make_settings(repo_root: Path) -> Settings:
+def make_settings(repo_root: Path, *, default_slug: str | None = "rebekah-love") -> Settings:
     return Settings(
         app_env="test",
         cheap_model="mock-cheap",
         company_discovery_search_grounding_enabled=True,
         database_url=None,
         default_model="mock-default",
-        default_candidate_profile_slug="rebekah-love",
+        default_candidate_profile_slug=default_slug,
         gemini_api_key=None,
         model_provider="mock",
         profile_intake_save_artifacts=False,

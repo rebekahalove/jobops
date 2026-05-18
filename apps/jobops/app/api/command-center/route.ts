@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { validateCommandCenterApiRequest } from "../../../lib/command-center-contract";
-import { getJobOpsApiServerConfig } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig, requireJobOpsServerEnvValue } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
@@ -34,8 +34,17 @@ export async function POST(request: Request) {
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
     config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  } catch {
-    return missingInternalApiKeyResponse();
+  } catch (error) {
+    return serverConfigErrorResponse(error);
+  }
+
+  let candidateProfileSlug: string;
+  try {
+    candidateProfileSlug =
+      validation.value.candidateProfileSlug ??
+      requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+  } catch (error) {
+    return serverConfigErrorResponse(error);
   }
 
   try {
@@ -47,8 +56,7 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         command: validation.value.command,
-        candidate_profile_slug:
-          validation.value.candidateProfileSlug ?? config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love",
+        candidate_profile_slug: candidateProfileSlug,
         active_workspace: validation.value.activeWorkspace,
         client_context: validation.value.clientContext ?? {}
       })
@@ -75,11 +83,11 @@ export async function POST(request: Request) {
   }
 }
 
-function missingInternalApiKeyResponse() {
+function serverConfigErrorResponse(error: unknown) {
   return NextResponse.json(
     {
       ok: false,
-      error: "JobOps internal API key is not configured on the server."
+      error: error instanceof Error ? error.message : "JobOps server configuration is invalid."
     },
     { status: 503 }
   );

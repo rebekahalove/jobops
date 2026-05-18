@@ -20,7 +20,7 @@ class Settings:
     profile_intake_save_raw_text: bool
     company_discovery_search_grounding_enabled: bool
     database_url: str | None
-    default_candidate_profile_slug: str
+    default_candidate_profile_slug: str | None
     repo_root: Path
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -55,7 +55,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
             default=True,
         ),
         database_url=merged.get("DATABASE_URL"),
-        default_candidate_profile_slug=merged.get("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG", "rebekah-love"),
+        default_candidate_profile_slug=clean_optional_text(merged.get("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG")),
         repo_root=root,
         internal_api_key=merged.get("JOBOPS_INTERNAL_API_KEY"),
         cors_origins=parse_csv_list(merged.get("JOBOPS_CORS_ORIGINS")),
@@ -73,6 +73,13 @@ def parse_csv_list(value: str | None) -> tuple[str, ...]:
     if value is None:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def find_repo_root() -> Path:

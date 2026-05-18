@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
+const requireJobOpsServerEnvValueMock = vi.hoisted(() =>
+  vi.fn((env: Record<string, string | undefined>, key: string) => {
+    const value = env[key]?.trim();
+    if (!value) {
+      throw new Error(`${key} is required for this JobOps server route.`);
+    }
+    return value;
+  })
+);
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock,
+  requireJobOpsServerEnvValue: requireJobOpsServerEnvValueMock
 }));
 
 describe("profile-intake API proxy", () => {
@@ -13,7 +23,7 @@ describe("profile-intake API proxy", () => {
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
       JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
     });
   });
 
@@ -78,7 +88,7 @@ describe("profile-intake API proxy", () => {
       existing_draft: {
         facts: []
       },
-      candidate_profile_slug: "rebekah-love"
+      candidate_profile_slug: "configured-profile"
     });
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });
@@ -105,7 +115,7 @@ describe("profile-intake API proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "JobOps internal API key is not configured on the server."
+      error: "missing key"
     });
   });
 });

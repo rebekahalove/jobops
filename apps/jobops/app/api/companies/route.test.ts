@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
+const requireJobOpsServerEnvValueMock = vi.hoisted(() =>
+  vi.fn((env: Record<string, string | undefined>, key: string) => {
+    const value = env[key]?.trim();
+    if (!value) {
+      throw new Error(`${key} is required for this JobOps server route.`);
+    }
+    return value;
+  })
+);
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock,
+  requireJobOpsServerEnvValue: requireJobOpsServerEnvValueMock
 }));
 
 describe("companies API proxy", () => {
@@ -13,7 +23,7 @@ describe("companies API proxy", () => {
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
       JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
     });
   });
 
@@ -30,7 +40,7 @@ describe("companies API proxy", () => {
     const response = await GET();
 
     const firstCall = fetchMock.mock.calls[0];
-    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/companies?candidate_profile_slug=rebekah-love");
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/companies?candidate_profile_slug=configured-profile");
     expect(firstCall?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
@@ -41,5 +51,26 @@ describe("companies API proxy", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual([]);
+  });
+
+  it("fails clearly when the default candidate slug is missing", async () => {
+    getJobOpsApiServerConfigMock.mockResolvedValueOnce({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
+    });
+    const { GET } = await import("./route");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
+    });
   });
 });

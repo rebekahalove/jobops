@@ -79,10 +79,12 @@ def execute_command_center_command(
     session: Session = Depends(get_db_session),
 ) -> CommandCenterCommandResponse:
     settings = load_settings()
-    candidate_slug = request.candidate_profile_slug or settings.default_candidate_profile_slug
     interpreted_action = interpret_command(request.command, request.active_workspace)
 
     if interpreted_action == "follow_company":
+        candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
+        if candidate_slug is None:
+            return missing_candidate_slug_response("follow_company", "companies", "Discover companies")
         return execute_company_discovery_command(
             request,
             candidate_slug=candidate_slug,
@@ -107,6 +109,10 @@ def execute_command_center_command(
             ],
             target_workspace=target_workspace_for_action(interpreted_action),
         )
+
+    candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
+    if candidate_slug is None:
+        return missing_candidate_slug_response("profile_intake", "profile", "Update profile")
 
     candidate_profile = get_candidate_profile_by_slug(session, candidate_slug)
     if candidate_profile is None:
@@ -183,6 +189,40 @@ def execute_command_center_command(
         ],
         target_workspace="profile",
         result_payload=result_payload,
+    )
+
+
+def resolve_candidate_slug(request_slug: str | None, default_slug: str | None) -> str | None:
+    return meaningful_text(request_slug) or meaningful_text(default_slug)
+
+
+def missing_candidate_slug_response(
+    action_type: CommandActionType,
+    target_workspace: str,
+    title: str,
+) -> CommandCenterCommandResponse:
+    error_body = {
+        "ok": False,
+        "error": (
+            "Candidate profile slug is required. Provide candidate_profile_slug in the request or configure "
+            "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+        ),
+        "code": "candidate_profile_slug_required",
+    }
+    return CommandCenterCommandResponse(
+        assistant_message=error_body["error"],
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="failed",
+                targetWorkspace=target_workspace,
+                title=title,
+                summary=error_body["error"],
+                resultPayload=error_body,
+            )
+        ],
+        target_workspace=target_workspace,
+        result_payload=error_body,
     )
 
 
@@ -367,6 +407,13 @@ def build_company_discovery_action_summary(added_count: int) -> str:
     if added_count == 1:
         return "Saved 1 model-derived company with new review status and verification links."
     return f"Saved {added_count} model-derived companies with new review status and verification links."
+
+
+def meaningful_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def target_workspace_for_action(action_type: CommandActionType) -> str | None:

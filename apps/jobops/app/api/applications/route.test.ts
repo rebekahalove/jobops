@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
+const requireJobOpsServerEnvValueMock = vi.hoisted(() =>
+  vi.fn((env: Record<string, string | undefined>, key: string) => {
+    const value = env[key]?.trim();
+    if (!value) {
+      throw new Error(`${key} is required for this JobOps server route.`);
+    }
+    return value;
+  })
+);
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock,
+  requireJobOpsServerEnvValue: requireJobOpsServerEnvValueMock
 }));
 
 describe("applications API proxy", () => {
@@ -13,7 +23,7 @@ describe("applications API proxy", () => {
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
       JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
     });
   });
 
@@ -32,7 +42,7 @@ describe("applications API proxy", () => {
     const response = await GET();
 
     const firstCall = fetchMock.mock.calls[0];
-    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications?candidate_profile_slug=rebekah-love");
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications?candidate_profile_slug=configured-profile");
     expect(firstCall?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
@@ -57,7 +67,7 @@ describe("applications API proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "JobOps internal API key is not configured on the server."
+      error: "missing key"
     });
   });
 });

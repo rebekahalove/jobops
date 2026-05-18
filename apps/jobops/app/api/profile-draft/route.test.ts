@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getJobOpsApiServerConfigMock = vi.hoisted(() => vi.fn());
+const requireJobOpsServerEnvValueMock = vi.hoisted(() =>
+  vi.fn((env: Record<string, string | undefined>, key: string) => {
+    const value = env[key]?.trim();
+    if (!value) {
+      throw new Error(`${key} is required for this JobOps server route.`);
+    }
+    return value;
+  })
+);
 
 vi.mock("../../../lib/server-env", () => ({
-  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock
+  getJobOpsApiServerConfig: getJobOpsApiServerConfigMock,
+  requireJobOpsServerEnvValue: requireJobOpsServerEnvValueMock
 }));
 
 describe("profile-draft API proxy", () => {
@@ -13,7 +23,7 @@ describe("profile-draft API proxy", () => {
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
       JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "rebekah-love"
+      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
     });
   });
 
@@ -45,7 +55,7 @@ describe("profile-draft API proxy", () => {
 
     const response = await GET(new Request("http://next.test/api/profile-draft"));
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/rebekah-love");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/configured-profile");
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({

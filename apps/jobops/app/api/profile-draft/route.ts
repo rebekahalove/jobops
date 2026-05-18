@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getJobOpsApiServerConfig } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig, requireJobOpsServerEnvValue } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
@@ -7,12 +7,19 @@ export async function GET(request: Request) {
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
     config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  } catch {
-    return missingInternalApiKeyResponse();
+  } catch (error) {
+    return serverConfigErrorResponse(error);
   }
 
   const requestUrl = new URL(request.url);
-  const slug = requestUrl.searchParams.get("candidateProfileSlug") ?? config.JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG ?? "rebekah-love";
+  let slug: string;
+  try {
+    slug =
+      requestUrl.searchParams.get("candidateProfileSlug") ??
+      requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+  } catch (error) {
+    return serverConfigErrorResponse(error);
+  }
 
   try {
     const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/${slug}`, {
@@ -34,11 +41,11 @@ export async function GET(request: Request) {
   }
 }
 
-function missingInternalApiKeyResponse() {
+function serverConfigErrorResponse(error: unknown) {
   return NextResponse.json(
     {
       ok: false,
-      error: "JobOps internal API key is not configured on the server."
+      error: error instanceof Error ? error.message : "JobOps server configuration is invalid."
     },
     { status: 503 }
   );
