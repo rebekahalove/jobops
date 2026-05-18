@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 
 ModelTask = Literal[
+    "company_discovery",
     "profile_extract",
     "profile_draft_update",
     "intake_followup",
@@ -29,6 +30,7 @@ class ModelRequest:
     temperature: float = 0
     max_output_tokens: int = 4000
     response_mime_type: str | None = None
+    search_grounding: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def with_model(self, model: str) -> ModelRequest:

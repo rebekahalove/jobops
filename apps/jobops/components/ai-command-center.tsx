@@ -20,6 +20,7 @@ type CommandMessage = {
 const starterPrompts = [
   "I want to be an Applied AI Engineer.",
   "Update my profile with this project.",
+  "Find companies in progressive politics hiring AI engineers.",
   "Here's a job URL. Add it to my jobs list.",
   "Follow this company.",
   "Which jobs should I apply to today?",

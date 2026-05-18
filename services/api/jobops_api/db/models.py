@@ -49,6 +49,7 @@ class CandidateProfile(Base, TimestampMixin):
     tenant: Mapped[Tenant] = relationship(back_populates="candidate_profiles")
     facts: Mapped[list[ProfileFact]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    target_companies: Mapped[list[TargetCompany]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -88,14 +89,37 @@ class TargetCompany(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("candidate_profile_id", "name", name="uq_target_companies_profile_name"),
         Index("ix_target_companies_profile_name", "candidate_profile_id", "name"),
+        Index("ix_target_companies_profile_normalized_name", "candidate_profile_id", "normalized_name"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(240))
+    normalized_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    careers_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_listings_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headquarters_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    headquarters_country: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    operating_countries: Mapped[list[str]] = mapped_column(JSON, default=list)
+    hiring_locations: Mapped[list[str]] = mapped_column(JSON, default=list)
+    remote_policy: Mapped[str] = mapped_column(String(40), default="unknown")
+    role_fit_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    mission_fit_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    fit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_urls: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    search_queries_used: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provider_grounding_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    discovered_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    derivation_status: Mapped[str] = mapped_column(String(40), default="user_entered")
+    review_status: Mapped[str] = mapped_column(String(40), default="reviewed")
     notes: Mapped[str] = mapped_column(Text, default="")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="target_companies")
     job_roles: Mapped[list[JobRole]] = relationship(back_populates="target_company", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="target_company")
 

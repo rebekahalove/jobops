@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .applications import router as applications_router
+from .company_discovery import router as companies_router
 from .command_center import router as command_center_router
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
@@ -43,6 +44,7 @@ app = FastAPI(
 
 configure_cors(app, allowed_origins=settings.cors_origins)
 app.include_router(applications_router)
+app.include_router(companies_router)
 app.include_router(command_center_router)
 
 

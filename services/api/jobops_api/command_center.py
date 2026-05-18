@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
@@ -81,10 +82,18 @@ def execute_command_center_command(
     candidate_slug = request.candidate_profile_slug or settings.default_candidate_profile_slug
     interpreted_action = interpret_command(request.command, request.active_workspace)
 
+    if interpreted_action == "follow_company":
+        return execute_company_discovery_command(
+            request,
+            candidate_slug=candidate_slug,
+            session=session,
+            settings=settings,
+        )
+
     if interpreted_action != "profile_intake":
         return CommandCenterCommandResponse(
             assistant_message=(
-                "I can route profile intake from the command center now. Job URL intake, company follow, "
+                "I can route profile intake and company discovery from the command center now. Job URL intake, "
                 "prioritization, materials, fit scoring, and applied-status updates are still planned tools."
             ),
             actions=[
@@ -177,6 +186,63 @@ def execute_command_center_command(
     )
 
 
+def execute_company_discovery_command(
+    request: CommandCenterCommandRequest,
+    *,
+    candidate_slug: str,
+    session: Session,
+    settings,
+) -> CommandCenterCommandResponse:
+    discovery_result = run_company_discovery(
+        CompanyDiscoveryRequest(
+            latest_user_message=request.command,
+            candidate_profile_slug=candidate_slug,
+        ),
+        db_session=session,
+        settings=settings,
+    )
+
+    if discovery_result.status_code != 200 or not discovery_result.body.get("ok"):
+        error_message = discovery_result.body.get("error", "Company discovery failed. No companies were saved.")
+        return CommandCenterCommandResponse(
+            assistant_message=error_message,
+            actions=[
+                CommandCenterActionResult(
+                    type="follow_company",
+                    status="failed",
+                    targetWorkspace="companies",
+                    title="Discover companies",
+                    summary=error_message,
+                    resultPayload=discovery_result.body,
+                )
+            ],
+            target_workspace="companies",
+            result_payload=discovery_result.body,
+        )
+
+    result_payload = discovery_result.body["result"]
+    added_count = len(result_payload.get("companies") or [])
+    assistant_message = result_payload.get("assistantMessage") or (
+        f"Added {added_count} model-derived companies. Please verify them from their source links."
+    )
+
+    return CommandCenterCommandResponse(
+        assistant_message=assistant_message,
+        actions=[
+            CommandCenterActionResult(
+                type="follow_company",
+                status="completed",
+                targetWorkspace="companies",
+                title="Discover companies",
+                summary=build_company_discovery_action_summary(added_count),
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace="companies",
+        result_payload=result_payload,
+    )
+
+
 @router.get("/profile-draft/{slug}")
 def get_profile_draft(slug: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
     candidate_profile = get_candidate_profile_by_slug(session, slug)
@@ -206,7 +272,7 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "mark_applied"
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return "prioritize_jobs"
-    if "follow this company" in normalized or "follow company" in normalized or "watch this company" in normalized:
+    if is_company_discovery_command(normalized, active_workspace):
         return "follow_company"
     if "http://" in normalized or "https://" in normalized or "job url" in normalized or "add it to my jobs" in normalized:
         return "add_job_from_url"
@@ -238,11 +304,43 @@ def is_profile_intake_command(normalized_command: str, active_workspace: str | N
     return False
 
 
+def is_company_discovery_command(normalized_command: str, active_workspace: str | None) -> bool:
+    direct_signals = [
+        "follow this company",
+        "follow company",
+        "watch this company",
+        "watch companies",
+        "follow companies",
+        "find me companies",
+        "find companies",
+        "discover companies",
+        "company discovery",
+        "companies operating",
+        "companies in the",
+        "companies who hire",
+        "companies that hire",
+    ]
+    if any(signal in normalized_command for signal in direct_signals):
+        return True
+
+    if active_workspace == "companies" and any(
+        signal in normalized_command
+        for signal in ["find", "discover", "follow", "watch", "track", "hire", "hiring"]
+    ):
+        return True
+
+    return False
+
+
 def looks_like_future_tool_command(normalized_command: str) -> bool:
     future_tool_signals = [
         "job url",
         "add it to my jobs",
         "follow company",
+        "follow companies",
+        "find companies",
+        "discover companies",
+        "company discovery",
         "follow this company",
         "prioritize",
         "which jobs",
@@ -263,6 +361,12 @@ def build_profile_action_summary(profile_draft: dict[str, Any]) -> str:
         f"Updated the saved profile draft with {fact_count} fact(s), {skill_count} skill claim(s), "
         f"and {experience_count} experience/project item(s)."
     )
+
+
+def build_company_discovery_action_summary(added_count: int) -> str:
+    if added_count == 1:
+        return "Saved 1 model-derived company with new review status and verification links."
+    return f"Saved {added_count} model-derived companies with new review status and verification links."
 
 
 def target_workspace_for_action(action_type: CommandActionType) -> str | None:

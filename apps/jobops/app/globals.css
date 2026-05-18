@@ -1216,7 +1216,8 @@ input:disabled {
   color: var(--ink);
 }
 
-.application-workspace {
+.application-workspace,
+.company-workspace {
   display: grid;
   gap: 18px;
 }
@@ -1228,7 +1229,8 @@ input:disabled {
 }
 
 .application-form,
-.application-list {
+.application-list,
+.company-list {
   display: grid;
   align-content: start;
   gap: 18px;
@@ -1346,6 +1348,110 @@ input:disabled {
   gap: 8px;
 }
 
+.company-card-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.company-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.company-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.company-card-header h2 {
+  margin-bottom: 6px;
+  font-size: 1.16rem;
+}
+
+.company-card-header p,
+.company-fit,
+.company-source-summary {
+  margin-bottom: 0;
+}
+
+.company-badges,
+.company-tag-row,
+.company-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.company-badges {
+  justify-content: flex-end;
+}
+
+.company-badges span,
+.company-tag-row span {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.company-tag-row span {
+  border-color: rgba(124, 92, 43, 0.25);
+  background: #fffaf1;
+  color: var(--focus);
+}
+
+.company-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.company-details div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 9px;
+}
+
+.company-details dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.company-details dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.company-links a {
+  color: var(--accent-strong);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.company-links a:hover,
+.company-links a:focus-visible {
+  text-decoration: underline;
+}
+
 .secondary-action {
   display: inline-flex;
   min-height: 42px;
@@ -1444,6 +1550,8 @@ input:disabled {
   .profile-compare-grid,
   .profile-review-row,
   .application-layout,
+  .company-card-header,
+  .company-details,
   .application-form-grid,
   .profile-review-details,
   .status-edit {

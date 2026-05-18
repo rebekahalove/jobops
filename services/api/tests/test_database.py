@@ -61,3 +61,12 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "last_turn_at" in {column["name"] for column in inspector.get_columns("profile_intake_sessions")}
     experience_columns = {column["name"] for column in inspector.get_columns("experience_project_drafts")}
     assert {"start_date", "end_date", "location"}.issubset(experience_columns)
+    company_columns = {column["name"] for column in inspector.get_columns("target_companies")}
+    assert {
+        "normalized_name",
+        "careers_url",
+        "job_listings_url",
+        "derivation_status",
+        "review_status",
+        "provider_grounding_metadata",
+    }.issubset(company_columns)

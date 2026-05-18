@@ -18,6 +18,7 @@ class Settings:
     gemini_api_key: str | None
     profile_intake_save_artifacts: bool
     profile_intake_save_raw_text: bool
+    company_discovery_search_grounding_enabled: bool
     database_url: str | None
     default_candidate_profile_slug: str
     repo_root: Path
@@ -49,6 +50,10 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         gemini_api_key=merged.get("GEMINI_API_KEY"),
         profile_intake_save_artifacts=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS")),
         profile_intake_save_raw_text=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT")),
+        company_discovery_search_grounding_enabled=parse_bool(
+            merged.get("JOBOPS_COMPANY_DISCOVERY_SEARCH_GROUNDING"),
+            default=True,
+        ),
         database_url=merged.get("DATABASE_URL"),
         default_candidate_profile_slug=merged.get("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG", "rebekah-love"),
         repo_root=root,

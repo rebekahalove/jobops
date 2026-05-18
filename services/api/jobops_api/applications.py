@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobops_api.company_discovery import normalize_company_name
 from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, JobRole, TargetCompany
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
@@ -227,7 +228,13 @@ def get_or_create_target_company(session: Session, candidate_profile_id: str, co
     if target_company is not None:
         return target_company
 
-    target_company = TargetCompany(candidate_profile_id=candidate_profile_id, name=company_name)
+    target_company = TargetCompany(
+        candidate_profile_id=candidate_profile_id,
+        name=company_name,
+        normalized_name=normalize_company_name(company_name),
+        derivation_status="user_entered",
+        review_status="reviewed",
+    )
     session.add(target_company)
     session.flush()
     return target_company

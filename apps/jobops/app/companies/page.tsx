@@ -1,5 +1,6 @@
-import { PlaceholderPage } from "../../components/placeholder-page";
+import React from "react";
+import { CompaniesList } from "../../components/companies-list";
 
 export default function CompaniesPage() {
-  return <PlaceholderPage workflowId="companies" />;
+  return <CompaniesList />;
 }
