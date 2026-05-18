@@ -38,7 +38,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [isChangeExpanded, setIsChangeExpanded] = useState(true);
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(true);
-  const [statusSummary, setStatusSummary] = useState("Loading saved profile draft...");
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +54,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         }
 
         if (!response.ok || !payload.ok) {
-          setStatusSummary(payload.ok ? "Saved profile draft could not be loaded." : payload.error);
           return;
         }
 
@@ -63,11 +61,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         setIntent(nextState.intent);
         setDraft(nextState.draft);
         setLastTurn(nextState.turn);
-        setStatusSummary(payload.result.statusSummary || "Latest saved profile draft loaded.");
       } catch {
-        if (!cancelled) {
-          setStatusSummary("Saved profile draft is unavailable until the FastAPI service is running.");
-        }
+        return;
       }
     }
 
@@ -103,25 +98,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         </p>
       </section>
 
-      <section className="profile-status-panel" aria-labelledby="profile-status-title">
-        <div>
-          <p className="eyebrow">Latest profile intake</p>
-          <h2 id="profile-status-title">Saved draft status</h2>
-        </div>
-        <p>{statusSummary}</p>
-      </section>
-
-      <CollapsiblePanel
-        eyebrow="Latest agent turn"
-        expanded={isChangeExpanded}
-        id="change-summary-title"
-        onToggle={() => setIsChangeExpanded((current) => !current)}
-        subtitle="Every generated change remains a private draft until reviewed."
-        title="What changed"
-      >
-        <ChangeSummary turn={lastTurn} />
-      </CollapsiblePanel>
-
       <CollapsiblePanel
         aside={
           <div className="profile-status-bar" aria-label="Profile-level statuses">
@@ -152,77 +128,28 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           review state.
         </p>
 
-        <section className="review-subsection" aria-labelledby="intent-review-title">
+        <section className="review-subsection" aria-labelledby="current-draft-title">
           <div>
-            <h3 id="intent-review-title">Target role intent</h3>
-          </div>
-          <div className="intent-form review-form" aria-label="Target role intent review form">
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="targetTitles"
-              label="Target titles"
-              onChange={updateIntent}
-              placeholder="Applied AI Engineer, Forward Deployed Engineer"
-              value={intent.targetTitles}
-            />
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="roleFamilies"
-              label="Target role families"
-              onChange={updateIntent}
-              placeholder="LLM systems, product engineering, evals"
-              value={intent.roleFamilies}
-            />
-            <label>
-              <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
-              <select
-                onChange={(event) => updateIntent("preferredWorkMode", event.target.value)}
-                suppressHydrationWarning
-                value={intent.preferredWorkMode}
-              >
-                <option value="flexible">Flexible</option>
-                <option value="remote">Remote</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="onsite">Onsite</option>
-              </select>
-            </label>
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="preferredLocations"
-              label="Preferred locations"
-              onChange={updateIntent}
-              placeholder="Remote US, Raleigh-Durham, NYC"
-              value={intent.preferredLocations}
-            />
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="domainsOfInterest"
-              label="Domains or industries of interest"
-              onChange={updateIntent}
-              placeholder="Developer tools, education, healthcare, enterprise AI"
-              value={intent.domainsOfInterest}
-            />
-            <label>
-              <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
-              <textarea
-                className="small-textarea"
-                onChange={(event) => updateIntent("constraints", event.target.value)}
-                placeholder="Travel, location, timeline, role scope, sponsorship, compensation constraints"
-                suppressHydrationWarning
-                value={intent.constraints}
-              />
-            </label>
-          </div>
-        </section>
-
-        <section className="review-subsection" aria-labelledby="draft-preview-title">
-          <div>
-            <h3 id="draft-preview-title">Draft review queues</h3>
+            <h3 id="current-draft-title">Current Draft</h3>
             <p>Draft items are grouped by information type and need review before they become verified private data.</p>
           </div>
-          <DraftProfilePreview draft={draft} />
+          <div className="current-draft-stack">
+            <TargetsCard editedFields={editedFields} intent={intent} onChange={updateIntent} />
+            <DraftProfilePreview draft={draft} />
+          </div>
         </section>
 
+      </CollapsiblePanel>
+
+      <CollapsiblePanel
+        eyebrow="Latest agent turn"
+        expanded={isChangeExpanded}
+        id="change-summary-title"
+        onToggle={() => setIsChangeExpanded((current) => !current)}
+        subtitle="Every generated change remains a private draft until reviewed."
+        title="What changed"
+      >
+        <ChangeSummary turn={lastTurn} />
       </CollapsiblePanel>
 
       <CollapsiblePanel
@@ -331,6 +258,82 @@ function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
   );
 }
 
+function TargetsCard({
+  editedFields,
+  intent,
+  onChange
+}: {
+  editedFields: Set<IntentField>;
+  intent: TargetRoleIntent;
+  onChange: (field: IntentField, value: string) => void;
+}) {
+  return (
+    <section className="profile-review-card target-settings-card" aria-labelledby="target-settings-title">
+      <div>
+        <p className="eyebrow">Draft settings</p>
+        <h4 id="target-settings-title">Targets</h4>
+      </div>
+      <div className="intent-form review-form" aria-label="Target settings review form">
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="targetTitles"
+          label="Target titles"
+          onChange={onChange}
+          placeholder="Applied AI Engineer, Forward Deployed Engineer"
+          value={intent.targetTitles}
+        />
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="roleFamilies"
+          label="Target role families"
+          onChange={onChange}
+          placeholder="LLM systems, product engineering, evals"
+          value={intent.roleFamilies}
+        />
+        <label>
+          <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
+          <select
+            onChange={(event) => onChange("preferredWorkMode", event.target.value)}
+            suppressHydrationWarning
+            value={intent.preferredWorkMode}
+          >
+            <option value="flexible">Flexible</option>
+            <option value="remote">Remote</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="onsite">Onsite</option>
+          </select>
+        </label>
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="preferredLocations"
+          label="Preferred locations"
+          onChange={onChange}
+          placeholder="Remote US, Raleigh-Durham, NYC"
+          value={intent.preferredLocations}
+        />
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="domainsOfInterest"
+          label="Domains or industries of interest"
+          onChange={onChange}
+          placeholder="Developer tools, education, healthcare, enterprise AI"
+          value={intent.domainsOfInterest}
+        />
+        <label>
+          <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
+          <textarea
+            className="small-textarea"
+            onChange={(event) => onChange("constraints", event.target.value)}
+            placeholder="Travel, location, timeline, role scope, sponsorship, compensation constraints"
+            suppressHydrationWarning
+            value={intent.constraints}
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
   if (!turn) {
     return (
@@ -356,7 +359,7 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
   );
 }
 
-function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
+export function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
   const [activeTab, setActiveTab] = useState<ReviewTabId>("experience");
 
   if (!draft) {
@@ -368,7 +371,7 @@ function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
   return <ReviewTabbedList activeTab={activeTab} draft={draft} onTabChange={setActiveTab} />;
 }
 
-function ReviewTabbedList({
+export function ReviewTabbedList({
   activeTab,
   draft,
   onTabChange
@@ -410,7 +413,22 @@ function ReviewTabbedList({
           <h3>{activeLabel}</h3>
           <span>{counts[activeTab]}</span>
         </div>
-        <ProfileReviewTabContent activeTab={activeTab} draft={draft} />
+        <div className="profile-compare-grid">
+          <section className="profile-review-card" aria-label={`Current draft ${activeLabel}`}>
+            <div className="profile-review-card-header">
+              <h4>Current draft</h4>
+              <span>{counts[activeTab]} draft</span>
+            </div>
+            <ProfileReviewTabContent activeTab={activeTab} draft={draft} />
+          </section>
+          <section className="profile-review-card published-profile-card" aria-label={`Current published profile ${activeLabel}`}>
+            <div className="profile-review-card-header">
+              <h4>Current published profile</h4>
+              <span>0 published</span>
+            </div>
+            <EmptyMessage>No published {activeLabel.toLowerCase()} yet.</EmptyMessage>
+          </section>
+        </div>
       </section>
     </div>
   );
@@ -422,19 +440,31 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
   }
 
   if (activeTab === "experience") {
-    const items = draft.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project");
+    const items = draft.experienceSummaries.filter((item) => {
+      const itemType = getReviewItemType(item);
+      return itemType === "experience" || itemType === "project";
+    });
     return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} />;
   }
 
   if (activeTab === "education") {
-    return <ExperienceList emptyLabel="No education items drafted yet." items={draft.experienceSummaries.filter((item) => item.itemType === "education")} />;
+    const educationFacts = draft.facts.filter((fact) => getFactCredentialType(fact) === "education");
+    return (
+      <CredentialList
+        emptyLabel="No education items drafted yet."
+        facts={educationFacts}
+        items={draft.experienceSummaries.filter((item) => getReviewItemType(item) === "education")}
+      />
+    );
   }
 
   if (activeTab === "certifications") {
+    const certificationFacts = draft.facts.filter((fact) => getFactCredentialType(fact) === "certification");
     return (
-      <ExperienceList
+      <CredentialList
         emptyLabel="No certification items drafted yet."
-        items={draft.experienceSummaries.filter((item) => item.itemType === "certification")}
+        facts={certificationFacts}
+        items={draft.experienceSummaries.filter((item) => getReviewItemType(item) === "certification")}
       />
     );
   }
@@ -443,15 +473,15 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
     return draft.skillClaims.length ? (
       <ul className="profile-review-list">
         {draft.skillClaims.map((skill) => (
-          <li className="profile-review-item" key={skill.id}>
-            <div>
+          <li className="profile-review-item profile-review-row" key={skill.id}>
+            <div className="profile-review-primary">
               <strong>{skill.skill}</strong>
               <span>{skill.category}</span>
             </div>
-            <DetailGrid
+            <CompactMeta
               items={[
-                ["Evidence", skill.evidence],
-                ["Years", formatYears(skill.yearsMin, skill.yearsMax)]
+                ["Years", formatYears(skill.yearsMin, skill.yearsMax)],
+                ["Evidence", skill.evidence]
               ]}
             />
             <StatusBadges source={skill.source} />
@@ -464,19 +494,22 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
   }
 
   if (activeTab === "achievements") {
-    const achievements = draft.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
+    const achievements = draft.facts.filter(
+      (fact) => !getFactCredentialType(fact) && looksLikeAchievement(fact.claim, fact.category)
+    );
     return achievements.length ? <FactList facts={achievements} /> : <EmptyMessage>No achievement or outcome items drafted yet.</EmptyMessage>;
   }
 
   if (activeTab === "facts") {
-    return draft.facts.length ? <FactList facts={draft.facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
+    const facts = draft.facts.filter((fact) => !getFactCredentialType(fact));
+    return facts.length ? <FactList facts={facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
   }
 
   return draft.links.length ? (
     <ul className="profile-review-list">
       {draft.links.map((link) => (
-        <li className="profile-review-item" key={link.id}>
-          <div>
+        <li className="profile-review-item profile-review-row" key={link.id}>
+          <div className="profile-review-primary">
             <strong>{link.label}</strong>
             <a href={link.url} rel="noreferrer" target="_blank">
               {link.url}
@@ -500,7 +533,7 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
     <ul className="profile-review-list">
       {items.map((experience) => (
         <li className="profile-review-item" key={experience.id}>
-          <div>
+          <div className="profile-review-primary">
             <strong>{experience.title}</strong>
             <span>{experience.organization}</span>
           </div>
@@ -508,7 +541,7 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
             items={[
               ["Dates", formatDateRange(experience.startDate, experience.endDate)],
               ["Location", experience.location],
-              ["Type", experience.itemType]
+              ["Type", getReviewItemType(experience)]
             ]}
           />
           <p>{experience.summary}</p>
@@ -526,12 +559,64 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
   );
 }
 
+function CredentialList({
+  emptyLabel,
+  facts,
+  items
+}: {
+  emptyLabel: string;
+  facts: MockProfileDraft["facts"];
+  items: MockProfileDraft["experienceSummaries"];
+}) {
+  if (!items.length && !facts.length) {
+    return <EmptyMessage>{emptyLabel}</EmptyMessage>;
+  }
+
+  return (
+    <ul className="profile-review-list">
+      {items.map((experience) => (
+        <li className="profile-review-item" key={experience.id}>
+          <div className="profile-review-primary">
+            <strong>{experience.title}</strong>
+            <span>{experience.organization}</span>
+          </div>
+          <DetailGrid
+            items={[
+              ["Dates", formatDateRange(experience.startDate, experience.endDate)],
+              ["Location", experience.location],
+              ["Type", getReviewItemType(experience)]
+            ]}
+          />
+          <p>{experience.summary}</p>
+          {experience.bullets.length ? (
+            <ul className="profile-review-bullets">
+              {experience.bullets.map((bullet) => (
+                <li key={bullet}>{bullet}</li>
+              ))}
+            </ul>
+          ) : null}
+          <StatusBadges source={experience.source} />
+        </li>
+      ))}
+      {facts.map((fact) => (
+        <li className="profile-review-item profile-review-row" key={fact.id}>
+          <div className="profile-review-primary">
+            <strong>{fact.claim}</strong>
+            <span>{fact.category}</span>
+          </div>
+          <StatusBadges source={fact.source} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function FactList({ facts }: { facts: MockProfileDraft["facts"] }) {
   return (
     <ul className="profile-review-list">
       {facts.map((fact) => (
-        <li className="profile-review-item" key={fact.id}>
-          <div>
+        <li className="profile-review-item profile-review-row" key={fact.id}>
+          <div className="profile-review-primary">
             <strong>{fact.category}</strong>
             <span>{fact.claim}</span>
           </div>
@@ -560,6 +645,24 @@ function DetailGrid({ items }: { items: Array<[string, string]> }) {
   );
 }
 
+function CompactMeta({ items }: { items: Array<[string, string]> }) {
+  const visibleItems = items.filter(([, value]) => value.trim().length > 0);
+  if (!visibleItems.length) {
+    return null;
+  }
+
+  return (
+    <dl className="profile-review-meta">
+      {visibleItems.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function EmptyReviewList({ activeTab }: { activeTab: ReviewTabId }) {
   const label = reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || "items";
   return <EmptyMessage>No {label} drafted yet.</EmptyMessage>;
@@ -571,13 +674,23 @@ function EmptyMessage({ children }: { children: React.ReactNode }) {
 
 function buildReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, number> {
   return {
-    experience: draft?.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project").length ?? 0,
+    experience:
+      draft?.experienceSummaries.filter((item) => {
+        const itemType = getReviewItemType(item);
+        return itemType === "experience" || itemType === "project";
+      }).length ?? 0,
     skills: draft?.skillClaims.length ?? 0,
-    achievements: draft?.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length ?? 0,
-    facts: draft?.facts.length ?? 0,
+    achievements:
+      draft?.facts.filter((fact) => !getFactCredentialType(fact) && looksLikeAchievement(fact.claim, fact.category))
+        .length ?? 0,
+    facts: draft?.facts.filter((fact) => !getFactCredentialType(fact)).length ?? 0,
     evidence: draft?.links.length ?? 0,
-    education: draft?.experienceSummaries.filter((item) => item.itemType === "education").length ?? 0,
-    certifications: draft?.experienceSummaries.filter((item) => item.itemType === "certification").length ?? 0
+    education:
+      (draft?.experienceSummaries.filter((item) => getReviewItemType(item) === "education").length ?? 0) +
+      (draft?.facts.filter((fact) => getFactCredentialType(fact) === "education").length ?? 0),
+    certifications:
+      (draft?.experienceSummaries.filter((item) => getReviewItemType(item) === "certification").length ?? 0) +
+      (draft?.facts.filter((fact) => getFactCredentialType(fact) === "certification").length ?? 0)
   };
 }
 
@@ -615,6 +728,32 @@ function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["s
 
 function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
   return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
+}
+
+function getReviewItemType(item: MockProfileDraft["experienceSummaries"][number]) {
+  if (item.itemType === "education" || item.itemType === "certification") {
+    return item.itemType;
+  }
+
+  const normalized = `${item.title} ${item.organization} ${item.summary} ${item.bullets.join(" ")}`.toLowerCase();
+  if (/certificate|certification|coursera|credential/.test(normalized)) {
+    return "certification";
+  }
+  if (/university|college|b\.a\.|b\.s\.|degree|stanford|bachelor|master/.test(normalized)) {
+    return "education";
+  }
+  return item.itemType;
+}
+
+function getFactCredentialType(fact: MockProfileDraft["facts"][number]) {
+  const normalized = `${fact.category} ${fact.claim}`.toLowerCase();
+  if (/certificate|certification|credential|coursera/.test(normalized)) {
+    return "certification";
+  }
+  if (/education|university|college|b\.a\.|b\.s\.|degree|bachelor|master/.test(normalized)) {
+    return "education";
+  }
+  return "";
 }
 
 function formatYears(yearsMin?: number, yearsMax?: number) {

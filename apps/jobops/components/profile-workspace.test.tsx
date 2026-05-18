@@ -9,7 +9,7 @@ import {
   emptyTargetRoleIntent,
   initialProfilePrompt
 } from "../lib/profile-intake";
-import { ClarifyingQuestions, ProfileWorkspace } from "./profile-workspace";
+import { ClarifyingQuestions, ProfileWorkspace, ReviewTabbedList } from "./profile-workspace";
 
 describe("Profile intake workspace", () => {
   it("renders the profile page", () => {
@@ -21,7 +21,6 @@ describe("Profile intake workspace", () => {
   it("does not render a standalone chat composer", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("Saved draft status");
     expect(html).not.toContain("Single command surface");
     expect(html).not.toContain(initialProfilePrompt);
     expect(html).not.toContain("Attach resume");
@@ -36,8 +35,9 @@ describe("Profile intake workspace", () => {
 
     expect(html).toContain("Structured review");
     expect(html).toContain("Review &amp; verify profile data");
-    expect(html).toContain("Target role intent");
-    expect(html).toContain("Draft review queues");
+    expect(html).toContain("Targets");
+    expect(html).toContain("Current Draft");
+    expect(html).toContain("Current published profile");
     expect(html).toContain("Experience &amp; Projects");
     expect(html).toContain("Skills");
     expect(html).toContain("Achievements &amp; Outcomes");
@@ -55,6 +55,8 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("Public facts");
     expect(html).not.toContain("Experience containers");
     expect(html).not.toContain("experience containers");
+    expect(html).not.toContain("Latest profile intake");
+    expect(html).not.toContain("Draft review queues");
   });
 
   it("keeps review sections in collapsible panels", () => {
@@ -63,7 +65,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("aria-label=\"Collapse What changed\"");
     expect(html).toContain("aria-label=\"Collapse Review &amp; verify profile data\"");
     expect(html).toContain("aria-label=\"Collapse Clarifying questions\"");
-    expect(html).toContain("Target role intent");
+    expect(html).toContain("Targets");
     expect(html).toContain("No questions yet");
   });
 
@@ -198,6 +200,106 @@ describe("Profile intake workspace", () => {
       bullets: ["Reduced report generation from a workday to under 30 minutes."]
     });
     expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
+  });
+
+  it("shows education and certification rows even when stored item type defaulted to experience", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [],
+      skillClaims: [],
+      experienceAndProjects: [
+        {
+          itemType: "experience",
+          title: "B.A., Fine Arts",
+          organization: "Indiana University",
+          summary: "Degree listed in resume education section.",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        },
+        {
+          itemType: "experience",
+          title: "Certificate - Supervised Machine Learning",
+          organization: "Stanford Online (Coursera)",
+          summary: "Credential listed in resume certification section.",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const educationHtml = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="education" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+    const certificationHtml = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="certifications" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(educationHtml).toContain("B.A., Fine Arts");
+    expect(educationHtml).toContain("Indiana University");
+    expect(certificationHtml).toContain("Certificate - Supervised Machine Learning");
+    expect(certificationHtml).toContain("Stanford Online (Coursera)");
+  });
+
+  it("moves credential-like facts into education and certification tabs instead of generic facts", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [
+        {
+          claim: "B.A., Fine Arts - Indiana University.",
+          category: "education",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        },
+        {
+          claim: "Certificate - Stanford Online (Coursera) - Supervised Machine Learning.",
+          category: "certification",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        },
+        {
+          claim: "Built a production AI reporting platform.",
+          category: "ai_product",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      skillClaims: [],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const educationHtml = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="education" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+    const certificationHtml = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="certifications" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+    const factsHtml = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="facts" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(educationHtml).toContain("B.A., Fine Arts - Indiana University.");
+    expect(certificationHtml).toContain("Certificate - Stanford Online (Coursera)");
+    expect(factsHtml).toContain("Built a production AI reporting platform.");
+    expect(factsHtml).not.toContain("B.A., Fine Arts - Indiana University.");
+    expect(factsHtml).not.toContain("Certificate - Stanford Online (Coursera)");
   });
 
   it("loads saved draft state from the profile-draft proxy", async () => {
