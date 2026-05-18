@@ -12,11 +12,10 @@ export async function GET(request: Request) {
   }
 
   const requestUrl = new URL(request.url);
+  const requestSlug = requestUrl.searchParams.get("candidateProfileSlug")?.trim();
   let slug: string;
   try {
-    slug =
-      requestUrl.searchParams.get("candidateProfileSlug") ??
-      requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+    slug = requestSlug || requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
   } catch (error) {
     return serverConfigErrorResponse(error);
   }

@@ -65,4 +65,38 @@ describe("profile-draft API proxy", () => {
     );
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });
+
+  it("ignores an empty candidateProfileSlug query and uses the configured slug", async () => {
+    const { GET } = await import("./route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ ok: true, result: {} }, { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET(new Request("http://next.test/api/profile-draft?candidateProfileSlug="));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/configured-profile");
+  });
+
+  it("fails clearly when candidateProfileSlug is empty and no configured slug exists", async () => {
+    getJobOpsApiServerConfigMock.mockResolvedValueOnce({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
+    });
+    const { GET } = await import("./route");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET(new Request("http://next.test/api/profile-draft?candidateProfileSlug="));
+
+    expect(response.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
+    });
+  });
 });
