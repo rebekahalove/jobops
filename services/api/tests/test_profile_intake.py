@@ -97,7 +97,29 @@ def test_malformed_model_output_fails_safely(tmp_path: Path) -> None:
     assert result.body["issues"] == ["Output is not valid JSON."]
     assert result.body["modelRequest"]["task"] == "profile_draft_update"
     assert result.body["modelRequest"]["messages"][1]["role"] == "user"
+    assert result.body["modelResponse"]["text"] == "not json"
     assert "debug_run_id" not in result.body
+
+
+def test_capacity_validation_failure_returns_specific_error_and_raw_response(tmp_path: Path) -> None:
+    over_capacity_output = realistic_resume_output()
+    over_capacity_output["changeSummary"] = [f"Change {index}" for index in range(13)]
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(StaticProvider(json.dumps(over_capacity_output))),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 502
+    assert result.body["ok"] is False
+    assert result.body["code"] == "model_output_exceeded_schema_capacity"
+    assert result.body["error"] == (
+        "Profile intake model returned more structured items than the current schema allows. No draft data was applied."
+    )
+    assert "changeSummary: List should have at most 12 items" in " ".join(result.body["issues"])
+    assert result.body["modelResponse"]["finishReason"] == "stop"
+    assert "Change 12" in result.body["modelResponse"]["text"]
 
 
 def test_pydantic_validation_failure_rejects_unsafe_generated_metadata(tmp_path: Path) -> None:
@@ -222,6 +244,101 @@ def test_profile_intake_uses_shared_model_connector(tmp_path: Path) -> None:
     assert provider.requests[0].messages[1].role == "user"
 
 
+def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path) -> None:
+    provider = RecordingProvider(json.dumps(valid_output()))
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    request = provider.requests[0]
+    prompt_payload = json.loads(request.messages[1].content)
+    assert request.max_output_tokens == 16000
+    assert request.metadata["intake_mode"] == "resume_intake"
+    assert "32 facts, 50 skills, 18 experiences, and 20 evidence links" in request.metadata["output_token_budget_reason"]
+    assert prompt_payload["detected_intake_mode"] == "resume_intake"
+    assert prompt_payload["capacity_guidance"]["active"] == {
+        "draftFacts": 32,
+        "skillClaims": 50,
+        "experienceAndProjects": 18,
+        "evidenceLinks": 20,
+        "clarifyingQuestions": 6,
+        "changeSummary": 12,
+    }
+    system_prompt = request.messages[0].content
+    assert "Put education and certifications in experienceAndProjects, not draftFacts." in system_prompt
+    assert 'Use itemType "education"' in system_prompt
+    assert 'Use itemType "certification"' in system_prompt
+    assert "Preserve month/year precision when the resume gives it" in system_prompt
+    assert "put it in location instead of summary" in system_prompt
+
+
+def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> None:
+    provider = RecordingProvider(json.dumps(valid_output()))
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=resume_text_without_resume_label()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
+    assert provider.requests[0].max_output_tokens == 16000
+
+
+def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
+    provider = RecordingProvider(json.dumps(valid_output()))
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message="I want to be an Applied AI Engineer."),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    request = provider.requests[0]
+    prompt_payload = json.loads(request.messages[1].content)
+    assert request.max_output_tokens == 5000
+    assert request.metadata["intake_mode"] == "chat_update"
+    assert prompt_payload["detected_intake_mode"] == "chat_update"
+    assert prompt_payload["capacity_guidance"]["active"] == {
+        "draftFacts": 4,
+        "skillClaims": 6,
+        "experienceAndProjects": 3,
+        "evidenceLinks": 4,
+        "clarifyingQuestions": 3,
+        "changeSummary": 3,
+    }
+
+
+def test_truncated_resume_response_returns_specific_actionable_error(tmp_path: Path) -> None:
+    full_response = json.dumps(realistic_resume_output())
+    truncated_response = full_response[:4000]
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(StaticProvider(truncated_response, finish_reason="MAX_TOKENS")),
+        settings=make_settings(tmp_path, save_artifacts=True),
+    )
+
+    assert result.status_code == 502
+    assert result.body["ok"] is False
+    assert result.body["code"] == "model_response_truncated"
+    assert result.body["error"] == (
+        "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
+    )
+    assert "Model response appears to have been truncated before valid JSON completed." in result.body["issues"]
+    assert result.body["modelRequest"]["maxOutputTokens"] == 16000
+    assert result.body["modelResponse"]["finishReason"] == "MAX_TOKENS"
+    run_dir = only_run_dir(tmp_path)
+    validation_error = json.loads((run_dir / "validation-error.json").read_text(encoding="utf-8"))
+    assert "truncated" in " ".join(validation_error["issues"]).lower()
+
+
 def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -293,6 +410,55 @@ def test_persisted_profile_intake_success_saves_private_drafts_and_redacted_even
         assert {event.role for event in events} == {"user", "assistant"}
         assert all(event.redacted_text is None for event in events)
         assert all("I built a Python FastAPI eval harness" not in json.dumps(event.event_metadata) for event in events)
+
+
+def test_persisted_resume_intake_accepts_realistic_complete_draft(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    provider = RecordingProvider(json.dumps(realistic_resume_output()))
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    snapshot = result.body["result"]
+    assert len(snapshot["draftFacts"]) == 16
+    assert len(snapshot["skillClaims"]) == 28
+    assert len(snapshot["experienceAndProjects"]) == 9
+    assert len(snapshot["evidenceLinks"]) == 9
+    assert len(snapshot["clarifyingQuestions"]) == 4
+    assert len(snapshot["changeSummary"]) == 6
+    assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
+
+    with session_factory() as session:
+        facts = session.scalars(select(ProfileFactDraft)).all()
+        skills = session.scalars(select(SkillClaim)).all()
+        experiences = session.scalars(select(ExperienceProjectDraft)).all()
+        evidence = session.scalars(select(EvidenceArtifact)).all()
+
+        assert len(facts) == 16
+        assert len(skills) == 28
+        assert len(experiences) == 9
+        assert len(evidence) == 9
+        assert experiences[0].start_date == "2022"
+        assert experiences[0].end_date == "Present"
+        assert experiences[0].location == "Remote"
+        assert experiences[0].structured_value["itemType"] == "experience"
+        assert experiences[0].structured_value["startDate"] == "2022"
+        assert experiences[0].structured_value["endDate"] == "Present"
+        assert experiences[0].structured_value["location"] == "Remote"
+        assert experiences[0].structured_value["bullets"] == [
+            "Built an LLM evaluation platform for support automation.",
+            "Led Python and FastAPI services that processed workflow data.",
+        ]
+        assert all(fact.review_status == "needs_review" for fact in facts)
+        assert all(skill.visibility == "private" and skill.publication_status == "not_published" for skill in skills)
+        assert all(item.visibility == "private" and item.publication_status == "not_published" for item in experiences)
+        assert all(item.visibility == "private" and item.publication_status == "not_published" for item in evidence)
 
 
 def test_persisted_evidence_links_remain_private_and_unpublished(tmp_path: Path) -> None:
@@ -933,6 +1099,165 @@ def make_connector(provider: StaticProvider | RecordingProvider) -> ModelConnect
             provider="test",
             routing=ModelRoutingConfig(default_model="mock-default", cheap_model="mock-cheap"),
         ),
+    )
+
+
+def fake_resume_text() -> str:
+    return """Resume
+Alex Example
+Applied AI and platform engineer
+
+Summary
+Built production AI, data, and backend systems for customer-facing workflow products.
+
+Experience
+Senior Applied AI Engineer | Northstar Systems | 2022 - Present
+- Built an LLM evaluation platform for support automation and reduced regression review time.
+- Led Python and FastAPI services that processed customer workflow data.
+- Partnered with sales, support, and security stakeholders on enterprise rollouts.
+
+Platform Engineer | River Analytics | 2019 - 2022
+- Implemented Postgres-backed analytics pipelines and CI/CD deployment workflows.
+- Improved observability, tracing, and incident response for data products.
+- Mentored engineers on TypeScript, React, API design, and testing.
+
+Software Engineer | Beacon Tools | 2016 - 2019
+- Shipped React and Node.js features for developer productivity dashboards.
+- Designed auth and audit logging for regulated customer environments.
+
+Projects
+Agent Review Console | 2024
+RAG Knowledge Base | 2023
+Workflow Metrics Dashboard | 2021
+
+Education
+State University, B.S. Computer Science
+
+Certifications
+AWS Solutions Architect Associate
+
+Skills
+Python, TypeScript, JavaScript, React, Next.js, FastAPI, Node.js, Postgres, SQL, RAG, LLM evals,
+observability, Docker, Kubernetes, AWS, GCP, Azure, CI/CD, security, product analytics, stakeholder collaboration
+
+Links
+https://example.com/profile
+https://example.com/project/agent-review
+https://example.com/project/rag
+"""
+
+
+def resume_text_without_resume_label() -> str:
+    return """Rebekah Love
+Louisville, KY | linkedin.com/in/rebekahalove
+Applied AI Systems Engineer
+
+PROFESSIONAL SUMMARY
+Applied AI Systems Engineer and Founder with 10+ years of experience building production data and AI platforms.
+
+CORE SKILLS
+RAG and structured context assembly
+LLM evaluation and prompt engineering
+Python, FastAPI, PostgreSQL, Docker
+
+PROFESSIONAL EXPERIENCE
+Shadow Network Intelligence - Founder & Applied AI Systems Engineer Remote 2024\u2013Present
+- Built and deployed a production AI reporting platform.
+- Reduced report generation from 8-12 hours to 10-30 minutes.
+
+PROFESSIONAL EXPERIENCE CONTINUED
+Sentry Data Systems - Software Developer Remote 2015\u20132018
+- Built and optimized large-scale ETL pipelines.
+
+EDUCATION
+B.A., Fine Arts - Indiana University
+
+SELECTED TECHNICAL STRENGTHS
+Production AI systems, data-intensive platforms, RAG workflows, human review systems
+"""
+
+
+def realistic_resume_output() -> dict[str, object]:
+    return profile_update_output(
+        assistant_message="I drafted a fuller resume profile and kept every item private for review.",
+        draft={
+            "targetRoleIntent": {
+                "targetTitles": "Applied AI Engineer",
+                "targetRoleFamilies": "Applied AI; Platform Engineering",
+                "preferredWorkMode": "flexible",
+                "domainsOrIndustries": "workflow automation; developer tools",
+            },
+            "draftFacts": [
+                {
+                    "claim": f"Resume fact {index}: built or led production AI, data, or platform work.",
+                    "category": "resume_evidence",
+                    "source": "resume",
+                    "status": "needs_review",
+                    "visibility": "private",
+                    "published": False,
+                }
+                for index in range(1, 17)
+            ],
+            "skillClaims": [
+                {
+                    "skill": f"Resume Skill {index}",
+                    "category": "resume_skill",
+                    "evidence": f"Used in resume role or project {index}.",
+                    "source": "resume",
+                    "status": "needs_review",
+                    "visibility": "private",
+                    "published": False,
+                }
+                for index in range(1, 29)
+            ],
+            "experienceAndProjects": [
+                {
+                    "itemType": "experience",
+                    "title": f"Resume Role or Project {index}",
+                    "organization": f"Example Organization {index}",
+                    "startDate": "2022" if index == 1 else None,
+                    "endDate": "Present" if index == 1 else None,
+                    "location": "Remote" if index == 1 else None,
+                    "summary": f"Delivered applied AI, backend, data, or platform outcomes in resume item {index}.",
+                    "bullets": [
+                        "Built an LLM evaluation platform for support automation.",
+                        "Led Python and FastAPI services that processed workflow data.",
+                    ]
+                    if index == 1
+                    else [],
+                    "source": "resume",
+                    "status": "needs_review",
+                    "visibility": "private",
+                    "published": False,
+                }
+                for index in range(1, 10)
+            ],
+            "evidenceLinks": [
+                {
+                    "url": f"https://example.com/resume-evidence/{index}",
+                    "label": f"Resume evidence {index}",
+                    "source": "resume",
+                    "status": "needs_review",
+                    "visibility": "private",
+                    "published": False,
+                }
+                for index in range(1, 10)
+            ],
+        },
+        clarifying_questions=[
+            "Which two outcomes should be quantified first?",
+            "Which resume projects are strongest for applied AI roles?",
+            "Which skills should be deemphasized?",
+            "Are any links private or outdated?",
+        ],
+        change_summary=[
+            "Extracted representative resume facts.",
+            "Created resume-backed skill claims.",
+            "Created experience and project drafts.",
+            "Added evidence links for review.",
+            "Kept all items private and unpublished.",
+            "Marked all generated items as needs review.",
+        ],
     )
 
 

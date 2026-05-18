@@ -11,6 +11,24 @@ import {
 } from "../lib/profile-intake";
 
 type IntentField = keyof TargetRoleIntent;
+type ReviewTabId =
+  | "experience"
+  | "skills"
+  | "achievements"
+  | "facts"
+  | "evidence"
+  | "education"
+  | "certifications";
+
+const reviewTabs: Array<{ id: ReviewTabId; label: string }> = [
+  { id: "experience", label: "Experience & Projects" },
+  { id: "skills", label: "Skills" },
+  { id: "achievements", label: "Achievements & Outcomes" },
+  { id: "facts", label: "Facts & Claims" },
+  { id: "evidence", label: "Evidence & Links" },
+  { id: "education", label: "Education" },
+  { id: "certifications", label: "Certifications" }
+];
 
 export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
@@ -20,7 +38,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [isChangeExpanded, setIsChangeExpanded] = useState(true);
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(true);
-  const [statusSummary, setStatusSummary] = useState("Loading saved profile draft...");
 
   useEffect(() => {
     let cancelled = false;
@@ -37,7 +54,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         }
 
         if (!response.ok || !payload.ok) {
-          setStatusSummary(payload.ok ? "Saved profile draft could not be loaded." : payload.error);
           return;
         }
 
@@ -45,11 +61,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         setIntent(nextState.intent);
         setDraft(nextState.draft);
         setLastTurn(nextState.turn);
-        setStatusSummary(payload.result.statusSummary || "Latest saved profile draft loaded.");
       } catch {
-        if (!cancelled) {
-          setStatusSummary("Saved profile draft is unavailable until the FastAPI service is running.");
-        }
+        return;
       }
     }
 
@@ -76,22 +89,29 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
 
   return (
     <main className="dashboard-main profile-workspace">
-      <section className="page-heading" aria-labelledby="profile-title">
-        <p className="eyebrow">Profile workspace</p>
-        <h1 id="profile-title">Review your JobOps profile draft.</h1>
-        <p>
-          Use the JobOps command center above to update your profile. This workspace shows the saved draft profile state
-          for review, correction, and later verification.
-        </p>
-      </section>
+      <CollapsiblePanel
+        aside={
+          <ProfileStatusIcons />
+        }
+        className="review-shell"
+        eyebrow="Structured review"
+        expanded={isReviewExpanded}
+        id="review-title"
+        onToggle={() => setIsReviewExpanded((current) => !current)}
+        subtitle="Use the JobOps command center above to update your profile. This workspace shows the saved draft profile state for review, correction, and later verification."
+        title="Review your JobOps profile draft."
+      >
+        <section className="review-subsection" aria-labelledby="current-draft-title">
+          <div>
+            <h3 id="current-draft-title">Current Draft</h3>
+          </div>
+          <div className="current-draft-stack">
+            <TargetsCard editedFields={editedFields} intent={intent} onChange={updateIntent} />
+            <DraftProfilePreview draft={draft} />
+          </div>
+        </section>
 
-      <section className="profile-status-panel" aria-labelledby="profile-status-title">
-        <div>
-          <p className="eyebrow">Latest profile intake</p>
-          <h2 id="profile-status-title">Saved draft status</h2>
-        </div>
-        <p>{statusSummary}</p>
-      </section>
+      </CollapsiblePanel>
 
       <CollapsiblePanel
         eyebrow="Latest agent turn"
@@ -102,109 +122,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         title="What changed"
       >
         <ChangeSummary turn={lastTurn} />
-      </CollapsiblePanel>
-
-      <CollapsiblePanel
-        aside={
-          <div className="profile-status-bar" aria-label="Profile-level statuses">
-            <span>
-              <strong>Review</strong>
-              Needs verification
-            </span>
-            <span>
-              <strong>Visibility</strong>
-              Private
-            </span>
-            <span>
-              <strong>Publication</strong>
-              Not published
-            </span>
-          </div>
-        }
-        className="review-shell"
-        eyebrow="Structured review"
-        expanded={isReviewExpanded}
-        id="review-title"
-        onToggle={() => setIsReviewExpanded((current) => !current)}
-        subtitle="These fields are updated from command-center profile intake and can be edited before verification."
-        title="Review & verify profile data"
-      >
-        <p className="status-context">
-          The status bar applies to the profile overall. Badges beside fields and draft items describe field-level
-          review state.
-        </p>
-
-        <section className="review-subsection" aria-labelledby="intent-review-title">
-          <div>
-            <h3 id="intent-review-title">Target role intent</h3>
-          </div>
-          <div className="intent-form review-form" aria-label="Target role intent review form">
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="targetTitles"
-              label="Target titles"
-              onChange={updateIntent}
-              placeholder="Applied AI Engineer, Forward Deployed Engineer"
-              value={intent.targetTitles}
-            />
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="roleFamilies"
-              label="Target role families"
-              onChange={updateIntent}
-              placeholder="LLM systems, product engineering, evals"
-              value={intent.roleFamilies}
-            />
-            <label>
-              <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
-              <select
-                onChange={(event) => updateIntent("preferredWorkMode", event.target.value)}
-                suppressHydrationWarning
-                value={intent.preferredWorkMode}
-              >
-                <option value="flexible">Flexible</option>
-                <option value="remote">Remote</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="onsite">Onsite</option>
-              </select>
-            </label>
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="preferredLocations"
-              label="Preferred locations"
-              onChange={updateIntent}
-              placeholder="Remote US, Raleigh-Durham, NYC"
-              value={intent.preferredLocations}
-            />
-            <IntentFieldControl
-              editedFields={editedFields}
-              field="domainsOfInterest"
-              label="Domains or industries of interest"
-              onChange={updateIntent}
-              placeholder="Developer tools, education, healthcare, enterprise AI"
-              value={intent.domainsOfInterest}
-            />
-            <label>
-              <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
-              <textarea
-                className="small-textarea"
-                onChange={(event) => updateIntent("constraints", event.target.value)}
-                placeholder="Travel, location, timeline, role scope, sponsorship, compensation constraints"
-                suppressHydrationWarning
-                value={intent.constraints}
-              />
-            </label>
-          </div>
-        </section>
-
-        <section className="review-subsection" aria-labelledby="draft-preview-title">
-          <div>
-            <h3 id="draft-preview-title">Draft review queues</h3>
-            <p>Draft items are grouped by information type and need review before they become verified private data.</p>
-          </div>
-          <DraftProfilePreview draft={draft} />
-        </section>
-
       </CollapsiblePanel>
 
       <CollapsiblePanel
@@ -278,14 +195,12 @@ function IntentFieldControl({
   field,
   label,
   onChange,
-  placeholder,
   value
 }: {
   editedFields: Set<IntentField>;
   field: IntentField;
   label: string;
   onChange: (field: IntentField, value: string) => void;
-  placeholder: string;
   value: string;
 }) {
   return (
@@ -293,7 +208,6 @@ function IntentFieldControl({
       <FieldLabel edited={editedFields.has(field)} label={label} />
       <input
         onChange={(event) => onChange(field, event.target.value)}
-        placeholder={placeholder}
         suppressHydrationWarning
         value={value}
       />
@@ -305,11 +219,89 @@ function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
   return (
     <span className="field-label">
       {label}
-      <span className="field-badges">
-        <span>{edited ? "Edited by you" : "Agent draft"}</span>
-        <span>Needs review</span>
-      </span>
+      <DraftIconSet author={edited ? "user" : "agent"} status="needs_review" visibility="private" />
     </span>
+  );
+}
+
+function ProfileStatusIcons() {
+  return (
+    <span className="profile-status-bar icon-badge-row" aria-label="Profile-level statuses">
+      <IconBadge kind="review" label="Needs verification" />
+      <IconBadge kind="private" label="Private" />
+      <IconBadge kind="unpublished" label="Not published" />
+    </span>
+  );
+}
+
+function TargetsCard({
+  editedFields,
+  intent,
+  onChange
+}: {
+  editedFields: Set<IntentField>;
+  intent: TargetRoleIntent;
+  onChange: (field: IntentField, value: string) => void;
+}) {
+  return (
+    <section className="profile-review-card target-settings-card" aria-labelledby="target-settings-title">
+      <div>
+        <p className="eyebrow">Draft settings</p>
+        <h4 id="target-settings-title">Targets</h4>
+      </div>
+      <div className="intent-form review-form" aria-label="Target settings review form">
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="targetTitles"
+          label="Target titles"
+          onChange={onChange}
+          value={intent.targetTitles}
+        />
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="roleFamilies"
+          label="Target role families"
+          onChange={onChange}
+          value={intent.roleFamilies}
+        />
+        <label>
+          <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
+          <select
+            onChange={(event) => onChange("preferredWorkMode", event.target.value)}
+            suppressHydrationWarning
+            value={intent.preferredWorkMode}
+          >
+            <option value="flexible">Flexible</option>
+            <option value="remote">Remote</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="onsite">Onsite</option>
+          </select>
+        </label>
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="preferredLocations"
+          label="Preferred locations"
+          onChange={onChange}
+          value={intent.preferredLocations}
+        />
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="domainsOfInterest"
+          label="Domains or industries of interest"
+          onChange={onChange}
+          value={intent.domainsOfInterest}
+        />
+        <label>
+          <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
+          <textarea
+            className="small-textarea"
+            onChange={(event) => onChange("constraints", event.target.value)}
+            suppressHydrationWarning
+            value={intent.constraints}
+          />
+        </label>
+      </div>
+    </section>
   );
 }
 
@@ -338,109 +330,278 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
   );
 }
 
-function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
+export function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
+  const [activeTab, setActiveTab] = useState<ReviewTabId>("experience");
+
   if (!draft) {
     return (
-      <div className="profile-preview-grid">
-        <PreviewColumn count={0} title="Experience & Projects">
-          <li>No work, project, or education items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Education">
-          <li>No education items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Certifications">
-          <li>No certification items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Skills">
-          <li>No skill claims detected yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Achievements / Outcomes">
-          <li>No achievement or outcome items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Facts / Claims">
-          <li>No draft yet. Command-center profile intake will draft profile facts for review.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Evidence & Links">
-          <li>No links detected.</li>
-        </PreviewColumn>
-      </div>
+      <ReviewTabbedList activeTab={activeTab} draft={null} onTabChange={setActiveTab} />
     );
   }
 
+  return <ReviewTabbedList activeTab={activeTab} draft={draft} onTabChange={setActiveTab} />;
+}
+
+export function ReviewTabbedList({
+  activeTab,
+  draft,
+  onTabChange
+}: {
+  activeTab: ReviewTabId;
+  draft: MockProfileDraft | null;
+  onTabChange: (tab: ReviewTabId) => void;
+}) {
+  const counts = buildReviewCounts(draft);
+  const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
+
   return (
-    <div className="profile-preview-grid">
-      <PreviewColumn count={draft.experienceSummaries.length} title="Experience & Projects">
-        {draft.experienceSummaries.length ? (
-          draft.experienceSummaries.slice(0, 2).map((experience) => (
-            <li key={experience.id}>
-              <strong>{experience.title}</strong>
-              <span>{experience.summary}</span>
-              <StatusBadges source={experience.source} />
-            </li>
-          ))
-        ) : (
-          <li>No past work, project, education, or artifact evidence detected yet.</li>
-        )}
-        <OverflowNote count={draft.experienceSummaries.length} noun="experience/project item" />
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Education">
-        <li>No education items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Certifications">
-        <li>No certification items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.skillClaims.length} title="Skills">
-        {draft.skillClaims.length ? (
-          draft.skillClaims.slice(0, 2).map((skill) => (
-            <li key={skill.id}>
-              <strong>{skill.skill}</strong>
-              <span>{skill.evidence}</span>
-              <StatusBadges source={skill.source} />
-            </li>
-          ))
-        ) : (
-          <li>No skill claims detected by the mock extractor.</li>
-        )}
-        <OverflowNote count={draft.skillClaims.length} noun="skill claim" />
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Achievements / Outcomes">
-        <li>No achievement or outcome items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.facts.length} title="Facts / Claims">
-        {draft.facts.slice(0, 2).map((fact) => (
-          <li key={fact.id}>
-            <strong>{fact.category}</strong>
-            <span>{fact.claim}</span>
-            <StatusBadges source={fact.source} />
-          </li>
+    <div className="profile-review-tabs">
+      <div className="profile-review-tablist" role="tablist" aria-orientation="vertical" aria-label="Profile data types">
+        {reviewTabs.map((tab) => (
+          <button
+            aria-controls={`profile-review-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            className={`profile-review-tab${activeTab === tab.id ? " active" : ""}`}
+            id={`profile-review-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => onTabChange(tab.id)}
+            role="tab"
+            suppressHydrationWarning
+            type="button"
+          >
+            <span>{tab.label}</span>
+            <strong>{counts[tab.id]}</strong>
+          </button>
         ))}
-        <OverflowNote count={draft.facts.length} noun="draft fact" />
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.links.length} title="Evidence & Links">
-        {draft.links.length ? (
-          draft.links.slice(0, 2).map((link) => (
-            <li key={link.id}>
-              <span>{link.label}</span>
-              <span className="badge-row">
-                <span>Needs review</span>
-                <span>Private</span>
-                <span>{sourceLabel(link.source)}</span>
-              </span>
-            </li>
-          ))
-        ) : (
-          <li>No links detected.</li>
-        )}
-        <OverflowNote count={draft.links.length} noun="evidence item" />
-      </PreviewColumn>
+      </div>
+      <section
+        aria-labelledby={`profile-review-tab-${activeTab}`}
+        className="profile-review-panel"
+        id={`profile-review-panel-${activeTab}`}
+        role="tabpanel"
+      >
+        <div className="profile-review-panel-header">
+          <h3>{activeLabel}</h3>
+          <span>{counts[activeTab]}</span>
+        </div>
+        <div className="profile-compare-grid">
+          <section className="profile-review-card" aria-label={`Current draft ${activeLabel}`}>
+            <div className="profile-review-card-header">
+              <h4>Current draft</h4>
+              <span>{counts[activeTab]} draft</span>
+            </div>
+            <ProfileReviewTabContent activeTab={activeTab} draft={draft} />
+          </section>
+          <section className="profile-review-card published-profile-card" aria-label={`Current published profile ${activeLabel}`}>
+            <div className="profile-review-card-header">
+              <h4>Current published profile</h4>
+              <span>0 published</span>
+            </div>
+            <EmptyMessage>No published {activeLabel.toLowerCase()} yet.</EmptyMessage>
+          </section>
+        </div>
+      </section>
     </div>
   );
+}
+
+function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId; draft: MockProfileDraft | null }) {
+  if (!draft) {
+    return <EmptyReviewList activeTab={activeTab} />;
+  }
+
+  if (activeTab === "experience") {
+    const items = draft.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project");
+    return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} showType />;
+  }
+
+  if (activeTab === "education") {
+    return (
+      <ExperienceList
+        emptyLabel="No education items drafted yet."
+        items={draft.experienceSummaries.filter((item) => item.itemType === "education")}
+      />
+    );
+  }
+
+  if (activeTab === "certifications") {
+    return (
+      <ExperienceList
+        emptyLabel="No certification items drafted yet."
+        items={draft.experienceSummaries.filter((item) => item.itemType === "certification")}
+      />
+    );
+  }
+
+  if (activeTab === "skills") {
+    return draft.skillClaims.length ? (
+      <ul className="profile-review-list">
+        {draft.skillClaims.map((skill) => (
+          <li className="profile-review-item profile-review-row" key={skill.id}>
+            <div className="profile-review-primary">
+              <TitleWithBadges title={skill.skill}>
+                <ItemIconSet item={skill} />
+              </TitleWithBadges>
+              <span>{skill.category}</span>
+            </div>
+            <CompactMeta
+              items={[
+                ["Years", formatYears(skill.yearsMin, skill.yearsMax)],
+                ["Evidence", skill.evidence]
+              ]}
+            />
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <EmptyMessage>No skill claims drafted yet.</EmptyMessage>
+    );
+  }
+
+  if (activeTab === "achievements") {
+    const achievements = draft.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
+    return achievements.length ? <FactList facts={achievements} /> : <EmptyMessage>No achievement or outcome items drafted yet.</EmptyMessage>;
+  }
+
+  if (activeTab === "facts") {
+    return draft.facts.length ? <FactList facts={draft.facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
+  }
+
+  return draft.links.length ? (
+    <ul className="profile-review-list">
+      {draft.links.map((link) => (
+        <li className="profile-review-item profile-review-row" key={link.id}>
+          <div className="profile-review-primary">
+            <TitleWithBadges title={link.label}>
+              <ItemIconSet item={link} />
+            </TitleWithBadges>
+            <a href={link.url} rel="noreferrer" target="_blank">
+              {link.url}
+            </a>
+          </div>
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <EmptyMessage>No evidence links drafted yet.</EmptyMessage>
+  );
+}
+
+function ExperienceList({
+  emptyLabel,
+  items,
+  showType = false
+}: {
+  emptyLabel: string;
+  items: MockProfileDraft["experienceSummaries"];
+  showType?: boolean;
+}) {
+  if (!items.length) {
+    return <EmptyMessage>{emptyLabel}</EmptyMessage>;
+  }
+
+  return (
+    <ul className="profile-review-list">
+      {items.map((experience) => (
+        <li className="profile-review-item" key={experience.id}>
+          <div className="profile-review-primary">
+            <TitleWithBadges title={experience.title}>
+              <ItemIconSet item={experience} />
+            </TitleWithBadges>
+            <span>{experience.organization}</span>
+          </div>
+          <DetailGrid
+            items={buildExperienceDetails(experience, showType)}
+          />
+          <p>{experience.summary}</p>
+          {experience.bullets.length ? (
+            <ul className="profile-review-bullets">
+              {experience.bullets.map((bullet) => (
+                <li key={bullet}>{bullet}</li>
+              ))}
+            </ul>
+          ) : null}
+          {showType ? <p className="profile-item-type">Type: {experience.itemType}</p> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function FactList({ facts }: { facts: MockProfileDraft["facts"] }) {
+  return (
+    <ul className="profile-review-list">
+      {facts.map((fact) => (
+        <li className="profile-review-item profile-review-row" key={fact.id}>
+          <div className="profile-review-primary">
+            <TitleWithBadges title={fact.category}>
+              <ItemIconSet item={fact} />
+            </TitleWithBadges>
+            <span>{fact.claim}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DetailGrid({ items }: { items: Array<[string, string]> }) {
+  const visibleItems = items.filter(([, value]) => value.trim().length > 0);
+  if (!visibleItems.length) {
+    return null;
+  }
+
+  return (
+    <dl className="profile-review-details">
+      {visibleItems.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function CompactMeta({ items }: { items: Array<[string, string]> }) {
+  const visibleItems = items.filter(([, value]) => value.trim().length > 0);
+  if (!visibleItems.length) {
+    return null;
+  }
+
+  return (
+    <dl className="profile-review-meta">
+      {visibleItems.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EmptyReviewList({ activeTab }: { activeTab: ReviewTabId }) {
+  const label = reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || "items";
+  return <EmptyMessage>No {label} drafted yet.</EmptyMessage>;
+}
+
+function EmptyMessage({ children }: { children: React.ReactNode }) {
+  return <p className="profile-review-empty">{children}</p>;
+}
+
+function buildReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, number> {
+  return {
+    experience:
+      draft?.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project")
+        .length ?? 0,
+    skills: draft?.skillClaims.length ?? 0,
+    achievements: draft?.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length ?? 0,
+    facts: draft?.facts.length ?? 0,
+    evidence: draft?.links.length ?? 0,
+    education: draft?.experienceSummaries.filter((item) => item.itemType === "education").length ?? 0,
+    certifications: draft?.experienceSummaries.filter((item) => item.itemType === "certification").length ?? 0
+  };
 }
 
 export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
@@ -465,25 +626,163 @@ export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null 
   );
 }
 
-function PreviewColumn({ children, count, title }: { children: React.ReactNode; count: number; title: string }) {
+type IconBadgeKind =
+  | "review"
+  | "private"
+  | "public"
+  | "published"
+  | "unpublished"
+  | "resume"
+  | "chat"
+  | "model"
+  | "agent"
+  | "user";
+
+type BadgeableDraftItem = {
+  source: MockProfileDraft["facts"][number]["source"];
+  status: MockProfileDraft["facts"][number]["status"];
+  visibility: "private" | "public";
+  published: boolean;
+};
+
+function TitleWithBadges({ children, title }: { children: React.ReactNode; title: string }) {
   return (
-    <section className="preview-column">
-      <div className="preview-column-header">
-        <h3>{title}</h3>
-        <span>{count}</span>
-      </div>
-      <ul>{children}</ul>
-    </section>
+    <span className="profile-title-line">
+      <strong>{title}</strong>
+      {children}
+    </span>
   );
 }
 
-function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["source"] }) {
+function ItemIconSet({ item }: { item: BadgeableDraftItem }) {
   return (
-    <span className="badge-row">
-      <span>Needs review</span>
-      <span>Private</span>
-      <span>{sourceLabel(source)}</span>
+    <span className="icon-badge-row">
+      <ReviewIcon status={item.status} />
+      <VisibilityIcon visibility={item.visibility} />
+      <PublicationIcon published={item.published} />
+      <SourceIcon source={item.source} />
     </span>
+  );
+}
+
+function DraftIconSet({
+  author,
+  status,
+  visibility
+}: {
+  author: "agent" | "user";
+  status: BadgeableDraftItem["status"];
+  visibility: BadgeableDraftItem["visibility"];
+}) {
+  return (
+    <span className="icon-badge-row">
+      <AuthorIcon author={author} />
+      <ReviewIcon status={status} />
+      <VisibilityIcon visibility={visibility} />
+    </span>
+  );
+}
+
+function ReviewIcon({ status }: { status: BadgeableDraftItem["status"] }) {
+  if (status !== "needs_review" && status !== "draft") {
+    return null;
+  }
+
+  return <IconBadge kind="review" label={status === "draft" ? "Draft" : "Needs review"} />;
+}
+
+function VisibilityIcon({ visibility }: { visibility: BadgeableDraftItem["visibility"] }) {
+  return <IconBadge kind={visibility === "private" ? "private" : "public"} label={visibilityLabel(visibility)} />;
+}
+
+function PublicationIcon({ published }: { published: BadgeableDraftItem["published"] }) {
+  return <IconBadge kind={published ? "published" : "unpublished"} label={published ? "Published" : "Not published"} />;
+}
+
+function SourceIcon({ source }: { source: BadgeableDraftItem["source"] }) {
+  return <IconBadge kind={source} label={sourceLabel(source)} />;
+}
+
+function AuthorIcon({ author }: { author: "agent" | "user" }) {
+  return <IconBadge kind={author} label={author === "user" ? "Edited by you" : "Agent draft"} />;
+}
+
+function IconBadge({ kind, label }: { kind: IconBadgeKind; label: string }) {
+  return (
+    <span aria-label={label} className={`icon-badge ${kind}`} role="img" title={label}>
+      <IconGlyph kind={kind} />
+    </span>
+  );
+}
+
+function IconGlyph({ kind }: { kind: IconBadgeKind }) {
+  if (kind === "review") {
+    return <span className="review-dot" aria-hidden="true" />;
+  }
+
+  if (kind === "resume") {
+    return (
+      <span className="cv-icon" aria-hidden="true">
+        CV
+      </span>
+    );
+  }
+
+  if (kind === "private") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M3 3l18 18" />
+        <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+        <path d="M9.5 5.3A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9 7a9.9 9.9 0 0 1-2 3.4" />
+        <path d="M6.6 6.7C4.7 8 3.4 10.1 3 12c.5 2.5 4 7 9 7 1.4 0 2.7-.3 3.8-.9" />
+      </svg>
+    );
+  }
+
+  if (kind === "public") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M3 12c.5-2.5 4-7 9-7s8.5 4.5 9 7c-.5 2.5-4 7-9 7s-8.5-4.5-9-7z" />
+        <circle cx="12" cy="12" r="2.5" />
+      </svg>
+    );
+  }
+
+  if (kind === "published") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M5 13l4 4L19 7" />
+      </svg>
+    );
+  }
+
+  if (kind === "unpublished") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M8 12h8" />
+      </svg>
+    );
+  }
+
+  if (kind === "chat" || kind === "user") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="3" />
+        <path d="M5.5 20c.8-3.8 3-6 6.5-6s5.7 2.2 6.5 6" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <rect x="6" y="8" width="12" height="9" rx="3" />
+      <path d="M12 8V5" />
+      <path d="M9.5 5h5" />
+      <circle cx="10" cy="12" r=".7" />
+      <circle cx="14" cy="12" r=".7" />
+      <path d="M10 15h4" />
+    </svg>
   );
 }
 
@@ -491,15 +790,37 @@ function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
   return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
 }
 
-function OverflowNote({ count, noun }: { count: number; noun: string }) {
-  if (count <= 2) {
-    return null;
-  }
+function visibilityLabel(visibility: BadgeableDraftItem["visibility"]) {
+  return visibility === "private" ? "Private" : "Public";
+}
 
-  return (
-    <li className="overflow-note">
-      +{count - 2} more {noun}
-      {count - 2 === 1 ? "" : "s"} in this draft.
-    </li>
+function buildExperienceDetails(experience: MockProfileDraft["experienceSummaries"][number], showType: boolean) {
+  const missingValue = showType ? "Needs review" : "";
+  const details: Array<[string, string]> = [
+    ["From", experience.startDate || missingValue],
+    ["To", experience.endDate || missingValue],
+    ["Location", experience.location || missingValue]
+  ];
+
+  return details;
+}
+
+function formatYears(yearsMin?: number, yearsMax?: number) {
+  if (typeof yearsMin === "number" && typeof yearsMax === "number" && yearsMin !== yearsMax) {
+    return `${yearsMin}-${yearsMax} years`;
+  }
+  if (typeof yearsMin === "number") {
+    return `${yearsMin}+ years`;
+  }
+  if (typeof yearsMax === "number") {
+    return `Up to ${yearsMax} years`;
+  }
+  return "";
+}
+
+function looksLikeAchievement(claim: string, category: string) {
+  const normalized = `${claim} ${category}`.toLowerCase();
+  return /%|\d|reduced|improved|increased|launched|shipped|built|deployed|optimized|scaled|throughput|hours|minutes/.test(
+    normalized
   );
 }

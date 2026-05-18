@@ -59,7 +59,7 @@ describe("AI command center", () => {
     expect(html).toContain("href=\"/profile\"");
   });
 
-  it("prints the model request debug payload on profile-intake action cards", () => {
+  it("prints model request and response debug payloads on profile-intake action cards", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter
         initialActions={[
@@ -77,6 +77,10 @@ describe("AI command center", () => {
                   { role: "system", content: "System prompt" },
                   { role: "user", content: "Louisville, KY is in the current draft" }
                 ]
+              },
+              modelResponse: {
+                finishReason: "STOP",
+                text: "{\"assistantMessage\":\"Drafted.\"}"
               }
             }
           }
@@ -87,6 +91,8 @@ describe("AI command center", () => {
     expect(html).toContain("Sent to model");
     expect(html).toContain("profile_draft_update");
     expect(html).toContain("Louisville, KY is in the current draft");
+    expect(html).toContain("Model response");
+    expect(html).toContain("Drafted.");
   });
 
   it("notifies the profile workspace after completed profile-intake commands", async () => {
@@ -169,5 +175,13 @@ describe("AI command center", () => {
     expect(combinedSource).not.toContain("runProfileIntakeExtraction");
     expect(combinedSource).not.toContain("buildProfileIntakeUserPrompt");
     expect(combinedSource).not.toContain("generateContent");
+  });
+
+  it("caps the command center to the viewport and scrolls chat content internally", async () => {
+    const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(css).toContain("max-height: calc(100svh - 112px)");
+    expect(css).toContain("grid-template-rows: auto minmax(0, 1fr) auto auto");
+    expect(css).toContain("overflow-y: auto");
   });
 });

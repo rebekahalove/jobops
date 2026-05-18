@@ -26,6 +26,7 @@ from .artifacts import (
     build_run_metadata,
     create_profile_intake_artifact_run,
 )
+from .intake_mode import detect_profile_intake_mode, max_output_tokens_for_mode
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
 from .persistence import (
     ensure_editable_profile_intake_draft,
@@ -281,6 +282,7 @@ def run_profile_intake_extraction(
             "ok": True,
             "result": output_json,
             **model_request_debug_fields(active_settings, routed_request),
+            **model_response_debug_fields(active_settings, response),
         },
         status_code=200,
     )
@@ -294,6 +296,8 @@ def build_profile_intake_model_request(
     seeded_editable_draft_from_published: bool = False,
 ) -> ModelRequest:
     current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
+    intake_mode = detect_profile_intake_mode(request.latest_user_message)
+    max_output_tokens, output_token_budget_reason = max_output_tokens_for_mode(intake_mode, current_draft)
     current_draft_status = (
         "initialized_from_published_profile"
         if seeded_editable_draft_from_published
@@ -304,7 +308,7 @@ def build_profile_intake_model_request(
     return ModelRequest(
         task="profile_draft_update",
         temperature=0,
-        max_output_tokens=4000,
+        max_output_tokens=max_output_tokens,
         response_mime_type="application/json",
         metadata={
             "authoritative_current_draft_included": bool(current_draft),
@@ -313,6 +317,8 @@ def build_profile_intake_model_request(
             "client_existing_draft_included": request.existing_draft is not None,
             "client_existing_draft_authoritative": False,
             "feature": "profile_intake",
+            "intake_mode": intake_mode,
+            "output_token_budget_reason": output_token_budget_reason,
             "profile_intake_contract": "full_draft_update",
             "seeded_editable_draft_from_published": seeded_editable_draft_from_published,
         },
@@ -324,6 +330,7 @@ def build_profile_intake_model_request(
                     request,
                     authoritative_current_draft=current_draft,
                     authoritative_current_draft_source=authoritative_current_draft_source,
+                    detected_intake_mode=intake_mode,
                 ),
             ),
         ],
@@ -455,12 +462,29 @@ def validation_failure_result(
         artifact_run.artifact_path,
     )
 
+    is_truncation = validation_issues_indicate_truncation(issues)
+    is_capacity_error = validation_issues_indicate_capacity_overflow(issues)
+
     return ProfileIntakeServiceResult(
         body={
             "ok": False,
-            "error": SAFE_VALIDATION_ERROR,
+            "error": (
+                "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
+                if is_truncation
+                else "Profile intake model returned more structured items than the current schema allows. No draft data was applied."
+                if is_capacity_error
+                else SAFE_VALIDATION_ERROR
+            ),
+            "code": (
+                "model_response_truncated"
+                if is_truncation
+                else "model_output_exceeded_schema_capacity"
+                if is_capacity_error
+                else "model_output_invalid"
+            ),
             "issues": issues,
             **model_request_debug_fields(settings, model_request),
+            **model_response_debug_fields(settings, response),
             **debug_fields(artifact_run),
         },
         status_code=502,
@@ -559,6 +583,22 @@ def model_request_debug_fields(settings: Settings, request: ModelRequest) -> dic
     }
 
 
+def model_response_debug_fields(settings: Settings, response) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"} or response is None:
+        return {}
+
+    return {
+        "modelResponse": {
+            "provider": response.provider,
+            "model": response.model,
+            "finishReason": response.finish_reason,
+            "text": response.text,
+            "usage": response.usage.__dict__ if response.usage else None,
+            "metadata": response.metadata,
+        }
+    }
+
+
 def format_validation_issues(error: ValidationError) -> list[str]:
     issues = []
     for item in error.errors():
@@ -571,3 +611,11 @@ def add_truncation_hint(issues: list[str], finish_reason: str | None) -> list[st
     if finish_reason and ("max" in finish_reason.lower() or "length" in finish_reason.lower() or "token" in finish_reason.lower()):
         return [*issues, "Model response appears to have been truncated before valid JSON completed."]
     return issues
+
+
+def validation_issues_indicate_truncation(issues: list[str]) -> bool:
+    return any("truncated" in issue.lower() for issue in issues)
+
+
+def validation_issues_indicate_capacity_overflow(issues: list[str]) -> bool:
+    return any("list should have at most" in issue.lower() for issue in issues)

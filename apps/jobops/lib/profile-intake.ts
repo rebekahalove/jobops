@@ -1,4 +1,4 @@
-import type { ProfileIntakeOutput, ProfileIntakeSource } from "./profile-intake-contract";
+import type { ProfileExperienceItemType, ProfileIntakeOutput, ProfileIntakeSource } from "./profile-intake-contract";
 
 export type TargetRoleIntent = {
   targetTitles: string;
@@ -26,6 +26,8 @@ export type DraftSkillClaim = {
   skill: string;
   category: string;
   evidence: string;
+  yearsMin?: number;
+  yearsMax?: number;
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
   visibility: "private";
@@ -34,9 +36,14 @@ export type DraftSkillClaim = {
 
 export type DraftExperienceSummary = {
   id: string;
+  itemType: ProfileExperienceItemType;
   title: string;
   organization: string;
+  startDate: string;
+  endDate: string;
+  location: string;
   summary: string;
+  bullets: string[];
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
   visibility: "private";
@@ -273,6 +280,8 @@ function buildSkillClaims(lowerResume: string, source: DraftSkillClaim["source"]
       skill,
       category,
       evidence: "Keyword evidence found in unverified intake text.",
+      yearsMin: undefined,
+      yearsMax: undefined,
       source,
       status: "needs_review",
       visibility: "private",
@@ -298,9 +307,14 @@ function buildExperienceSummaries(
     return [
       {
         id: "experience-1",
+        itemType: inferExperienceItemType(lines[0] || ""),
         title: lines[0]?.slice(0, 80) || "Past work item",
         organization: "Needs review",
+        startDate: "",
+        endDate: "",
+        location: "",
         summary: "Potential past work, project, education, or artifact evidence detected from intake text.",
+        bullets: [],
         source,
         status: "needs_review",
         visibility: "private",
@@ -312,9 +326,14 @@ function buildExperienceSummaries(
   return [
     {
       id: "experience-1",
+      itemType: inferExperienceItemType(likelyExperienceLine),
       title: likelyExperienceLine.slice(0, 80),
       organization: "Needs review",
+      startDate: "",
+      endDate: "",
+      location: "",
       summary: "Potential work, project, education, or artifact evidence detected from intake text. Candidate review is required.",
+      bullets: [],
       source,
       status: "needs_review",
       visibility: "private",
@@ -387,6 +406,8 @@ export function applyProfileIntakeOutputToState(
       skill: skill.skill,
       category: skill.category || "general",
       evidence: skill.evidence || "Needs evidence review.",
+      yearsMin: skill.yearsMin,
+      yearsMax: skill.yearsMax,
       source: skill.source,
       status: skill.status,
       visibility: skill.visibility,
@@ -394,9 +415,14 @@ export function applyProfileIntakeOutputToState(
     })),
     experienceSummaries: output.experienceAndProjects.map((experience, index) => ({
       id: experience.id || nextGeneratedId(`experience-${index + 1}`),
+      itemType: experience.itemType || inferExperienceItemType(`${experience.title} ${experience.summary}`),
       title: experience.title,
       organization: experience.organization || "Needs review",
+      startDate: experience.startDate || "",
+      endDate: experience.endDate || "",
+      location: experience.location || "",
       summary: experience.summary,
+      bullets: experience.bullets || [],
       source: experience.source,
       status: experience.status,
       visibility: experience.visibility,
@@ -569,4 +595,18 @@ function looksLikePastWorkText(text: string): boolean {
   ];
 
   return mentionsAny(normalized, pastWorkSignals);
+}
+
+function inferExperienceItemType(text: string): ProfileExperienceItemType {
+  const normalized = text.toLowerCase();
+  if (mentionsAny(normalized, ["certificate", "certification", "coursera"])) {
+    return "certification";
+  }
+  if (mentionsAny(normalized, ["education", "university", "college", "b.a.", "b.s.", "degree"])) {
+    return "education";
+  }
+  if (mentionsAny(normalized, ["project", "platform", "console", "dashboard", "knowledge base"])) {
+    return "project";
+  }
+  return "experience";
 }

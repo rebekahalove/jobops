@@ -4,9 +4,12 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from .intake_mode import RESUME_INTAKE_CAPACITY
+
 
 Source = Literal["chat", "resume", "model"]
 GeneratedStatus = Literal["draft", "needs_review"]
+ExperienceItemType = Literal["experience", "project", "education", "certification"]
 WorkMode = Literal["remote", "hybrid", "onsite", "flexible"]
 
 
@@ -60,13 +63,20 @@ class SkillClaim(GeneratedItem):
     skill: str = Field(max_length=120)
     category: str | None = Field(default=None, max_length=120)
     evidence: str | None = Field(default=None, max_length=240)
+    years_min: int | None = Field(default=None, alias="yearsMin", ge=0, le=80)
+    years_max: int | None = Field(default=None, alias="yearsMax", ge=0, le=80)
 
 
 class ExperienceAndProject(GeneratedItem):
     id: str | None = Field(default=None, max_length=120)
+    item_type: ExperienceItemType = Field(default="experience", alias="itemType")
     title: str = Field(max_length=200)
     organization: str | None = Field(default=None, max_length=200)
+    start_date: str | None = Field(default=None, alias="startDate", max_length=80)
+    end_date: str | None = Field(default=None, alias="endDate", max_length=80)
+    location: str | None = Field(default=None, max_length=160)
     summary: str = Field(max_length=320)
+    bullets: list[str] = Field(default_factory=list, max_length=12)
 
 
 class EvidenceLink(GeneratedItem):
@@ -77,10 +87,13 @@ class EvidenceLink(GeneratedItem):
 
 class UpdatedDraftProfile(ApiModel):
     target_role_intent: TargetRoleIntent = Field(alias="targetRoleIntent")
-    draft_facts: list[DraftFact] = Field(alias="draftFacts", max_length=40)
-    skill_claims: list[SkillClaim] = Field(alias="skillClaims", max_length=80)
-    experience_and_projects: list[ExperienceAndProject] = Field(alias="experienceAndProjects", max_length=40)
-    evidence_links: list[EvidenceLink] = Field(alias="evidenceLinks", max_length=80)
+    draft_facts: list[DraftFact] = Field(alias="draftFacts", max_length=RESUME_INTAKE_CAPACITY.draft_facts)
+    skill_claims: list[SkillClaim] = Field(alias="skillClaims", max_length=RESUME_INTAKE_CAPACITY.skill_claims)
+    experience_and_projects: list[ExperienceAndProject] = Field(
+        alias="experienceAndProjects",
+        max_length=RESUME_INTAKE_CAPACITY.experience_and_projects,
+    )
+    evidence_links: list[EvidenceLink] = Field(alias="evidenceLinks", max_length=RESUME_INTAKE_CAPACITY.evidence_links)
 
 
 class RemovedDraftItems(ApiModel):
@@ -94,8 +107,11 @@ class RemovedDraftItems(ApiModel):
 class ProfileIntakeOutput(ApiModel):
     assistant_message: str = Field(alias="assistantMessage", max_length=400)
     updated_draft_profile: UpdatedDraftProfile = Field(alias="updatedDraftProfile")
-    clarifying_questions: list[str] = Field(alias="clarifyingQuestions", max_length=10)
-    change_summary: list[str] = Field(alias="changeSummary", max_length=20)
+    clarifying_questions: list[str] = Field(
+        alias="clarifyingQuestions",
+        max_length=RESUME_INTAKE_CAPACITY.clarifying_questions,
+    )
+    change_summary: list[str] = Field(alias="changeSummary", max_length=RESUME_INTAKE_CAPACITY.change_summary)
     no_change_reason: str | None = Field(default=None, alias="noChangeReason", max_length=300)
     removed_items: RemovedDraftItems = Field(default_factory=RemovedDraftItems, alias="removedItems")
 

@@ -520,6 +520,8 @@ def sync_skill_claims(
                 existing.skill_name = skill_name
                 existing.skill_category = category
                 existing.evidence_summary = evidence
+                existing.years_min = skill.years_min
+                existing.years_max = skill.years_max
                 existing.source = skill.source
             continue
 
@@ -532,6 +534,8 @@ def sync_skill_claims(
             profile_intake_session_id=intake_session.id,
             skill_name=skill_name,
             skill_category=category,
+            years_min=skill.years_min,
+            years_max=skill.years_max,
             evidence_summary=evidence,
             evidence_fact_ids=[],
             source=skill.source,
@@ -579,6 +583,8 @@ def sync_experience_projects(
                 existing.title = title
                 existing.organization = organization
                 existing.summary = summary
+                apply_experience_fields(existing, item)
+                existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
 
@@ -591,6 +597,8 @@ def sync_experience_projects(
                     existing.organization = organization
                 if summary:
                     existing.summary = summary
+                apply_experience_fields(existing, item)
+                existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
         row = ExperienceProjectDraft(
@@ -598,14 +606,16 @@ def sync_experience_projects(
             profile_intake_session_id=intake_session.id,
             title=title,
             organization=organization,
+            start_date=meaningful_text(item.start_date),
+            end_date=meaningful_text(item.end_date),
+            location=meaningful_text(item.location),
             summary=summary,
             source=item.source,
             visibility="private",
             review_status="needs_review",
             publication_status="not_published",
             structured_value={
-                "published": False,
-                "sourceStatus": item.status,
+                **experience_structured_value(item),
             },
         )
         session.add(row)
@@ -841,21 +851,31 @@ def merge_experience_projects(
                 existing.organization = organization
             if not meaningful_text(existing.summary) and summary:
                 existing.summary = summary
+            if not meaningful_text(existing.start_date):
+                existing.start_date = meaningful_text(item.start_date)
+            if not meaningful_text(existing.end_date):
+                existing.end_date = meaningful_text(item.end_date)
+            if not meaningful_text(existing.location):
+                existing.location = meaningful_text(item.location)
+            existing.structured_value = {
+                **(existing.structured_value if isinstance(existing.structured_value, dict) else {}),
+                **experience_structured_value(item),
+            }
             continue
         row = ExperienceProjectDraft(
             candidate_profile_id=candidate_profile.id,
             profile_intake_session_id=intake_session.id,
             title=title,
             organization=organization,
+            start_date=meaningful_text(item.start_date),
+            end_date=meaningful_text(item.end_date),
+            location=meaningful_text(item.location),
             summary=summary or "",
             source=item.source,
             visibility="private",
             review_status="needs_review",
             publication_status="not_published",
-            structured_value={
-                "published": False,
-                "sourceStatus": item.status,
-            },
+            structured_value=experience_structured_value(item),
         )
         session.add(row)
         saved.append(row)
@@ -1089,30 +1109,39 @@ def serialize_fact_draft(fact: ProfileFactDraft) -> dict[str, Any]:
 
 
 def serialize_skill_claim(skill: SkillClaim) -> dict[str, Any]:
-    return {
+    payload = {
         "id": skill.id,
         "skill": skill.skill_name,
         "category": skill.skill_category,
         "evidence": skill.evidence_summary,
+        "yearsMin": skill.years_min,
+        "yearsMax": skill.years_max,
         "source": normalize_source(skill.source),
         "status": skill.verification_status,
         "visibility": skill.visibility,
         "published": skill.publication_status == "published",
     }
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def serialize_experience_project(item: ExperienceProjectDraft) -> dict[str, Any]:
     structured_value = item.structured_value if isinstance(item.structured_value, dict) else {}
-    return {
+    payload = {
         "id": item.id,
+        "itemType": structured_value.get("itemType") or "experience",
         "title": item.title,
         "organization": item.organization,
+        "startDate": item.start_date or structured_value.get("startDate"),
+        "endDate": item.end_date or structured_value.get("endDate"),
+        "location": item.location or structured_value.get("location"),
         "summary": item.summary,
+        "bullets": structured_value.get("bullets") if isinstance(structured_value.get("bullets"), list) else [],
         "source": normalize_source(item.source),
         "status": item.review_status,
         "visibility": item.visibility,
         "published": item.publication_status == "published" or bool(structured_value.get("published")),
     }
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def serialize_evidence_link(item: EvidenceArtifact) -> dict[str, Any]:
@@ -1133,6 +1162,25 @@ def meaningful_text(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def apply_experience_fields(row: ExperienceProjectDraft, item) -> None:
+    row.start_date = meaningful_text(item.start_date)
+    row.end_date = meaningful_text(item.end_date)
+    row.location = meaningful_text(item.location)
+
+
+def experience_structured_value(item) -> dict[str, Any]:
+    bullets = [bullet.strip() for bullet in item.bullets if isinstance(bullet, str) and bullet.strip()]
+    return {
+        "published": False,
+        "sourceStatus": item.status,
+        "itemType": item.item_type,
+        **({"startDate": item.start_date} if meaningful_text(item.start_date) else {}),
+        **({"endDate": item.end_date} if meaningful_text(item.end_date) else {}),
+        **({"location": item.location} if meaningful_text(item.location) else {}),
+        **({"bullets": bullets} if bullets else {}),
+    }
 
 
 def normalize_key(value: str | None) -> str:

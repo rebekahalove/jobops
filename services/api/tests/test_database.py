@@ -59,3 +59,5 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "profile_intake_events" in inspector.get_table_names()
     assert "experience_project_drafts" in inspector.get_table_names()
     assert "last_turn_at" in {column["name"] for column in inspector.get_columns("profile_intake_sessions")}
+    experience_columns = {column["name"] for column in inspector.get_columns("experience_project_drafts")}
+    assert {"start_date", "end_date", "location"}.issubset(experience_columns)
