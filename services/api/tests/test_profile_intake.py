@@ -214,7 +214,7 @@ def test_profile_intake_uses_shared_model_connector(tmp_path: Path) -> None:
 
     assert result.status_code == 200
     assert provider.requests
-    assert provider.requests[0].task == "profile_extract"
+    assert provider.requests[0].task == "profile_draft_update"
     assert provider.requests[0].model == "mock-default"
     assert provider.requests[0].messages[0].role == "system"
     assert provider.requests[0].messages[1].role == "user"
@@ -483,10 +483,11 @@ def test_profile_intake_model_receives_authoritative_saved_draft_for_additive_tu
     assert second_prompt["authoritative_current_draft_source"] == "database"
     assert second_prompt["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
     assert second_prompt["client_existing_draft"]["targetRoleIntent"]["preferredLocations"] == "Paris, France"
-    assert second_prompt["update_semantics"]["empty_output_fields_mean"] == "no_change_not_clear"
-    assert second_prompt["update_semantics"]["backend_interprets_additive_or_replacement_language"] is False
+    assert second_prompt["task"] == "update_profile_draft"
+    assert second_prompt["update_rules"]["return_full_updated_draft"] is True
+    assert second_prompt["update_rules"]["backend_interprets_additive_or_replacement_language"] is False
     assert (
-        second_prompt["update_semantics"]["examples"][0]["expected_output_preferredLocations"]
+        second_prompt["update_rules"]["examples"][0]["expected_output_preferredLocations"]
         == "London, UK; NYC; San Francisco Bay"
     )
     assert provider.requests[1].metadata["authoritative_current_draft_source"] == "database"
@@ -612,9 +613,208 @@ def test_profile_intake_model_final_state_handles_terse_location_alternatives(tm
     prompt_payload = json.loads(provider.requests[0].messages[1].content)
     assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "London, UK"
     assert (
-        prompt_payload["update_semantics"]["target_role_intent_update_contract"]
-        .startswith("Persistence treats non-empty targetRoleIntent fields as final values")
+        prompt_payload["update_rules"]["target_role_intent_update_contract"]
+        .startswith("Return full targetRoleIntent after the latest message")
     )
+
+
+def test_profile_intake_full_draft_sync_preserves_ids_and_status_metadata(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        first = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I saved a full draft."),
+            connector=make_connector(StaticProvider(json.dumps(full_profile_intake_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        assert first.status_code == 200
+
+        fact = session.scalars(select(ProfileFactDraft)).one()
+        skill = session.scalars(select(SkillClaim)).one()
+        experience = session.scalars(select(ExperienceProjectDraft)).one()
+        evidence = session.scalars(select(EvidenceArtifact)).one()
+
+        fact.review_status = "approved"
+        fact.suggested_visibility = "public"
+        skill.verification_status = "approved"
+        skill.visibility = "public"
+        experience.review_status = "approved"
+        experience.visibility = "public"
+        evidence.review_status = "approved"
+        evidence.visibility = "public"
+        session.commit()
+
+        update = full_profile_intake_output()
+        draft = update["updatedDraftProfile"]
+        draft["draftFacts"] = [
+            {
+                "id": fact.id,
+                "claim": "Built and operated a production FastAPI service for JobOps.",
+                "category": "backend",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            },
+            {
+                "claim": "Created regression checks for LLM profile intake.",
+                "category": "evals",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            },
+        ]
+        draft["skillClaims"] = [
+            {
+                "id": skill.id,
+                "skill": "Python",
+                "category": "programming language",
+                "evidence": "Used Python to build the JobOps API.",
+                "source": "chat",
+                "status": "draft",
+                "visibility": "private",
+                "published": False,
+            },
+            {
+                "skill": "LLM evals",
+                "category": "ai_systems",
+                "evidence": "Created regression checks for profile intake.",
+                "source": "chat",
+                "status": "draft",
+                "visibility": "private",
+                "published": False,
+            },
+        ]
+        draft["experienceAndProjects"] = [
+            {
+                "id": experience.id,
+                "title": "JobOps",
+                "organization": "Independent",
+                "summary": "Built the full-draft profile intake path.",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ]
+        draft["evidenceLinks"] = [
+            {
+                "id": evidence.id,
+                "url": "https://example.com/jobops",
+                "label": "Updated JobOps project",
+                "source": "chat",
+                "status": "needs_review",
+                "visibility": "private",
+                "published": False,
+            }
+        ]
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Update the saved draft with these refinements."),
+            connector=make_connector(StaticProvider(json.dumps(update))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    snapshot = result.body["result"]
+    assert snapshot["draftFacts"][0]["id"] == fact.id
+    assert snapshot["draftFacts"][0]["claim"] == "Built and operated a production FastAPI service for JobOps."
+    assert snapshot["draftFacts"][0]["status"] == "approved"
+    assert snapshot["draftFacts"][0]["visibility"] == "public"
+    assert len(snapshot["draftFacts"]) == 2
+    assert snapshot["skillClaims"][0]["id"] == skill.id
+    assert snapshot["skillClaims"][0]["evidence"] == "Used Python to build the JobOps API."
+    assert snapshot["skillClaims"][0]["status"] == "approved"
+    assert snapshot["skillClaims"][0]["visibility"] == "public"
+    assert len(snapshot["skillClaims"]) == 2
+    assert snapshot["experienceAndProjects"][0]["id"] == experience.id
+    assert snapshot["experienceAndProjects"][0]["summary"] == "Built the full-draft profile intake path."
+    assert snapshot["experienceAndProjects"][0]["status"] == "approved"
+    assert snapshot["evidenceLinks"][0]["id"] == evidence.id
+    assert snapshot["evidenceLinks"][0]["label"] == "Updated JobOps project"
+    assert snapshot["evidenceLinks"][0]["visibility"] == "public"
+
+
+def test_profile_intake_omitted_items_are_preserved_without_explicit_removal(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I saved a full draft."),
+            connector=make_connector(StaticProvider(json.dumps(full_profile_intake_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        fact_id = session.scalars(select(ProfileFactDraft)).one().id
+
+    update = profile_update_output(
+        assistant_message="The request was ambiguous, so I left the draft unchanged.",
+        draft={
+            "targetRoleIntent": {
+                "targetTitles": "Applied AI Engineer",
+                "targetRoleFamilies": "Applied AI",
+                "preferredWorkMode": "remote",
+                "preferredLocations": "New York",
+                "domainsOrIndustries": "developer tools",
+                "constraints": "No onsite-only roles",
+            },
+            "draftFacts": [],
+            "skillClaims": [],
+            "experienceAndProjects": [],
+            "evidenceLinks": [],
+        },
+        clarifying_questions=["Did you want me to change the profile draft?"],
+        change_summary=[],
+        no_change_reason="The latest message did not clearly request a profile update.",
+    )
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="maybe that"),
+            connector=make_connector(StaticProvider(json.dumps(update))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["draftFacts"][0]["id"] == fact_id
+    assert result.body["result"]["clarifyingQuestions"] == ["Did you want me to change the profile draft?"]
+    assert result.body["result"]["noChangeReason"] == "The latest message did not clearly request a profile update."
+
+
+def test_profile_intake_explicit_removed_items_delete_private_drafts(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I saved a full draft."),
+            connector=make_connector(StaticProvider(json.dumps(full_profile_intake_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        fact = session.scalars(select(ProfileFactDraft)).one()
+        removed_fact_id = fact.id
+        kept_draft = full_profile_intake_output()
+        kept_draft["updatedDraftProfile"]["draftFacts"] = []
+        kept_draft["removedItems"]["draftFactIds"] = [removed_fact_id]
+        kept_draft["changeSummary"] = ["Removed the requested draft fact."]
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Remove that draft fact."),
+            connector=make_connector(StaticProvider(json.dumps(kept_draft))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["draftFacts"] == []
+    with session_factory() as session:
+        assert session.scalars(select(ProfileFactDraft)).all() == []
 
 
 def test_profile_intake_seeds_editable_draft_from_published_role_target_without_mutating_published(
@@ -735,8 +935,9 @@ def make_connector(provider: StaticProvider | RecordingProvider) -> ModelConnect
 
 
 def valid_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I drafted updates and kept them private.",
+    return profile_update_output(
+        assistant_message="I drafted updates and kept them private.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "Applied AI Engineer",
         },
@@ -744,14 +945,16 @@ def valid_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": ["What production constraints did you handle?"],
-        "changeSummary": ["Updated target role intent."],
-    }
+        },
+        clarifying_questions=["What production constraints did you handle?"],
+        change_summary=["Updated target role intent."],
+    )
 
 
 def unsafe_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "Bad output.",
+    return profile_update_output(
+        assistant_message="Bad output.",
+        draft={
         "targetRoleIntent": {},
         "draftFacts": [
             {
@@ -765,14 +968,15 @@ def unsafe_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": [],
-        "changeSummary": [],
-    }
+        },
+        clarifying_questions=[],
+        change_summary=[],
+    )
 
 
 def valid_output_with_evidence() -> dict[str, object]:
     output = valid_output()
-    output["evidenceLinks"] = [
+    output["updatedDraftProfile"]["evidenceLinks"] = [
         {
             "url": "https://example.com/jobops",
             "label": "JobOps project",
@@ -786,8 +990,9 @@ def valid_output_with_evidence() -> dict[str, object]:
 
 
 def full_profile_intake_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I saved a merged draft.",
+    return profile_update_output(
+        assistant_message="I saved a merged draft.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "Applied AI Engineer",
             "targetRoleFamilies": "Applied AI",
@@ -838,14 +1043,16 @@ def full_profile_intake_output() -> dict[str, object]:
                 "published": False,
             }
         ],
-        "clarifyingQuestions": ["What outcomes can we quantify?"],
-        "changeSummary": ["Saved initial profile draft."],
-    }
+        },
+        clarifying_questions=["What outcomes can we quantify?"],
+        change_summary=["Saved initial profile draft."],
+    )
 
 
 def louisville_target_role_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I saved your target role direction.",
+    return profile_update_output(
+        assistant_message="I saved your target role direction.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "Applied AI Engineer",
             "targetRoleFamilies": "Applied AI",
@@ -857,14 +1064,16 @@ def louisville_target_role_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": ["What projects best show this direction?"],
-        "changeSummary": ["Saved target role intent."],
-    }
+        },
+        clarifying_questions=["What projects best show this direction?"],
+        change_summary=["Saved target role intent."],
+    )
 
 
 def london_additive_target_role_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I added London while preserving Louisville.",
+    return profile_update_output(
+        assistant_message="I added London while preserving Louisville.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "Applied AI Engineer",
             "targetRoleFamilies": "Applied AI",
@@ -876,14 +1085,16 @@ def london_additive_target_role_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": [],
-        "changeSummary": ["Added London as a target location."],
-    }
+        },
+        clarifying_questions=[],
+        change_summary=["Added London as a target location."],
+    )
 
 
 def london_replacement_target_role_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I changed the target location to London.",
+    return profile_update_output(
+        assistant_message="I changed the target location to London.",
+        draft={
         "targetRoleIntent": {
             "preferredLocations": "London, UK",
         },
@@ -891,14 +1102,16 @@ def london_replacement_target_role_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": [],
-        "changeSummary": ["Changed target location to London."],
-    }
+        },
+        clarifying_questions=[],
+        change_summary=["Changed target location to London."],
+    )
 
 
 def london_nyc_sf_final_state_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I added NYC and San Francisco Bay as onsite options.",
+    return profile_update_output(
+        assistant_message="I added NYC and San Francisco Bay as onsite options.",
+        draft={
         "targetRoleIntent": {
             "preferredLocations": "London, UK; NYC; San Francisco Bay",
         },
@@ -906,14 +1119,16 @@ def london_nyc_sf_final_state_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": [],
-        "changeSummary": ["Added NYC and San Francisco Bay to preferred locations."],
-    }
+        },
+        clarifying_questions=[],
+        change_summary=["Added NYC and San Francisco Bay to preferred locations."],
+    )
 
 
 def additive_role_intent_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I added the product AI option.",
+    return profile_update_output(
+        assistant_message="I added the product AI option.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "Applied AI Engineer; AI Product Engineer",
             "targetRoleFamilies": "Applied AI; AI Product",
@@ -925,14 +1140,16 @@ def additive_role_intent_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": [],
-        "changeSummary": ["Added AI Product Engineer and healthcare as target options."],
-    }
+        },
+        clarifying_questions=[],
+        change_summary=["Added AI Product Engineer and healthcare as target options."],
+    )
 
 
 def empty_patch_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I do not have new profile details yet.",
+    return profile_update_output(
+        assistant_message="I do not have new profile details yet.",
+        draft={
         "targetRoleIntent": {
             "targetTitles": "",
             "targetRoleFamilies": "",
@@ -944,15 +1161,17 @@ def empty_patch_output() -> dict[str, object]:
         "skillClaims": [],
         "experienceAndProjects": [],
         "evidenceLinks": [],
-        "clarifyingQuestions": ["What else should I add?"],
-        "changeSummary": [],
-    }
+        },
+        clarifying_questions=["What else should I add?"],
+        change_summary=[],
+        no_change_reason="No clear profile update was provided.",
+    )
 
 
 def dedupe_initial_output() -> dict[str, object]:
     output = full_profile_intake_output()
-    output["targetRoleIntent"] = {"targetTitles": "Applied AI Engineer"}
-    output["skillClaims"] = [
+    output["updatedDraftProfile"]["targetRoleIntent"] = {"targetTitles": "Applied AI Engineer"}
+    output["updatedDraftProfile"]["skillClaims"] = [
         {
             "skill": "Python",
             "category": "programming language",
@@ -963,7 +1182,7 @@ def dedupe_initial_output() -> dict[str, object]:
             "published": False,
         }
     ]
-    output["experienceAndProjects"] = [
+    output["updatedDraftProfile"]["experienceAndProjects"] = [
         {
             "title": "JobOps",
             "organization": None,
@@ -978,8 +1197,9 @@ def dedupe_initial_output() -> dict[str, object]:
 
 
 def dedupe_patch_output() -> dict[str, object]:
-    return {
-        "assistantMessage": "I added the evals fact.",
+    return profile_update_output(
+        assistant_message="I added the evals fact.",
+        draft={
         "targetRoleIntent": {},
         "draftFacts": [
             {
@@ -1031,8 +1251,41 @@ def dedupe_patch_output() -> dict[str, object]:
                 "published": False,
             }
         ],
-        "clarifyingQuestions": [],
-        "changeSummary": ["Added evals fact."],
+        },
+        clarifying_questions=[],
+        change_summary=["Added evals fact."],
+    )
+
+
+def profile_update_output(
+    *,
+    assistant_message: str,
+    draft: dict[str, object],
+    clarifying_questions: list[str],
+    change_summary: list[str],
+    no_change_reason: str | None = None,
+    removed_items: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "assistantMessage": assistant_message,
+        "updatedDraftProfile": {
+            "targetRoleIntent": draft.get("targetRoleIntent", {}),
+            "draftFacts": draft.get("draftFacts", []),
+            "skillClaims": draft.get("skillClaims", []),
+            "experienceAndProjects": draft.get("experienceAndProjects", []),
+            "evidenceLinks": draft.get("evidenceLinks", []),
+        },
+        "clarifyingQuestions": clarifying_questions,
+        "changeSummary": change_summary,
+        "noChangeReason": no_change_reason,
+        "removedItems": removed_items
+        or {
+            "draftFactIds": [],
+            "skillClaimIds": [],
+            "experienceAndProjectIds": [],
+            "evidenceLinkIds": [],
+            "targetRoleIntentFields": [],
+        },
     }
 
 

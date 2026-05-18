@@ -125,7 +125,10 @@ def run_profile_intake_extraction(
     try:
         active_connector = connector or create_model_connector(
             connector_config,
-            mock_responses_by_task={"profile_extract": build_mock_profile_intake_response},
+            mock_responses_by_task={
+                "profile_draft_update": build_mock_profile_intake_response,
+                "profile_extract": build_mock_profile_intake_response,
+            },
         )
     except ModelConfigurationError as error:
         _persist_failure_event(
@@ -232,9 +235,10 @@ def run_profile_intake_extraction(
             response=response,
         )
 
-    output_json = output.model_dump(by_alias=True, exclude_none=True)
+    parsed_output_json = output.model_dump(by_alias=True, exclude_none=True)
+    output_json = profile_intake_output_to_result(output)
     if artifact_run.enabled and artifact_run.run_id:
-        artifact_run.write_json("parsed-output.json", output_json)
+        artifact_run.write_json("parsed-output.json", parsed_output_json)
         artifact_run.write_json(
             "metadata.json",
             build_run_metadata(
@@ -285,16 +289,26 @@ def build_profile_intake_model_request(
     seeded_editable_draft_from_published: bool = False,
 ) -> ModelRequest:
     current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
+    current_draft_status = (
+        "initialized_from_published_profile"
+        if seeded_editable_draft_from_published
+        else "loaded_from_database"
+        if authoritative_current_draft_source == "database"
+        else "empty_no_database_session"
+    )
     return ModelRequest(
-        task="profile_extract",
+        task="profile_draft_update",
         temperature=0,
         max_output_tokens=4000,
         response_mime_type="application/json",
         metadata={
             "authoritative_current_draft_included": bool(current_draft),
             "authoritative_current_draft_source": authoritative_current_draft_source,
+            "authoritative_current_draft_status": current_draft_status,
             "client_existing_draft_included": request.existing_draft is not None,
+            "client_existing_draft_authoritative": False,
             "feature": "profile_intake",
+            "profile_intake_contract": "full_draft_update",
             "seeded_editable_draft_from_published": seeded_editable_draft_from_published,
         },
         messages=[
@@ -309,6 +323,17 @@ def build_profile_intake_model_request(
             ),
         ],
     )
+
+
+def profile_intake_output_to_result(output: ProfileIntakeOutput) -> dict[str, Any]:
+    draft = output.updated_draft_profile.model_dump(by_alias=True, exclude_none=True)
+    return {
+        "assistantMessage": output.assistant_message,
+        **draft,
+        "clarifyingQuestions": output.clarifying_questions,
+        "changeSummary": output.change_summary,
+        **({"noChangeReason": output.no_change_reason} if output.no_change_reason else {}),
+    }
 
 
 class ProfileIntakeValidationFailure(Exception):

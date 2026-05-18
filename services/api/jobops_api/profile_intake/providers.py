@@ -8,10 +8,34 @@ from ..model_connector import ModelRequest
 
 
 def build_mock_profile_intake_response(request: ModelRequest) -> str:
-    return json.dumps(build_mock_profile_intake_output(extract_latest_user_message(request)))
+    prompt_payload = extract_user_prompt_payload(request)
+    latest_user_message = extract_latest_user_message_from_payload(prompt_payload)
+    current_draft = prompt_payload.get("authoritative_current_draft") if isinstance(prompt_payload, dict) else None
+    return json.dumps(build_mock_profile_intake_output(latest_user_message, current_draft))
+
+
+def extract_user_prompt_payload(request: ModelRequest) -> dict[str, Any]:
+    for message in reversed(request.messages):
+        if message.role != "user":
+            continue
+        try:
+            parsed = json.loads(message.content)
+        except json.JSONDecodeError:
+            return {"latest_user_message": message.content, "authoritative_current_draft": {}}
+        return parsed if isinstance(parsed, dict) else {"latest_user_message": message.content}
+    return {}
 
 
 def extract_latest_user_message(request: ModelRequest) -> str:
+    return extract_latest_user_message_from_payload(extract_user_prompt_payload(request))
+
+
+def extract_latest_user_message_from_payload(payload: dict[str, Any]) -> str:
+    latest_user_message = payload.get("latest_user_message") or payload.get("latestUserMessage")
+    return latest_user_message if isinstance(latest_user_message, str) else ""
+
+
+def legacy_extract_latest_user_message(request: ModelRequest) -> str:
     for message in reversed(request.messages):
         if message.role != "user":
             continue
@@ -29,7 +53,8 @@ def extract_latest_user_message(request: ModelRequest) -> str:
     return ""
 
 
-def build_mock_profile_intake_output(message: str) -> dict[str, Any]:
+def build_mock_profile_intake_output(message: str, current_draft: object = None) -> dict[str, Any]:
+    updated_draft = normalize_current_draft(current_draft)
     lower = message.lower()
     is_resume_like = looks_like_resume_or_work_history(message)
     is_past_work_like = looks_like_past_work(message)
@@ -97,6 +122,27 @@ def build_mock_profile_intake_output(message: str) -> dict[str, Any]:
             )
         )
 
+    target_role_intent = {
+        **(updated_draft.get("targetRoleIntent") if isinstance(updated_draft.get("targetRoleIntent"), dict) else {}),
+        **({"targetTitles": title} if title else {}),
+        **({"targetRoleFamilies": "Applied AI, LLM systems, and forward-deployed engineering"} if mentions_ai else {}),
+        **({"preferredWorkMode": "remote"} if "remote" in lower else {}),
+        **({"preferredWorkMode": "hybrid"} if "hybrid" in lower else {}),
+        **({"domainsOrIndustries": "developer tools"} if "developer tools" in lower else {}),
+    }
+
+    updated_draft = {
+        "targetRoleIntent": {key: value for key, value in target_role_intent.items() if value},
+        "draftFacts": append_unique_items(updated_draft.get("draftFacts"), draft_facts[:4], "claim"),
+        "skillClaims": append_unique_items(updated_draft.get("skillClaims"), skill_claims[:6], "skill"),
+        "experienceAndProjects": append_unique_items(
+            updated_draft.get("experienceAndProjects"),
+            experience_and_projects[:3],
+            "title",
+        ),
+        "evidenceLinks": append_unique_items(updated_draft.get("evidenceLinks"), [generated_item({"url": url, "label": url, "source": source}) for url in links[:4]], "url"),
+    }
+
     return {
         "assistantMessage": (
             "I drafted profile updates from your message. Everything is private and needs review. "
@@ -104,17 +150,7 @@ def build_mock_profile_intake_output(message: str) -> dict[str, Any]:
             if draft_facts or skill_claims or experience_and_projects
             else "I captured your target direction. Next, paste your resume or describe a shipped project so I can draft evidence-backed profile items."
         ),
-        "targetRoleIntent": {
-            **({"targetTitles": title} if title else {}),
-            **({"targetRoleFamilies": "Applied AI, LLM systems, and forward-deployed engineering"} if mentions_ai else {}),
-            **({"preferredWorkMode": "remote"} if "remote" in lower else {}),
-            **({"preferredWorkMode": "hybrid"} if "hybrid" in lower else {}),
-            **({"domainsOrIndustries": "developer tools"} if "developer tools" in lower else {}),
-        },
-        "draftFacts": draft_facts[:4],
-        "skillClaims": skill_claims[:6],
-        "experienceAndProjects": experience_and_projects[:3],
-        "evidenceLinks": [generated_item({"url": url, "label": url, "source": source}) for url in links[:4]],
+        "updatedDraftProfile": updated_draft,
         "clarifyingQuestions": [
             "What AI, automation, or agentic products have you shipped beyond a prototype?",
             "Which production constraints did you handle: latency, cost, safety, observability, or failure recovery?",
@@ -128,7 +164,39 @@ def build_mock_profile_intake_output(message: str) -> dict[str, Any]:
             ),
             "Kept all generated data private, unpublished, and marked for review.",
         ],
+        "noChangeReason": None,
+        "removedItems": {
+            "draftFactIds": [],
+            "skillClaimIds": [],
+            "experienceAndProjectIds": [],
+            "evidenceLinkIds": [],
+            "targetRoleIntentFields": [],
+        },
     }
+
+
+def normalize_current_draft(current_draft: object) -> dict[str, Any]:
+    draft = current_draft if isinstance(current_draft, dict) else {}
+    return {
+        "targetRoleIntent": draft.get("targetRoleIntent") if isinstance(draft.get("targetRoleIntent"), dict) else {},
+        "draftFacts": draft.get("draftFacts") if isinstance(draft.get("draftFacts"), list) else [],
+        "skillClaims": draft.get("skillClaims") if isinstance(draft.get("skillClaims"), list) else [],
+        "experienceAndProjects": draft.get("experienceAndProjects") if isinstance(draft.get("experienceAndProjects"), list) else [],
+        "evidenceLinks": draft.get("evidenceLinks") if isinstance(draft.get("evidenceLinks"), list) else [],
+    }
+
+
+def append_unique_items(existing: object, incoming: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    items = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    seen = {normalize_key(item.get(key)) for item in items if isinstance(item.get(key), str)}
+    for item in incoming:
+        item_key = normalize_key(item.get(key))
+        if item_key and item_key in seen:
+            continue
+        if item_key:
+            seen.add(item_key)
+        items.append(item)
+    return items
 
 
 def generated_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -213,3 +281,7 @@ def looks_like_past_work(message: str) -> bool:
 
 def mentions_any(text: str, keywords: list[str]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def normalize_key(value: object) -> str:
+    return " ".join(value.split()).casefold() if isinstance(value, str) else ""

@@ -75,15 +75,29 @@ class EvidenceLink(GeneratedItem):
     label: str | None = Field(default=None, max_length=200)
 
 
+class UpdatedDraftProfile(ApiModel):
+    target_role_intent: TargetRoleIntent = Field(alias="targetRoleIntent")
+    draft_facts: list[DraftFact] = Field(alias="draftFacts", max_length=40)
+    skill_claims: list[SkillClaim] = Field(alias="skillClaims", max_length=80)
+    experience_and_projects: list[ExperienceAndProject] = Field(alias="experienceAndProjects", max_length=40)
+    evidence_links: list[EvidenceLink] = Field(alias="evidenceLinks", max_length=80)
+
+
+class RemovedDraftItems(ApiModel):
+    draft_fact_ids: list[str] = Field(default_factory=list, alias="draftFactIds", max_length=80)
+    skill_claim_ids: list[str] = Field(default_factory=list, alias="skillClaimIds", max_length=80)
+    experience_and_project_ids: list[str] = Field(default_factory=list, alias="experienceAndProjectIds", max_length=80)
+    evidence_link_ids: list[str] = Field(default_factory=list, alias="evidenceLinkIds", max_length=80)
+    target_role_intent_fields: list[str] = Field(default_factory=list, alias="targetRoleIntentFields", max_length=20)
+
+
 class ProfileIntakeOutput(ApiModel):
     assistant_message: str = Field(alias="assistantMessage", max_length=400)
-    target_role_intent: TargetRoleIntent = Field(alias="targetRoleIntent")
-    draft_facts: list[DraftFact] = Field(alias="draftFacts", max_length=4)
-    skill_claims: list[SkillClaim] = Field(alias="skillClaims", max_length=6)
-    experience_and_projects: list[ExperienceAndProject] = Field(alias="experienceAndProjects", max_length=3)
-    evidence_links: list[EvidenceLink] = Field(alias="evidenceLinks", max_length=4)
-    clarifying_questions: list[str] = Field(alias="clarifyingQuestions", max_length=3)
-    change_summary: list[str] = Field(alias="changeSummary", max_length=3)
+    updated_draft_profile: UpdatedDraftProfile = Field(alias="updatedDraftProfile")
+    clarifying_questions: list[str] = Field(alias="clarifyingQuestions", max_length=10)
+    change_summary: list[str] = Field(alias="changeSummary", max_length=20)
+    no_change_reason: str | None = Field(default=None, alias="noChangeReason", max_length=300)
+    removed_items: RemovedDraftItems = Field(default_factory=RemovedDraftItems, alias="removedItems")
 
 
 SAFE_VALIDATION_ERROR = "The model returned malformed profile intake data. No draft data was applied."

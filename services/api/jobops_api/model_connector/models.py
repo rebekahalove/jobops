@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 ModelTask = Literal[
     "profile_extract",
+    "profile_draft_update",
     "intake_followup",
     "role_fit",
     "bulk_triage",

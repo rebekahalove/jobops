@@ -149,6 +149,7 @@ def save_intake_assistant_event(
             "assistantMessageLength": len(output.assistant_message),
             "changeSummaryCount": len(output.change_summary),
             "clarifyingQuestionCount": len(output.clarifying_questions),
+            "noChangeReasonPresent": bool(output.no_change_reason),
             **draft_count_metadata(output),
         },
     )
@@ -192,13 +193,11 @@ def persist_profile_intake_output(
     artifact_path: str | None,
     model_run_id: str | None,
 ) -> dict[str, Any]:
-    # Normal intake turns are patches. Explicit user-requested clears/resets should use
-    # a separate intentional path instead of whole-session replacement.
-    saved_role_target = merge_role_target(session, candidate_profile, intake_session, output)
-    saved_facts = merge_draft_facts(session, candidate_profile, intake_session, output)
-    saved_skills = merge_skill_claims(session, candidate_profile, intake_session, output)
-    saved_experiences = merge_experience_projects(session, candidate_profile, intake_session, output)
-    saved_evidence = merge_evidence_links(session, candidate_profile, intake_session, output)
+    saved_role_target = sync_role_target(session, candidate_profile, intake_session, output)
+    saved_facts = sync_draft_facts(session, candidate_profile, intake_session, output)
+    saved_skills = sync_skill_claims(session, candidate_profile, intake_session, output)
+    saved_experiences = sync_experience_projects(session, candidate_profile, intake_session, output)
+    saved_evidence = sync_evidence_links(session, candidate_profile, intake_session, output)
     session.flush()
 
     saved_snapshot = build_saved_profile_draft_snapshot(
@@ -377,13 +376,328 @@ def replace_current_session_drafts(session: Session, intake_session_id: str) -> 
         session.execute(delete(model).where(model.profile_intake_session_id == intake_session_id))
 
 
+def sync_role_target(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+    output: ProfileIntakeOutput,
+) -> RoleTarget | None:
+    intent = output.updated_draft_profile.target_role_intent
+    existing = get_active_role_target(session, intake_session.id)
+
+    if existing is not None and existing.publication_status == "published":
+        return existing
+
+    removed_fields = set(output.removed_items.target_role_intent_fields)
+    target_titles = split_text_list(intent.target_titles)
+    role_families = split_text_list(intent.target_role_families)
+    preferred_locations = split_location_text_list(intent.preferred_locations)
+    work_modes = [intent.preferred_work_mode] if meaningful_text(intent.preferred_work_mode) else []
+    domains_or_industries = meaningful_text(intent.domains_or_industries)
+    constraints_text = meaningful_text(intent.constraints)
+
+    if existing is None:
+        if not any([target_titles, role_families, work_modes, preferred_locations, domains_or_industries, constraints_text]):
+            return None
+        role_target = RoleTarget(
+            candidate_profile_id=candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            target_titles=target_titles,
+            role_families=role_families,
+            preferred_locations=preferred_locations,
+            work_modes=work_modes,
+            constraints={
+                **({"domainsOrIndustries": domains_or_industries} if domains_or_industries else {}),
+                **({"constraints": constraints_text} if constraints_text else {}),
+            },
+            source="model",
+            review_status="needs_review",
+            visibility="private",
+            publication_status="not_published",
+            is_active=True,
+        )
+        session.add(role_target)
+        return role_target
+
+    if target_titles or "targetRoleIntent.targetTitles" in removed_fields:
+        existing.target_titles = target_titles
+    if role_families or "targetRoleIntent.targetRoleFamilies" in removed_fields:
+        existing.role_families = role_families
+    if preferred_locations or "targetRoleIntent.preferredLocations" in removed_fields:
+        existing.preferred_locations = preferred_locations
+    if work_modes or "targetRoleIntent.preferredWorkMode" in removed_fields:
+        existing.work_modes = work_modes
+
+    constraints = existing.constraints if isinstance(existing.constraints, dict) else {}
+    if domains_or_industries or "targetRoleIntent.domainsOrIndustries" in removed_fields:
+        constraints = {**constraints, "domainsOrIndustries": domains_or_industries}
+    if constraints_text or "targetRoleIntent.constraints" in removed_fields:
+        constraints = {**constraints, "constraints": constraints_text}
+    existing.constraints = {key: value for key, value in constraints.items() if value}
+    return existing
+
+
+def sync_draft_facts(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+    output: ProfileIntakeOutput,
+) -> list[ProfileFactDraft]:
+    saved = get_session_facts(session, intake_session.id)
+    existing_by_id = {row.id: row for row in saved}
+    existing_by_key = {fact_key(row.claim, row.fact_type): row for row in saved}
+    returned_ids: set[str] = set()
+
+    for fact in output.updated_draft_profile.draft_facts:
+        claim = meaningful_text(fact.claim)
+        if not claim:
+            continue
+        category = meaningful_text(fact.category) or "general"
+        existing = existing_by_id.get(fact.id) if fact.id else None
+        if existing is not None:
+            returned_ids.add(existing.id)
+            if not draft_fact_is_published(existing):
+                existing.claim = claim
+                existing.fact_type = category
+                existing.source = fact.source
+            continue
+
+        key = fact_key(claim, category)
+        if key in existing_by_key:
+            returned_ids.add(existing_by_key[key].id)
+            continue
+        row = ProfileFactDraft(
+            candidate_profile_id=candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            claim=claim,
+            fact_type=category,
+            structured_value={
+                "published": False,
+                "sourceStatus": fact.status,
+            },
+            source=fact.source,
+            confidence="unknown",
+            suggested_visibility="private",
+            review_status="needs_review",
+        )
+        session.add(row)
+        session.flush()
+        returned_ids.add(row.id)
+        existing_by_key[key] = row
+
+    remove_ids = set(output.removed_items.draft_fact_ids)
+    for row in saved:
+        if row.id in returned_ids:
+            continue
+        if row.id in remove_ids and not draft_fact_is_published(row):
+            session.delete(row)
+
+    session.flush()
+    return get_session_facts(session, intake_session.id)
+
+
+def sync_skill_claims(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+    output: ProfileIntakeOutput,
+) -> list[SkillClaim]:
+    saved = get_session_skills(session, intake_session.id)
+    existing_by_id = {row.id: row for row in saved}
+    existing_by_key = {skill_key(row.skill_name, row.skill_category): row for row in saved}
+    returned_ids: set[str] = set()
+
+    for skill in output.updated_draft_profile.skill_claims:
+        skill_name = meaningful_text(skill.skill)
+        if not skill_name:
+            continue
+        category = meaningful_text(skill.category) or "general"
+        evidence = meaningful_text(skill.evidence)
+        existing = existing_by_id.get(skill.id) if skill.id else None
+        if existing is not None:
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.skill_name = skill_name
+                existing.skill_category = category
+                existing.evidence_summary = evidence
+                existing.source = skill.source
+            continue
+
+        key = skill_key(skill_name, category)
+        if key in existing_by_key:
+            returned_ids.add(existing_by_key[key].id)
+            continue
+        row = SkillClaim(
+            candidate_profile_id=candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            skill_name=skill_name,
+            skill_category=category,
+            evidence_summary=evidence,
+            evidence_fact_ids=[],
+            source=skill.source,
+            visibility="private",
+            verification_status="draft",
+            publication_status="not_published",
+        )
+        session.add(row)
+        session.flush()
+        returned_ids.add(row.id)
+        existing_by_key[key] = row
+
+    remove_ids = set(output.removed_items.skill_claim_ids)
+    for row in saved:
+        if row.id in returned_ids:
+            continue
+        if row.id in remove_ids and row.publication_status != "published":
+            session.delete(row)
+
+    session.flush()
+    return get_session_skills(session, intake_session.id)
+
+
+def sync_experience_projects(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+    output: ProfileIntakeOutput,
+) -> list[ExperienceProjectDraft]:
+    saved = get_session_experiences(session, intake_session.id)
+    existing_by_id = {row.id: row for row in saved}
+    exact_by_key, title_by_key = experience_indexes(saved)
+    returned_ids: set[str] = set()
+
+    for item in output.updated_draft_profile.experience_and_projects:
+        title = meaningful_text(item.title)
+        if not title:
+            continue
+        organization = meaningful_text(item.organization)
+        summary = meaningful_text(item.summary) or ""
+        existing = existing_by_id.get(item.id) if item.id else None
+        if existing is not None:
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.title = title
+                existing.organization = organization
+                existing.summary = summary
+                existing.source = item.source
+            continue
+
+        existing = exact_by_key.get(experience_key(title, organization)) or title_by_key.get(normalize_key(title))
+        if existing is not None:
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.title = title
+                if organization:
+                    existing.organization = organization
+                if summary:
+                    existing.summary = summary
+                existing.source = item.source
+            continue
+        row = ExperienceProjectDraft(
+            candidate_profile_id=candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            title=title,
+            organization=organization,
+            summary=summary,
+            source=item.source,
+            visibility="private",
+            review_status="needs_review",
+            publication_status="not_published",
+            structured_value={
+                "published": False,
+                "sourceStatus": item.status,
+            },
+        )
+        session.add(row)
+        session.flush()
+        returned_ids.add(row.id)
+        saved.append(row)
+        exact_by_key[experience_key(title, organization)] = row
+        title_by_key = rebuild_unique_title_index(saved)
+
+    remove_ids = set(output.removed_items.experience_and_project_ids)
+    for row in saved:
+        if row.id in returned_ids:
+            continue
+        if row.id in remove_ids and row.publication_status != "published":
+            session.delete(row)
+
+    session.flush()
+    return get_session_experiences(session, intake_session.id)
+
+
+def sync_evidence_links(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    intake_session: ProfileIntakeSession,
+    output: ProfileIntakeOutput,
+) -> list[EvidenceArtifact]:
+    saved = get_session_evidence(session, intake_session.id)
+    existing_by_id = {row.id: row for row in saved}
+    existing_by_key = {evidence_key(row.uri, row.label): row for row in saved}
+    returned_ids: set[str] = set()
+
+    for link in output.updated_draft_profile.evidence_links:
+        url = meaningful_text(link.url)
+        label = meaningful_text(link.label)
+        if not url and not label:
+            continue
+        existing = existing_by_id.get(link.id) if link.id else None
+        if existing is not None:
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.uri = url
+                existing.label = label or url or "Evidence link"
+                existing.source = link.source
+            continue
+
+        key = evidence_key(url, label)
+        if key in existing_by_key:
+            returned_ids.add(existing_by_key[key].id)
+            continue
+        row = EvidenceArtifact(
+            candidate_profile_id=candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            artifact_type="link",
+            label=label or url or "Evidence link",
+            uri=url,
+            source=link.source,
+            visibility="private",
+            review_status="needs_review",
+            publication_status="not_published",
+            artifact_metadata={
+                "published": False,
+                "sourceStatus": link.status,
+            },
+        )
+        session.add(row)
+        session.flush()
+        returned_ids.add(row.id)
+        existing_by_key[key] = row
+
+    remove_ids = set(output.removed_items.evidence_link_ids)
+    for row in saved:
+        if row.id in returned_ids:
+            continue
+        if row.id in remove_ids and row.publication_status != "published":
+            session.delete(row)
+
+    session.flush()
+    return get_session_evidence(session, intake_session.id)
+
+
+def draft_fact_is_published(row: ProfileFactDraft) -> bool:
+    structured_value = row.structured_value if isinstance(row.structured_value, dict) else {}
+    return bool(structured_value.get("published"))
+
+
 def merge_role_target(
     session: Session,
     candidate_profile: CandidateProfile,
     intake_session: ProfileIntakeSession,
     output: ProfileIntakeOutput,
 ) -> RoleTarget | None:
-    intent = output.target_role_intent
+    intent = output.updated_draft_profile.target_role_intent
     existing = get_active_role_target(session, intake_session.id)
     target_titles = split_text_list(intent.target_titles)
     role_families = split_text_list(intent.target_role_families)
@@ -441,7 +755,7 @@ def merge_draft_facts(
 ) -> list[ProfileFactDraft]:
     saved = get_session_facts(session, intake_session.id)
     existing_by_key = {fact_key(row.claim, row.fact_type): row for row in saved}
-    for fact in output.draft_facts:
+    for fact in output.updated_draft_profile.draft_facts:
         claim = meaningful_text(fact.claim)
         if not claim:
             continue
@@ -477,7 +791,7 @@ def merge_skill_claims(
 ) -> list[SkillClaim]:
     saved = get_session_skills(session, intake_session.id)
     existing_by_key = {skill_key(row.skill_name, row.skill_category): row for row in saved}
-    for skill in output.skill_claims:
+    for skill in output.updated_draft_profile.skill_claims:
         skill_name = meaningful_text(skill.skill)
         if not skill_name:
             continue
@@ -515,7 +829,7 @@ def merge_experience_projects(
 ) -> list[ExperienceProjectDraft]:
     saved = get_session_experiences(session, intake_session.id)
     exact_by_key, title_by_key = experience_indexes(saved)
-    for item in output.experience_and_projects:
+    for item in output.updated_draft_profile.experience_and_projects:
         title = meaningful_text(item.title)
         if not title:
             continue
@@ -558,7 +872,7 @@ def merge_evidence_links(
 ) -> list[EvidenceArtifact]:
     saved = get_session_evidence(session, intake_session.id)
     existing_by_key = {evidence_key(row.uri, row.label): row for row in saved}
-    for link in output.evidence_links:
+    for link in output.updated_draft_profile.evidence_links:
         url = meaningful_text(link.url)
         label = meaningful_text(link.label)
         if not url and not label:
@@ -608,12 +922,13 @@ def build_saved_profile_draft_snapshot(
         "evidenceLinks": [serialize_evidence_link(item) for item in evidence],
         "clarifyingQuestions": output.clarifying_questions,
         "changeSummary": output.change_summary,
+        **({"noChangeReason": output.no_change_reason} if output.no_change_reason else {}),
     }
 
 
 def serialize_role_target(role_target: RoleTarget | None, output: ProfileIntakeOutput) -> dict[str, Any]:
     if role_target is None:
-        return output.target_role_intent.model_dump(by_alias=True, exclude_none=True)
+        return output.updated_draft_profile.target_role_intent.model_dump(by_alias=True, exclude_none=True)
 
     constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
     payload = {
@@ -628,7 +943,7 @@ def serialize_role_target(role_target: RoleTarget | None, output: ProfileIntakeO
 
 
 def role_target_summary(output: ProfileIntakeOutput) -> str:
-    intent = output.target_role_intent
+    intent = output.updated_draft_profile.target_role_intent
     values = [
         intent.target_titles,
         intent.target_role_families,
@@ -688,11 +1003,12 @@ def normalize_source(value: str | None) -> str:
 
 
 def draft_count_metadata(output: ProfileIntakeOutput) -> dict[str, int]:
+    draft = output.updated_draft_profile
     return {
-        "draftFactCount": len(output.draft_facts),
-        "skillClaimCount": len(output.skill_claims),
-        "experienceAndProjectCount": len(output.experience_and_projects),
-        "evidenceLinkCount": len(output.evidence_links),
+        "draftFactCount": len(draft.draft_facts),
+        "skillClaimCount": len(draft.skill_claims),
+        "experienceAndProjectCount": len(draft.experience_and_projects),
+        "evidenceLinkCount": len(draft.evidence_links),
     }
 
 
