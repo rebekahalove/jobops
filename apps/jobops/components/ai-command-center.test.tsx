@@ -176,4 +176,12 @@ describe("AI command center", () => {
     expect(combinedSource).not.toContain("buildProfileIntakeUserPrompt");
     expect(combinedSource).not.toContain("generateContent");
   });
+
+  it("caps the command center to the viewport and scrolls chat content internally", async () => {
+    const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(css).toContain("max-height: calc(100svh - 112px)");
+    expect(css).toContain("grid-template-rows: auto minmax(0, 1fr) auto auto");
+    expect(css).toContain("overflow-y: auto");
+  });
 });

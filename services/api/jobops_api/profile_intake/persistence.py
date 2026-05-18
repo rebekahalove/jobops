@@ -583,6 +583,7 @@ def sync_experience_projects(
                 existing.title = title
                 existing.organization = organization
                 existing.summary = summary
+                apply_experience_fields(existing, item)
                 existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
@@ -596,6 +597,7 @@ def sync_experience_projects(
                     existing.organization = organization
                 if summary:
                     existing.summary = summary
+                apply_experience_fields(existing, item)
                 existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
@@ -604,6 +606,9 @@ def sync_experience_projects(
             profile_intake_session_id=intake_session.id,
             title=title,
             organization=organization,
+            start_date=meaningful_text(item.start_date),
+            end_date=meaningful_text(item.end_date),
+            location=meaningful_text(item.location),
             summary=summary,
             source=item.source,
             visibility="private",
@@ -846,21 +851,31 @@ def merge_experience_projects(
                 existing.organization = organization
             if not meaningful_text(existing.summary) and summary:
                 existing.summary = summary
+            if not meaningful_text(existing.start_date):
+                existing.start_date = meaningful_text(item.start_date)
+            if not meaningful_text(existing.end_date):
+                existing.end_date = meaningful_text(item.end_date)
+            if not meaningful_text(existing.location):
+                existing.location = meaningful_text(item.location)
+            existing.structured_value = {
+                **(existing.structured_value if isinstance(existing.structured_value, dict) else {}),
+                **experience_structured_value(item),
+            }
             continue
         row = ExperienceProjectDraft(
             candidate_profile_id=candidate_profile.id,
             profile_intake_session_id=intake_session.id,
             title=title,
             organization=organization,
+            start_date=meaningful_text(item.start_date),
+            end_date=meaningful_text(item.end_date),
+            location=meaningful_text(item.location),
             summary=summary or "",
             source=item.source,
             visibility="private",
             review_status="needs_review",
             publication_status="not_published",
-            structured_value={
-                "published": False,
-                "sourceStatus": item.status,
-            },
+            structured_value=experience_structured_value(item),
         )
         session.add(row)
         saved.append(row)
@@ -1116,9 +1131,9 @@ def serialize_experience_project(item: ExperienceProjectDraft) -> dict[str, Any]
         "itemType": structured_value.get("itemType") or "experience",
         "title": item.title,
         "organization": item.organization,
-        "startDate": structured_value.get("startDate"),
-        "endDate": structured_value.get("endDate"),
-        "location": structured_value.get("location"),
+        "startDate": item.start_date or structured_value.get("startDate"),
+        "endDate": item.end_date or structured_value.get("endDate"),
+        "location": item.location or structured_value.get("location"),
         "summary": item.summary,
         "bullets": structured_value.get("bullets") if isinstance(structured_value.get("bullets"), list) else [],
         "source": normalize_source(item.source),
@@ -1147,6 +1162,12 @@ def meaningful_text(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def apply_experience_fields(row: ExperienceProjectDraft, item) -> None:
+    row.start_date = meaningful_text(item.start_date)
+    row.end_date = meaningful_text(item.end_date)
+    row.location = meaningful_text(item.location)
 
 
 def experience_structured_value(item) -> dict[str, Any]:

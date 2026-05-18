@@ -34,7 +34,7 @@ describe("Profile intake workspace", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("Structured review");
-    expect(html).toContain("Review &amp; verify profile data");
+    expect(html).toContain("Review your JobOps profile draft.");
     expect(html).toContain("Targets");
     expect(html).toContain("Current Draft");
     expect(html).toContain("Current published profile");
@@ -46,10 +46,10 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Education");
     expect(html).toContain("Certifications");
     expect(html).toContain("aria-orientation=\"vertical\"");
-    expect(html).toContain("Review");
-    expect(html).toContain("Needs verification");
-    expect(html).toContain("Visibility");
-    expect(html).toContain("Publication");
+    expect(html).toContain("aria-label=\"Needs verification\"");
+    expect(html).toContain("title=\"Private\"");
+    expect(html).toContain("title=\"Not published\"");
+    expect(html).toContain("title=\"Agent draft\"");
     expect(html).not.toContain("Review section");
     expect(html).not.toContain("Human-approved facts");
     expect(html).not.toContain("Public facts");
@@ -57,13 +57,15 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("experience containers");
     expect(html).not.toContain("Latest profile intake");
     expect(html).not.toContain("Draft review queues");
+    expect(html).not.toContain("<p class=\"eyebrow\">Profile workspace</p>");
+    expect(html).not.toContain("Review &amp; verify profile data");
   });
 
   it("keeps review sections in collapsible panels", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("aria-label=\"Collapse What changed\"");
-    expect(html).toContain("aria-label=\"Collapse Review &amp; verify profile data\"");
+    expect(html).toContain("aria-label=\"Collapse Review your JobOps profile draft.\"");
     expect(html).toContain("aria-label=\"Collapse Clarifying questions\"");
     expect(html).toContain("Targets");
     expect(html).toContain("No questions yet");
@@ -202,6 +204,80 @@ describe("Profile intake workspace", () => {
     expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
   });
 
+  it("renders experience dates as separate from and to fields with location", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [],
+      skillClaims: [],
+      experienceAndProjects: [
+        {
+          itemType: "experience",
+          title: "Applied AI Systems Engineer",
+          organization: "Shadow Network Intelligence",
+          startDate: "Jan 2024",
+          endDate: "Present",
+          location: "Remote - Louisville, KY",
+          summary: "Built production AI reporting systems.",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="experience" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(html).toContain("From");
+    expect(html).toContain("Jan 2024");
+    expect(html).toContain("To");
+    expect(html).toContain("Present");
+    expect(html).toContain("Location");
+    expect(html).toContain("Remote - Louisville, KY");
+    expect(html).toContain("Type: experience");
+    expect(html).not.toContain("<dt>Type</dt>");
+  });
+
+  it("shows review placeholders for missing experience dates and location", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [],
+      skillClaims: [],
+      experienceAndProjects: [
+        {
+          itemType: "project",
+          title: "AI Reporting Platform",
+          organization: "Shadow Network Intelligence",
+          summary: "Built production AI reporting systems.",
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList activeTab="experience" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(html).toContain("From");
+    expect(html).toContain("To");
+    expect(html).toContain("Location");
+    expect(html.match(/Needs review/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(html).toContain("Type: project");
+  });
+
   it("shows education and certification rows only when they are structured with matching item types", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
@@ -244,8 +320,10 @@ describe("Profile intake workspace", () => {
 
     expect(educationHtml).toContain("B.A., Fine Arts");
     expect(educationHtml).toContain("Indiana University");
+    expect(educationHtml).not.toContain("<dt>Type</dt>");
     expect(certificationHtml).toContain("Certificate - Supervised Machine Learning");
     expect(certificationHtml).toContain("Stanford Online (Coursera)");
+    expect(certificationHtml).not.toContain("<dt>Type</dt>");
   });
 
   it("does not reroute credential-like facts into education and certification tabs", () => {

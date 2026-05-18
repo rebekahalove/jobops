@@ -66,6 +66,8 @@ Update guidance:
 - These are total output caps for the complete updated draft. Do not exceed the resume caps even if the resume is longer.
 - For skillClaims, include yearsMin and yearsMax when the resume clearly states duration or when it can be conservatively inferred from dated roles; otherwise use null or omit them.
 - For experienceAndProjects, include itemType as "experience", "project", "education", or "certification". Preserve role/project dates in startDate and endDate when stated, include location when stated, and preserve concise resume bullets in bullets.
+- For experience/project roles with date ranges, split the range into startDate and endDate. Preserve month/year precision when the resume gives it, such as "Jan 2021" and "Mar 2024"; use year-only only when the resume gives only a year. Do not invent day values.
+- For experience/project roles with location text such as "Remote", "Louisville, KY", "Remote - Louisville, KY", or similar, put it in location instead of summary.
 - Put education and certifications in experienceAndProjects, not draftFacts. Use itemType "education" for degrees, schools, universities, colleges, coursework programs, and training entries. Use itemType "certification" for certificates, credentials, licenses, Coursera/online certificates, and similar completed credentials.
 - For education entries, use title for the degree/program/course name, organization for the school/provider, startDate/endDate when stated, and summary for field of study or relevant context.
 - For certification entries, use title for the certificate or credential name, organization for the issuer/provider, endDate for completion date when stated, and summary for the credential context.
@@ -128,7 +130,7 @@ Return exactly this JSON shape:
         "itemType": "experience",
         "title": "Role or project",
         "organization": "Organization or Needs review",
-        "startDate": "2024",
+        "startDate": "Jan 2024",
         "endDate": "Present",
         "location": "Remote",
         "summary": "Concise summary.",

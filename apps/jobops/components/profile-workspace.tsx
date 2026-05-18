@@ -89,49 +89,21 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
 
   return (
     <main className="dashboard-main profile-workspace">
-      <section className="page-heading" aria-labelledby="profile-title">
-        <p className="eyebrow">Profile workspace</p>
-        <h1 id="profile-title">Review your JobOps profile draft.</h1>
-        <p>
-          Use the JobOps command center above to update your profile. This workspace shows the saved draft profile state
-          for review, correction, and later verification.
-        </p>
-      </section>
-
       <CollapsiblePanel
         aside={
-          <div className="profile-status-bar" aria-label="Profile-level statuses">
-            <span>
-              <strong>Review</strong>
-              Needs verification
-            </span>
-            <span>
-              <strong>Visibility</strong>
-              Private
-            </span>
-            <span>
-              <strong>Publication</strong>
-              Not published
-            </span>
-          </div>
+          <ProfileStatusIcons />
         }
         className="review-shell"
         eyebrow="Structured review"
         expanded={isReviewExpanded}
         id="review-title"
         onToggle={() => setIsReviewExpanded((current) => !current)}
-        subtitle="These fields are updated from command-center profile intake and can be edited before verification."
-        title="Review & verify profile data"
+        subtitle="Use the JobOps command center above to update your profile. This workspace shows the saved draft profile state for review, correction, and later verification."
+        title="Review your JobOps profile draft."
       >
-        <p className="status-context">
-          The status bar applies to the profile overall. Badges beside fields and draft items describe field-level
-          review state.
-        </p>
-
         <section className="review-subsection" aria-labelledby="current-draft-title">
           <div>
             <h3 id="current-draft-title">Current Draft</h3>
-            <p>Draft items are grouped by information type and need review before they become verified private data.</p>
           </div>
           <div className="current-draft-stack">
             <TargetsCard editedFields={editedFields} intent={intent} onChange={updateIntent} />
@@ -223,14 +195,12 @@ function IntentFieldControl({
   field,
   label,
   onChange,
-  placeholder,
   value
 }: {
   editedFields: Set<IntentField>;
   field: IntentField;
   label: string;
   onChange: (field: IntentField, value: string) => void;
-  placeholder: string;
   value: string;
 }) {
   return (
@@ -238,7 +208,6 @@ function IntentFieldControl({
       <FieldLabel edited={editedFields.has(field)} label={label} />
       <input
         onChange={(event) => onChange(field, event.target.value)}
-        placeholder={placeholder}
         suppressHydrationWarning
         value={value}
       />
@@ -250,10 +219,17 @@ function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
   return (
     <span className="field-label">
       {label}
-      <span className="field-badges">
-        <span>{edited ? "Edited by you" : "Agent draft"}</span>
-        <span>Needs review</span>
-      </span>
+      <DraftIconSet author={edited ? "user" : "agent"} status="needs_review" visibility="private" />
+    </span>
+  );
+}
+
+function ProfileStatusIcons() {
+  return (
+    <span className="profile-status-bar icon-badge-row" aria-label="Profile-level statuses">
+      <IconBadge kind="review" label="Needs verification" />
+      <IconBadge kind="private" label="Private" />
+      <IconBadge kind="unpublished" label="Not published" />
     </span>
   );
 }
@@ -279,7 +255,6 @@ function TargetsCard({
           field="targetTitles"
           label="Target titles"
           onChange={onChange}
-          placeholder="Applied AI Engineer, Forward Deployed Engineer"
           value={intent.targetTitles}
         />
         <IntentFieldControl
@@ -287,7 +262,6 @@ function TargetsCard({
           field="roleFamilies"
           label="Target role families"
           onChange={onChange}
-          placeholder="LLM systems, product engineering, evals"
           value={intent.roleFamilies}
         />
         <label>
@@ -308,7 +282,6 @@ function TargetsCard({
           field="preferredLocations"
           label="Preferred locations"
           onChange={onChange}
-          placeholder="Remote US, Raleigh-Durham, NYC"
           value={intent.preferredLocations}
         />
         <IntentFieldControl
@@ -316,7 +289,6 @@ function TargetsCard({
           field="domainsOfInterest"
           label="Domains or industries of interest"
           onChange={onChange}
-          placeholder="Developer tools, education, healthcare, enterprise AI"
           value={intent.domainsOfInterest}
         />
         <label>
@@ -324,7 +296,6 @@ function TargetsCard({
           <textarea
             className="small-textarea"
             onChange={(event) => onChange("constraints", event.target.value)}
-            placeholder="Travel, location, timeline, role scope, sponsorship, compensation constraints"
             suppressHydrationWarning
             value={intent.constraints}
           />
@@ -441,7 +412,7 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
 
   if (activeTab === "experience") {
     const items = draft.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project");
-    return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} />;
+    return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} showType />;
   }
 
   if (activeTab === "education") {
@@ -468,7 +439,9 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
         {draft.skillClaims.map((skill) => (
           <li className="profile-review-item profile-review-row" key={skill.id}>
             <div className="profile-review-primary">
-              <strong>{skill.skill}</strong>
+              <TitleWithBadges title={skill.skill}>
+                <ItemIconSet item={skill} />
+              </TitleWithBadges>
               <span>{skill.category}</span>
             </div>
             <CompactMeta
@@ -477,7 +450,6 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
                 ["Evidence", skill.evidence]
               ]}
             />
-            <StatusBadges source={skill.source} />
           </li>
         ))}
       </ul>
@@ -500,12 +472,13 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
       {draft.links.map((link) => (
         <li className="profile-review-item profile-review-row" key={link.id}>
           <div className="profile-review-primary">
-            <strong>{link.label}</strong>
+            <TitleWithBadges title={link.label}>
+              <ItemIconSet item={link} />
+            </TitleWithBadges>
             <a href={link.url} rel="noreferrer" target="_blank">
               {link.url}
             </a>
           </div>
-          <StatusBadges source={link.source} />
         </li>
       ))}
     </ul>
@@ -514,7 +487,15 @@ function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId;
   );
 }
 
-function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: MockProfileDraft["experienceSummaries"] }) {
+function ExperienceList({
+  emptyLabel,
+  items,
+  showType = false
+}: {
+  emptyLabel: string;
+  items: MockProfileDraft["experienceSummaries"];
+  showType?: boolean;
+}) {
   if (!items.length) {
     return <EmptyMessage>{emptyLabel}</EmptyMessage>;
   }
@@ -524,15 +505,13 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
       {items.map((experience) => (
         <li className="profile-review-item" key={experience.id}>
           <div className="profile-review-primary">
-            <strong>{experience.title}</strong>
+            <TitleWithBadges title={experience.title}>
+              <ItemIconSet item={experience} />
+            </TitleWithBadges>
             <span>{experience.organization}</span>
           </div>
           <DetailGrid
-            items={[
-              ["Dates", formatDateRange(experience.startDate, experience.endDate)],
-              ["Location", experience.location],
-              ["Type", experience.itemType]
-            ]}
+            items={buildExperienceDetails(experience, showType)}
           />
           <p>{experience.summary}</p>
           {experience.bullets.length ? (
@@ -542,7 +521,7 @@ function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: Mock
               ))}
             </ul>
           ) : null}
-          <StatusBadges source={experience.source} />
+          {showType ? <p className="profile-item-type">Type: {experience.itemType}</p> : null}
         </li>
       ))}
     </ul>
@@ -555,10 +534,11 @@ function FactList({ facts }: { facts: MockProfileDraft["facts"] }) {
       {facts.map((fact) => (
         <li className="profile-review-item profile-review-row" key={fact.id}>
           <div className="profile-review-primary">
-            <strong>{fact.category}</strong>
+            <TitleWithBadges title={fact.category}>
+              <ItemIconSet item={fact} />
+            </TitleWithBadges>
             <span>{fact.claim}</span>
           </div>
-          <StatusBadges source={fact.source} />
         </li>
       ))}
     </ul>
@@ -646,18 +626,183 @@ export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null 
   );
 }
 
-function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["source"] }) {
+type IconBadgeKind =
+  | "review"
+  | "private"
+  | "public"
+  | "published"
+  | "unpublished"
+  | "resume"
+  | "chat"
+  | "model"
+  | "agent"
+  | "user";
+
+type BadgeableDraftItem = {
+  source: MockProfileDraft["facts"][number]["source"];
+  status: MockProfileDraft["facts"][number]["status"];
+  visibility: "private" | "public";
+  published: boolean;
+};
+
+function TitleWithBadges({ children, title }: { children: React.ReactNode; title: string }) {
   return (
-    <span className="badge-row">
-      <span>Needs review</span>
-      <span>Private</span>
-      <span>{sourceLabel(source)}</span>
+    <span className="profile-title-line">
+      <strong>{title}</strong>
+      {children}
     </span>
+  );
+}
+
+function ItemIconSet({ item }: { item: BadgeableDraftItem }) {
+  return (
+    <span className="icon-badge-row">
+      <ReviewIcon status={item.status} />
+      <VisibilityIcon visibility={item.visibility} />
+      <PublicationIcon published={item.published} />
+      <SourceIcon source={item.source} />
+    </span>
+  );
+}
+
+function DraftIconSet({
+  author,
+  status,
+  visibility
+}: {
+  author: "agent" | "user";
+  status: BadgeableDraftItem["status"];
+  visibility: BadgeableDraftItem["visibility"];
+}) {
+  return (
+    <span className="icon-badge-row">
+      <AuthorIcon author={author} />
+      <ReviewIcon status={status} />
+      <VisibilityIcon visibility={visibility} />
+    </span>
+  );
+}
+
+function ReviewIcon({ status }: { status: BadgeableDraftItem["status"] }) {
+  if (status !== "needs_review" && status !== "draft") {
+    return null;
+  }
+
+  return <IconBadge kind="review" label={status === "draft" ? "Draft" : "Needs review"} />;
+}
+
+function VisibilityIcon({ visibility }: { visibility: BadgeableDraftItem["visibility"] }) {
+  return <IconBadge kind={visibility === "private" ? "private" : "public"} label={visibilityLabel(visibility)} />;
+}
+
+function PublicationIcon({ published }: { published: BadgeableDraftItem["published"] }) {
+  return <IconBadge kind={published ? "published" : "unpublished"} label={published ? "Published" : "Not published"} />;
+}
+
+function SourceIcon({ source }: { source: BadgeableDraftItem["source"] }) {
+  return <IconBadge kind={source} label={sourceLabel(source)} />;
+}
+
+function AuthorIcon({ author }: { author: "agent" | "user" }) {
+  return <IconBadge kind={author} label={author === "user" ? "Edited by you" : "Agent draft"} />;
+}
+
+function IconBadge({ kind, label }: { kind: IconBadgeKind; label: string }) {
+  return (
+    <span aria-label={label} className={`icon-badge ${kind}`} role="img" title={label}>
+      <IconGlyph kind={kind} />
+    </span>
+  );
+}
+
+function IconGlyph({ kind }: { kind: IconBadgeKind }) {
+  if (kind === "review") {
+    return <span className="review-dot" aria-hidden="true" />;
+  }
+
+  if (kind === "resume") {
+    return (
+      <span className="cv-icon" aria-hidden="true">
+        CV
+      </span>
+    );
+  }
+
+  if (kind === "private") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M3 3l18 18" />
+        <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+        <path d="M9.5 5.3A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9 7a9.9 9.9 0 0 1-2 3.4" />
+        <path d="M6.6 6.7C4.7 8 3.4 10.1 3 12c.5 2.5 4 7 9 7 1.4 0 2.7-.3 3.8-.9" />
+      </svg>
+    );
+  }
+
+  if (kind === "public") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M3 12c.5-2.5 4-7 9-7s8.5 4.5 9 7c-.5 2.5-4 7-9 7s-8.5-4.5-9-7z" />
+        <circle cx="12" cy="12" r="2.5" />
+      </svg>
+    );
+  }
+
+  if (kind === "published") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M5 13l4 4L19 7" />
+      </svg>
+    );
+  }
+
+  if (kind === "unpublished") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M8 12h8" />
+      </svg>
+    );
+  }
+
+  if (kind === "chat" || kind === "user") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="3" />
+        <path d="M5.5 20c.8-3.8 3-6 6.5-6s5.7 2.2 6.5 6" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <rect x="6" y="8" width="12" height="9" rx="3" />
+      <path d="M12 8V5" />
+      <path d="M9.5 5h5" />
+      <circle cx="10" cy="12" r=".7" />
+      <circle cx="14" cy="12" r=".7" />
+      <path d="M10 15h4" />
+    </svg>
   );
 }
 
 function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
   return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
+}
+
+function visibilityLabel(visibility: BadgeableDraftItem["visibility"]) {
+  return visibility === "private" ? "Private" : "Public";
+}
+
+function buildExperienceDetails(experience: MockProfileDraft["experienceSummaries"][number], showType: boolean) {
+  const missingValue = showType ? "Needs review" : "";
+  const details: Array<[string, string]> = [
+    ["From", experience.startDate || missingValue],
+    ["To", experience.endDate || missingValue],
+    ["Location", experience.location || missingValue]
+  ];
+
+  return details;
 }
 
 function formatYears(yearsMin?: number, yearsMax?: number) {
@@ -671,13 +816,6 @@ function formatYears(yearsMin?: number, yearsMax?: number) {
     return `Up to ${yearsMax} years`;
   }
   return "";
-}
-
-function formatDateRange(startDate: string, endDate: string) {
-  if (startDate && endDate) {
-    return `${startDate} - ${endDate}`;
-  }
-  return startDate || endDate;
 }
 
 function looksLikeAchievement(claim: string, category: string) {

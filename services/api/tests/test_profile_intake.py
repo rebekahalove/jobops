@@ -272,6 +272,8 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
     assert "Put education and certifications in experienceAndProjects, not draftFacts." in system_prompt
     assert 'Use itemType "education"' in system_prompt
     assert 'Use itemType "certification"' in system_prompt
+    assert "Preserve month/year precision when the resume gives it" in system_prompt
+    assert "put it in location instead of summary" in system_prompt
 
 
 def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> None:
@@ -442,6 +444,9 @@ def test_persisted_resume_intake_accepts_realistic_complete_draft(tmp_path: Path
         assert len(skills) == 28
         assert len(experiences) == 9
         assert len(evidence) == 9
+        assert experiences[0].start_date == "2022"
+        assert experiences[0].end_date == "Present"
+        assert experiences[0].location == "Remote"
         assert experiences[0].structured_value["itemType"] == "experience"
         assert experiences[0].structured_value["startDate"] == "2022"
         assert experiences[0].structured_value["endDate"] == "Present"
