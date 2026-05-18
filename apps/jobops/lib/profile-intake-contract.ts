@@ -5,6 +5,7 @@ export const profileIntakeWorkModes = ["remote", "hybrid", "onsite", "flexible"]
 export type ProfileIntakeSource = (typeof profileIntakeSources)[number];
 export type ProfileIntakeItemStatus = (typeof profileIntakeItemStatuses)[number];
 export type ProfileIntakeWorkMode = (typeof profileIntakeWorkModes)[number];
+export type ProfileExperienceItemType = "experience" | "project" | "education" | "certification";
 
 export type ProfileIntakeMetadata = {
   source: ProfileIntakeSource;
@@ -36,14 +37,21 @@ export type ProfileIntakeOutput = {
       skill: string;
       category?: string;
       evidence?: string;
+      yearsMin?: number;
+      yearsMax?: number;
     }
   >;
   experienceAndProjects: Array<
     ProfileIntakeMetadata & {
       id?: string;
+      itemType?: ProfileExperienceItemType;
       title: string;
       organization?: string;
+      startDate?: string;
+      endDate?: string;
+      location?: string;
       summary: string;
+      bullets?: string[];
     }
   >;
   evidenceLinks: Array<

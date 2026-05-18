@@ -9,6 +9,7 @@ from .intake_mode import RESUME_INTAKE_CAPACITY
 
 Source = Literal["chat", "resume", "model"]
 GeneratedStatus = Literal["draft", "needs_review"]
+ExperienceItemType = Literal["experience", "project", "education", "certification"]
 WorkMode = Literal["remote", "hybrid", "onsite", "flexible"]
 
 
@@ -62,13 +63,20 @@ class SkillClaim(GeneratedItem):
     skill: str = Field(max_length=120)
     category: str | None = Field(default=None, max_length=120)
     evidence: str | None = Field(default=None, max_length=240)
+    years_min: int | None = Field(default=None, alias="yearsMin", ge=0, le=80)
+    years_max: int | None = Field(default=None, alias="yearsMax", ge=0, le=80)
 
 
 class ExperienceAndProject(GeneratedItem):
     id: str | None = Field(default=None, max_length=120)
+    item_type: ExperienceItemType = Field(default="experience", alias="itemType")
     title: str = Field(max_length=200)
     organization: str | None = Field(default=None, max_length=200)
+    start_date: str | None = Field(default=None, alias="startDate", max_length=80)
+    end_date: str | None = Field(default=None, alias="endDate", max_length=80)
+    location: str | None = Field(default=None, max_length=160)
     summary: str = Field(max_length=320)
+    bullets: list[str] = Field(default_factory=list, max_length=12)
 
 
 class EvidenceLink(GeneratedItem):

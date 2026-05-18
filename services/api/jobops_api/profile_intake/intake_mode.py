@@ -50,12 +50,14 @@ CHAT_UPDATE_MAX_OUTPUT_TOKENS = 5000
 RESUME_INTAKE_MAX_OUTPUT_TOKENS = 16000
 
 SECTION_HEADING_PATTERN = re.compile(
-    r"(?im)^\s*(experience|work history|employment|education|skills|technical skills|projects|"
-    r"certifications|certificates|publications|open source|summary)\s*:?\s*$"
+    r"(?im)^\s*((?:professional|selected|core|additional)\s+)?"
+    r"(experience|work history|employment|education|skills|technical skills|strengths|projects|"
+    r"certifications|certificates|publications|open source|summary|platform highlights)\s*(?:continued)?\s*:?\s*$"
 )
 DATE_RANGE_PATTERN = re.compile(
     r"(?i)\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{4})"
-    r"[\w\s,./-]{0,24}(?:-|to|through|present|current)[\w\s,./-]{0,24}(?:\d{4}|present|current)\b"
+    r"[\w\s,./\-\u2013\u2014]{0,24}(?:-|\u2013|\u2014|to|through|present|current)"
+    r"[\w\s,./\-\u2013\u2014]{0,24}(?:\d{4}|present|current)\b"
 )
 ROLE_PATTERN = re.compile(
     r"(?i)\b(engineer|developer|architect|manager|director|analyst|consultant|lead|founder|"
@@ -71,8 +73,25 @@ def detect_profile_intake_mode(latest_user_message: str) -> ProfileIntakeMode:
     section_count = len(SECTION_HEADING_PATTERN.findall(text))
     date_range_count = len(DATE_RANGE_PATTERN.findall(text))
     role_line_count = sum(1 for line in non_empty_lines if ROLE_PATTERN.search(line))
+    resume_keyword_count = sum(
+        1
+        for keyword in (
+            "professional summary",
+            "core skills",
+            "professional experience",
+            "additional engineering experience",
+            "selected technical strengths",
+            "selected platform highlights",
+            "education",
+            "certificate",
+            "linkedin.com/in/",
+        )
+        if keyword in lower
+    )
 
     if EXPLICIT_RESUME_PATTERN.search(lower):
+        return "resume_intake"
+    if resume_keyword_count >= 2:
         return "resume_intake"
     if len(text) >= 2500 and section_count >= 2:
         return "resume_intake"

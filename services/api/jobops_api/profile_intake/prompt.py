@@ -64,11 +64,14 @@ Update guidance:
 - For detected_intake_mode "chat_update", extract compact incremental updates: up to 4 draftFacts, 6 skillClaims, 3 experienceAndProjects, 4 evidenceLinks, 1-3 clarifyingQuestions, and up to 3 changeSummary entries.
 - For detected_intake_mode "resume_intake", extract a fuller structured draft suitable for a normal 2-3 page resume: up to 32 draftFacts, 50 skillClaims, 18 experienceAndProjects, 20 evidenceLinks, 3-6 clarifyingQuestions, and up to 12 changeSummary entries.
 - These are total output caps for the complete updated draft. Do not exceed the resume caps even if the resume is longer.
+- For skillClaims, include yearsMin and yearsMax when the resume clearly states duration or when it can be conservatively inferred from dated roles; otherwise use null or omit them.
+- For experienceAndProjects, include itemType as "experience", "project", "education", or "certification". Preserve role/project dates in startDate and endDate when stated, include location when stated, and preserve concise resume bullets in bullets.
 - Keep assistantMessage under 240 characters.
 - Keep every targetRoleIntent field under 160 characters.
 - For targetTitles, use only exact titles stated by the user. Do not invent adjacent, seniority, alternate, or related title lists.
 - Keep each claim, evidence, title, organization, summary, label, question, and changeSummary string under 180 characters.
 - Do not copy large resume sections into the output.
+- Do not collapse a dated role into only a summary when the resume provides title, organization, dates, and bullets.
 - Prefer a useful, deduplicated draft over exhaustive extraction.
 - Ask at most 1-3 targeted next questions in chat update mode, and at most 3-6 in resume intake mode.
 - In resume intake mode, choose the most representative roles, projects, skills, education, certifications, outcomes, and links instead of compressing the resume into a tiny first-pass subset.
@@ -107,6 +110,8 @@ Return exactly this JSON shape:
         "skill": "Skill name",
         "category": "general",
         "evidence": "Concise evidence phrase.",
+        "yearsMin": 2,
+        "yearsMax": 5,
         "source": "resume",
         "status": "needs_review",
         "visibility": "private",
@@ -116,9 +121,14 @@ Return exactly this JSON shape:
     "experienceAndProjects": [
       {
         "id": "Preserve existing id; omit id for new items.",
+        "itemType": "experience",
         "title": "Role or project",
         "organization": "Organization or Needs review",
+        "startDate": "2024",
+        "endDate": "Present",
+        "location": "Remote",
         "summary": "Concise summary.",
+        "bullets": ["Concise resume bullet."],
         "source": "resume",
         "status": "needs_review",
         "visibility": "private",

@@ -865,35 +865,47 @@ input:disabled {
   line-height: 1.55;
 }
 
-.profile-preview-grid {
+.profile-review-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr);
   gap: 14px;
 }
 
-.preview-column {
+.profile-review-tablist {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fafcfd;
-  padding: 16px;
+  padding: 10px;
 }
 
-.preview-column-header {
-  display: flex;
+.profile-review-tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 9px 10px;
+  text-align: left;
 }
 
-.preview-column-header h3 {
-  margin: 0;
-  font-size: 1rem;
+.profile-review-tab:hover,
+.profile-review-tab:focus-visible,
+.profile-review-tab.active {
+  border-color: rgba(15, 118, 110, 0.3);
+  background: var(--surface-strong);
 }
 
-.preview-column-header > span {
+.profile-review-tab strong,
+.profile-review-panel-header > span {
   display: inline-flex;
   min-width: 30px;
   height: 30px;
@@ -906,31 +918,114 @@ input:disabled {
   font-weight: 800;
 }
 
-.preview-column ul,
+.profile-review-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 16px;
+}
+
+.profile-review-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-review-panel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.profile-review-list,
 .question-list {
   display: grid;
   gap: 10px;
   margin: 0;
-  padding-left: 18px;
+  padding: 0;
+  list-style: none;
 }
 
-.preview-column li,
+.profile-review-item,
 .question-list li {
   color: var(--muted);
   line-height: 1.55;
 }
 
-.preview-column strong,
-.preview-column span,
-.preview-column small,
+.profile-review-item {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.profile-review-item p {
+  margin-bottom: 0;
+}
+
+.profile-review-item strong,
+.profile-review-item span,
+.profile-review-item small,
+.profile-review-item a,
 .question-list strong,
 .question-list span {
   display: block;
 }
 
-.preview-column strong,
+.profile-review-item strong,
 .question-list strong {
   color: var(--ink);
+}
+
+.profile-review-item a {
+  overflow-wrap: anywhere;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.profile-review-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.profile-review-details div {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 8px;
+}
+
+.profile-review-details dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.profile-review-details dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.profile-review-bullets {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.profile-review-empty {
+  margin: 0;
 }
 
 .badge-row {
@@ -940,7 +1035,7 @@ input:disabled {
   margin-top: 8px;
 }
 
-.preview-column .badge-row span {
+.profile-review-item .badge-row span {
   display: inline-flex;
   border: 1px solid rgba(15, 118, 110, 0.18);
   border-radius: 999px;
@@ -949,12 +1044,6 @@ input:disabled {
   font-size: 0.78rem;
   font-weight: 700;
   padding: 4px 8px;
-}
-
-.overflow-note {
-  color: var(--focus);
-  font-size: 0.88rem;
-  font-weight: 700;
 }
 
 .compact-label {
@@ -1145,7 +1234,7 @@ input:disabled {
   }
 
   .workflow-grid,
-  .profile-preview-grid,
+  .profile-review-tabs,
   .application-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1192,9 +1281,10 @@ input:disabled {
 
   .workflow-grid,
   .intent-form,
-  .profile-preview-grid,
+  .profile-review-tabs,
   .application-layout,
   .application-form-grid,
+  .profile-review-details,
   .status-edit {
     grid-template-columns: 1fr;
   }

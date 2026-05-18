@@ -306,9 +306,13 @@ def extract_resume_experience_items(message: str, source: str, limit: int) -> li
         items.append(
             generated_item(
                 {
+                    "itemType": infer_item_type(line),
                     "title": title[:180],
                     "organization": organization[:180] if organization else "Needs review",
+                    "startDate": extract_start_date(line),
+                    "endDate": extract_end_date(line),
                     "summary": "Resume-like experience, project, education, or certification item detected.",
+                    "bullets": [],
                     "source": source,
                 }
             )
@@ -330,6 +334,27 @@ def split_resume_title_and_org(line: str) -> tuple[str, str | None]:
             first, second = line.split(separator, 1)
             return first.strip(), second.strip() or None
     return line.strip(), None
+
+
+def infer_item_type(line: str) -> str:
+    lower = line.lower()
+    if mentions_any(lower, ["certificate", "certification", "coursera"]):
+        return "certification"
+    if mentions_any(lower, ["education", "university", "college", "b.a.", "b.s.", "degree"]):
+        return "education"
+    if mentions_any(lower, ["project", "platform", "dashboard", "console", "knowledge base"]):
+        return "project"
+    return "experience"
+
+
+def extract_start_date(line: str) -> str | None:
+    match = re.search(r"(\d{4})\s*(?:-|\u2013|\u2014|to)\s*(?:\d{4}|present|current)", line, flags=re.I)
+    return match.group(1) if match else None
+
+
+def extract_end_date(line: str) -> str | None:
+    match = re.search(r"\d{4}\s*(?:-|\u2013|\u2014|to)\s*(\d{4}|present|current)", line, flags=re.I)
+    return match.group(1).title() if match else None
 
 
 def extract_target_title(message: str) -> str | None:

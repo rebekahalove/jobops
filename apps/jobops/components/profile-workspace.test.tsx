@@ -40,7 +40,12 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Draft review queues");
     expect(html).toContain("Experience &amp; Projects");
     expect(html).toContain("Skills");
+    expect(html).toContain("Achievements &amp; Outcomes");
+    expect(html).toContain("Facts &amp; Claims");
     expect(html).toContain("Evidence &amp; Links");
+    expect(html).toContain("Education");
+    expect(html).toContain("Certifications");
+    expect(html).toContain("aria-orientation=\"vertical\"");
     expect(html).toContain("Review");
     expect(html).toContain("Needs verification");
     expect(html).toContain("Visibility");
@@ -66,7 +71,7 @@ describe("Profile intake workspace", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("Use the JobOps command center above to update your profile draft.");
-    expect(html).toContain("Command-center profile intake will draft profile facts for review.");
+    expect(html).toContain("No experience &amp; projects drafted yet.");
     expect(html).toContain("Command-center profile intake should pull these answers forward over time.");
     expect(html).not.toContain("Send a message or attach a resume");
     expect(html).not.toContain("Use the conversation panel");
@@ -146,13 +151,30 @@ describe("Profile intake workspace", () => {
           skill: "LLM evals",
           category: "ai_systems",
           evidence: "Unverified chat evidence.",
+          yearsMin: 2,
+          yearsMax: 4,
           source: "chat",
           status: "needs_review",
           visibility: "private",
           published: false
         }
       ],
-      experienceAndProjects: [],
+      experienceAndProjects: [
+        {
+          itemType: "experience",
+          title: "Applied AI Systems Engineer",
+          organization: "Shadow Network Intelligence",
+          startDate: "2024",
+          endDate: "Present",
+          location: "Remote",
+          summary: "Built production AI reporting systems.",
+          bullets: ["Reduced report generation from a workday to under 30 minutes."],
+          source: "resume",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
       evidenceLinks: [],
       clarifyingQuestions: ["What production constraints did you handle?"],
       changeSummary: ["Updated target role intent.", "Created one draft claim."]
@@ -165,6 +187,15 @@ describe("Profile intake workspace", () => {
       status: "needs_review",
       visibility: "private",
       published: false
+    });
+    expect(nextState.draft.skillClaims[0].yearsMin).toBe(2);
+    expect(nextState.draft.skillClaims[0].yearsMax).toBe(4);
+    expect(nextState.draft.experienceSummaries[0]).toMatchObject({
+      itemType: "experience",
+      startDate: "2024",
+      endDate: "Present",
+      location: "Remote",
+      bullets: ["Reduced report generation from a workday to under 30 minutes."]
     });
     expect(nextState.turn.agentMessage).toBe("I drafted updates and kept them private.");
   });

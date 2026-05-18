@@ -11,6 +11,24 @@ import {
 } from "../lib/profile-intake";
 
 type IntentField = keyof TargetRoleIntent;
+type ReviewTabId =
+  | "experience"
+  | "skills"
+  | "achievements"
+  | "facts"
+  | "evidence"
+  | "education"
+  | "certifications";
+
+const reviewTabs: Array<{ id: ReviewTabId; label: string }> = [
+  { id: "experience", label: "Experience & Projects" },
+  { id: "skills", label: "Skills" },
+  { id: "achievements", label: "Achievements & Outcomes" },
+  { id: "facts", label: "Facts & Claims" },
+  { id: "evidence", label: "Evidence & Links" },
+  { id: "education", label: "Education" },
+  { id: "certifications", label: "Certifications" }
+];
 
 export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
@@ -339,108 +357,228 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
 }
 
 function DraftProfilePreview({ draft }: { draft: MockProfileDraft | null }) {
+  const [activeTab, setActiveTab] = useState<ReviewTabId>("experience");
+
   if (!draft) {
     return (
-      <div className="profile-preview-grid">
-        <PreviewColumn count={0} title="Experience & Projects">
-          <li>No work, project, or education items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Education">
-          <li>No education items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Certifications">
-          <li>No certification items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Skills">
-          <li>No skill claims detected yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Achievements / Outcomes">
-          <li>No achievement or outcome items drafted yet.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Facts / Claims">
-          <li>No draft yet. Command-center profile intake will draft profile facts for review.</li>
-        </PreviewColumn>
-        <PreviewColumn count={0} title="Evidence & Links">
-          <li>No links detected.</li>
-        </PreviewColumn>
-      </div>
+      <ReviewTabbedList activeTab={activeTab} draft={null} onTabChange={setActiveTab} />
     );
   }
 
+  return <ReviewTabbedList activeTab={activeTab} draft={draft} onTabChange={setActiveTab} />;
+}
+
+function ReviewTabbedList({
+  activeTab,
+  draft,
+  onTabChange
+}: {
+  activeTab: ReviewTabId;
+  draft: MockProfileDraft | null;
+  onTabChange: (tab: ReviewTabId) => void;
+}) {
+  const counts = buildReviewCounts(draft);
+  const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
+
   return (
-    <div className="profile-preview-grid">
-      <PreviewColumn count={draft.experienceSummaries.length} title="Experience & Projects">
-        {draft.experienceSummaries.length ? (
-          draft.experienceSummaries.slice(0, 2).map((experience) => (
-            <li key={experience.id}>
-              <strong>{experience.title}</strong>
-              <span>{experience.summary}</span>
-              <StatusBadges source={experience.source} />
-            </li>
-          ))
-        ) : (
-          <li>No past work, project, education, or artifact evidence detected yet.</li>
-        )}
-        <OverflowNote count={draft.experienceSummaries.length} noun="experience/project item" />
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Education">
-        <li>No education items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Certifications">
-        <li>No certification items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.skillClaims.length} title="Skills">
-        {draft.skillClaims.length ? (
-          draft.skillClaims.slice(0, 2).map((skill) => (
-            <li key={skill.id}>
-              <strong>{skill.skill}</strong>
-              <span>{skill.evidence}</span>
-              <StatusBadges source={skill.source} />
-            </li>
-          ))
-        ) : (
-          <li>No skill claims detected by the mock extractor.</li>
-        )}
-        <OverflowNote count={draft.skillClaims.length} noun="skill claim" />
-      </PreviewColumn>
-
-      <PreviewColumn count={0} title="Achievements / Outcomes">
-        <li>No achievement or outcome items detected by the mock extractor.</li>
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.facts.length} title="Facts / Claims">
-        {draft.facts.slice(0, 2).map((fact) => (
-          <li key={fact.id}>
-            <strong>{fact.category}</strong>
-            <span>{fact.claim}</span>
-            <StatusBadges source={fact.source} />
-          </li>
+    <div className="profile-review-tabs">
+      <div className="profile-review-tablist" role="tablist" aria-orientation="vertical" aria-label="Profile data types">
+        {reviewTabs.map((tab) => (
+          <button
+            aria-controls={`profile-review-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            className={`profile-review-tab${activeTab === tab.id ? " active" : ""}`}
+            id={`profile-review-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => onTabChange(tab.id)}
+            role="tab"
+            suppressHydrationWarning
+            type="button"
+          >
+            <span>{tab.label}</span>
+            <strong>{counts[tab.id]}</strong>
+          </button>
         ))}
-        <OverflowNote count={draft.facts.length} noun="draft fact" />
-      </PreviewColumn>
-
-      <PreviewColumn count={draft.links.length} title="Evidence & Links">
-        {draft.links.length ? (
-          draft.links.slice(0, 2).map((link) => (
-            <li key={link.id}>
-              <span>{link.label}</span>
-              <span className="badge-row">
-                <span>Needs review</span>
-                <span>Private</span>
-                <span>{sourceLabel(link.source)}</span>
-              </span>
-            </li>
-          ))
-        ) : (
-          <li>No links detected.</li>
-        )}
-        <OverflowNote count={draft.links.length} noun="evidence item" />
-      </PreviewColumn>
+      </div>
+      <section
+        aria-labelledby={`profile-review-tab-${activeTab}`}
+        className="profile-review-panel"
+        id={`profile-review-panel-${activeTab}`}
+        role="tabpanel"
+      >
+        <div className="profile-review-panel-header">
+          <h3>{activeLabel}</h3>
+          <span>{counts[activeTab]}</span>
+        </div>
+        <ProfileReviewTabContent activeTab={activeTab} draft={draft} />
+      </section>
     </div>
   );
+}
+
+function ProfileReviewTabContent({ activeTab, draft }: { activeTab: ReviewTabId; draft: MockProfileDraft | null }) {
+  if (!draft) {
+    return <EmptyReviewList activeTab={activeTab} />;
+  }
+
+  if (activeTab === "experience") {
+    const items = draft.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project");
+    return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} />;
+  }
+
+  if (activeTab === "education") {
+    return <ExperienceList emptyLabel="No education items drafted yet." items={draft.experienceSummaries.filter((item) => item.itemType === "education")} />;
+  }
+
+  if (activeTab === "certifications") {
+    return (
+      <ExperienceList
+        emptyLabel="No certification items drafted yet."
+        items={draft.experienceSummaries.filter((item) => item.itemType === "certification")}
+      />
+    );
+  }
+
+  if (activeTab === "skills") {
+    return draft.skillClaims.length ? (
+      <ul className="profile-review-list">
+        {draft.skillClaims.map((skill) => (
+          <li className="profile-review-item" key={skill.id}>
+            <div>
+              <strong>{skill.skill}</strong>
+              <span>{skill.category}</span>
+            </div>
+            <DetailGrid
+              items={[
+                ["Evidence", skill.evidence],
+                ["Years", formatYears(skill.yearsMin, skill.yearsMax)]
+              ]}
+            />
+            <StatusBadges source={skill.source} />
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <EmptyMessage>No skill claims drafted yet.</EmptyMessage>
+    );
+  }
+
+  if (activeTab === "achievements") {
+    const achievements = draft.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
+    return achievements.length ? <FactList facts={achievements} /> : <EmptyMessage>No achievement or outcome items drafted yet.</EmptyMessage>;
+  }
+
+  if (activeTab === "facts") {
+    return draft.facts.length ? <FactList facts={draft.facts} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
+  }
+
+  return draft.links.length ? (
+    <ul className="profile-review-list">
+      {draft.links.map((link) => (
+        <li className="profile-review-item" key={link.id}>
+          <div>
+            <strong>{link.label}</strong>
+            <a href={link.url} rel="noreferrer" target="_blank">
+              {link.url}
+            </a>
+          </div>
+          <StatusBadges source={link.source} />
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <EmptyMessage>No evidence links drafted yet.</EmptyMessage>
+  );
+}
+
+function ExperienceList({ emptyLabel, items }: { emptyLabel: string; items: MockProfileDraft["experienceSummaries"] }) {
+  if (!items.length) {
+    return <EmptyMessage>{emptyLabel}</EmptyMessage>;
+  }
+
+  return (
+    <ul className="profile-review-list">
+      {items.map((experience) => (
+        <li className="profile-review-item" key={experience.id}>
+          <div>
+            <strong>{experience.title}</strong>
+            <span>{experience.organization}</span>
+          </div>
+          <DetailGrid
+            items={[
+              ["Dates", formatDateRange(experience.startDate, experience.endDate)],
+              ["Location", experience.location],
+              ["Type", experience.itemType]
+            ]}
+          />
+          <p>{experience.summary}</p>
+          {experience.bullets.length ? (
+            <ul className="profile-review-bullets">
+              {experience.bullets.map((bullet) => (
+                <li key={bullet}>{bullet}</li>
+              ))}
+            </ul>
+          ) : null}
+          <StatusBadges source={experience.source} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function FactList({ facts }: { facts: MockProfileDraft["facts"] }) {
+  return (
+    <ul className="profile-review-list">
+      {facts.map((fact) => (
+        <li className="profile-review-item" key={fact.id}>
+          <div>
+            <strong>{fact.category}</strong>
+            <span>{fact.claim}</span>
+          </div>
+          <StatusBadges source={fact.source} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DetailGrid({ items }: { items: Array<[string, string]> }) {
+  const visibleItems = items.filter(([, value]) => value.trim().length > 0);
+  if (!visibleItems.length) {
+    return null;
+  }
+
+  return (
+    <dl className="profile-review-details">
+      {visibleItems.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EmptyReviewList({ activeTab }: { activeTab: ReviewTabId }) {
+  const label = reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || "items";
+  return <EmptyMessage>No {label} drafted yet.</EmptyMessage>;
+}
+
+function EmptyMessage({ children }: { children: React.ReactNode }) {
+  return <p className="profile-review-empty">{children}</p>;
+}
+
+function buildReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, number> {
+  return {
+    experience: draft?.experienceSummaries.filter((item) => item.itemType === "experience" || item.itemType === "project").length ?? 0,
+    skills: draft?.skillClaims.length ?? 0,
+    achievements: draft?.facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length ?? 0,
+    facts: draft?.facts.length ?? 0,
+    evidence: draft?.links.length ?? 0,
+    education: draft?.experienceSummaries.filter((item) => item.itemType === "education").length ?? 0,
+    certifications: draft?.experienceSummaries.filter((item) => item.itemType === "certification").length ?? 0
+  };
 }
 
 export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
@@ -465,18 +603,6 @@ export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null 
   );
 }
 
-function PreviewColumn({ children, count, title }: { children: React.ReactNode; count: number; title: string }) {
-  return (
-    <section className="preview-column">
-      <div className="preview-column-header">
-        <h3>{title}</h3>
-        <span>{count}</span>
-      </div>
-      <ul>{children}</ul>
-    </section>
-  );
-}
-
 function StatusBadges({ source }: { source: MockProfileDraft["facts"][number]["source"] }) {
   return (
     <span className="badge-row">
@@ -491,15 +617,29 @@ function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
   return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
 }
 
-function OverflowNote({ count, noun }: { count: number; noun: string }) {
-  if (count <= 2) {
-    return null;
+function formatYears(yearsMin?: number, yearsMax?: number) {
+  if (typeof yearsMin === "number" && typeof yearsMax === "number" && yearsMin !== yearsMax) {
+    return `${yearsMin}-${yearsMax} years`;
   }
+  if (typeof yearsMin === "number") {
+    return `${yearsMin}+ years`;
+  }
+  if (typeof yearsMax === "number") {
+    return `Up to ${yearsMax} years`;
+  }
+  return "";
+}
 
-  return (
-    <li className="overflow-note">
-      +{count - 2} more {noun}
-      {count - 2 === 1 ? "" : "s"} in this draft.
-    </li>
+function formatDateRange(startDate: string, endDate: string) {
+  if (startDate && endDate) {
+    return `${startDate} - ${endDate}`;
+  }
+  return startDate || endDate;
+}
+
+function looksLikeAchievement(claim: string, category: string) {
+  const normalized = `${claim} ${category}`.toLowerCase();
+  return /%|\d|reduced|improved|increased|launched|shipped|built|deployed|optimized|scaled|throughput|hours|minutes/.test(
+    normalized
   );
 }

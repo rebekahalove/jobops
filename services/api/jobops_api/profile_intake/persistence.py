@@ -520,6 +520,8 @@ def sync_skill_claims(
                 existing.skill_name = skill_name
                 existing.skill_category = category
                 existing.evidence_summary = evidence
+                existing.years_min = skill.years_min
+                existing.years_max = skill.years_max
                 existing.source = skill.source
             continue
 
@@ -532,6 +534,8 @@ def sync_skill_claims(
             profile_intake_session_id=intake_session.id,
             skill_name=skill_name,
             skill_category=category,
+            years_min=skill.years_min,
+            years_max=skill.years_max,
             evidence_summary=evidence,
             evidence_fact_ids=[],
             source=skill.source,
@@ -579,6 +583,7 @@ def sync_experience_projects(
                 existing.title = title
                 existing.organization = organization
                 existing.summary = summary
+                existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
 
@@ -591,6 +596,7 @@ def sync_experience_projects(
                     existing.organization = organization
                 if summary:
                     existing.summary = summary
+                existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
             continue
         row = ExperienceProjectDraft(
@@ -604,8 +610,7 @@ def sync_experience_projects(
             review_status="needs_review",
             publication_status="not_published",
             structured_value={
-                "published": False,
-                "sourceStatus": item.status,
+                **experience_structured_value(item),
             },
         )
         session.add(row)
@@ -1089,30 +1094,39 @@ def serialize_fact_draft(fact: ProfileFactDraft) -> dict[str, Any]:
 
 
 def serialize_skill_claim(skill: SkillClaim) -> dict[str, Any]:
-    return {
+    payload = {
         "id": skill.id,
         "skill": skill.skill_name,
         "category": skill.skill_category,
         "evidence": skill.evidence_summary,
+        "yearsMin": skill.years_min,
+        "yearsMax": skill.years_max,
         "source": normalize_source(skill.source),
         "status": skill.verification_status,
         "visibility": skill.visibility,
         "published": skill.publication_status == "published",
     }
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def serialize_experience_project(item: ExperienceProjectDraft) -> dict[str, Any]:
     structured_value = item.structured_value if isinstance(item.structured_value, dict) else {}
-    return {
+    payload = {
         "id": item.id,
+        "itemType": structured_value.get("itemType") or "experience",
         "title": item.title,
         "organization": item.organization,
+        "startDate": structured_value.get("startDate"),
+        "endDate": structured_value.get("endDate"),
+        "location": structured_value.get("location"),
         "summary": item.summary,
+        "bullets": structured_value.get("bullets") if isinstance(structured_value.get("bullets"), list) else [],
         "source": normalize_source(item.source),
         "status": item.review_status,
         "visibility": item.visibility,
         "published": item.publication_status == "published" or bool(structured_value.get("published")),
     }
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def serialize_evidence_link(item: EvidenceArtifact) -> dict[str, Any]:
@@ -1133,6 +1147,19 @@ def meaningful_text(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def experience_structured_value(item) -> dict[str, Any]:
+    bullets = [bullet.strip() for bullet in item.bullets if isinstance(bullet, str) and bullet.strip()]
+    return {
+        "published": False,
+        "sourceStatus": item.status,
+        "itemType": item.item_type,
+        **({"startDate": item.start_date} if meaningful_text(item.start_date) else {}),
+        **({"endDate": item.end_date} if meaningful_text(item.end_date) else {}),
+        **({"location": item.location} if meaningful_text(item.location) else {}),
+        **({"bullets": bullets} if bullets else {}),
+    }
 
 
 def normalize_key(value: str | None) -> str:

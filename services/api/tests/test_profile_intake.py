@@ -270,6 +270,20 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
     }
 
 
+def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> None:
+    provider = RecordingProvider(json.dumps(valid_output()))
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=resume_text_without_resume_label()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
+    assert provider.requests[0].max_output_tokens == 16000
+
+
 def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
     provider = RecordingProvider(json.dumps(valid_output()))
 
@@ -424,6 +438,14 @@ def test_persisted_resume_intake_accepts_realistic_complete_draft(tmp_path: Path
         assert len(skills) == 28
         assert len(experiences) == 9
         assert len(evidence) == 9
+        assert experiences[0].structured_value["itemType"] == "experience"
+        assert experiences[0].structured_value["startDate"] == "2022"
+        assert experiences[0].structured_value["endDate"] == "Present"
+        assert experiences[0].structured_value["location"] == "Remote"
+        assert experiences[0].structured_value["bullets"] == [
+            "Built an LLM evaluation platform for support automation.",
+            "Led Python and FastAPI services that processed workflow data.",
+        ]
         assert all(fact.review_status == "needs_review" for fact in facts)
         assert all(skill.visibility == "private" and skill.publication_status == "not_published" for skill in skills)
         assert all(item.visibility == "private" and item.publication_status == "not_published" for item in experiences)
@@ -1116,6 +1138,36 @@ https://example.com/project/rag
 """
 
 
+def resume_text_without_resume_label() -> str:
+    return """Rebekah Love
+Louisville, KY | linkedin.com/in/rebekahalove
+Applied AI Systems Engineer
+
+PROFESSIONAL SUMMARY
+Applied AI Systems Engineer and Founder with 10+ years of experience building production data and AI platforms.
+
+CORE SKILLS
+RAG and structured context assembly
+LLM evaluation and prompt engineering
+Python, FastAPI, PostgreSQL, Docker
+
+PROFESSIONAL EXPERIENCE
+Shadow Network Intelligence - Founder & Applied AI Systems Engineer Remote 2024\u2013Present
+- Built and deployed a production AI reporting platform.
+- Reduced report generation from 8-12 hours to 10-30 minutes.
+
+PROFESSIONAL EXPERIENCE CONTINUED
+Sentry Data Systems - Software Developer Remote 2015\u20132018
+- Built and optimized large-scale ETL pipelines.
+
+EDUCATION
+B.A., Fine Arts - Indiana University
+
+SELECTED TECHNICAL STRENGTHS
+Production AI systems, data-intensive platforms, RAG workflows, human review systems
+"""
+
+
 def realistic_resume_output() -> dict[str, object]:
     return profile_update_output(
         assistant_message="I drafted a fuller resume profile and kept every item private for review.",
@@ -1151,9 +1203,19 @@ def realistic_resume_output() -> dict[str, object]:
             ],
             "experienceAndProjects": [
                 {
+                    "itemType": "experience",
                     "title": f"Resume Role or Project {index}",
                     "organization": f"Example Organization {index}",
+                    "startDate": "2022" if index == 1 else None,
+                    "endDate": "Present" if index == 1 else None,
+                    "location": "Remote" if index == 1 else None,
                     "summary": f"Delivered applied AI, backend, data, or platform outcomes in resume item {index}.",
+                    "bullets": [
+                        "Built an LLM evaluation platform for support automation.",
+                        "Led Python and FastAPI services that processed workflow data.",
+                    ]
+                    if index == 1
+                    else [],
                     "source": "resume",
                     "status": "needs_review",
                     "visibility": "private",
