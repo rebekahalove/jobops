@@ -128,7 +128,7 @@ describe("command-center API proxy", () => {
     expect(JSON.parse(String(init?.body)).candidate_profile_slug).toBe("request-profile");
   });
 
-  it("fails clearly when no request or configured candidate slug is available", async () => {
+  it("returns a clear config error when no request or configured candidate slug is available", async () => {
     getJobOpsApiServerConfigMock.mockResolvedValueOnce({
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
@@ -141,14 +141,14 @@ describe("command-center API proxy", () => {
 
     const response = await POST(
       new Request("http://next.test/api/command-center", {
-        body: JSON.stringify({ command: "Find companies" }),
+        body: JSON.stringify({ command: "update switchboard's careers url to https://welcome.oneswitchboard.com/careers" }),
         headers: { "Content-Type": "application/json" },
         method: "POST"
       })
     );
 
-    expect(response.status).toBe(503);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({
       ok: false,
       error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
