@@ -144,7 +144,9 @@ describe("AI command center", () => {
 
   it("classifies common command examples into planned action types", () => {
     expect(classifyCommand("Here's a job URL. Add it to my jobs list.").type).toBe("add_job_from_url");
-    expect(classifyCommand("Follow this company.").type).toBe("follow_company");
+    expect(classifyCommand("Follow this company.").type).toBe("company_discovery");
+    expect(classifyCommand("Find civic tech companies to follow.").type).toBe("company_discovery");
+    expect(classifyCommand("Update CivicActions job listings URL to https://example.com/jobs").type).toBe("company_update");
     expect(classifyCommand("Which jobs should I apply to today?").type).toBe("prioritize_jobs");
     expect(classifyCommand("Prioritize my saved jobs.").type).toBe("prioritize_jobs");
     expect(classifyCommand("Generate application materials for this role.").type).toBe("generate_materials");

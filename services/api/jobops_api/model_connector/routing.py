@@ -14,6 +14,7 @@ DEFAULT_MODEL_TASKS: set[ModelTask] = {
     "judge_or_second_pass",
 }
 CHEAP_MODEL_TASKS: set[ModelTask] = {
+    "command_router",
     "bulk_triage",
     "eval_harness",
 }
