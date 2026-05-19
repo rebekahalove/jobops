@@ -533,6 +533,8 @@ def looks_like_company_update(normalized: str) -> bool:
             "careers url",
             "career url",
             "company url",
+            "the url for",
+            "url for",
             "website",
             "source url",
             "source link",
@@ -550,7 +552,7 @@ def infer_company_update_field(normalized: str) -> str | None:
         return "careers_url"
     if "source url" in normalized or "source link" in normalized:
         return "source_urls"
-    if "website" in normalized or "company url" in normalized:
+    if "website" in normalized or "company url" in normalized or "url for" in normalized:
         return "website_url"
     if "notes" in normalized or "note" in normalized:
         return "notes"

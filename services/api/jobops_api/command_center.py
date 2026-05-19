@@ -130,6 +130,11 @@ def execute_command_center_command(
             result_payload=router_result.body,
         )
 
+    if interpreted_action == "company_update":
+        return router_unavailable_company_update_response(router_result.body)
+    if interpreted_action == "unknown" and command_contains_url(request.command):
+        return ambiguous_url_fallback_response(router_result.body)
+
     if not should_use_deterministic_fallback(settings, interpreted_action):
         return CommandCenterCommandResponse(
             assistant_message="Command routing is temporarily unavailable, so I did not execute a tool. Please try again after the router is available.",
@@ -478,9 +483,11 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "mark_applied"
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return "prioritize_jobs"
+    if is_company_update_command(normalized):
+        return "company_update"
     if is_company_discovery_command(normalized, active_workspace):
         return "company_discovery"
-    if "http://" in normalized or "https://" in normalized or "job url" in normalized or "add it to my jobs" in normalized:
+    if is_job_url_intake_command(normalized):
         return "add_job_from_url"
     return "unknown"
 
@@ -536,6 +543,43 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         return True
 
     return False
+
+
+def is_company_update_command(normalized_command: str) -> bool:
+    update_signal = any(
+        signal in normalized_command
+        for signal in ["update", "set", "should be", "add this source", "add this careers", "add this company"]
+    )
+    field_signal = any(
+        signal in normalized_command
+        for signal in [
+            "job listings url",
+            "job listing url",
+            "careers url",
+            "career url",
+            "company url",
+            "website",
+            "source url",
+            "source link",
+            "the url for",
+            "url for",
+            "notes",
+            "note",
+        ]
+    )
+    return update_signal and field_signal
+
+
+def is_job_url_intake_command(normalized_command: str) -> bool:
+    return any(
+        signal in normalized_command
+        for signal in ["add this job", "save this job", "track this role", "job posting", "job url", "add it to my jobs"]
+    )
+
+
+def command_contains_url(command: str) -> bool:
+    normalized = command.casefold()
+    return "http://" in normalized or "https://" in normalized
 
 
 def looks_like_future_tool_command(normalized_command: str) -> bool:
@@ -602,6 +646,43 @@ def clarifying_router_response(
             )
         ],
         target_workspace=router_decision.target_workspace,
+        result_payload=router_payload,
+    )
+
+
+def router_unavailable_company_update_response(router_payload: dict[str, Any]) -> CommandCenterCommandResponse:
+    message = "Command routing is temporarily unavailable, so I did not update the tracked company. Please try again when the router is available."
+    return CommandCenterCommandResponse(
+        assistant_message=message,
+        actions=[
+            CommandCenterActionResult(
+                type="company_update",
+                status="needs_confirmation",
+                targetWorkspace="companies",
+                title="Update company",
+                summary="No company update was applied because the router was unavailable.",
+                resultPayload=router_payload,
+            )
+        ],
+        target_workspace="companies",
+        result_payload=router_payload,
+    )
+
+
+def ambiguous_url_fallback_response(router_payload: dict[str, Any]) -> CommandCenterCommandResponse:
+    message = "Do you want me to save this as a job posting, or update a tracked company's careers/job listings URL?"
+    return CommandCenterCommandResponse(
+        assistant_message=message,
+        actions=[
+            CommandCenterActionResult(
+                type="unknown",
+                status="needs_confirmation",
+                targetWorkspace=None,
+                title="Review command",
+                summary="The command contains a URL, but the deterministic fallback could not safely choose a tool.",
+                resultPayload=router_payload,
+            )
+        ],
         result_payload=router_payload,
     )
 

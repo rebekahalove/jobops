@@ -23,6 +23,8 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("Update my profile with this project.") == "profile_intake"
     assert command_center_module.interpret_command("My experience includes Python and LLM evals.") == "profile_intake"
     assert command_center_module.interpret_command("Add it to my jobs list.") == "add_job_from_url"
+    assert command_center_module.interpret_command("https://example.com/careers") == "unknown"
+    assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
 
@@ -263,6 +265,40 @@ def test_command_with_url_is_not_automatically_add_job_from_url(tmp_path: Path, 
     assert response.actions[0].status == "completed"
 
 
+def test_command_center_routes_generic_company_url_update_to_company_update(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        company = TargetCompany(
+            candidate_profile_id=profile.id,
+            name="CivicActions",
+            normalized_name="civicactions",
+            derivation_status="model_derived",
+            review_status="new",
+        )
+        session.add(company)
+        session.commit()
+        company_id = company.id
+
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="Update the URL for CivicActions to https://civicactions.com",
+                active_workspace="companies",
+            ),
+            session=session,
+        )
+
+    with Session(engine) as session:
+        saved = session.get(TargetCompany, company_id)
+        assert response.actions[0].type == "company_update"
+        assert response.actions[0].status == "completed"
+        assert saved is not None
+        assert saved.website_url == "https://civicactions.com"
+
+
 def test_command_center_add_job_url_remains_planned_tool(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()
@@ -275,6 +311,32 @@ def test_command_center_add_job_url_remains_planned_tool(tmp_path: Path, monkeyp
 
     assert response.actions[0].type == "add_job_from_url"
     assert response.actions[0].status == "planned"
+
+
+def test_router_unavailable_ambiguous_url_asks_for_clarification(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    monkeypatch.setattr(
+        command_center_module,
+        "run_command_router",
+        lambda *args, **kwargs: SimpleNamespace(
+            decision=None,
+            body={"ok": False, "error": "router unavailable"},
+            status_code=503,
+            unavailable=True,
+        ),
+    )
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(command="https://example.com/careers"),
+            session=session,
+        )
+
+    assert response.actions[0].type == "unknown"
+    assert response.actions[0].status == "needs_confirmation"
+    assert "save this as a job posting" in response.assistant_message
 
 
 def test_router_unavailable_uses_conservative_fallback(tmp_path: Path, monkeypatch) -> None:
@@ -301,8 +363,10 @@ def test_router_unavailable_uses_conservative_fallback(tmp_path: Path, monkeypat
             session=session,
         )
 
-    assert response.actions[0].type == "add_job_from_url"
-    assert response.actions[0].status == "planned"
+    assert response.actions[0].type == "company_update"
+    assert response.actions[0].status == "needs_confirmation"
+    assert "router was unavailable" in response.actions[0].summary
+    assert response.target_workspace == "companies"
 
 
 def test_executable_command_without_candidate_slug_or_default_fails_clearly(tmp_path: Path, monkeypatch) -> None:
