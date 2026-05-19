@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   let candidateProfileSlug: string;
   try {
     candidateProfileSlug =
-      validation.value.candidateProfileSlug ??
+      validation.value.candidateProfileSlug?.trim() ||
       requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
   } catch (error) {
     return serverConfigErrorResponse(error);
