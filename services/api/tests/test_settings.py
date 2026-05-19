@@ -29,6 +29,18 @@ def test_load_settings_uses_app_env_file(tmp_path: Path, monkeypatch: pytest.Mon
     assert settings.enable_api_docs is True
 
 
+def test_load_settings_does_not_default_candidate_profile_slug(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG", raising=False)
+
+    (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
+    (tmp_path / ".env.dev").write_text("MODEL_PROVIDER=mock\n", encoding="utf-8")
+
+    settings = load_settings(tmp_path)
+
+    assert settings.default_candidate_profile_slug is None
+
+
 def test_load_settings_rejects_path_like_app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "../prod")
 

@@ -16,7 +16,7 @@ vi.mock("../../../lib/server-env", () => ({
   requireJobOpsServerEnvValue: requireJobOpsServerEnvValueMock
 }));
 
-describe("applications API proxy", () => {
+describe("companies API proxy", () => {
   beforeEach(() => {
     getJobOpsApiServerConfigMock.mockResolvedValue({
       apiBaseUrl: "http://fastapi.test/",
@@ -32,17 +32,15 @@ describe("applications API proxy", () => {
     vi.unstubAllGlobals();
   });
 
-  it("includes the internal key when loading applications from FastAPI", async () => {
+  it("includes the internal key when loading companies from FastAPI", async () => {
     const { GET } = await import("./route");
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      Response.json([], { status: 200 })
-    );
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json([], { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await GET();
 
     const firstCall = fetchMock.mock.calls[0];
-    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications?candidate_profile_slug=configured-profile");
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/companies?candidate_profile_slug=configured-profile");
     expect(firstCall?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
@@ -55,8 +53,13 @@ describe("applications API proxy", () => {
     await expect(response.json()).resolves.toEqual([]);
   });
 
-  it("fails safely when the server-side internal key is missing", async () => {
-    getJobOpsApiServerConfigMock.mockRejectedValueOnce(new Error("missing key"));
+  it("fails clearly when the default candidate slug is missing", async () => {
+    getJobOpsApiServerConfigMock.mockResolvedValueOnce({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
+    });
     const { GET } = await import("./route");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -67,7 +70,7 @@ describe("applications API proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "missing key"
+      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
     });
   });
 });

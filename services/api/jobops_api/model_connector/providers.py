@@ -50,6 +50,7 @@ class MockModelProvider:
             model=request.model or "mock",
             provider="mock",
             text=text,
+            metadata={"searchGroundingEnabled": request.search_grounding},
         )
 
 
@@ -97,6 +98,7 @@ class GeminiModelProvider:
 
         return ModelResponse(
             finish_reason=candidate.get("finishReason") if isinstance(candidate.get("finishReason"), str) else None,
+            metadata=gemini_response_metadata(candidate, data),
             model=request.model,
             provider="gemini",
             text=text,
@@ -133,13 +135,15 @@ def build_gemini_payload(request: ModelRequest) -> dict[str, object]:
         "temperature": request.temperature,
         "maxOutputTokens": request.max_output_tokens,
     }
-    if request.response_mime_type:
+    if request.response_mime_type and not request.search_grounding:
         generation_config["responseMimeType"] = request.response_mime_type
 
     payload: dict[str, object] = {
         "contents": contents,
         "generationConfig": generation_config,
     }
+    if request.search_grounding:
+        payload["tools"] = [{"google_search": {}}]
     if system_text:
         payload["systemInstruction"] = {
             "parts": [{"text": system_text}],
@@ -186,3 +190,19 @@ def gemini_candidate_parts(candidate: dict[str, object]) -> list[dict[str, objec
         raise ModelProviderError("Gemini response content did not include parts.")
 
     return [part for part in parts if isinstance(part, dict)]
+
+
+def gemini_response_metadata(candidate: dict[str, object], data: dict[str, object]) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    grounding_metadata = candidate.get("groundingMetadata")
+    if isinstance(grounding_metadata, dict):
+        metadata["groundingMetadata"] = grounding_metadata
+        web_search_queries = grounding_metadata.get("webSearchQueries")
+        if isinstance(web_search_queries, list):
+            metadata["webSearchQueries"] = [query for query in web_search_queries if isinstance(query, str)]
+
+    usage_metadata = data.get("usageMetadata")
+    if isinstance(usage_metadata, dict):
+        metadata["usageMetadata"] = usage_metadata
+
+    return metadata

@@ -24,17 +24,21 @@ export async function getJobOpsApiServerConfig(
   extraKeys: string[] = []
 ): Promise<JobOpsServerEnv & { apiBaseUrl: string; internalApiKey: string }> {
   const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_INTERNAL_API_KEY", ...extraKeys]);
-  const internalApiKey = env.JOBOPS_INTERNAL_API_KEY?.trim();
-
-  if (!internalApiKey) {
-    throw new Error("JOBOPS_INTERNAL_API_KEY is required for server-to-server JobOps API calls.");
-  }
+  const internalApiKey = requireJobOpsServerEnvValue(env, "JOBOPS_INTERNAL_API_KEY");
 
   return {
     ...env,
     apiBaseUrl: env.JOBOPS_API_BASE_URL ?? "http://localhost:8000",
     internalApiKey
   };
+}
+
+export function requireJobOpsServerEnvValue(env: JobOpsServerEnv, key: string): string {
+  const value = env[key]?.trim();
+  if (!value) {
+    throw new Error(`${key} is required for this JobOps server route.`);
+  }
+  return value;
 }
 
 async function readDotenv(path: string) {

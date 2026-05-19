@@ -3,7 +3,7 @@ import { getJobOpsApiServerConfig, requireJobOpsServerEnvValue } from "../../../
 
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
+export async function GET() {
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
     config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
@@ -11,29 +11,30 @@ export async function GET(request: Request) {
     return serverConfigErrorResponse(error);
   }
 
-  const requestUrl = new URL(request.url);
-  const requestSlug = requestUrl.searchParams.get("candidateProfileSlug")?.trim();
   let slug: string;
   try {
-    slug = requestSlug || requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+    slug = requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
   } catch (error) {
     return serverConfigErrorResponse(error);
   }
 
+  const url = new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/companies`);
+  url.searchParams.set("candidate_profile_slug", slug);
+
   try {
-    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/${slug}`, {
+    const apiResponse = await fetch(url, {
+      cache: "no-store",
       headers: {
         "X-JobOps-Internal-Key": config.internalApiKey
       }
     });
     const payload = await apiResponse.json();
-
     return NextResponse.json(payload, { status: apiResponse.status });
   } catch {
     return NextResponse.json(
       {
         ok: false,
-        error: "Profile draft API is unavailable. Start the FastAPI service on JOBOPS_API_BASE_URL."
+        error: "Company watchlist API is unavailable. Start the FastAPI service on JOBOPS_API_BASE_URL."
       },
       { status: 503 }
     );

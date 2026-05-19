@@ -74,6 +74,18 @@ def run_profile_intake_extraction(
     seeded_editable_draft_from_published = False
     if db_session is not None:
         candidate_slug = request.candidate_profile_slug or active_settings.default_candidate_profile_slug
+        if not candidate_slug:
+            return ProfileIntakeServiceResult(
+                body={
+                    "ok": False,
+                    "error": (
+                        "Candidate profile slug is required. Provide candidate_profile_slug in the request or "
+                        "configure JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+                    ),
+                    "code": "candidate_profile_slug_required",
+                },
+                status_code=400,
+            )
         candidate_profile = get_candidate_profile_by_slug(db_session, candidate_slug)
         if candidate_profile is None:
             return ProfileIntakeServiceResult(

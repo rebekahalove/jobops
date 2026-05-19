@@ -129,7 +129,17 @@ export function classifyCommand(command: string): ClassifiedCommand {
     return actionDetails.prioritize_jobs;
   }
 
-  if (normalized.includes("follow this company") || normalized.includes("follow company") || normalized.includes("watch this company")) {
+  if (
+    normalized.includes("follow this company") ||
+    normalized.includes("follow company") ||
+    normalized.includes("follow companies") ||
+    normalized.includes("watch this company") ||
+    normalized.includes("watch companies") ||
+    normalized.includes("find companies") ||
+    normalized.includes("find me companies") ||
+    normalized.includes("discover companies") ||
+    normalized.includes("company discovery")
+  ) {
     return actionDetails.follow_company;
   }
 

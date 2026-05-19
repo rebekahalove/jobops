@@ -19,6 +19,7 @@ from jobops_api.model_connector import (
     route_model_request,
     select_model_for_task,
 )
+from jobops_api.model_connector.providers import build_gemini_payload
 from jobops_api.settings import Settings
 
 
@@ -26,6 +27,7 @@ def test_model_routing_selects_default_and_cheap_models() -> None:
     routing = ModelRoutingConfig(default_model="default-model", cheap_model="cheap-model")
 
     assert select_model_for_task("profile_extract", routing) == "default-model"
+    assert select_model_for_task("company_discovery", routing) == "default-model"
     assert select_model_for_task("intake_followup", routing) == "default-model"
     assert select_model_for_task("role_fit", routing) == "default-model"
     assert select_model_for_task("judge_or_second_pass", routing) == "default-model"
@@ -93,6 +95,7 @@ def test_read_model_connector_config_from_settings() -> None:
         Settings(
             app_env="test",
             cheap_model="cheap",
+            company_discovery_search_grounding_enabled=True,
             database_url=None,
             default_model="default",
             default_candidate_profile_slug="rebekah-love",
@@ -130,6 +133,39 @@ def test_gemini_unexpected_response_shape_is_wrapped_safely(monkeypatch) -> None
         GeminiModelProvider("test-key").generate(make_request(task="profile_extract", model="gemini-test"))
 
 
+def test_gemini_payload_enables_google_search_for_grounded_requests() -> None:
+    payload = build_gemini_payload(make_request(task="company_discovery", model="gemini-test", search_grounding=True))
+
+    assert payload["tools"] == [{"google_search": {}}]
+    assert "responseMimeType" not in payload["generationConfig"]
+
+
+def test_gemini_response_includes_grounding_metadata(monkeypatch) -> None:
+    response_body = json.dumps(
+        {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "{\"ok\": true}"}]},
+                    "groundingMetadata": {
+                        "webSearchQueries": ["progressive politics AI engineer companies"],
+                        "groundingChunks": [{"web": {"uri": "https://example.org"}}],
+                    },
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 10},
+        }
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeHttpResponse(response_body))
+
+    response = GeminiModelProvider("test-key").generate(
+        make_request(task="company_discovery", model="gemini-test", search_grounding=True)
+    )
+
+    assert response.metadata["webSearchQueries"] == ["progressive politics AI engineer companies"]
+    assert response.metadata["groundingMetadata"]["groundingChunks"][0]["web"]["uri"] == "https://example.org"
+
+
 class FakeHttpResponse:
     def __init__(self, body: str) -> None:
         self.body = body
@@ -144,7 +180,7 @@ class FakeHttpResponse:
         return self.body.encode("utf-8")
 
 
-def make_request(*, task, model: str | None = None) -> ModelRequest:
+def make_request(*, task, model: str | None = None, search_grounding: bool = False) -> ModelRequest:
     return ModelRequest(
         max_output_tokens=4000,
         messages=[
@@ -153,6 +189,7 @@ def make_request(*, task, model: str | None = None) -> ModelRequest:
         ],
         model=model,
         response_mime_type="application/json",
+        search_grounding=search_grounding,
         task=task,
         temperature=0,
     )

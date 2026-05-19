@@ -1677,6 +1677,7 @@ def make_settings(
     return Settings(
         app_env="test",
         cheap_model="mock-cheap",
+        company_discovery_search_grounding_enabled=True,
         database_url=None,
         default_model="mock-default",
         default_candidate_profile_slug="rebekah-love",
