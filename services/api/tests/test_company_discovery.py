@@ -68,7 +68,7 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
             session=session,
         )
 
-    assert response.actions[0].type == "follow_company"
+    assert response.actions[0].type == "company_discovery"
     assert response.actions[0].status == "completed"
     assert response.target_workspace == "companies"
     assert response.result_payload is not None

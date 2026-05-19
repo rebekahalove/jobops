@@ -4,6 +4,8 @@ export type WorkspaceTab = (typeof workspaceTabs)[number];
 
 export const commandCenterActionTypes = [
   "add_job_from_url",
+  "company_discovery",
+  "company_update",
   "follow_company",
   "prioritize_jobs",
   "generate_materials",
@@ -59,6 +61,18 @@ const actionDetails: Record<CommandCenterActionType, ClassifiedCommand> = {
     type: "follow_company",
     targetWorkspace: "companies",
     title: "Follow company",
+    ctaLabel: "Open Companies"
+  },
+  company_discovery: {
+    type: "company_discovery",
+    targetWorkspace: "companies",
+    title: "Discover companies",
+    ctaLabel: "Open Companies"
+  },
+  company_update: {
+    type: "company_update",
+    targetWorkspace: "companies",
+    title: "Update company",
     ctaLabel: "Open Companies"
   },
   prioritize_jobs: {
@@ -125,6 +139,13 @@ export function classifyCommand(command: string): ClassifiedCommand {
     return actionDetails.profile_intake;
   }
 
+  if (
+    (normalized.includes("company") || normalized.includes("careers url") || normalized.includes("job listings url") || normalized.includes("source url")) &&
+    (normalized.includes("update") || normalized.includes("set") || normalized.includes("add this"))
+  ) {
+    return actionDetails.company_update;
+  }
+
   if (normalized.includes("prioritize") || normalized.includes("which jobs") || normalized.includes("apply to today")) {
     return actionDetails.prioritize_jobs;
   }
@@ -137,10 +158,11 @@ export function classifyCommand(command: string): ClassifiedCommand {
     normalized.includes("watch companies") ||
     normalized.includes("find companies") ||
     normalized.includes("find me companies") ||
+    (normalized.includes("find") && normalized.includes("companies")) ||
     normalized.includes("discover companies") ||
     normalized.includes("company discovery")
   ) {
-    return actionDetails.follow_company;
+    return actionDetails.company_discovery;
   }
 
   if (/https?:\/\/\S+/.test(command) || normalized.includes("job url") || normalized.includes("add it to my jobs")) {

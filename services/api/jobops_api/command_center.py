@@ -7,6 +7,13 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
+from .company_update import CompanyUpdateRequest, run_company_update
+from .command_router import (
+    CommandRouterOutput,
+    CommandRouterRequest,
+    RouterActionType,
+    run_command_router,
+)
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
@@ -17,6 +24,8 @@ from .settings import load_settings
 
 CommandActionType = Literal[
     "add_job_from_url",
+    "company_discovery",
+    "company_update",
     "follow_company",
     "prioritize_jobs",
     "generate_materials",
@@ -79,17 +88,127 @@ def execute_command_center_command(
     session: Session = Depends(get_db_session),
 ) -> CommandCenterCommandResponse:
     settings = load_settings()
-    interpreted_action = interpret_command(request.command, request.active_workspace)
+    candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
+    candidate_profile = get_candidate_profile_by_slug(session, candidate_slug) if candidate_slug else None
+    router_result = run_command_router(
+        CommandRouterRequest(
+            latest_user_message=request.command,
+            active_workspace=request.active_workspace,
+            candidate_profile=candidate_profile,
+        ),
+        db_session=session,
+        settings=settings,
+    )
+    if router_result.decision is not None and router_result.decision.confidence == "high" and router_result.decision.action_type != "unknown":
+        return dispatch_command_center_action(
+            request,
+            action_type=router_result.decision.action_type,
+            router_decision=router_result.decision,
+            router_payload=router_result.body,
+            candidate_slug=candidate_slug,
+            candidate_profile=candidate_profile,
+            session=session,
+            settings=settings,
+        )
+    if router_result.decision is not None:
+        return clarifying_router_response(router_result.decision, router_result.body)
 
-    if interpreted_action == "follow_company":
-        candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
+    interpreted_action = interpret_command(request.command, request.active_workspace)
+    if not router_result.unavailable:
+        return CommandCenterCommandResponse(
+            assistant_message="I could not safely route that command. Please clarify which workspace or action you want.",
+            actions=[
+                CommandCenterActionResult(
+                    type="unknown",
+                    status="needs_confirmation",
+                    targetWorkspace=None,
+                    title="Review command",
+                    summary="The router response could not be validated, so no tool was executed.",
+                    resultPayload=router_result.body,
+                )
+            ],
+            result_payload=router_result.body,
+        )
+
+    if not should_use_deterministic_fallback(settings, interpreted_action):
+        return CommandCenterCommandResponse(
+            assistant_message="Command routing is temporarily unavailable, so I did not execute a tool. Please try again after the router is available.",
+            actions=[
+                CommandCenterActionResult(
+                    type=interpreted_action,
+                    status="failed",
+                    targetWorkspace=target_workspace_for_action(interpreted_action),
+                    title=title_for_action(interpreted_action),
+                    summary="The model-assisted router was unavailable and this action can change saved data.",
+                    resultPayload=router_result.body,
+                )
+            ],
+            target_workspace=target_workspace_for_action(interpreted_action),
+            result_payload=router_result.body,
+        )
+
+    return dispatch_command_center_action(
+        request,
+        action_type=interpreted_action,
+        router_decision=None,
+        router_payload=router_result.body,
+        candidate_slug=candidate_slug,
+        candidate_profile=candidate_profile,
+        session=session,
+        settings=settings,
+    )
+
+
+def dispatch_command_center_action(
+    request: CommandCenterCommandRequest,
+    *,
+    action_type: CommandActionType | RouterActionType,
+    router_decision: CommandRouterOutput | None,
+    router_payload: dict[str, Any] | None,
+    candidate_slug: str | None,
+    candidate_profile,
+    session: Session,
+    settings,
+) -> CommandCenterCommandResponse:
+    interpreted_action = normalize_dispatch_action(action_type)
+
+    if interpreted_action in {"follow_company", "company_discovery"}:
         if candidate_slug is None:
-            return missing_candidate_slug_response("follow_company", "companies", "Discover companies")
+            return missing_candidate_slug_response("company_discovery", "companies", "Discover companies")
         return execute_company_discovery_command(
             request,
             candidate_slug=candidate_slug,
             session=session,
             settings=settings,
+            router_payload=router_payload,
+        )
+
+    if interpreted_action == "company_update":
+        if candidate_slug is None:
+            return missing_candidate_slug_response("company_update", "companies", "Update company")
+        if candidate_profile is None:
+            return candidate_profile_not_found_response("company_update", "companies", "Update company")
+        if router_decision is None:
+            return CommandCenterCommandResponse(
+                assistant_message="I need the router to extract the company update details before changing a company.",
+                actions=[
+                    CommandCenterActionResult(
+                        type="company_update",
+                        status="needs_confirmation",
+                        targetWorkspace="companies",
+                        title="Update company",
+                        summary="No company update was applied.",
+                        resultPayload=router_payload,
+                    )
+                ],
+                target_workspace="companies",
+                result_payload=router_payload,
+            )
+        return execute_company_update_command(
+            router_decision,
+            candidate_profile=candidate_profile,
+            session=session,
+            router_payload=router_payload,
         )
 
     if interpreted_action != "profile_intake":
@@ -114,28 +233,8 @@ def execute_command_center_command(
     if candidate_slug is None:
         return missing_candidate_slug_response("profile_intake", "profile", "Update profile")
 
-    candidate_profile = get_candidate_profile_by_slug(session, candidate_slug)
     if candidate_profile is None:
-        error_body = {
-            "ok": False,
-            "error": "Candidate profile not found.",
-            "code": "candidate_profile_not_found",
-        }
-        return CommandCenterCommandResponse(
-            assistant_message=error_body["error"],
-            actions=[
-                CommandCenterActionResult(
-                    type="profile_intake",
-                    status="failed",
-                    targetWorkspace="profile",
-                    title="Update profile",
-                    summary=error_body["error"],
-                    resultPayload=error_body,
-                )
-            ],
-            target_workspace="profile",
-            result_payload=error_body,
-        )
+        return candidate_profile_not_found_response("profile_intake", "profile", "Update profile")
 
     current_draft = get_latest_profile_draft_snapshot(session, candidate_profile)
 
@@ -151,6 +250,7 @@ def execute_command_center_command(
 
     if intake_result.status_code != 200 or not intake_result.body.get("ok"):
         error_message = intake_result.body.get("error", "Profile intake failed. No draft data was applied.")
+        result_payload = {**intake_result.body, **router_debug_payload(router_payload)}
         return CommandCenterCommandResponse(
             assistant_message=error_message,
             actions=[
@@ -160,11 +260,11 @@ def execute_command_center_command(
                     targetWorkspace="profile",
                     title="Update profile",
                     summary=error_message,
-                    resultPayload=intake_result.body,
+                    resultPayload=result_payload,
                 )
             ],
             target_workspace="profile",
-            result_payload=intake_result.body,
+            result_payload=result_payload,
         )
 
     profile_draft = intake_result.body["result"]
@@ -172,6 +272,7 @@ def execute_command_center_command(
         "profileDraft": profile_draft,
         **({"modelRequest": intake_result.body["modelRequest"]} if intake_result.body.get("modelRequest") else {}),
         **({"modelResponse": intake_result.body["modelResponse"]} if intake_result.body.get("modelResponse") else {}),
+        **router_debug_payload(router_payload),
     }
     assistant_message = profile_draft.get("assistantMessage") or "I updated your profile draft and kept it private for review."
 
@@ -226,12 +327,40 @@ def missing_candidate_slug_response(
     )
 
 
+def candidate_profile_not_found_response(
+    action_type: CommandActionType,
+    target_workspace: str,
+    title: str,
+) -> CommandCenterCommandResponse:
+    error_body = {
+        "ok": False,
+        "error": "Candidate profile not found.",
+        "code": "candidate_profile_not_found",
+    }
+    return CommandCenterCommandResponse(
+        assistant_message=error_body["error"],
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="failed",
+                targetWorkspace=target_workspace,
+                title=title,
+                summary=error_body["error"],
+                resultPayload=error_body,
+            )
+        ],
+        target_workspace=target_workspace,
+        result_payload=error_body,
+    )
+
+
 def execute_company_discovery_command(
     request: CommandCenterCommandRequest,
     *,
     candidate_slug: str,
     session: Session,
     settings,
+    router_payload: dict[str, Any] | None = None,
 ) -> CommandCenterCommandResponse:
     discovery_result = run_company_discovery(
         CompanyDiscoveryRequest(
@@ -248,19 +377,19 @@ def execute_company_discovery_command(
             assistant_message=error_message,
             actions=[
                 CommandCenterActionResult(
-                    type="follow_company",
+                    type="company_discovery",
                     status="failed",
                     targetWorkspace="companies",
                     title="Discover companies",
                     summary=error_message,
-                    resultPayload=discovery_result.body,
+                    resultPayload={**discovery_result.body, **router_debug_payload(router_payload)},
                 )
             ],
             target_workspace="companies",
-            result_payload=discovery_result.body,
+            result_payload={**discovery_result.body, **router_debug_payload(router_payload)},
         )
 
-    result_payload = discovery_result.body["result"]
+    result_payload = {**discovery_result.body["result"], **router_debug_payload(router_payload)}
     added_count = len(result_payload.get("companies") or [])
     assistant_message = result_payload.get("assistantMessage") or (
         f"Added {added_count} model-derived companies. Please verify them from their source links."
@@ -270,11 +399,48 @@ def execute_company_discovery_command(
         assistant_message=assistant_message,
         actions=[
             CommandCenterActionResult(
-                type="follow_company",
+                type="company_discovery",
                 status="completed",
                 targetWorkspace="companies",
                 title="Discover companies",
                 summary=build_company_discovery_action_summary(added_count),
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace="companies",
+        result_payload=result_payload,
+    )
+
+
+def execute_company_update_command(
+    router_decision: CommandRouterOutput,
+    *,
+    candidate_profile,
+    session: Session,
+    router_payload: dict[str, Any] | None = None,
+) -> CommandCenterCommandResponse:
+    extracted = router_decision.extracted
+    update_result = run_company_update(
+        CompanyUpdateRequest(
+            company_id=extracted.company_id,
+            company_name=extracted.company_name,
+            field=extracted.field,
+            url=extracted.url,
+            raw_text=extracted.raw_text,
+        ),
+        candidate_profile=candidate_profile,
+        db_session=session,
+    )
+    result_payload = {**update_result.body, **router_debug_payload(router_payload)}
+    return CommandCenterCommandResponse(
+        assistant_message=update_result.assistant_message,
+        actions=[
+            CommandCenterActionResult(
+                type="company_update",
+                status=update_result.status,
+                targetWorkspace="companies",
+                title="Update company",
+                summary=company_update_summary(update_result),
                 resultPayload=result_payload,
             )
         ],
@@ -313,7 +479,7 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return "prioritize_jobs"
     if is_company_discovery_command(normalized, active_workspace):
-        return "follow_company"
+        return "company_discovery"
     if "http://" in normalized or "https://" in normalized or "job url" in normalized or "add it to my jobs" in normalized:
         return "add_job_from_url"
     return "unknown"
@@ -409,6 +575,63 @@ def build_company_discovery_action_summary(added_count: int) -> str:
     return f"Saved {added_count} model-derived companies with new review status and verification links."
 
 
+def company_update_summary(update_result) -> str:
+    if update_result.status == "completed":
+        result = update_result.body.get("result", {})
+        field = result.get("updatedField", "company field") if isinstance(result, dict) else "company field"
+        return f"Updated the tracked company's {str(field).replace('_', ' ')}."
+    return update_result.assistant_message
+
+
+def clarifying_router_response(
+    router_decision: CommandRouterOutput,
+    router_payload: dict[str, Any],
+) -> CommandCenterCommandResponse:
+    action_type = normalize_dispatch_action(router_decision.action_type)
+    question = router_decision.clarifying_question or "I need one more detail before I can safely route that command."
+    return CommandCenterCommandResponse(
+        assistant_message=question,
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="needs_confirmation",
+                targetWorkspace=router_decision.target_workspace,
+                title=title_for_action(action_type),
+                summary=router_decision.reason or "No tool was executed because the router confidence was not high.",
+                resultPayload=router_payload,
+            )
+        ],
+        target_workspace=router_decision.target_workspace,
+        result_payload=router_payload,
+    )
+
+
+def router_debug_payload(router_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not router_payload:
+        return {}
+    return {
+        key: value
+        for key, value in {
+            "routerDecision": router_payload.get("result"),
+            "routerModelRequest": router_payload.get("modelRequest"),
+            "routerModelResponse": router_payload.get("modelResponse"),
+        }.items()
+        if value is not None
+    }
+
+
+def normalize_dispatch_action(action_type: CommandActionType | RouterActionType) -> CommandActionType:
+    if action_type == "company_discovery":
+        return "company_discovery"
+    return action_type
+
+
+def should_use_deterministic_fallback(settings, action_type: CommandActionType) -> bool:
+    if settings.model_provider.strip().lower() == "mock":
+        return True
+    return action_type not in {"profile_intake", "company_discovery", "follow_company", "company_update"}
+
+
 def meaningful_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -419,6 +642,8 @@ def meaningful_text(value: str | None) -> str | None:
 def target_workspace_for_action(action_type: CommandActionType) -> str | None:
     return {
         "add_job_from_url": "jobs",
+        "company_discovery": "companies",
+        "company_update": "companies",
         "follow_company": "companies",
         "prioritize_jobs": "jobs",
         "generate_materials": "materials",
@@ -432,6 +657,8 @@ def target_workspace_for_action(action_type: CommandActionType) -> str | None:
 def title_for_action(action_type: CommandActionType) -> str:
     return {
         "add_job_from_url": "Add job from URL",
+        "company_discovery": "Discover companies",
+        "company_update": "Update company",
         "follow_company": "Follow company",
         "prioritize_jobs": "Prioritize saved jobs",
         "generate_materials": "Generate application materials",
