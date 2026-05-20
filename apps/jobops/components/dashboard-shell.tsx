@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect } from "react";
 import { AiCommandCenter } from "./ai-command-center";
 import { dashboardWorkflows } from "../lib/workflows";
 import { getWorkspaceRoute } from "../lib/command-center-actions";
@@ -18,8 +19,11 @@ export function DashboardShell({
   children: React.ReactNode;
 }>) {
   const pathname = usePathname();
+  const isPublicPath = isPublicDashboardPath(pathname, basePath);
 
-  if (pathname === `${basePath}/login` || (!basePath && pathname === "/login")) {
+  useSessionValidityRedirect({ apiBasePath, basePath, enabled: !isPublicPath, pathname });
+
+  if (isPublicPath) {
     return <>{children}</>;
   }
 
@@ -64,6 +68,80 @@ export function DashboardShell({
       </div>
     </div>
   );
+}
+
+function useSessionValidityRedirect({
+  apiBasePath,
+  basePath,
+  enabled,
+  pathname
+}: {
+  apiBasePath: string;
+  basePath: string;
+  enabled: boolean;
+  pathname: string | null;
+}) {
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function checkSession() {
+      try {
+        const response = await fetch(`${apiBasePath}/me`, {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+        if (isCancelled || response.ok) {
+          if (response.ok) {
+            const payload = await response.json();
+            if (payload?.result?.user?.passwordResetRequired) {
+              redirectToPasswordReset(basePath, pathname, payload.result.user.username);
+            }
+          }
+          return;
+        }
+      } catch {
+        if (isCancelled) {
+          return;
+        }
+      }
+
+      redirectToLogin(basePath, pathname);
+    }
+
+    checkSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [apiBasePath, basePath, enabled, pathname]);
+}
+
+function redirectToLogin(basePath: string, pathname: string | null) {
+  const loginUrl = new URL(`${basePath}/login`, window.location.origin);
+  loginUrl.searchParams.set("returnTo", pathname || basePath || "/");
+  window.location.assign(`${loginUrl.pathname}${loginUrl.search}`);
+}
+
+function redirectToPasswordReset(basePath: string, pathname: string | null, username: string | undefined) {
+  const resetUrl = new URL(`${basePath}/reset-password`, window.location.origin);
+  if (username) {
+    resetUrl.searchParams.set("username", username);
+  }
+  resetUrl.searchParams.set("returnTo", pathname || basePath || "/");
+  window.location.assign(`${resetUrl.pathname}${resetUrl.search}`);
+}
+
+function isPublicDashboardPath(pathname: string | null, basePath: string) {
+  if (!pathname) {
+    return false;
+  }
+
+  const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
+  return localPath === "/login" || localPath === "/reset-password" || localPath === "/privacy" || localPath.startsWith("/invite/");
 }
 
 export function isActiveWorkspace(pathname: string | null, href: string) {

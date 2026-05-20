@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -36,7 +37,8 @@ def main() -> None:
     bootstrap_parser.add_argument("--email", required=True)
     bootstrap_parser.add_argument("--username", required=True)
     bootstrap_parser.add_argument("--name", required=True)
-    bootstrap_parser.add_argument("--password", required=True)
+    bootstrap_parser.add_argument("--password", default=None)
+    bootstrap_parser.add_argument("--prompt-password", action="store_true")
     bootstrap_parser.add_argument("--require-reset", action=argparse.BooleanOptionalAction, default=True)
     bootstrap_parser.add_argument("--workspace-slug", default=None)
 
@@ -44,7 +46,8 @@ def main() -> None:
     seed_user_parser.add_argument("--email", required=True)
     seed_user_parser.add_argument("--username", required=True)
     seed_user_parser.add_argument("--name", required=True)
-    seed_user_parser.add_argument("--password", required=True)
+    seed_user_parser.add_argument("--password", default=None)
+    seed_user_parser.add_argument("--prompt-password", action="store_true")
     seed_user_parser.add_argument("--require-reset", action=argparse.BooleanOptionalAction, default=True)
     seed_user_parser.add_argument("--workspace-slug", default=None)
 
@@ -71,7 +74,7 @@ def main() -> None:
             email=args.email,
             username=args.username,
             name=args.name,
-            password=args.password,
+            password=resolve_password_arg(args.password, args.prompt_password),
             require_reset=args.require_reset,
             workspace_slug=args.workspace_slug,
         )
@@ -80,7 +83,7 @@ def main() -> None:
             email=args.email,
             username=args.username,
             name=args.name,
-            password=args.password,
+            password=resolve_password_arg(args.password, args.prompt_password),
             require_reset=args.require_reset,
             workspace_slug=args.workspace_slug,
         )
@@ -134,6 +137,18 @@ def seed_initial_user_command(*, email: str, username: str, name: str, password:
         print(f"User: {auth.user.username} <{auth.user.email}> ({auth.user.id})")
         print(f"Workspace: {auth.tenant.slug} ({auth.tenant.id})")
         print(f"Candidate profile: {auth.candidate_profile.slug} ({auth.candidate_profile.id})")
+
+
+def resolve_password_arg(password: str | None, prompt_password: bool) -> str:
+    if password:
+        return password
+    if prompt_password:
+        first = getpass.getpass("Password: ")
+        second = getpass.getpass("Confirm password: ")
+        if first != second:
+            raise SystemExit("Passwords did not match.")
+        return first
+    raise SystemExit("Password is required. Pass --password or use --prompt-password.")
 
 
 def inspect_alpha_workspaces_command(*, workspace_slug: str | None = None) -> None:

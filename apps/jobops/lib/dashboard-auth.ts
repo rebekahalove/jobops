@@ -64,6 +64,22 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
   }
 
   const sessionCookieValue = readCookie(request.headers.get("cookie"), JOBOPS_SESSION_COOKIE_NAME);
+  if (sessionCookieValue && isProtectedUiPath) {
+    const backendSession = await validateBackendSession(request.headers.get("cookie"));
+    if (backendSession.ok) {
+      return undefined;
+    }
+
+    const loginUrl = buildLoginRedirectUrl(request.url, loginPath, requestUrl);
+    return new Response(null, {
+      headers: {
+        Location: loginUrl.toString(),
+        "Set-Cookie": clearSessionCookieHeader(env.isProduction)
+      },
+      status: 307
+    });
+  }
+
   if (sessionCookieValue) {
     return undefined;
   }
@@ -78,12 +94,7 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
     );
   }
 
-  const loginUrl = new URL(request.url);
-  loginUrl.pathname = loginPath;
-  loginUrl.search = "";
-  loginUrl.searchParams.set("returnTo", `${requestUrl.pathname}${requestUrl.search}`);
-
-  return Response.redirect(loginUrl, 307);
+  return Response.redirect(buildLoginRedirectUrl(request.url, loginPath, requestUrl), 307);
 }
 
 export function isProtectedDashboardUiPath(pathname: string, dashboardBasePath: "" | "/jobops") {
@@ -187,6 +198,40 @@ export function redirectResponse(location: string, status: 303 | 307) {
     },
     status
   });
+}
+
+function buildLoginRedirectUrl(requestUrl: string, loginPath: "/login" | "/jobops/login", currentUrl: URL) {
+  const loginUrl = new URL(requestUrl);
+  loginUrl.pathname = loginPath;
+  loginUrl.search = "";
+  loginUrl.searchParams.set("returnTo", `${currentUrl.pathname}${currentUrl.search}`);
+  return loginUrl;
+}
+
+async function validateBackendSession(cookieHeader: string | null) {
+  const apiBaseUrl = process.env.JOBOPS_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
+  const internalApiKey = process.env.JOBOPS_INTERNAL_API_KEY?.trim() || "";
+
+  if (!internalApiKey) {
+    return { ok: false };
+  }
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/v1/auth/me`, {
+      cache: "no-store",
+      headers: {
+        Cookie: cookieHeader || "",
+        "X-JobOps-Internal-Key": internalApiKey
+      }
+    });
+    return { ok: response.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function clearSessionCookieHeader(isProduction: boolean) {
+  return `${JOBOPS_SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax; HttpOnly${isProduction ? "; Secure" : ""}`;
 }
 
 function readCookie(cookieHeader: string | null, name: string) {
