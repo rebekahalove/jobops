@@ -90,7 +90,7 @@ The app uses local mock behavior until verified public profile facts and the rea
 
 ## Run The JobOps Dashboard Stub
 
-The dashboard shell is the private JobOps app scaffold. It has only a temporary private-preview password gate, not full product auth. It does not include user accounts, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
+The dashboard shell is the private JobOps app scaffold. It uses persisted alpha user sessions, not full product auth. It does not include OAuth, password reset, billing, complex RBAC, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -102,14 +102,7 @@ Then open:
 http://localhost:3002
 ```
 
-Set the local dashboard gate values in `.env.dev`:
-
-```text
-JOBOPS_DASHBOARD_PASSWORD=<temporary local preview password>
-JOBOPS_DASHBOARD_COOKIE_SECRET=<long random local secret>
-```
-
-The default is fail closed when those values are missing. For local development only, you may set:
+For local development only, you may bypass the session gate with:
 
 ```text
 JOBOPS_DASHBOARD_AUTH_DISABLED=true
@@ -349,14 +342,7 @@ The portfolio and JobOps apps also read the repo-root `.env` and `.env.<APP_ENV>
 
 The local Next.js `dev` and `start` scripts load these files before starting Next so middleware can see the same private server-side values as route handlers.
 
-The dashboard gate variables are also server-only:
-
-```text
-JOBOPS_DASHBOARD_PASSWORD=<temporary private-preview password>
-JOBOPS_DASHBOARD_COOKIE_SECRET=<long random secret>
-```
-
-Do not prefix them with `NEXT_PUBLIC_`.
+Dashboard sessions are server-owned and stored in the backend `user_sessions` table. Do not store default user identity in `.env`.
 
 ## Database Setup
 

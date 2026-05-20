@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .auth import AuthContext, require_auth_context
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
 from .company_update import CompanyUpdateRequest, run_company_update
 from .command_router import (
@@ -14,6 +17,7 @@ from .command_router import (
     RouterActionType,
     run_command_router,
 )
+from .db.models import CandidateProfile, CommandInteractionLog
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
@@ -86,10 +90,28 @@ class CommandCenterCommandResponse(ApiModel):
 def execute_command_center_command(
     request: CommandCenterCommandRequest,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> CommandCenterCommandResponse:
+    started_at = time.perf_counter()
     settings = load_settings()
-    candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
-    candidate_profile = get_candidate_profile_by_slug(session, candidate_slug) if candidate_slug else None
+    has_auth_context = isinstance(auth, AuthContext)
+    candidate_slug = auth.candidate_profile.slug if has_auth_context else meaningful_text(request.candidate_profile_slug)
+    candidate_profile = auth.candidate_profile if has_auth_context else resolve_direct_candidate_profile(session, candidate_slug)
+    candidate_slug = candidate_slug or (candidate_profile.slug if candidate_profile is not None else None)
+    safety_response = preflight_safety_response(request.command)
+    if safety_response is not None:
+        save_command_interaction_log(
+            session,
+            auth=auth if has_auth_context else None,
+            request=request,
+            response=safety_response,
+            router_payload=None,
+            router_decision=None,
+            latency_ms=round((time.perf_counter() - started_at) * 1000),
+            model_provider=settings.model_provider,
+        )
+        session.commit()
+        return safety_response
     router_result = run_command_router(
         CommandRouterRequest(
             latest_user_message=request.command,
@@ -99,69 +121,94 @@ def execute_command_center_command(
         db_session=session,
         settings=settings,
     )
-    if router_result.decision is not None and router_result.decision.confidence == "high" and router_result.decision.action_type != "unknown":
-        return dispatch_command_center_action(
-            request,
-            action_type=router_result.decision.action_type,
-            router_decision=router_result.decision,
+    try:
+        if router_result.decision is not None and router_result.decision.confidence == "high" and router_result.decision.action_type != "unknown":
+            response = dispatch_command_center_action(
+                request,
+                action_type=router_result.decision.action_type,
+                router_decision=router_result.decision,
+                router_payload=router_result.body,
+                candidate_slug=candidate_slug,
+                candidate_profile=candidate_profile,
+                session=session,
+                settings=settings,
+            )
+        elif router_result.decision is not None:
+            response = clarifying_router_response(router_result.decision, router_result.body)
+        else:
+            interpreted_action = interpret_command(request.command, request.active_workspace)
+            if not router_result.unavailable:
+                response = CommandCenterCommandResponse(
+                    assistant_message="I could not safely route that command. Please clarify which workspace or action you want.",
+                    actions=[
+                        CommandCenterActionResult(
+                            type="unknown",
+                            status="needs_confirmation",
+                            targetWorkspace=None,
+                            title="Review command",
+                            summary="The router response could not be validated, so no tool was executed.",
+                            resultPayload=router_result.body,
+                        )
+                    ],
+                    result_payload=router_result.body,
+                )
+            elif interpreted_action == "company_update":
+                response = router_unavailable_company_update_response(router_result.body)
+            elif interpreted_action == "unknown" and command_contains_url(request.command):
+                response = ambiguous_url_fallback_response(router_result.body)
+            elif not should_use_deterministic_fallback(settings, interpreted_action):
+                response = CommandCenterCommandResponse(
+                    assistant_message="Command routing is temporarily unavailable, so I did not execute a tool. Please try again after the router is available.",
+                    actions=[
+                        CommandCenterActionResult(
+                            type=interpreted_action,
+                            status="failed",
+                            targetWorkspace=target_workspace_for_action(interpreted_action),
+                            title=title_for_action(interpreted_action),
+                            summary="The model-assisted router was unavailable and this action can change saved data.",
+                            resultPayload=router_result.body,
+                        )
+                    ],
+                    target_workspace=target_workspace_for_action(interpreted_action),
+                    result_payload=router_result.body,
+                )
+            else:
+                response = dispatch_command_center_action(
+                    request,
+                    action_type=interpreted_action,
+                    router_decision=None,
+                    router_payload=router_result.body,
+                    candidate_slug=candidate_slug,
+                    candidate_profile=candidate_profile,
+                    session=session,
+                    settings=settings,
+                )
+        save_command_interaction_log(
+            session,
+            auth=auth if has_auth_context else None,
+            request=request,
+            response=response,
             router_payload=router_result.body,
-            candidate_slug=candidate_slug,
-            candidate_profile=candidate_profile,
-            session=session,
-            settings=settings,
+            router_decision=router_result.decision,
+            latency_ms=round((time.perf_counter() - started_at) * 1000),
+            model_provider=settings.model_provider,
         )
-    if router_result.decision is not None:
-        return clarifying_router_response(router_result.decision, router_result.body)
-
-    interpreted_action = interpret_command(request.command, request.active_workspace)
-    if not router_result.unavailable:
-        return CommandCenterCommandResponse(
-            assistant_message="I could not safely route that command. Please clarify which workspace or action you want.",
-            actions=[
-                CommandCenterActionResult(
-                    type="unknown",
-                    status="needs_confirmation",
-                    targetWorkspace=None,
-                    title="Review command",
-                    summary="The router response could not be validated, so no tool was executed.",
-                    resultPayload=router_result.body,
-                )
-            ],
-            result_payload=router_result.body,
+        session.commit()
+        return response
+    except Exception as error:
+        save_command_interaction_log(
+            session,
+            auth=auth if has_auth_context else None,
+            request=request,
+            response=None,
+            router_payload=router_result.body,
+            router_decision=router_result.decision,
+            latency_ms=round((time.perf_counter() - started_at) * 1000),
+            model_provider=settings.model_provider,
+            error=error,
         )
-
-    if interpreted_action == "company_update":
-        return router_unavailable_company_update_response(router_result.body)
-    if interpreted_action == "unknown" and command_contains_url(request.command):
-        return ambiguous_url_fallback_response(router_result.body)
-
-    if not should_use_deterministic_fallback(settings, interpreted_action):
-        return CommandCenterCommandResponse(
-            assistant_message="Command routing is temporarily unavailable, so I did not execute a tool. Please try again after the router is available.",
-            actions=[
-                CommandCenterActionResult(
-                    type=interpreted_action,
-                    status="failed",
-                    targetWorkspace=target_workspace_for_action(interpreted_action),
-                    title=title_for_action(interpreted_action),
-                    summary="The model-assisted router was unavailable and this action can change saved data.",
-                    resultPayload=router_result.body,
-                )
-            ],
-            target_workspace=target_workspace_for_action(interpreted_action),
-            result_payload=router_result.body,
-        )
-
-    return dispatch_command_center_action(
-        request,
-        action_type=interpreted_action,
-        router_decision=None,
-        router_payload=router_result.body,
-        candidate_slug=candidate_slug,
-        candidate_profile=candidate_profile,
-        session=session,
-        settings=settings,
-    )
+        session.commit()
+        raise
 
 
 def dispatch_command_center_action(
@@ -183,6 +230,7 @@ def dispatch_command_center_action(
         return execute_company_discovery_command(
             request,
             candidate_slug=candidate_slug,
+            candidate_profile=candidate_profile,
             session=session,
             settings=settings,
             router_payload=router_payload,
@@ -234,7 +282,7 @@ def dispatch_command_center_action(
             target_workspace=target_workspace_for_action(interpreted_action),
         )
 
-    candidate_slug = resolve_candidate_slug(request.candidate_profile_slug, settings.default_candidate_profile_slug)
+    candidate_slug = candidate_slug or meaningful_text(request.candidate_profile_slug)
     if candidate_slug is None:
         return missing_candidate_slug_response("profile_intake", "profile", "Update profile")
 
@@ -251,6 +299,7 @@ def dispatch_command_center_action(
         ),
         db_session=session,
         settings=settings,
+        candidate_profile=candidate_profile,
     )
 
     if intake_result.status_code != 200 or not intake_result.body.get("ok"):
@@ -298,10 +347,6 @@ def dispatch_command_center_action(
     )
 
 
-def resolve_candidate_slug(request_slug: str | None, default_slug: str | None) -> str | None:
-    return meaningful_text(request_slug) or meaningful_text(default_slug)
-
-
 def missing_candidate_slug_response(
     action_type: CommandActionType,
     target_workspace: str,
@@ -310,8 +355,7 @@ def missing_candidate_slug_response(
     error_body = {
         "ok": False,
         "error": (
-            "Candidate profile slug is required. Provide candidate_profile_slug in the request or configure "
-            "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+            "Candidate profile slug is required when no authenticated candidate profile is available."
         ),
         "code": "candidate_profile_slug_required",
     }
@@ -330,6 +374,13 @@ def missing_candidate_slug_response(
         target_workspace=target_workspace,
         result_payload=error_body,
     )
+
+
+def resolve_direct_candidate_profile(session: Session, candidate_slug: str | None) -> CandidateProfile | None:
+    if candidate_slug:
+        return get_candidate_profile_by_slug(session, candidate_slug)
+    profiles = list(session.scalars(select(CandidateProfile).limit(2)))
+    return profiles[0] if len(profiles) == 1 else None
 
 
 def candidate_profile_not_found_response(
@@ -363,6 +414,7 @@ def execute_company_discovery_command(
     request: CommandCenterCommandRequest,
     *,
     candidate_slug: str,
+    candidate_profile,
     session: Session,
     settings,
     router_payload: dict[str, Any] | None = None,
@@ -374,6 +426,7 @@ def execute_company_discovery_command(
         ),
         db_session=session,
         settings=settings,
+        candidate_profile=candidate_profile,
     )
 
     if discovery_result.status_code != 200 or not discovery_result.body.get("ok"):
@@ -454,16 +507,77 @@ def execute_company_update_command(
     )
 
 
-@router.get("/profile-draft/{slug}")
-def get_profile_draft(slug: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
-    candidate_profile = get_candidate_profile_by_slug(session, slug)
-    if candidate_profile is None:
-        return {
-            "ok": False,
-            "error": "Candidate profile not found.",
-            "code": "candidate_profile_not_found",
-        }
+def preflight_safety_response(command: str) -> CommandCenterCommandResponse | None:
+    normalized = " ".join(command.casefold().split())
+    if any(signal in normalized for signal in ["system prompt", "developer prompt", "hidden prompt", "hidden instructions"]):
+        return CommandCenterCommandResponse(
+            assistant_message="I cannot reveal hidden system or developer instructions. I can still help with your JobOps workspace data.",
+            actions=[
+                CommandCenterActionResult(
+                    type="unknown",
+                    status="needs_confirmation",
+                    targetWorkspace=None,
+                    title="Review command",
+                    summary="No workspace action was executed because the request tried to reveal hidden instructions.",
+                )
+            ],
+        )
+    if any(signal in normalized for signal in ["delete", "remove all", "wipe", "drop table", "destroy"]):
+        return CommandCenterCommandResponse(
+            assistant_message="Destructive actions are disabled for the alpha MVP unless an explicit confirmation flow is added.",
+            actions=[
+                CommandCenterActionResult(
+                    type="unknown",
+                    status="needs_confirmation",
+                    targetWorkspace=None,
+                    title="Review command",
+                    summary="No destructive action was executed.",
+                )
+            ],
+        )
+    return None
 
+
+def save_command_interaction_log(
+    session: Session,
+    *,
+    auth: AuthContext | None,
+    request: CommandCenterCommandRequest,
+    response: CommandCenterCommandResponse | None,
+    router_payload: dict[str, Any] | None,
+    router_decision: CommandRouterOutput | None,
+    latency_ms: int,
+    model_provider: str,
+    error: Exception | None = None,
+) -> None:
+    if auth is None:
+        return
+    actions = response.actions if response is not None else []
+    first_action = actions[0] if actions else None
+    session.add(
+        CommandInteractionLog(
+            user_id=auth.user_id,
+            tenant_id=auth.tenant_id,
+            candidate_profile_id=auth.candidate_profile.id,
+            user_message=request.command,
+            route_selected=(router_decision.action_type if router_decision is not None else first_action.type if first_action else None),
+            model_provider=model_provider,
+            parsed_action_payload=router_decision.model_dump(by_alias=True) if router_decision is not None else {},
+            validation_result={
+                "routerOk": bool(router_payload and router_payload.get("ok")),
+                "actionStatuses": [action.status for action in actions],
+            },
+            action_applied=any(action.status == "completed" for action in actions),
+            final_response=response.assistant_message if response is not None else "",
+            error_details={"type": type(error).__name__, "message": str(error)} if error else {},
+            latency_ms=latency_ms,
+        )
+    )
+
+
+@router.get("/profile-draft/{slug}")
+def get_profile_draft(slug: str, session: Session = Depends(get_db_session), auth: AuthContext = Depends(require_auth_context)) -> dict[str, Any]:
+    candidate_profile = auth.candidate_profile
     return {
         "ok": True,
         "result": get_latest_profile_draft_snapshot(session, candidate_profile),
@@ -748,3 +862,4 @@ def title_for_action(action_type: CommandActionType) -> str:
         "follow_up_review": "Review follow-ups",
         "unknown": "Review command",
     }[action_type]
+from .auth import AuthContext, require_auth_context

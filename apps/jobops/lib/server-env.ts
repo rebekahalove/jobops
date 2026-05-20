@@ -23,8 +23,13 @@ export async function getJobOpsServerEnv(keys: string[]): Promise<JobOpsServerEn
 export async function getJobOpsApiServerConfig(
   extraKeys: string[] = []
 ): Promise<JobOpsServerEnv & { apiBaseUrl: string; internalApiKey: string }> {
-  const env = await getJobOpsServerEnv(["JOBOPS_API_BASE_URL", "JOBOPS_INTERNAL_API_KEY", ...extraKeys]);
-  const internalApiKey = requireJobOpsServerEnvValue(env, "JOBOPS_INTERNAL_API_KEY");
+  const env = await getJobOpsServerEnv(["APP_ENV", "JOBOPS_API_BASE_URL", "JOBOPS_INTERNAL_API_KEY", ...extraKeys]);
+  const appEnv = env.APP_ENV?.trim().toLowerCase() || "dev";
+  const internalApiKey = env.JOBOPS_INTERNAL_API_KEY?.trim() ?? "";
+
+  if (appEnv === "prod" && !internalApiKey) {
+    throw new Error("JOBOPS_INTERNAL_API_KEY is required for this JobOps server route.");
+  }
 
   return {
     ...env,

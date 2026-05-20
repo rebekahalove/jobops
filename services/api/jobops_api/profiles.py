@@ -32,8 +32,11 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
     }
 
 
-def get_candidate_profile_by_slug(session: Session, slug: str) -> CandidateProfile | None:
-    return session.scalar(select(CandidateProfile).where(CandidateProfile.slug == slug))
+def get_candidate_profile_by_slug(session: Session, slug: str, *, tenant_id: str | None = None) -> CandidateProfile | None:
+    statement = select(CandidateProfile).where(CandidateProfile.slug == slug)
+    if tenant_id is not None:
+        statement = statement.where(CandidateProfile.tenant_id == tenant_id)
+    return session.scalar(statement.order_by(CandidateProfile.created_at.asc()).limit(1))
 
 
 def get_candidate_profile_by_hostname(session: Session, hostname: str) -> CandidateProfile | None:

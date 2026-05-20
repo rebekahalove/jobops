@@ -35,7 +35,8 @@ export async function POST(request: Request, context: RouteContext) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-JobOps-Internal-Key": config.internalApiKey
+        "X-JobOps-Internal-Key": config.internalApiKey,
+        ...forwardCookieHeader(request)
       },
       body: JSON.stringify(body)
     });
@@ -50,6 +51,11 @@ export async function POST(request: Request, context: RouteContext) {
       { status: 503 }
     );
   }
+}
+
+function forwardCookieHeader(request: Request): Record<string, string> {
+  const cookie = request.headers.get("cookie");
+  return cookie ? { Cookie: cookie } : {};
 }
 
 function missingInternalApiKeyResponse() {

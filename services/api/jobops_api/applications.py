@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobops_api.auth import AuthContext, require_auth_context
 from jobops_api.company_discovery import normalize_company_name
 from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, JobRole, TargetCompany
 from jobops_api.db.session import get_db_session
@@ -75,12 +76,9 @@ class ApplicationEventResponse(BaseModel):
 def create_application(
     request: ApplicationCreateRequest,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> Application:
-    candidate_profile = resolve_candidate_profile(
-        session,
-        candidate_profile_id=request.candidate_profile_id,
-        candidate_profile_slug=request.candidate_profile_slug,
-    )
+    candidate_profile = auth.candidate_profile
     company_name = request.company_name.strip()
     job_title = request.job_title.strip()
     target_company = get_or_create_target_company(session, candidate_profile.id, company_name)
@@ -122,15 +120,13 @@ def list_applications(
     candidate_profile_slug: str | None = None,
     status: ApplicationStatus | None = None,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> list[Application]:
-    statement = select(Application).order_by(Application.created_at.desc())
-    candidate_profile = resolve_optional_candidate_profile(
-        session,
-        candidate_profile_id=candidate_profile_id,
-        candidate_profile_slug=candidate_profile_slug,
+    statement = (
+        select(Application)
+        .where(Application.candidate_profile_id == auth.candidate_profile.id)
+        .order_by(Application.created_at.desc())
     )
-    if candidate_profile is not None:
-        statement = statement.where(Application.candidate_profile_id == candidate_profile.id)
     if status is not None:
         statement = statement.where(Application.status == status)
 
@@ -142,9 +138,10 @@ def update_application_status(
     application_id: str,
     request: ApplicationStatusUpdateRequest,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> Application:
     application = session.get(Application, application_id)
-    if application is None:
+    if application is None or application.candidate_profile_id != auth.candidate_profile.id:
         raise HTTPException(status_code=404, detail="Application not found.")
 
     application.status = request.status
@@ -163,9 +160,10 @@ def add_application_event(
     application_id: str,
     request: ApplicationEventCreateRequest,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> ApplicationEvent:
     application = session.get(Application, application_id)
-    if application is None:
+    if application is None or application.candidate_profile_id != auth.candidate_profile.id:
         raise HTTPException(status_code=404, detail="Application not found.")
 
     event = ApplicationEvent(

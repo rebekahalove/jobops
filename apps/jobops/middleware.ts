@@ -22,6 +22,7 @@ export const config = {
     "/api/command-center",
     "/api/profile-intake",
     "/api/profile-draft",
+    "/api/companies",
     "/api/applications",
     "/api/applications/:path*"
   ]

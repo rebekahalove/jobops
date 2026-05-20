@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .applications import router as applications_router
+from .auth_routes import router as auth_router
+from .auth import AuthContext, require_auth_context
 from .company_discovery import router as companies_router
 from .command_center import router as command_center_router
 from .db.session import get_db_session
@@ -44,6 +46,7 @@ app = FastAPI(
 
 configure_cors(app, allowed_origins=settings.cors_origins)
 app.include_router(applications_router)
+app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
 
@@ -83,8 +86,9 @@ def get_profile_by_hostname(hostname: str, session: Session = Depends(get_db_ses
 def extract_profile_intake(
     request: ProfileIntakeExtractRequest,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> JSONResponse:
-    result = run_profile_intake_extraction(request, db_session=session, settings=settings)
+    result = run_profile_intake_extraction(request, db_session=session, settings=settings, candidate_profile=auth.candidate_profile)
     return JSONResponse(content=result.body, status_code=result.status_code)
 
 

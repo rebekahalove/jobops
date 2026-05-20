@@ -18,6 +18,8 @@ describe("JobOps dashboard shell", () => {
 
     expect(html).toContain("JobOps");
     expect(html).toContain("AI command center");
+    expect(html).toContain("Log out");
+    expect(html).toContain('action="/api/dashboard-auth/logout"');
   });
 
   it("renders workspace tabs without auth assumptions", () => {

@@ -10,6 +10,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .auth import AuthContext, require_auth_context
 from .db.models import CandidateProfile, RoleTarget, TargetCompany
 from .db.session import get_db_session
 from .model_connector import (
@@ -254,15 +255,13 @@ def list_companies(
     candidate_profile_slug: str | None = None,
     review_status: ReviewStatus | None = None,
     session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
 ) -> list[TargetCompany]:
-    statement = select(TargetCompany).order_by(TargetCompany.created_at.desc())
-    candidate_profile = resolve_optional_candidate_profile(
-        session,
-        candidate_profile_id=candidate_profile_id,
-        candidate_profile_slug=candidate_profile_slug,
+    statement = (
+        select(TargetCompany)
+        .where(TargetCompany.candidate_profile_id == auth.candidate_profile.id)
+        .order_by(TargetCompany.created_at.desc())
     )
-    if candidate_profile is not None:
-        statement = statement.where(TargetCompany.candidate_profile_id == candidate_profile.id)
     if review_status is not None:
         statement = statement.where(TargetCompany.review_status == review_status)
 
@@ -275,10 +274,11 @@ def run_company_discovery(
     connector: ModelConnector | None = None,
     db_session: Session,
     settings: Settings | None = None,
+    candidate_profile: CandidateProfile | None = None,
 ) -> CompanyDiscoveryServiceResult:
     active_settings = settings or load_settings()
     connector_config = read_model_connector_config_from_settings(active_settings)
-    candidate_profile = get_candidate_profile_by_slug(db_session, request.candidate_profile_slug)
+    candidate_profile = candidate_profile or get_candidate_profile_by_slug(db_session, request.candidate_profile_slug)
     if candidate_profile is None:
         return CompanyDiscoveryServiceResult(
             body={"ok": False, "error": "Candidate profile not found.", "code": "candidate_profile_not_found"},

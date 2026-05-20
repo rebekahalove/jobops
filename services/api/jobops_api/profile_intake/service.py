@@ -4,11 +4,13 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..db.models import CandidateProfile
 from ..model_connector import (
     ModelConfigurationError,
     ModelConnector,
@@ -62,31 +64,45 @@ def run_profile_intake_extraction(
     connector: ModelConnector | None = None,
     db_session: Session | None = None,
     settings: Settings | None = None,
+    candidate_profile: CandidateProfile | None = None,
 ) -> ProfileIntakeServiceResult:
     active_settings = settings or load_settings()
     connector_config = read_model_connector_config_from_settings(active_settings)
     artifact_run = create_profile_intake_artifact_run(active_settings)
 
-    candidate_profile = None
     intake_session = None
     authoritative_current_draft = None
     authoritative_current_draft_source = "none_no_database_session"
     seeded_editable_draft_from_published = False
     if db_session is not None:
-        candidate_slug = request.candidate_profile_slug or active_settings.default_candidate_profile_slug
-        if not candidate_slug:
+        candidate_slug = request.candidate_profile_slug
+        if candidate_profile is None and not candidate_slug:
+            only_profile_result = get_only_candidate_profile(db_session)
+            if only_profile_result == "missing":
+                return ProfileIntakeServiceResult(
+                    body={
+                        "ok": False,
+                        "error": (
+                            "Candidate profile not found. Run migrations and seed the local candidate profile before "
+                            "using profile intake persistence."
+                        ),
+                        "code": "candidate_profile_not_found",
+                    },
+                    status_code=404,
+                )
+            candidate_profile = only_profile_result
+        if candidate_profile is None and not candidate_slug:
             return ProfileIntakeServiceResult(
                 body={
                     "ok": False,
                     "error": (
-                        "Candidate profile slug is required. Provide candidate_profile_slug in the request or "
-                        "configure JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+                        "Candidate profile slug is required when no authenticated candidate profile is provided."
                     ),
                     "code": "candidate_profile_slug_required",
                 },
                 status_code=400,
             )
-        candidate_profile = get_candidate_profile_by_slug(db_session, candidate_slug)
+        candidate_profile = candidate_profile or get_candidate_profile_by_slug(db_session, candidate_slug)
         if candidate_profile is None:
             return ProfileIntakeServiceResult(
                 body={
@@ -631,3 +647,10 @@ def validation_issues_indicate_truncation(issues: list[str]) -> bool:
 
 def validation_issues_indicate_capacity_overflow(issues: list[str]) -> bool:
     return any("list should have at most" in issue.lower() for issue in issues)
+
+
+def get_only_candidate_profile(session: Session) -> CandidateProfile | Literal["missing"] | None:
+    profiles = list(session.scalars(select(CandidateProfile).limit(2)))
+    if not profiles:
+        return "missing"
+    return profiles[0] if len(profiles) == 1 else None

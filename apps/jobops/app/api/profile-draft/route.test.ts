@@ -22,8 +22,7 @@ describe("profile-draft API proxy", () => {
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
-      JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
   });
 
@@ -55,7 +54,7 @@ describe("profile-draft API proxy", () => {
 
     const response = await GET(new Request("http://next.test/api/profile-draft"));
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/configured-profile");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/current");
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({
@@ -66,7 +65,7 @@ describe("profile-draft API proxy", () => {
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });
 
-  it("ignores an empty candidateProfileSlug query and uses the configured slug", async () => {
+  it("ignores a candidateProfileSlug query and uses the authenticated session", async () => {
     const { GET } = await import("./route");
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({ ok: true, result: {} }, { status: 200 })
@@ -76,10 +75,10 @@ describe("profile-draft API proxy", () => {
     const response = await GET(new Request("http://next.test/api/profile-draft?candidateProfileSlug="));
 
     expect(response.status).toBe(200);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/configured-profile");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/profile-draft/current");
   });
 
-  it("fails clearly when candidateProfileSlug is empty and no configured slug exists", async () => {
+  it("does not require a configured candidate slug", async () => {
     getJobOpsApiServerConfigMock.mockResolvedValueOnce({
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
@@ -87,16 +86,12 @@ describe("profile-draft API proxy", () => {
       JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
     const { GET } = await import("./route");
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => Response.json({ ok: true, result: {} }, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await GET(new Request("http://next.test/api/profile-draft?candidateProfileSlug="));
 
-    expect(response.status).toBe(503);
-    expect(fetchMock).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
-    });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

@@ -22,8 +22,7 @@ describe("command-center API proxy", () => {
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
-      JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
   });
 
@@ -90,7 +89,6 @@ describe("command-center API proxy", () => {
     );
     expect(JSON.parse(String(init?.body))).toEqual({
       command: "I want to be an Applied AI Engineer.",
-      candidate_profile_slug: "configured-profile",
       active_workspace: "profile",
       client_context: {}
     });
@@ -100,7 +98,7 @@ describe("command-center API proxy", () => {
     });
   });
 
-  it("uses an explicit request candidate slug even when no default slug is configured", async () => {
+  it("ignores explicit request candidate slugs because FastAPI owns workspace identity", async () => {
     getJobOpsApiServerConfigMock.mockResolvedValueOnce({
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
@@ -125,10 +123,10 @@ describe("command-center API proxy", () => {
     );
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body)).candidate_profile_slug).toBe("request-profile");
+    expect(JSON.parse(String(init?.body)).candidate_profile_slug).toBeUndefined();
   });
 
-  it("returns a clear config error when no request or configured candidate slug is available", async () => {
+  it("does not require a configured candidate slug", async () => {
     getJobOpsApiServerConfigMock.mockResolvedValueOnce({
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
@@ -136,7 +134,9 @@ describe("command-center API proxy", () => {
       JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
     const { POST } = await import("./route");
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ assistant_message: "ok", actions: [] }, { status: 200 })
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await POST(
@@ -147,11 +147,7 @@ describe("command-center API proxy", () => {
       })
     );
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
-    });
+    expect(fetchMock).toHaveBeenCalled();
+    expect(response.status).toBe(200);
   });
 });

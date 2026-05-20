@@ -22,8 +22,7 @@ describe("companies API proxy", () => {
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
-      JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
   });
 
@@ -37,10 +36,10 @@ describe("companies API proxy", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json([], { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://next.test/api/companies"));
 
     const firstCall = fetchMock.mock.calls[0];
-    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/companies?candidate_profile_slug=configured-profile");
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/companies");
     expect(firstCall?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
@@ -53,7 +52,7 @@ describe("companies API proxy", () => {
     await expect(response.json()).resolves.toEqual([]);
   });
 
-  it("fails clearly when the default candidate slug is missing", async () => {
+  it("does not require a default candidate slug", async () => {
     getJobOpsApiServerConfigMock.mockResolvedValueOnce({
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
@@ -61,16 +60,12 @@ describe("companies API proxy", () => {
       JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
     const { GET } = await import("./route");
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => Response.json([], { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://next.test/api/companies"));
 
-    expect(response.status).toBe(503);
-    expect(fetchMock).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG is required for this JobOps server route."
-    });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
