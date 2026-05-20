@@ -1,31 +1,24 @@
 import { NextResponse } from "next/server";
-import { getJobOpsApiServerConfig, requireJobOpsServerEnvValue } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
-    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  } catch (error) {
-    return serverConfigErrorResponse(error);
-  }
-
-  let slug: string;
-  try {
-    slug = requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+    config = await getJobOpsApiServerConfig();
   } catch (error) {
     return serverConfigErrorResponse(error);
   }
 
   const url = new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/applications`);
-  url.searchParams.set("candidate_profile_slug", slug);
 
   try {
     const apiResponse = await fetch(url, {
       cache: "no-store",
       headers: {
-        "X-JobOps-Internal-Key": config.internalApiKey
+        "X-JobOps-Internal-Key": config.internalApiKey,
+        ...forwardCookieHeader(request)
       }
     });
     const payload = await apiResponse.json();
@@ -58,36 +51,20 @@ export async function POST(request: Request) {
 
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
-    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
+    config = await getJobOpsApiServerConfig();
   } catch (error) {
     return serverConfigErrorResponse(error);
   }
-
-  let candidateProfileSlug: string | undefined;
-  try {
-    candidateProfileSlug =
-      typeof body.candidate_profile_slug === "string" && body.candidate_profile_slug.trim().length > 0
-        ? body.candidate_profile_slug
-        : typeof body.candidateProfileSlug === "string" && body.candidateProfileSlug.trim().length > 0
-          ? body.candidateProfileSlug
-          : requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
-  } catch (error) {
-    return serverConfigErrorResponse(error);
-  }
-
-  const payload = {
-    ...body,
-    candidate_profile_slug: candidateProfileSlug
-  };
 
   try {
     const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/applications`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-JobOps-Internal-Key": config.internalApiKey
+        "X-JobOps-Internal-Key": config.internalApiKey,
+        ...forwardCookieHeader(request)
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(body)
     });
     const responsePayload = await apiResponse.json();
     return NextResponse.json(responsePayload, { status: apiResponse.status });
@@ -100,6 +77,11 @@ export async function POST(request: Request) {
       { status: 503 }
     );
   }
+}
+
+function forwardCookieHeader(request: Request): Record<string, string> {
+  const cookie = request.headers.get("cookie");
+  return cookie ? { Cookie: cookie } : {};
 }
 
 function serverConfigErrorResponse(error: unknown) {

@@ -22,8 +22,7 @@ describe("profile-intake API proxy", () => {
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
-      JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
   });
 
@@ -87,8 +86,7 @@ describe("profile-intake API proxy", () => {
       latest_user_message: "I want to be an Applied AI Engineer.",
       existing_draft: {
         facts: []
-      },
-      candidate_profile_slug: "configured-profile"
+      }
     });
     await expect(response.json()).resolves.toEqual(fastApiPayload);
   });

@@ -31,6 +31,81 @@ class Tenant(Base, TimestampMixin):
     candidate_profiles: Mapped[list[CandidateProfile]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
 
 
+class User(Base, TimestampMixin):
+    __tablename__ = "users"
+    __table_args__ = (
+        Index("ix_users_email", "email", unique=True),
+        Index("ix_users_username", "username", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(320))
+    username: Mapped[str] = mapped_column(String(40))
+    display_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_reset_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="active")
+
+    memberships: Mapped[list[WorkspaceMembership]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    sessions: Mapped[list[UserSession]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class WorkspaceMembership(Base, TimestampMixin):
+    __tablename__ = "workspace_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id", name="uq_workspace_memberships_user_tenant"),
+        Index("ix_workspace_memberships_tenant", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(String(40), default="owner")
+
+    user: Mapped[User] = relationship(back_populates="memberships")
+    tenant: Mapped[Tenant] = relationship()
+
+
+class InviteToken(Base, TimestampMixin):
+    __tablename__ = "invite_tokens"
+    __table_args__ = (
+        Index("ix_invite_tokens_token_hash", "token_hash", unique=True),
+        Index("ix_invite_tokens_email", "email"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    email: Mapped[str] = mapped_column(String(320))
+    username: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    workspace_slug: Mapped[str] = mapped_column(String(120))
+    created_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        Index("ix_user_sessions_token_hash", "token_hash", unique=True),
+        Index("ix_user_sessions_user_tenant", "user_id", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+    tenant: Mapped[Tenant] = relationship()
+
+
 class CandidateProfile(Base, TimestampMixin):
     __tablename__ = "candidate_profiles"
     __table_args__ = (
@@ -336,4 +411,26 @@ class UsageEvent(Base):
     candidate_profile_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"), nullable=True)
     event_name: Mapped[str] = mapped_column(String(120))
     event_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CommandInteractionLog(Base):
+    __tablename__ = "command_interaction_logs"
+    __table_args__ = (
+        Index("ix_command_interaction_logs_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="SET NULL"), nullable=True)
+    user_message: Mapped[str] = mapped_column(Text)
+    route_selected: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    model_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    parsed_action_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    validation_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    action_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    final_response: Mapped[str] = mapped_column(Text, default="")
+    error_details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -22,8 +22,7 @@ describe("applications API proxy", () => {
       apiBaseUrl: "http://fastapi.test/",
       internalApiKey: "test-secret",
       JOBOPS_API_BASE_URL: "http://fastapi.test/",
-      JOBOPS_INTERNAL_API_KEY: "test-secret",
-      JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG: "configured-profile"
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
     });
   });
 
@@ -39,10 +38,10 @@ describe("applications API proxy", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://next.test/api/applications"));
 
     const firstCall = fetchMock.mock.calls[0];
-    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications?candidate_profile_slug=configured-profile");
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications");
     expect(firstCall?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
@@ -61,7 +60,7 @@ describe("applications API proxy", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://next.test/api/applications"));
 
     expect(response.status).toBe(503);
     expect(fetchMock).not.toHaveBeenCalled();

@@ -30,6 +30,11 @@ export function DashboardShell({
           <span>JobOps</span>
           <small>AI command center</small>
         </Link>
+        <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
+          <button className="logout-button" type="submit">
+            Log out
+          </button>
+        </form>
       </header>
       <div className="command-shell">
         <AiCommandCenter

@@ -42,15 +42,14 @@ Render is preferred over Fly.io for the first API host because it is a lower-ope
 
 `rebekahalove.dev/jobops` should start as a private dashboard shell and grow only through approved increments.
 
-Before full auth, configure the pragmatic internal API key layer and the temporary dashboard private-preview gate:
+For alpha auth, configure the pragmatic internal API key layer and seed persisted dashboard users:
 
 - Render backend: `APP_ENV=prod`, `JOBOPS_INTERNAL_API_KEY=<long random secret>`, and `JOBOPS_CORS_ORIGINS=https://rebekahalove.dev,https://www.rebekahalove.dev,https://jobops.rebekahalove.dev`.
 - Netlify frontend server routes: `JOBOPS_API_BASE_URL=https://api.rebekahalove.dev` or the current Render URL, plus the same `JOBOPS_INTERNAL_API_KEY`.
-- Netlify dashboard gate: `JOBOPS_DASHBOARD_PASSWORD=<temporary private-preview password>` and `JOBOPS_DASHBOARD_COOKIE_SECRET=<long random secret>`.
 - Render does not need new dashboard-gate variables; its existing backend security variables remain unchanged.
 - Do not expose any of these values as `NEXT_PUBLIC_*`.
 
-The dashboard password gate is a temporary construction curtain, not full authentication. It does not support users, roles, password reset, account recovery, tenant isolation, audit trails, or per-user authorization. It is acceptable while the project is not intentionally shared, but it must be upgraded before publicly sharing the JobOps dashboard, onboarding other users, storing other people's private data, or using JobOps as a real multi-tenant product. Future replacement should be proper user authentication and authorization: owner-only auth first, then tenant/user auth later.
+The alpha auth layer is not full SaaS authentication. It does not support password reset, account recovery, OAuth, billing, complex RBAC, or polished onboarding. Future replacement should add stronger per-user authentication before beta/public launch.
 
 The request gate uses `middleware.ts` in both Next.js apps. The installed Next.js version is `15.5.18`, and this toolchain still exposes the stable root interception convention as `middleware`; `proxy.ts` was not used because it is not the clean supported convention for this repo's installed Next version.
 

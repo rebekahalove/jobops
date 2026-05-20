@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
+from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.db.models import Base, ProfileIntakeSession, RoleTarget, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
@@ -42,9 +43,11 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
     app.dependency_overrides[get_db_session] = override_session
     try:
         client = TestClient(app)
+        session_token = create_auth_session_token(engine)
         response = client.post(
             "/v1/command-center/commands",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={
                 "command": "I want to be an Applied AI Engineer.",
                 "active_workspace": "profile",
@@ -97,7 +100,7 @@ def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp
         )
         session.commit()
 
-    def fake_run_profile_intake_extraction(request, *, db_session, settings):
+    def fake_run_profile_intake_extraction(request, *, db_session, settings, candidate_profile=None):
         captured["request"] = request
         return SimpleNamespace(
             status_code=200,
@@ -370,8 +373,13 @@ def test_router_unavailable_uses_conservative_fallback(tmp_path: Path, monkeypat
 
 
 def test_executable_command_without_candidate_slug_or_default_fails_clearly(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path, default_slug=None))
-    engine = create_seeded_engine()
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
 
     with Session(engine) as session:
         response = command_center_module.execute_command_center_command(
@@ -384,8 +392,7 @@ def test_executable_command_without_candidate_slug_or_default_fails_clearly(tmp_
     assert response.result_payload == {
         "ok": False,
         "error": (
-            "Candidate profile slug is required. Provide candidate_profile_slug in the request or configure "
-            "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG."
+            "Candidate profile slug is required when no authenticated candidate profile is available."
         ),
         "code": "candidate_profile_slug_required",
     }
@@ -404,14 +411,17 @@ def test_latest_profile_draft_endpoint_returns_saved_snapshot(tmp_path: Path, mo
     app.dependency_overrides[get_db_session] = override_session
     try:
         client = TestClient(app)
+        session_token = create_auth_session_token(engine)
         client.post(
             "/v1/command-center/commands",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={"command": "I want to be an Applied AI Engineer."},
         )
         response = client.get(
             "/v1/command-center/profile-draft/rebekah-love",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
         )
     finally:
         app.dependency_overrides.clear()
@@ -448,14 +458,28 @@ def create_seeded_engine():
     return engine
 
 
-def make_settings(repo_root: Path, *, default_slug: str | None = "rebekah-love") -> Settings:
+def create_auth_session_token(engine) -> str:
+    with Session(engine) as session:
+        seed_initial_user(
+            session,
+            email="rebekah-love@jobops.local",
+            username="rebekah-love",
+            display_name="Rebekah Love",
+            password="rebekah alpha password",
+            password_reset_required=False,
+        )
+        _, raw_token = create_session_for_username(session, username="rebekah-love", password="rebekah alpha password")
+        session.commit()
+        return raw_token
+
+
+def make_settings(repo_root: Path) -> Settings:
     return Settings(
         app_env="test",
         cheap_model="mock-cheap",
         company_discovery_search_grounding_enabled=True,
         database_url=None,
         default_model="mock-default",
-        default_candidate_profile_slug=default_slug,
         gemini_api_key=None,
         model_provider="mock",
         profile_intake_save_artifacts=False,

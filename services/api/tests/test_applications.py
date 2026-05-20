@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.db.models import Base, CandidateProfile
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
@@ -45,10 +46,12 @@ def test_application_tracker_crud_endpoints(monkeypatch) -> None:
     app.dependency_overrides[get_db_session] = override_session
     try:
         client = TestClient(app)
+        session_token = create_auth_session_token(engine)
 
         create_response = client.post(
             "/v1/applications",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={
                 "candidate_profile_id": profile_id,
                 "company_name": "Acme AI",
@@ -71,6 +74,7 @@ def test_application_tracker_crud_endpoints(monkeypatch) -> None:
         list_response = client.get(
             f"/v1/applications?candidate_profile_id={profile_id}",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
         )
         assert list_response.status_code == 200
         applications = list_response.json()
@@ -80,6 +84,7 @@ def test_application_tracker_crud_endpoints(monkeypatch) -> None:
         status_response = client.patch(
             f"/v1/applications/{created['id']}/status",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={"status": "interviewing"},
         )
         assert status_response.status_code == 200
@@ -88,6 +93,7 @@ def test_application_tracker_crud_endpoints(monkeypatch) -> None:
         event_response = client.post(
             f"/v1/applications/{created['id']}/events",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={
                 "event_type": "recruiter_screen_scheduled",
                 "event_date": "2026-05-21",
@@ -133,9 +139,11 @@ def test_application_create_can_resolve_candidate_profile_slug(monkeypatch) -> N
     app.dependency_overrides[get_db_session] = override_session
     try:
         client = TestClient(app)
+        session_token = create_auth_session_token(engine)
         response = client.post(
             "/v1/applications",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={
                 "candidate_profile_slug": "rebekah-love",
                 "company_name": "Example Robotics",
@@ -149,3 +157,18 @@ def test_application_create_can_resolve_candidate_profile_slug(monkeypatch) -> N
         assert response.json()["candidate_profile_id"] == profile_id
     finally:
         app.dependency_overrides.clear()
+
+
+def create_auth_session_token(engine) -> str:
+    with Session(engine) as session:
+        seed_initial_user(
+            session,
+            email="rebekah-love@jobops.local",
+            username="rebekah-love",
+            display_name="Rebekah Love",
+            password="rebekah alpha password",
+            password_reset_required=False,
+        )
+        _, raw_token = create_session_for_username(session, username="rebekah-love", password="rebekah alpha password")
+        session.commit()
+        return raw_token

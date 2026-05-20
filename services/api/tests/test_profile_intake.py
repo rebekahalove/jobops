@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.main as main_module
+from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.db.models import (
     Base,
     EvidenceArtifact,
@@ -346,11 +347,13 @@ def test_api_endpoint_uses_fastapi_profile_intake_path(tmp_path: Path, monkeypat
     session_factory = make_seeded_session_factory()
     main_module.app.dependency_overrides[get_db_session] = override_session_dependency(session_factory)
     client = TestClient(main_module.app)
+    session_token = create_auth_session_token(session_factory)
 
     try:
         response = client.post(
             "/v1/profile-intake/extract",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
             json={"latest_user_message": "I want to be an Applied AI Engineer."},
         )
     finally:
@@ -1652,6 +1655,21 @@ def override_session_dependency(session_factory: sessionmaker[Session]):
     return _override
 
 
+def create_auth_session_token(session_factory: sessionmaker[Session]) -> str:
+    with session_factory() as session:
+        seed_initial_user(
+            session,
+            email="rebekah-love@jobops.local",
+            username="rebekah-love",
+            display_name="Rebekah Love",
+            password="rebekah alpha password",
+            password_reset_required=False,
+        )
+        _, raw_token = create_session_for_username(session, username="rebekah-love", password="rebekah alpha password")
+        session.commit()
+        return raw_token
+
+
 def seeded_profile(session: Session):
     return seed_public_profile(
         session,
@@ -1680,7 +1698,6 @@ def make_settings(
         company_discovery_search_grounding_enabled=True,
         database_url=None,
         default_model="mock-default",
-        default_candidate_profile_slug="rebekah-love",
         gemini_api_key=gemini_api_key,
         model_provider=model_provider,
         profile_intake_save_artifacts=save_artifacts,

@@ -99,7 +99,6 @@ def test_read_model_connector_config_from_settings() -> None:
             company_discovery_search_grounding_enabled=True,
             database_url=None,
             default_model="default",
-            default_candidate_profile_slug="rebekah-love",
             gemini_api_key="key",
             model_provider="mock",
             profile_intake_save_artifacts=False,

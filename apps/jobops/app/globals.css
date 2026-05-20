@@ -80,6 +80,22 @@ textarea {
   font-size: 0.78rem;
 }
 
+.logout-button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 12px;
+}
+
+.logout-button:hover,
+.logout-button:focus-visible {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: var(--surface-strong);
+}
+
 .primary-nav {
   display: flex;
   flex-wrap: wrap;

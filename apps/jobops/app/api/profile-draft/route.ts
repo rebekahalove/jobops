@@ -1,29 +1,21 @@
 import { NextResponse } from "next/server";
-import { getJobOpsApiServerConfig, requireJobOpsServerEnvValue } from "../../../lib/server-env";
+import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
-    config = await getJobOpsApiServerConfig(["JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG"]);
-  } catch (error) {
-    return serverConfigErrorResponse(error);
-  }
-
-  const requestUrl = new URL(request.url);
-  const requestSlug = requestUrl.searchParams.get("candidateProfileSlug")?.trim();
-  let slug: string;
-  try {
-    slug = requestSlug || requireJobOpsServerEnvValue(config, "JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG");
+    config = await getJobOpsApiServerConfig();
   } catch (error) {
     return serverConfigErrorResponse(error);
   }
 
   try {
-    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/${slug}`, {
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/profile-draft/current`, {
       headers: {
-        "X-JobOps-Internal-Key": config.internalApiKey
+        "X-JobOps-Internal-Key": config.internalApiKey,
+        ...forwardCookieHeader(request)
       }
     });
     const payload = await apiResponse.json();
@@ -38,6 +30,11 @@ export async function GET(request: Request) {
       { status: 503 }
     );
   }
+}
+
+function forwardCookieHeader(request: Request): Record<string, string> {
+  const cookie = request.headers.get("cookie");
+  return cookie ? { Cookie: cookie } : {};
 }
 
 function serverConfigErrorResponse(error: unknown) {
