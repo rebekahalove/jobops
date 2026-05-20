@@ -48,6 +48,8 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
   if (
     isStaticOrFrameworkPath(pathname) ||
     isDashboardLoginPath(pathname, loginPath) ||
+    isDashboardPublicInfoPath(pathname, dashboardBasePath) ||
+    isDashboardPublicApiPath(pathname, dashboardBasePath) ||
     isDashboardInvitePath(pathname, dashboardBasePath) ||
     isDashboardPrivacyPath(pathname, dashboardBasePath) ||
     isDashboardPasswordResetPath(pathname, dashboardBasePath) ||
@@ -82,6 +84,10 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
 
   if (sessionCookieValue) {
     return undefined;
+  }
+
+  if (isDashboardLandingPath(pathname, dashboardBasePath)) {
+    return Response.redirect(buildPublicInfoUrl(request.url, dashboardBasePath), 307);
   }
 
   if (isProtectedApiPath) {
@@ -145,6 +151,18 @@ function isDashboardLoginPath(pathname: string, loginPath: "/login" | "/jobops/l
   return pathname === loginPath;
 }
 
+function isDashboardLandingPath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath) === "/";
+}
+
+function isDashboardPublicInfoPath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath) === "/about";
+}
+
+function isDashboardPublicApiPath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath).startsWith("/api/public/");
+}
+
 function isDashboardInvitePath(pathname: string, dashboardBasePath: "" | "/jobops") {
   const localPath = stripDashboardBasePath(pathname, dashboardBasePath);
   return localPath === "/invite" || localPath.startsWith("/invite/");
@@ -206,6 +224,13 @@ function buildLoginRedirectUrl(requestUrl: string, loginPath: "/login" | "/jobop
   loginUrl.search = "";
   loginUrl.searchParams.set("returnTo", `${currentUrl.pathname}${currentUrl.search}`);
   return loginUrl;
+}
+
+function buildPublicInfoUrl(requestUrl: string, dashboardBasePath: "" | "/jobops") {
+  const publicInfoUrl = new URL(requestUrl);
+  publicInfoUrl.pathname = `${dashboardBasePath}/about` || "/about";
+  publicInfoUrl.search = "";
+  return publicInfoUrl;
 }
 
 async function validateBackendSession(cookieHeader: string | null) {

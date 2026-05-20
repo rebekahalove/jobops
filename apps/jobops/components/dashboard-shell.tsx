@@ -34,11 +34,16 @@ export function DashboardShell({
           <span>JobOps</span>
           <small>AI command center</small>
         </Link>
-        <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
-          <button className="logout-button" type="submit">
-            Log out
-          </button>
-        </form>
+        <div className="top-bar-actions">
+          <Link className="top-bar-link" href={`${basePath}/about`}>
+            About JobOps
+          </Link>
+          <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
+            <button className="logout-button" type="submit">
+              Log out
+            </button>
+          </form>
+        </div>
       </header>
       <div className="command-shell">
         <AiCommandCenter
@@ -66,6 +71,9 @@ export function DashboardShell({
       <div className="workspace-content" aria-label="Active workspace content">
         {children}
       </div>
+      <footer className="dashboard-footer">
+        <Link href={`${basePath}/about`}>Public metrics</Link>
+      </footer>
     </div>
   );
 }
@@ -141,7 +149,7 @@ function isPublicDashboardPath(pathname: string | null, basePath: string) {
   }
 
   const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
-  return localPath === "/login" || localPath === "/reset-password" || localPath === "/privacy" || localPath.startsWith("/invite/");
+  return localPath === "/about" || localPath === "/login" || localPath === "/reset-password" || localPath === "/privacy" || localPath.startsWith("/invite/");
 }
 
 export function isActiveWorkspace(pathname: string | null, href: string) {

@@ -3,7 +3,7 @@ JobOps is an AI job-search operations platform for serious technical candidates,
 
 ## Local Quickstart
 
-This first scaffold is local-first. It has no auth, scraping, email integration, billing, or paid-service requirements. Model-assisted profile intake can run in deterministic mock mode, with live Gemini available only when configured server-side.
+This scaffold is local-first. It has alpha username/password auth, invite-based onboarding, tenant-scoped persistence, and no billing, scraping, or paid-service requirements. Model-assisted profile intake can run in deterministic mock mode, with live Gemini available only when configured server-side.
 
 ```powershell
 corepack enable
@@ -36,7 +36,9 @@ Then open:
 http://localhost:3002
 ```
 
-The dashboard currently includes a profile-first app shell with placeholders for Profile, Jobs, Fit Scoring, Materials, and Applications. Auth, job intake, fit scoring, and material generation are intentionally deferred.
+The JobOps experience now has a public alpha surface and a private authenticated app. Unauthenticated visitors to `/jobops` are sent to `/jobops/about`, which explains the build-in-public alpha, shows safe aggregate metrics, and accepts alpha access requests. Existing alpha users can log in from that page and continue to the private dashboard.
+
+The dashboard currently includes profile intake, company tracking, application tracking, AI-assisted workflow commands, and placeholders for jobs, fit scoring, materials, and follow-ups. Billing, OAuth, email recovery, teams/RBAC, publishing, and job intake are intentionally deferred.
 
 The Profile workspace at `/profile` includes a conversation-first intake flow with an `I want to be a...` prompt, resume paste directly in chat, model-assisted draft extraction through FastAPI, DB-backed draft persistence, redacted intake events, change summary, draft preview, clarifying questions, and structured review below the conversation.
 

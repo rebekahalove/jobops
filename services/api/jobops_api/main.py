@@ -16,6 +16,7 @@ from .command_center import router as command_center_router
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by_hostname, get_candidate_profile_by_slug
+from .public_jobops import router as public_jobops_router
 from .security import INTERNAL_API_KEY_HEADER, require_internal_api_key
 from .settings import load_settings
 
@@ -49,6 +50,7 @@ app.include_router(applications_router)
 app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
+app.include_router(public_jobops_router)
 
 
 class CandidateQuestionRequest(BaseModel):

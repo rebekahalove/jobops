@@ -45,6 +45,36 @@ describe("dashboard auth gate", () => {
     });
   });
 
+  it("redirects an unauthenticated dashboard landing path to the public about page", async () => {
+    const response = await gateDashboardRequest(new NextRequest("http://next.test/jobops"), {
+      dashboardBasePath: "/jobops",
+      env: configuredEnv,
+      loginPath: "/jobops/login"
+    });
+
+    if (!response) {
+      throw new Error("Expected dashboard gate response.");
+    }
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("http://next.test/jobops/about");
+  });
+
+  it("lets public info and public API routes through without a session", async () => {
+    const aboutResponse = await gateDashboardRequest(new NextRequest("http://next.test/jobops/about"), {
+      dashboardBasePath: "/jobops",
+      env: configuredEnv,
+      loginPath: "/jobops/login"
+    });
+    const apiResponse = await gateDashboardRequest(new NextRequest("http://next.test/jobops/api/public/jobops/metrics"), {
+      dashboardBasePath: "/jobops",
+      env: configuredEnv,
+      loginPath: "/jobops/login"
+    });
+
+    expect(aboutResponse).toBeUndefined();
+    expect(apiResponse).toBeUndefined();
+  });
+
   it("lets requests with a backend session reach protected dashboard paths", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
