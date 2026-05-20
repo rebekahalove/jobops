@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     resetUrl.searchParams.set("returnTo", returnTo);
     return redirectResponse(`${resetUrl.pathname}${resetUrl.search}`, 303);
   }
-  if (backendSession.unknownUsername) {
+  if (backendSession.unknownUsername || backendSession.invalidCredentials) {
     const loginUrl = new URL(loginPath, "https://jobops.local");
     loginUrl.searchParams.set("error", "1");
     loginUrl.searchParams.set("returnTo", returnTo);
@@ -85,6 +85,11 @@ async function createBackendSessionCookie(username: string, password: string) {
         unknownUsername: true
       };
     }
+    if (apiResponse.status === 401 && (await isInvalidCredentials(apiResponse))) {
+      return {
+        invalidCredentials: true
+      };
+    }
     if (!apiResponse.ok) {
       return {
         error: `JobOps backend session could not be created: ${await readBackendError(apiResponse)}`
@@ -106,6 +111,15 @@ async function isPasswordResetRequired(response: Response) {
   try {
     const payload = await response.clone().json();
     return payload?.detail?.code === "password_reset_required";
+  } catch {
+    return false;
+  }
+}
+
+async function isInvalidCredentials(response: Response) {
+  try {
+    const payload = await response.clone().json();
+    return payload?.detail === "Username or password is incorrect.";
   } catch {
     return false;
   }
