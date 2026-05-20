@@ -12,6 +12,7 @@ export async function middleware(request: Request) {
 export const config = {
   matcher: [
     "/",
+    "/about",
     "/profile/:path*",
     "/companies/:path*",
     "/jobs/:path*",

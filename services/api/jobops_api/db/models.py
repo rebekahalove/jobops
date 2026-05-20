@@ -86,6 +86,19 @@ class InviteToken(Base, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AlphaAccessRequest(Base):
+    __tablename__ = "alpha_access_requests"
+    __table_args__ = (
+        Index("ix_alpha_access_requests_email_created", "email", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200))
+    email: Mapped[str] = mapped_column(String(320))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UserSession(Base):
     __tablename__ = "user_sessions"
     __table_args__ = (
