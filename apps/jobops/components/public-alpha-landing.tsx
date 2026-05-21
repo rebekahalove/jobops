@@ -138,7 +138,7 @@ export function PublicAlphaLanding({
             <span>Profile</span>
             <span>Companies</span>
             <span>Jobs</span>
-            <span>Materials</span>
+            <span>Applications</span>
           </div>
         </div>
       </section>
@@ -186,7 +186,7 @@ export function PublicAlphaLanding({
         </ul>
       </section>
 
-      <section className="public-alpha-band" aria-labelledby="alpha-status-title">
+      <section className="public-alpha-band alpha-status-band" aria-labelledby="alpha-status-title">
         <div>
           <p className="eyebrow">Alpha status</p>
           <h2 id="alpha-status-title">The first product slice is taking shape.</h2>
@@ -216,7 +216,7 @@ export function PublicAlphaLanding({
         </div>
       </section>
 
-      <section className="public-alpha-band" aria-labelledby="public-metrics-title">
+      <section className="public-alpha-band metrics-band" aria-labelledby="public-metrics-title">
         <div>
           <p className="eyebrow">Public metrics</p>
           <h2 id="public-metrics-title">
