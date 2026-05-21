@@ -72,7 +72,10 @@ def test_alpha_access_request_submission_stores_request(monkeypatch) -> None:
         )
 
     assert response.status_code == 201
-    assert response.json()["result"]["message"] == "Thanks for your interest. Your alpha access request was received."
+    assert (
+        response.json()["result"]["message"]
+        == "Thanks. Your alpha access request was received. I'll review requests as the product becomes ready for additional users."
+    )
     with Session(engine) as session:
         stored = session.scalar(select(AlphaAccessRequest))
         assert stored is not None

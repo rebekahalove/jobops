@@ -72,7 +72,7 @@ export function DashboardShell({
         {children}
       </div>
       <footer className="dashboard-footer">
-        <Link href={`${basePath}/about`}>Public metrics</Link>
+        <Link href={`${basePath}/about`}>Public Alpha Page</Link>
       </footer>
     </div>
   );

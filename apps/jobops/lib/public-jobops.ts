@@ -5,18 +5,16 @@ import { getJobOpsApiServerConfig } from "./server-env";
 export type PublicJobOpsMetric = {
   id: string;
   label: string;
-  value: number;
+  value: number | null;
 };
 
 const DEFAULT_METRICS: PublicJobOpsMetric[] = [
-  { id: "alphaAccessRequests", label: "Alpha access requests", value: 0 },
-  { id: "usersOnboarded", label: "Users onboarded", value: 0 },
-  { id: "companiesTracked", label: "Companies tracked", value: 0 },
-  { id: "jobsTracked", label: "Jobs tracked", value: 0 },
-  { id: "profileDraftsCreated", label: "Profile drafts created", value: 0 },
-  { id: "profileDraftsPublished", label: "Profile drafts published", value: 0 },
-  { id: "applicationsTracked", label: "Applications tracked", value: 0 },
-  { id: "aiAssistedActionsCompleted", label: "AI-assisted actions completed", value: 0 }
+  { id: "usersOnboarded", label: "Alpha users onboarded", value: null },
+  { id: "companiesTracked", label: "Companies tracked", value: null },
+  { id: "jobsTracked", label: "Jobs saved", value: null },
+  { id: "applicationsTracked", label: "Applications tracked", value: null },
+  { id: "profileDraftsCreated", label: "Profile drafts created", value: null },
+  { id: "aiAssistedActionsCompleted", label: "AI-assisted workflow actions", value: null }
 ];
 
 export async function getPublicJobOpsMetrics(): Promise<PublicJobOpsMetric[]> {
@@ -58,7 +56,10 @@ function normalizeMetrics(value: unknown): PublicJobOpsMetric[] {
       ])
   );
 
-  return DEFAULT_METRICS.map((fallback) => valuesById.get(fallback.id) ?? fallback);
+  return DEFAULT_METRICS.map((fallback) => {
+    const metric = valuesById.get(fallback.id);
+    return metric ? { ...metric, label: fallback.label } : fallback;
+  });
 }
 
 function isMetricLike(value: unknown): value is PublicJobOpsMetric {
