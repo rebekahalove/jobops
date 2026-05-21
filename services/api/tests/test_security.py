@@ -23,6 +23,26 @@ def test_public_health_does_not_require_internal_key() -> None:
     assert response.status_code == 200
 
 
+def test_public_version_returns_safe_build_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_RELEASE_CHANNEL", "alpha")
+    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_APP_ENV", "prod")
+    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_COMMIT_SHA", "abcdef123456")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "do-not-expose")
+    client = TestClient(app)
+
+    response = client.get("/v1/version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "app": "jobops-api",
+        "releaseChannel": "alpha",
+        "environment": "prod",
+        "commit": "abcdef1",
+    }
+    assert "do-not-expose" not in str(payload)
+
+
 def test_public_profile_read_does_not_require_internal_key() -> None:
     engine = create_seeded_engine()
 

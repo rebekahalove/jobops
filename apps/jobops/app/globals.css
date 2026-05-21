@@ -41,7 +41,8 @@ textarea {
   font: inherit;
 }
 
-.dashboard-shell {
+.dashboard-shell,
+.jobops-page-frame {
   min-height: 100vh;
 }
 
@@ -352,10 +353,26 @@ textarea {
 }
 
 .dashboard-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
   width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
   border-top: 1px solid var(--line);
   padding: 18px 0 28px;
+}
+
+.public-page-footer {
+  margin-top: 12px;
+}
+
+.build-metadata {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 .dashboard-main {
