@@ -10,13 +10,31 @@ type FormState =
   | { status: "success"; message: string }
   | { status: "error"; message: string };
 
-const focusItems = [
-  "Profile and portfolio building",
-  "Company tracking",
-  "AI-assisted workflow commands",
-  "Application tracking",
-  "Human-in-the-loop review",
-  "Metrics and self-improvement loops"
+const workflowItems = [
+  "Start by pasting your resume to build a reusable profile",
+  "Save your skills, experience, goals, locations, and target roles",
+  "Track companies you want to follow for future openings",
+  "Save jobs, notes, statuses, and application activity",
+  "Draft tailored materials from your saved profile and the target job",
+  "Store cover letters, notes, and drafts with the application they belong to",
+  "Review what you sent before recruiter calls or interviews",
+  "Use natural language to update your search without managing a spreadsheet by hand"
+];
+
+const availableNowItems = [
+  "Public alpha page and request-access form",
+  "Private alpha login",
+  "Early profile, company, job, and application tracking",
+  "Public repo for following the build"
+];
+
+const comingNextItems = [
+  "Resume-to-profile onboarding",
+  "Tailored cover letters and outreach drafts saved to applications",
+  "Reusable company records and job discovery support",
+  "Better application follow-up tracking",
+  "Profile publishing and portfolio support",
+  "Search metrics and feedback loops"
 ];
 
 export function PublicAlphaLanding({
@@ -67,7 +85,11 @@ export function PublicAlphaLanding({
     }
 
     form.reset();
-    setFormState({ status: "success", message: "Thanks. Your alpha access request was received." });
+    setFormState({
+      status: "success",
+      message:
+        "Thanks — your alpha access request was received. I’ll review requests as JobOps becomes ready for more alpha users."
+    });
   }
 
   return (
@@ -78,17 +100,18 @@ export function PublicAlphaLanding({
           <small>Public alpha</small>
         </Link>
         <nav>
-          <a href="https://github.com/rebekahalove/jobops">GitHub</a>
+          <a href="https://github.com/rebekahalove/jobops">View the public repo</a>
           <Link href={loginHref}>Log in</Link>
         </nav>
       </header>
 
       <section className="public-alpha-hero" aria-labelledby="jobops-alpha-title">
         <div className="public-alpha-copy">
-          <p className="eyebrow">Early alpha / build in public</p>
-          <h1 id="jobops-alpha-title">JobOps</h1>
+          <p className="eyebrow">Early alpha / building in public</p>
+          <h1 id="jobops-alpha-title">Use AI for your job search without starting over every time.</h1>
           <p className="public-alpha-lede">
-            An AI-assisted command center for job search operations. It is being built in public as a practical applied AI engineering demo, with a bias toward workflow automation, human review, and measurable improvement.
+            JobOps saves your profile, target companies, jobs, application materials, and follow-ups so AI can help
+            with each next step using the context you already gave it.
           </p>
           <div className="public-alpha-actions">
             <a className="primary-action" href="#alpha-access">
@@ -97,51 +120,123 @@ export function PublicAlphaLanding({
             <Link className="secondary-action" href={loginHref}>
               Log in
             </Link>
+            <a className="secondary-action" href="https://github.com/rebekahalove/jobops">
+              View the public repo
+            </a>
           </div>
         </div>
         <div className="public-product-preview" aria-label="JobOps command center preview">
           <div className="preview-toolbar">
-            <span>Command center</span>
-            <strong>human reviewed</strong>
+            <span>Job search command center</span>
+            <strong>context saved</strong>
           </div>
-          <div className="preview-command">Add Acme AI to my target companies and check whether they have applied AI platform roles.</div>
+          <div className="preview-command">
+            Save this job, draft a tailored cover letter using my profile, and attach it to the application so I can
+            review it later.
+          </div>
           <div className="preview-grid">
-            <span>Profile draft</span>
+            <span>Profile</span>
             <span>Companies</span>
+            <span>Jobs</span>
             <span>Applications</span>
-            <span>Metrics loop</span>
           </div>
         </div>
       </section>
 
-      <section className="public-alpha-band" aria-labelledby="current-focus-title">
+      <section className="public-alpha-band" aria-labelledby="why-jobops-title">
         <div>
-          <p className="eyebrow">Current focus</p>
-          <h2 id="current-focus-title">Small, inspectable systems for real job-search work.</h2>
+          <p className="eyebrow">Why this exists</p>
+          <h2 id="why-jobops-title">ChatGPT can help. JobOps helps it remember.</h2>
           <p>
-            The alpha is deliberately narrow: organize the work, keep private data tenant-scoped, let AI propose structured actions, and leave meaningful decisions with the person using it.
+            You can already ask AI to write a cover letter, improve your resume, or help prep for an interview. The
+            frustrating part is having to re-upload your resume, paste the job description, explain your goals, and
+            repeat your preferences every time.
+          </p>
+          <p>
+            JobOps is being built around the missing layer: saved job-search context. Start with your resume, complete
+            your profile, and then use that context across companies, jobs, applications, and follow-ups.
           </p>
         </div>
         <ul className="focus-list">
-          {focusItems.map((item) => (
+          <li>Save your profile once and keep improving it</li>
+          <li>Keep company and job-search filters consistent</li>
+          <li>Capture the materials you actually sent</li>
+          <li>Use AI as an assistant, not as an autopilot</li>
+        </ul>
+      </section>
+
+      <section className="public-alpha-band" aria-labelledby="workflow-title">
+        <div>
+          <p className="eyebrow">What JobOps does</p>
+          <h2 id="workflow-title">It connects the pieces of a serious technical job search.</h2>
+          <p>
+            Job seekers are often told to follow specific companies, check them regularly for relevant roles, tailor
+            their materials, and track every application. You can do that with spreadsheets, saved links, notes, and
+            separate AI chats — but it is easy to miss details or lose track of what happened.
+          </p>
+          <p>
+            JobOps brings those pieces into one workspace: your profile, target companies, saved jobs, drafted
+            materials, application history, and natural-language updates.
+          </p>
+        </div>
+        <ul className="focus-list">
+          {workflowItems.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
       </section>
 
-      <section className="public-alpha-band" aria-labelledby="public-metrics-title">
+      <section className="public-alpha-band alpha-status-band" aria-labelledby="alpha-status-title">
+        <div>
+          <p className="eyebrow">Alpha status</p>
+          <h2 id="alpha-status-title">The first product slice is taking shape.</h2>
+          <p>
+            JobOps is early alpha software, not a finished SaaS product. The current build focuses on the foundation:
+            request access, log in, save job-search context, and build toward AI-assisted application workflows that
+            remember what you already saved.
+          </p>
+        </div>
+        <div className="alpha-status-columns">
+          <div>
+            <h3>Available now</h3>
+            <ul>
+              {availableNowItems.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h3>Coming next</h3>
+            <ul>
+              {comingNextItems.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className="public-alpha-band metrics-band" aria-labelledby="public-metrics-title">
         <div>
           <p className="eyebrow">Public metrics</p>
-          <h2 id="public-metrics-title">Harmless aggregate snapshot.</h2>
+          <h2 id="public-metrics-title">
+            {hasLiveMetric(metrics) ? "Early alpha snapshot." : "Alpha metrics are coming online."}
+          </h2>
           <p>
-            These numbers are intentionally aggregate-only. They do not expose user names, emails, companies tied to a user, profile content, application details, raw logs, or private notes.
+            As the alpha develops, this page will show safe aggregate activity such as users onboarded, companies
+            tracked, jobs saved, applications tracked, and AI-assisted materials drafted.
+          </p>
+          <p>
+            Private job-search details, saved materials, notes, and application history should never appear here.
           </p>
         </div>
         <dl className="public-metrics-grid">
           {metrics.map((item) => (
             <div key={item.id}>
               <dt>{item.label}</dt>
-              <dd>{item.value.toLocaleString()}</dd>
+              <dd className={displayMetricValue(item.value) === "Coming soon" ? "coming-soon" : undefined}>
+                {displayMetricValue(item.value)}
+              </dd>
             </div>
           ))}
         </dl>
@@ -150,9 +245,13 @@ export function PublicAlphaLanding({
       <section className="public-alpha-band access-band" id="alpha-access" aria-labelledby="alpha-access-title">
         <div>
           <p className="eyebrow">Request access</p>
-          <h2 id="alpha-access-title">Interested in trying the alpha?</h2>
+          <h2 id="alpha-access-title">Want to try JobOps as an early alpha user?</h2>
           <p>
-            Share a name, email, and optional use case. This only records the request; no emails are sent yet.
+            I’m looking for technical professionals who want a more organized way to use AI while managing companies,
+            jobs, applications, materials, and follow-ups.
+          </p>
+          <p>
+            Share your name, email, and a quick note about your job-search workflow.
           </p>
         </div>
         <form className="alpha-access-form" onSubmit={submitAccessRequest}>
@@ -184,4 +283,16 @@ export function PublicAlphaLanding({
 
 function stringValue(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function hasLiveMetric(metrics: PublicJobOpsMetric[]) {
+  return metrics.some((item) => typeof item.value === "number" && item.value > 0);
+}
+
+function displayMetricValue(value: PublicJobOpsMetric["value"]) {
+  if (typeof value !== "number" || value <= 0) {
+    return "Coming soon";
+  }
+
+  return value.toLocaleString();
 }

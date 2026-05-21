@@ -19,6 +19,7 @@ from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by
 from .public_jobops import router as public_jobops_router
 from .security import INTERNAL_API_KEY_HEADER, require_internal_api_key
 from .settings import load_settings
+from .version import build_version_metadata
 
 
 settings = load_settings()
@@ -68,6 +69,11 @@ def health() -> dict[str, str]:
         "app_env": settings.app_env,
         "model_provider": settings.model_provider
     }
+
+
+@app.get("/v1/version")
+def get_version() -> dict[str, str]:
+    return build_version_metadata(app="jobops-api", app_env=settings.app_env)
 
 
 @app.get("/v1/profiles/{slug}")

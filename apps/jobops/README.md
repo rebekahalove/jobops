@@ -22,6 +22,18 @@ For local development only, `JOBOPS_DASHBOARD_AUTH_DISABLED=true` can bypass the
 
 The local `dev` and `start` scripts load the repo-root `.env` and `.env.<APP_ENV>` files before starting Next so middleware and server routes use the same private values.
 
+## Footer Build Metadata
+
+Every JobOps page shows a subtle footer line such as:
+
+```text
+JobOps alpha · dev · build local
+```
+
+The footer is display-only alpha support metadata so testers can report which build they used. It is not stored in the database and does not require manual version increments or manually maintained `NEXT_PUBLIC_JOBOPS_VERSION` / `NEXT_PUBLIC_JOBOPS_BUILD` values.
+
+The package `predev`, `pretypecheck`, `prebuild`, and `prestart` scripts run `scripts/generate-jobops-build-info.mjs`, which writes `apps/jobops/lib/generated-build-info.ts`. The generator uses Netlify `COMMIT_REF` / `CONTEXT`, GitHub Actions `GITHUB_SHA`, Render `RENDER_GIT_COMMIT`, Vercel `VERCEL_GIT_COMMIT_SHA` / `VERCEL_ENV`, Cloudflare Pages `CF_PAGES_COMMIT_SHA`, or local `git rev-parse HEAD`. Missing values fall back to `alpha`, `dev`, and `local`. Only the app name, release channel, environment, short commit, full commit in the footer title, and generated build time are exposed to the browser.
+
 ## AI Command Center Shell
 
 The private app now centers on one JobOps command panel at the top of the shell, with workspace tabs below it:

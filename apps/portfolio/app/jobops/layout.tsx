@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DashboardShell } from "../../../jobops/components/dashboard-shell";
+import { getJobOpsAppMetadata } from "../../../jobops/lib/app-metadata";
 
 export const metadata: Metadata = {
   title: "JobOps Command Center | Rebekah Love",
@@ -11,8 +12,10 @@ export default function JobOpsLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const appMetadata = getJobOpsAppMetadata();
+
   return (
-    <DashboardShell apiBasePath="/jobops/api" basePath="/jobops">
+    <DashboardShell apiBasePath="/jobops/api" appMetadata={appMetadata} basePath="/jobops">
       {children}
     </DashboardShell>
   );

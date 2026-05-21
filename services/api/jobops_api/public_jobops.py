@@ -62,9 +62,9 @@ class AlphaAccessRequestCreate(BaseModel):
 def get_public_metrics(session: Session = Depends(get_db_session)) -> dict[str, Any]:
     metrics = [
         metric("alphaAccessRequests", "Alpha access requests", count_rows(session, AlphaAccessRequest)),
-        metric("usersOnboarded", "Users onboarded", count_rows(session, User)),
+        metric("usersOnboarded", "Alpha users onboarded", count_rows(session, User)),
         metric("companiesTracked", "Companies tracked", count_rows(session, TargetCompany)),
-        metric("jobsTracked", "Jobs tracked", count_rows(session, JobRole)),
+        metric("jobsTracked", "Jobs saved", count_rows(session, JobRole)),
         metric("profileDraftsCreated", "Profile drafts created", count_rows(session, ProfileFactDraft)),
         metric(
             "profileDraftsPublished",
@@ -79,7 +79,7 @@ def get_public_metrics(session: Session = Depends(get_db_session)) -> dict[str, 
         metric("applicationsTracked", "Applications tracked", count_rows(session, Application)),
         metric(
             "aiAssistedActionsCompleted",
-            "AI-assisted actions completed",
+            "AI-assisted workflow actions",
             count_rows(session, CommandInteractionLog, CommandInteractionLog.action_applied.is_(True)),
         ),
     ]
@@ -112,7 +112,7 @@ def create_access_request(
         "result": {
             "requestId": access_request.id,
             "createdAt": access_request.created_at.isoformat(),
-            "message": "Thanks for your interest. Your alpha access request was received.",
+            "message": "Thanks. Your alpha access request was received. I'll review requests as the product becomes ready for additional users.",
         },
     }
 

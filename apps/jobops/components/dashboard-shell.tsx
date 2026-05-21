@@ -8,13 +8,21 @@ import { AiCommandCenter } from "./ai-command-center";
 import { dashboardWorkflows } from "../lib/workflows";
 import { getWorkspaceRoute } from "../lib/command-center-actions";
 import type { WorkspaceTab } from "../lib/command-center-actions";
+import {
+  FALLBACK_JOBOPS_APP_METADATA,
+  formatJobOpsAppMetadata,
+  formatJobOpsAppMetadataTitle,
+  type JobOpsAppMetadata
+} from "../lib/app-metadata-contract";
 
 export function DashboardShell({
   apiBasePath = "/api",
+  appMetadata = FALLBACK_JOBOPS_APP_METADATA,
   basePath = "",
   children
 }: Readonly<{
   apiBasePath?: string;
+  appMetadata?: JobOpsAppMetadata;
   basePath?: string;
   children: React.ReactNode;
 }>) {
@@ -24,7 +32,12 @@ export function DashboardShell({
   useSessionValidityRedirect({ apiBasePath, basePath, enabled: !isPublicPath, pathname });
 
   if (isPublicPath) {
-    return <>{children}</>;
+    return (
+      <div className="jobops-page-frame">
+        {children}
+        <JobOpsFooter appMetadata={appMetadata} />
+      </div>
+    );
   }
 
   return (
@@ -72,9 +85,26 @@ export function DashboardShell({
         {children}
       </div>
       <footer className="dashboard-footer">
-        <Link href={`${basePath}/about`}>Public metrics</Link>
+        <Link href={`${basePath}/about`}>Public Alpha Page</Link>
+        <JobOpsMetadataLine appMetadata={appMetadata} />
       </footer>
     </div>
+  );
+}
+
+function JobOpsFooter({ appMetadata }: { appMetadata: JobOpsAppMetadata }) {
+  return (
+    <footer className="dashboard-footer public-page-footer">
+      <JobOpsMetadataLine appMetadata={appMetadata} />
+    </footer>
+  );
+}
+
+function JobOpsMetadataLine({ appMetadata }: { appMetadata: JobOpsAppMetadata }) {
+  return (
+    <p className="build-metadata" title={formatJobOpsAppMetadataTitle(appMetadata)}>
+      {formatJobOpsAppMetadata(appMetadata)}
+    </p>
   );
 }
 

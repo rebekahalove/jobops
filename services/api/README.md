@@ -29,6 +29,14 @@ Health check:
 http://localhost:8000/health
 ```
 
+Safe build metadata:
+
+```text
+http://localhost:8000/v1/version
+```
+
+`/v1/version` returns only public support metadata such as app name, release channel, environment, and short commit SHA. It recognizes safe deployment variables like `COMMIT_REF`, `RENDER_GIT_COMMIT`, and `GITHUB_SHA`, then falls back to local git metadata when available. It never returns secrets, database URLs, API keys, CORS config, or full environment dumps.
+
 ## Internal API Key
 
 The backend keeps public read endpoints open:

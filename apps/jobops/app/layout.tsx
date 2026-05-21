@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DashboardShell } from "../components/dashboard-shell";
+import { getJobOpsAppMetadata } from "../lib/app-metadata";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,10 +13,12 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const appMetadata = getJobOpsAppMetadata();
+
   return (
     <html lang="en">
       <body>
-        <DashboardShell>{children}</DashboardShell>
+        <DashboardShell appMetadata={appMetadata}>{children}</DashboardShell>
       </body>
     </html>
   );
