@@ -35,7 +35,7 @@ Safe build metadata:
 http://localhost:8000/v1/version
 ```
 
-`/v1/version` returns only public support metadata such as app name, release channel, environment, short commit SHA, and optional build time. It recognizes safe deployment variables like `NEXT_PUBLIC_JOBOPS_COMMIT_SHA`, `JOBOPS_COMMIT_SHA`, `COMMIT_REF`, `RENDER_GIT_COMMIT`, and `GITHUB_SHA`; it never returns secrets, database URLs, API keys, CORS config, or full environment dumps.
+`/v1/version` returns only public support metadata such as app name, release channel, environment, and short commit SHA. It recognizes safe deployment variables like `COMMIT_REF`, `RENDER_GIT_COMMIT`, and `GITHUB_SHA`, then falls back to local git metadata when available. It never returns secrets, database URLs, API keys, CORS config, or full environment dumps.
 
 ## Internal API Key
 

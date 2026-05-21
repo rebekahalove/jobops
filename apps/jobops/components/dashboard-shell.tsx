@@ -11,6 +11,7 @@ import type { WorkspaceTab } from "../lib/command-center-actions";
 import {
   FALLBACK_JOBOPS_APP_METADATA,
   formatJobOpsAppMetadata,
+  formatJobOpsAppMetadataTitle,
   type JobOpsAppMetadata
 } from "../lib/app-metadata-contract";
 
@@ -100,7 +101,11 @@ function JobOpsFooter({ appMetadata }: { appMetadata: JobOpsAppMetadata }) {
 }
 
 function JobOpsMetadataLine({ appMetadata }: { appMetadata: JobOpsAppMetadata }) {
-  return <p className="build-metadata">{formatJobOpsAppMetadata(appMetadata)}</p>;
+  return (
+    <p className="build-metadata" title={formatJobOpsAppMetadataTitle(appMetadata)}>
+      {formatJobOpsAppMetadata(appMetadata)}
+    </p>
+  );
 }
 
 function useSessionValidityRedirect({

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+import subprocess
+from pathlib import Path
 
 
 SAFE_LABEL_PATTERN = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -10,13 +11,14 @@ SAFE_LABEL_PATTERN = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 def build_version_metadata(*, app: str, app_env: str) -> dict[str, str]:
     metadata = {
         "app": app,
-        "releaseChannel": safe_label(first_value("NEXT_PUBLIC_JOBOPS_RELEASE_CHANNEL", "JOBOPS_RELEASE_CHANNEL"), "alpha"),
+        "releaseChannel": "alpha",
         "environment": normalize_environment(
             safe_label(
                 first_value(
-                    "NEXT_PUBLIC_JOBOPS_APP_ENV",
-                    "JOBOPS_APP_ENV",
                     "APP_ENV",
+                    "NETLIFY_CONTEXT",
+                    "CONTEXT",
+                    "VERCEL_ENV",
                     fallback=app_env,
                 ),
                 "dev",
@@ -24,21 +26,16 @@ def build_version_metadata(*, app: str, app_env: str) -> dict[str, str]:
         ),
         "commit": short_commit(
             first_value(
-                "NEXT_PUBLIC_JOBOPS_COMMIT_SHA",
-                "JOBOPS_COMMIT_SHA",
                 "COMMIT_REF",
                 "NETLIFY_COMMIT_REF",
-                "VERCEL_GIT_COMMIT_SHA",
-                "RENDER_GIT_COMMIT",
                 "GITHUB_SHA",
+                "RENDER_GIT_COMMIT",
+                "VERCEL_GIT_COMMIT_SHA",
                 "CF_PAGES_COMMIT_SHA",
-            )
+                fallback=git_commit(),
+            ),
         ),
     }
-
-    build_time = safe_build_time(first_value("NEXT_PUBLIC_JOBOPS_BUILD_TIME", "JOBOPS_BUILD_TIME", "BUILD_TIME"))
-    if build_time:
-        metadata["buildTime"] = build_time
 
     return metadata
 
@@ -65,16 +62,6 @@ def short_commit(value: str | None) -> str:
     return normalized[:7]
 
 
-def safe_build_time(value: str | None) -> str | None:
-    if not value:
-        return None
-
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).isoformat().replace("+00:00", "Z")
-    except ValueError:
-        return None
-
-
 def safe_label(value: str | None, fallback: str) -> str:
     if not value:
         return fallback
@@ -96,3 +83,15 @@ def first_value(*keys: str, fallback: str | None = None) -> str | None:
         if value and value.strip():
             return value
     return fallback
+
+
+def git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None

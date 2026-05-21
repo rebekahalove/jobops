@@ -1,73 +1,38 @@
 import "server-only";
 
-import type { JobOpsAppMetadata } from "./app-metadata-contract";
-import { FALLBACK_JOBOPS_APP_METADATA } from "./app-metadata-contract";
-
-type Env = Record<string, string | undefined>;
+import { FALLBACK_JOBOPS_APP_METADATA, type JobOpsAppMetadata } from "./app-metadata-contract";
+import { GENERATED_JOBOPS_BUILD_INFO } from "./generated-build-info";
 
 const SAFE_LABEL_PATTERN = /^[A-Za-z0-9._-]+$/;
 const SAFE_COMMIT_PATTERN = /^[A-Za-z0-9._-]+$/;
 
-export function getJobOpsAppMetadata(env: Env = process.env): JobOpsAppMetadata {
+export function getJobOpsAppMetadata(): JobOpsAppMetadata {
   return {
-    appName: FALLBACK_JOBOPS_APP_METADATA.appName,
-    releaseChannel: safeLabel(firstValue(env.NEXT_PUBLIC_JOBOPS_RELEASE_CHANNEL, env.JOBOPS_RELEASE_CHANNEL), "alpha"),
-    environment: resolveEnvironment(env),
-    build: shortCommit(firstValue(
-      env.NEXT_PUBLIC_JOBOPS_COMMIT_SHA,
-      env.JOBOPS_COMMIT_SHA,
-      env.COMMIT_REF,
-      env.NETLIFY_COMMIT_REF,
-      env.VERCEL_GIT_COMMIT_SHA,
-      env.RENDER_GIT_COMMIT,
-      env.GITHUB_SHA,
-      env.CF_PAGES_COMMIT_SHA
-    )),
-    buildTime: safeBuildTime(firstValue(env.NEXT_PUBLIC_JOBOPS_BUILD_TIME, env.JOBOPS_BUILD_TIME, env.BUILD_TIME))
+    appName: "JobOps",
+    releaseChannel: "alpha",
+    environment: safeLabel(GENERATED_JOBOPS_BUILD_INFO.environment, FALLBACK_JOBOPS_APP_METADATA.environment),
+    commit: shortCommit(GENERATED_JOBOPS_BUILD_INFO.commit || GENERATED_JOBOPS_BUILD_INFO.fullCommit),
+    fullCommit: safeCommit(GENERATED_JOBOPS_BUILD_INFO.fullCommit || GENERATED_JOBOPS_BUILD_INFO.commit),
+    buildTime: safeBuildTime(GENERATED_JOBOPS_BUILD_INFO.buildTime)
   };
 }
 
-function resolveEnvironment(env: Env) {
-  const explicit = safeLabel(firstValue(env.NEXT_PUBLIC_JOBOPS_APP_ENV, env.JOBOPS_APP_ENV, env.APP_ENV), "");
-  if (explicit) {
-    return normalizeEnvironment(explicit);
-  }
-
-  const netlifyContext = safeLabel(firstValue(env.NETLIFY_CONTEXT, env.CONTEXT), "");
-  if (netlifyContext) {
-    return normalizeEnvironment(netlifyContext);
-  }
-
-  const vercelEnvironment = safeLabel(env.VERCEL_ENV, "");
-  if (vercelEnvironment) {
-    return normalizeEnvironment(vercelEnvironment);
-  }
-
-  return FALLBACK_JOBOPS_APP_METADATA.environment;
-}
-
-function normalizeEnvironment(value: string) {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "production") {
-    return "prod";
-  }
-  if (normalized === "development" || normalized === "local") {
-    return "dev";
-  }
-  if (normalized === "deploy-preview" || normalized === "branch-deploy") {
-    return "preview";
-  }
-
-  return normalized || FALLBACK_JOBOPS_APP_METADATA.environment;
-}
-
 function shortCommit(value: string | undefined) {
-  const normalized = value?.trim();
-  if (!normalized || !SAFE_COMMIT_PATTERN.test(normalized)) {
-    return FALLBACK_JOBOPS_APP_METADATA.build;
+  const normalized = safeCommit(value);
+  if (!normalized || normalized === "local") {
+    return FALLBACK_JOBOPS_APP_METADATA.commit;
   }
 
   return normalized.slice(0, 7);
+}
+
+function safeCommit(value: string | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || !SAFE_COMMIT_PATTERN.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
 }
 
 function safeBuildTime(value: string | undefined) {
@@ -91,8 +56,4 @@ function safeLabel(value: string | undefined, fallback: string) {
   }
 
   return normalized;
-}
-
-function firstValue(...values: Array<string | undefined>) {
-  return values.find((value) => value?.trim());
 }

@@ -3,9 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
+    "predev": "node ../../scripts/generate-jobops-build-info.mjs",
     "dev": "node ../../scripts/run-with-jobops-env.mjs next dev --port 3002",
+    "prebuild": "node ../../scripts/generate-jobops-build-info.mjs",
     "build": "next build",
+    "prestart": "node ../../scripts/generate-jobops-build-info.mjs",
     "start": "node ../../scripts/run-with-jobops-env.mjs next start --port 3002",
+    "pretypecheck": "node ../../scripts/generate-jobops-build-info.mjs",
     "typecheck": "tsc --noEmit --incremental false",
     "test": "vitest run"
   },

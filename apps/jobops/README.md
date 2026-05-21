@@ -30,18 +30,9 @@ Every JobOps page shows a subtle footer line such as:
 JobOps alpha · dev · build local
 ```
 
-The footer is display-only alpha support metadata so testers can report which build they used. It is not stored in the database and does not require manual version increments. Missing values fall back to `alpha`, the current `APP_ENV` or `dev`, and `local`.
+The footer is display-only alpha support metadata so testers can report which build they used. It is not stored in the database and does not require manual version increments or manually maintained `NEXT_PUBLIC_JOBOPS_VERSION` / `NEXT_PUBLIC_JOBOPS_BUILD` values.
 
-Safe frontend variables can be set directly:
-
-```text
-NEXT_PUBLIC_JOBOPS_RELEASE_CHANNEL=alpha
-NEXT_PUBLIC_JOBOPS_APP_ENV=prod
-NEXT_PUBLIC_JOBOPS_COMMIT_SHA=<commit sha>
-NEXT_PUBLIC_JOBOPS_BUILD_TIME=<iso timestamp>
-```
-
-The helper also recognizes common deployment metadata such as Netlify `COMMIT_REF` / `CONTEXT`, Vercel `VERCEL_GIT_COMMIT_SHA` / `VERCEL_ENV`, Render `RENDER_GIT_COMMIT`, GitHub Actions `GITHUB_SHA`, and Cloudflare Pages `CF_PAGES_COMMIT_SHA`. Only the app name, release channel, environment, short commit, and optional build time are exposed to the browser. Do not expose secrets with `NEXT_PUBLIC_*`.
+The package `predev`, `pretypecheck`, `prebuild`, and `prestart` scripts run `scripts/generate-jobops-build-info.mjs`, which writes `apps/jobops/lib/generated-build-info.ts`. The generator uses Netlify `COMMIT_REF` / `CONTEXT`, GitHub Actions `GITHUB_SHA`, Render `RENDER_GIT_COMMIT`, Vercel `VERCEL_GIT_COMMIT_SHA` / `VERCEL_ENV`, Cloudflare Pages `CF_PAGES_COMMIT_SHA`, or local `git rev-parse HEAD`. Missing values fall back to `alpha`, `dev`, and `local`. Only the app name, release channel, environment, short commit, full commit in the footer title, and generated build time are exposed to the browser.
 
 ## AI Command Center Shell
 

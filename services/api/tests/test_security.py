@@ -24,9 +24,8 @@ def test_public_health_does_not_require_internal_key() -> None:
 
 
 def test_public_version_returns_safe_build_metadata(monkeypatch) -> None:
-    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_RELEASE_CHANNEL", "alpha")
-    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_APP_ENV", "prod")
-    monkeypatch.setenv("NEXT_PUBLIC_JOBOPS_COMMIT_SHA", "abcdef123456")
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("COMMIT_REF", "abcdef123456")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "do-not-expose")
     client = TestClient(app)
 

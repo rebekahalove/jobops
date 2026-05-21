@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "description": "AI job-search operations platform and candidate-agent portfolio.",
   "scripts": {
+    "build:metadata": "node scripts/generate-jobops-build-info.mjs",
     "dev": "corepack pnpm --filter @jobops/portfolio dev",
     "dev:jobops": "corepack pnpm --filter @jobops/jobops dev",
     "dev:portfolio": "corepack pnpm --filter @jobops/portfolio dev",
