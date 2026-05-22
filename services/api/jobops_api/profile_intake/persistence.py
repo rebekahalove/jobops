@@ -247,7 +247,7 @@ def get_latest_profile_draft_snapshot(session: Session, candidate_profile: Candi
 def get_profile_draft_snapshot_for_session(session: Session, intake_session: ProfileIntakeSession) -> dict[str, Any]:
     redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
     latest_snapshot = redacted_state.get("latestDraftSnapshot")
-    if isinstance(latest_snapshot, dict):
+    if isinstance(latest_snapshot, dict) and not has_profile_intake_draft_rows(session, intake_session.id):
         return {
             **empty_profile_draft_snapshot(),
             **latest_snapshot,

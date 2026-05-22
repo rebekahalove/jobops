@@ -13,6 +13,8 @@ export const config = {
   matcher: [
     "/jobops/:path*",
     "/api/command-center",
+    "/api/profile",
+    "/api/profile/:path*",
     "/api/profile-intake",
     "/api/profile-draft",
     "/api/companies",

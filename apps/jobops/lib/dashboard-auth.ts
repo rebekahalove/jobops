@@ -2,6 +2,7 @@ export const JOBOPS_SESSION_COOKIE_NAME = "jobops_session";
 
 const PROTECTED_API_PROXY_PATHS = [
   "/api/command-center",
+  "/api/profile",
   "/api/profile-intake",
   "/api/profile-draft",
   "/api/companies",
@@ -49,6 +50,7 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
     isStaticOrFrameworkPath(pathname) ||
     isDashboardLoginPath(pathname, loginPath) ||
     isDashboardPublicInfoPath(pathname, dashboardBasePath) ||
+    isDashboardPublicPortfolioPath(pathname, dashboardBasePath) ||
     isDashboardPublicApiPath(pathname, dashboardBasePath) ||
     isDashboardInvitePath(pathname, dashboardBasePath) ||
     isDashboardPrivacyPath(pathname, dashboardBasePath) ||
@@ -157,6 +159,11 @@ function isDashboardLandingPath(pathname: string, dashboardBasePath: "" | "/jobo
 
 function isDashboardPublicInfoPath(pathname: string, dashboardBasePath: "" | "/jobops") {
   return stripDashboardBasePath(pathname, dashboardBasePath) === "/about";
+}
+
+function isDashboardPublicPortfolioPath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  const localPath = stripDashboardBasePath(pathname, dashboardBasePath);
+  return localPath === "/portfolio" || localPath.startsWith("/portfolio/");
 }
 
 function isDashboardPublicApiPath(pathname: string, dashboardBasePath: "" | "/jobops") {

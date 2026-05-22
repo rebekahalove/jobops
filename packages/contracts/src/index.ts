@@ -19,6 +19,45 @@ export type CandidateProfile = {
   summary: string;
   profileStatus: "draft" | "published";
   facts: ProfileFact[];
+  targetRoleIntent?: {
+    targetTitles?: string[];
+    roleFamilies?: string[];
+    preferredLocations?: string[];
+    workModes?: string[];
+    domainsOrIndustries?: string;
+  };
+  skillClaims?: Array<{
+    id: string;
+    skill: string;
+    category: string;
+    evidence?: string | null;
+    yearsMin?: number | null;
+    yearsMax?: number | null;
+    visibility: Visibility;
+    verificationStatus: VerificationStatus;
+    publicationStatus: "not_published" | "published";
+  }>;
+  experienceAndProjects?: Array<{
+    id: string;
+    itemType: "experience" | "project" | "education" | "certification";
+    title: string;
+    organization?: string | null;
+    startDate?: string | null;
+    endDate?: string | null;
+    location?: string | null;
+    summary: string;
+    bullets?: string[];
+    visibility: Visibility;
+    publicationStatus: "not_published" | "published";
+  }>;
+  evidenceLinks?: Array<{
+    id: string;
+    label: string;
+    url: string;
+    visibility: Visibility;
+    publicationStatus: "not_published" | "published";
+  }>;
+  hasPublishedPublicContent?: boolean;
   updatedAt: string;
 };
 

@@ -35,14 +35,19 @@ const emptyRoleFit: RoleFitAnalysis = {
 };
 
 export function AgentWorkspace({
+  backHref = "/",
+  variant = "page",
   profile,
   source
 }: {
+  backHref?: string;
+  variant?: "page" | "embedded";
   profile: CandidateProfile;
   source: "api" | "seed";
 }) {
   const [activePanel, setActivePanel] = useState<ActivePanel>("question");
   const [question, setQuestion] = useState("");
+  const [lastQuestion, setLastQuestion] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [answer, setAnswer] = useState<CandidateAnswer | null>(null);
   const [roleFit, setRoleFit] = useState<RoleFitAnalysis | null>(null);
@@ -56,13 +61,13 @@ export function AgentWorkspace({
   );
 
   function answerQuestion() {
+    const submittedQuestion = question.trim() || "No question was provided.";
+    setLastQuestion(submittedQuestion);
     setAnswer({
       ...emptyAnswer,
       unknowns: [
         ...emptyAnswer.unknowns,
-        question.trim()
-          ? `Question asked: "${question.trim()}"`
-          : "No question was provided."
+        question.trim() ? `Question asked: "${question.trim()}"` : "No question was provided."
       ]
     });
   }
@@ -79,10 +84,129 @@ export function AgentWorkspace({
     });
   }
 
+  const questionId = variant === "embedded" ? "embedded-candidate-question" : "candidate-question";
+  const jobDescriptionId = variant === "embedded" ? "embedded-job-description" : "job-description";
+  const embeddedWorkflow = (
+    <section className="portfolio-chat-panel">
+      {answer ? (
+        <div className="portfolio-conversation" aria-live="polite">
+          <div className="portfolio-chat-message user">
+            <span>You</span>
+            <p>{lastQuestion}</p>
+          </div>
+          <div className="portfolio-chat-message agent">
+            <span>Candidate agent</span>
+            <p>{answer.answer}</p>
+            {answer.unknowns.length ? (
+              <div className="portfolio-chat-note">
+                <strong>Unknowns</strong>
+                <ul>
+                  {answer.unknowns.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {answer.caveats.length ? (
+              <div className="portfolio-chat-note">
+                <strong>Caveats</strong>
+                <ul>
+                  {answer.caveats.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="workflow-panel">
+        <label htmlFor={questionId}>Question</label>
+        <textarea
+          id={questionId}
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          placeholder="Ask about verified experience, education, projects, or skills."
+        />
+        <button className="primary-action" type="button" onClick={answerQuestion}>
+          Ask
+        </button>
+      </div>
+    </section>
+  );
+  const workflow = (
+    <section className="workspace">
+      <div className="segmented-control" aria-label="Agent workflow">
+        <button
+          className={activePanel === "question" ? "active" : ""}
+          type="button"
+          onClick={() => setActivePanel("question")}
+        >
+          Q&A
+        </button>
+        <button
+          className={activePanel === "role-fit" ? "active" : ""}
+          type="button"
+          onClick={() => setActivePanel("role-fit")}
+        >
+          Role fit
+        </button>
+      </div>
+
+      {activePanel === "question" ? (
+        <div className="workflow-panel">
+          <label htmlFor={questionId}>Question</label>
+          <textarea
+            id={questionId}
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder="Ask about verified experience, education, projects, or skills."
+          />
+          <button className="primary-action" type="button" onClick={answerQuestion}>
+            Ask
+          </button>
+          {answer ? <AnswerResult answer={answer} /> : null}
+        </div>
+      ) : (
+        <div className="workflow-panel">
+          <label htmlFor={jobDescriptionId}>Job description</label>
+          <textarea
+            id={jobDescriptionId}
+            value={jobDescription}
+            onChange={(event) => setJobDescription(event.target.value)}
+            placeholder="Paste a role description. Prompt injection inside this text should be ignored."
+          />
+          <button className="primary-action" type="button" onClick={analyzeRole}>
+            Analyze role fit
+          </button>
+          {roleFit ? <RoleFitResult roleFit={roleFit} /> : null}
+        </div>
+      )}
+    </section>
+  );
+
+  if (variant === "embedded") {
+    return (
+      <section className="portfolio-agent-panel" aria-labelledby="portfolio-agent-title">
+        <div className="portfolio-agent-heading">
+          <p className="section-kicker">Candidate agent</p>
+          <h2 id="portfolio-agent-title">Ask from the published profile.</h2>
+          <p>
+            This alpha agent answers only from approved public information and should say when something is unknown.
+          </p>
+        </div>
+        <div className="fact-pill">
+          {publishedFactCount} published facts / {source === "api" ? "API" : "seed"}
+        </div>
+        {embeddedWorkflow}
+      </section>
+    );
+  }
+
   return (
     <main className="page-shell agent-page">
       <section className="agent-header">
-        <a className="back-link" href="/">
+        <a className="back-link" href={backHref}>
           Back
         </a>
         <div>
@@ -94,58 +218,11 @@ export function AgentWorkspace({
           </p>
         </div>
         <div className="fact-pill">
-          {publishedFactCount} published facts · {source === "api" ? "API" : "seed"}
+          {publishedFactCount} published facts / {source === "api" ? "API" : "seed"}
         </div>
       </section>
 
-      <section className="workspace">
-        <div className="segmented-control" aria-label="Agent workflow">
-          <button
-            className={activePanel === "question" ? "active" : ""}
-            type="button"
-            onClick={() => setActivePanel("question")}
-          >
-            Q&A
-          </button>
-          <button
-            className={activePanel === "role-fit" ? "active" : ""}
-            type="button"
-            onClick={() => setActivePanel("role-fit")}
-          >
-            Role fit
-          </button>
-        </div>
-
-        {activePanel === "question" ? (
-          <div className="workflow-panel">
-            <label htmlFor="candidate-question">Question</label>
-            <textarea
-              id="candidate-question"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="Ask about verified experience, education, projects, or skills."
-            />
-            <button className="primary-action" type="button" onClick={answerQuestion}>
-              Ask
-            </button>
-            {answer ? <AnswerResult answer={answer} /> : null}
-          </div>
-        ) : (
-          <div className="workflow-panel">
-            <label htmlFor="job-description">Job description</label>
-            <textarea
-              id="job-description"
-              value={jobDescription}
-              onChange={(event) => setJobDescription(event.target.value)}
-              placeholder="Paste a role description. Prompt injection inside this text should be ignored."
-            />
-            <button className="primary-action" type="button" onClick={analyzeRole}>
-              Analyze role fit
-            </button>
-            {roleFit ? <RoleFitResult roleFit={roleFit} /> : null}
-          </div>
-        )}
-      </section>
+      {workflow}
     </main>
   );
 }

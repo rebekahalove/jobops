@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 import jobops_api.command_center as command_center_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.command_router import CommandRouterServiceResult
-from jobops_api.db.models import Application, Base, CandidateProfile, InviteToken, TargetCompany, User
+from jobops_api.db.models import Application, Base, CandidateProfile, InviteToken, ProfileFact, ProfileFactDraft, TargetCompany, User
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -261,6 +261,91 @@ def test_authenticated_reads_and_writes_are_scoped_to_workspace(monkeypatch) -> 
             json={"status": "applied"},
         )
         assert forbidden_update.status_code == 404
+
+
+def test_user_cannot_edit_another_users_profile_fact(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_two_workspace_engine()
+    alpha_token = create_session_token(engine, email="chance@example.com", name="Chance Alpha", slug="chance-alpha")
+
+    with Session(engine) as session:
+        rebekah = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert rebekah is not None
+        draft = ProfileFactDraft(
+            candidate_profile_id=rebekah.id,
+            claim="Rebekah private draft fact.",
+            fact_type="private",
+            structured_value={"published": False},
+            source="resume",
+            confidence="unknown",
+            suggested_visibility="private",
+            review_status="needs_review",
+        )
+        session.add(draft)
+        session.commit()
+        draft_id = draft.id
+
+    with app_with_session(engine):
+        response = TestClient(app).patch(
+            f"/v1/profile/draft-items/fact/{draft_id}",
+            headers=INTERNAL_HEADERS,
+            cookies={SESSION_COOKIE_NAME: alpha_token},
+            json={"visibility": "public", "reviewStatus": "candidate_approved"},
+        )
+
+    assert response.status_code == 404
+
+
+def test_tenant_portfolio_exposes_only_that_tenants_published_public_facts(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_two_workspace_engine()
+
+    with Session(engine) as session:
+        rebekah = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        alpha = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "chance-alpha"))
+        assert rebekah is not None and alpha is not None
+        rebekah.profile_status = "published"
+        alpha.profile_status = "published"
+        session.add_all(
+            [
+                ProfileFact(
+                    candidate_profile_id=rebekah.id,
+                    fact_type="impact",
+                    claim="Rebekah public fact.",
+                    structured_value={},
+                    source="resume",
+                    visibility="public",
+                    verification_status="published",
+                ),
+                ProfileFact(
+                    candidate_profile_id=alpha.id,
+                    fact_type="impact",
+                    claim="Chance public fact.",
+                    structured_value={},
+                    source="resume",
+                    visibility="public",
+                    verification_status="published",
+                ),
+                ProfileFact(
+                    candidate_profile_id=alpha.id,
+                    fact_type="private",
+                    claim="Chance private fact.",
+                    structured_value={},
+                    source="resume",
+                    visibility="private",
+                    verification_status="published",
+                ),
+            ]
+        )
+        session.commit()
+
+    with app_with_session(engine):
+        response = TestClient(app).get("/v1/public/portfolio/chance-alpha")
+
+    assert response.status_code == 200
+    assert [fact["claim"] for fact in response.json()["facts"]] == ["Chance public fact."]
 
 
 def test_command_context_and_ai_actions_do_not_cross_tenants(monkeypatch, tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 export const profileIntakeSources = ["chat", "resume", "model"] as const;
-export const profileIntakeItemStatuses = ["draft", "needs_review"] as const;
+export const profileIntakeItemStatuses = ["draft", "needs_review", "candidate_approved", "reviewed", "rejected", "published"] as const;
 export const profileIntakeWorkModes = ["remote", "hybrid", "onsite", "flexible"] as const;
 
 export type ProfileIntakeSource = (typeof profileIntakeSources)[number];
@@ -10,8 +10,8 @@ export type ProfileExperienceItemType = "experience" | "project" | "education" |
 export type ProfileIntakeMetadata = {
   source: ProfileIntakeSource;
   status: ProfileIntakeItemStatus;
-  visibility: "private";
-  published: false;
+  visibility: "private" | "public";
+  published: boolean;
 };
 
 export type ProfileIntakeOutput = {

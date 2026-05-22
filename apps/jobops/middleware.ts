@@ -13,6 +13,7 @@ export const config = {
   matcher: [
     "/",
     "/about",
+    "/portfolio/:path*",
     "/profile/:path*",
     "/companies/:path*",
     "/jobs/:path*",
@@ -21,6 +22,8 @@ export const config = {
     "/follow-ups/:path*",
     "/fit-scoring/:path*",
     "/api/command-center",
+    "/api/profile",
+    "/api/profile/:path*",
     "/api/profile-intake",
     "/api/profile-draft",
     "/api/companies",

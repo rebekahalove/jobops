@@ -380,12 +380,12 @@ describe("Profile intake workspace", () => {
     expect(factsHtml).toContain("Certificate - Stanford Online (Coursera)");
   });
 
-  it("loads saved draft state from the profile-draft proxy", async () => {
+  it("loads saved profile review state from the profile proxy", async () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile(new URL("./profile-workspace.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain('apiBasePath = "/api"');
-    expect(source).toContain('fetch(`${apiBasePath}/profile-draft`)');
+    expect(source).toContain('fetch(`${apiBasePath}/profile`)');
     expect(source).toContain('addEventListener("jobops:profile-draft-updated"');
     expect(source).not.toContain('fetch("/api/profile-intake"');
     expect(source).toContain("applyProfileIntakeOutputToState");
