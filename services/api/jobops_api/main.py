@@ -22,6 +22,7 @@ from .profiles import (
     get_candidate_profile_by_slug,
     get_candidate_profile_by_tenant_or_profile_slug,
 )
+from .public_candidate_agent import router as public_candidate_agent_router
 from .public_jobops import router as public_jobops_router
 from .security import INTERNAL_API_KEY_HEADER, require_internal_api_key
 from .settings import load_settings
@@ -58,6 +59,7 @@ app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
 app.include_router(profile_review_router)
+app.include_router(public_candidate_agent_router)
 app.include_router(public_jobops_router)
 
 

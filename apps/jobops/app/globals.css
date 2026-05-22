@@ -1911,6 +1911,17 @@ main.page-shell .content-band {
   padding-left: 18px;
 }
 
+.form-error {
+  margin: 0;
+  color: #8f2f2f;
+  font-weight: 800;
+}
+
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .segmented-control {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(120px, 1fr));

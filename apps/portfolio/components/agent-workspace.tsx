@@ -52,6 +52,8 @@ export function AgentWorkspace({
   const [jobDescription, setJobDescription] = useState("");
   const [answer, setAnswer] = useState<CandidateAnswer | null>(null);
   const [roleFit, setRoleFit] = useState<RoleFitAnalysis | null>(null);
+  const [isAsking, setIsAsking] = useState(false);
+  const [chatError, setChatError] = useState("");
 
   const publishedFactCount = useMemo(
     () =>
@@ -61,16 +63,50 @@ export function AgentWorkspace({
     [profile.facts]
   );
 
-  function answerQuestion() {
-    const submittedQuestion = question.trim() || "No question was provided.";
+  async function answerQuestion() {
+    const submittedQuestion = question.trim();
+    if (!submittedQuestion) {
+      setChatError("Enter a question first.");
+      return;
+    }
+
     setLastQuestion(submittedQuestion);
-    setAnswer({
-      ...emptyAnswer,
-      unknowns: [
-        ...emptyAnswer.unknowns,
-        question.trim() ? `Question asked: "${question.trim()}"` : "No question was provided."
-      ]
-    });
+    setChatError("");
+
+    if (variant !== "embedded") {
+      setAnswer({
+        ...emptyAnswer,
+        unknowns: [...emptyAnswer.unknowns, `Question asked: "${submittedQuestion}"`]
+      });
+      return;
+    }
+
+    setIsAsking(true);
+    try {
+      const response = await fetch("/api/public/candidate-agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profileSlug: profile.slug, question: submittedQuestion })
+      });
+
+      if (!response.ok) {
+        throw new Error("Candidate agent request failed.");
+      }
+
+      setAnswer(sanitizeAnswer(await response.json()));
+      setQuestion("");
+    } catch {
+      setAnswer({
+        answer: "The public candidate agent is temporarily unavailable. Please try again later.",
+        verifiedFactsUsed: [],
+        inferences: [],
+        unknowns: [],
+        caveats: ["Answered only from published public profile information."]
+      });
+      setChatError("The candidate agent could not answer just now.");
+    } finally {
+      setIsAsking(false);
+    }
   }
 
   function analyzeRole() {
@@ -129,9 +165,10 @@ export function AgentWorkspace({
           onChange={(event) => setQuestion(event.target.value)}
           placeholder="Ask about verified experience, education, projects, or skills."
         />
-        <button className="primary-action" type="button" onClick={answerQuestion}>
-          Ask
+        <button className="primary-action" type="button" onClick={answerQuestion} disabled={isAsking}>
+          {isAsking ? "Asking..." : "Ask"}
         </button>
+        {chatError ? <p className="form-error">{chatError}</p> : null}
       </div>
     </section>
   );
@@ -163,7 +200,7 @@ export function AgentWorkspace({
             onChange={(event) => setQuestion(event.target.value)}
             placeholder="Ask about verified experience, education, projects, or skills."
           />
-          <button className="primary-action" type="button" onClick={answerQuestion}>
+          <button className="primary-action" type="button" onClick={answerQuestion} disabled={isAsking}>
             Ask
           </button>
           {answer ? <AnswerResult answer={answer} /> : null}
@@ -286,4 +323,24 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
       )}
     </div>
   );
+}
+
+function sanitizeAnswer(value: unknown): CandidateAnswer {
+  if (!value || typeof value !== "object") {
+    return emptyAnswer;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    answer: typeof record.answer === "string" && record.answer.trim() ? record.answer : emptyAnswer.answer,
+    verifiedFactsUsed: stringList(record.verifiedFactsUsed),
+    inferences: stringList(record.inferences),
+    unknowns: stringList(record.unknowns),
+    caveats: stringList(record.caveats)
+  };
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
 }

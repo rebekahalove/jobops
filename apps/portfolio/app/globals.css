@@ -354,6 +354,17 @@ h3 {
   padding-left: 18px;
 }
 
+.form-error {
+  margin: 0;
+  color: #8f2f2f;
+  font-weight: 800;
+}
+
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .portfolio-facts-band {
   position: relative;
   display: grid;

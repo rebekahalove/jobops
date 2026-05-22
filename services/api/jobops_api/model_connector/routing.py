@@ -10,6 +10,7 @@ DEFAULT_MODEL_TASKS: set[ModelTask] = {
     "profile_extract",
     "profile_draft_update",
     "intake_followup",
+    "public_candidate_qa",
     "role_fit",
     "judge_or_second_pass",
 }

@@ -364,12 +364,12 @@ This creates the first tenant, candidate profile, and domain mapping. It does no
 
 ## Run The API And Portfolio Together
 
-Start the API:
+Start the API. Use the port configured by `JOBOPS_API_BASE_URL` in `.env.dev`; recent local JobOps work has commonly used `8002`, while older docs/examples used `8000`.
 
 ```powershell
 cd C:\Users\rasho\jobops\services\api
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn jobops_api.main:app --reload --port 8000
+python -m uvicorn jobops_api.main:app --reload --host 127.0.0.1 --port 8002
 ```
 
 In another terminal, start the portfolio:
@@ -379,4 +379,20 @@ cd C:\Users\rasho\jobops
 corepack pnpm dev
 ```
 
-With `JOBOPS_API_BASE_URL=http://localhost:8000` in `.env.dev`, the portfolio should show `Backend API` as its data source.
+With `JOBOPS_API_BASE_URL=http://localhost:8002` in `.env.dev`, the portfolio loads public profile data from FastAPI. If you use a different backend port, update `.env.dev` before starting the frontend.
+
+The current route structure is:
+
+```text
+http://localhost:3000/                         # portfolio app root, hostname-resolved portfolio
+http://localhost:3000/portfolio                # explicit default portfolio route
+http://localhost:3000/portfolio/<tenant-slug>  # alpha tenant portfolio
+http://localhost:3000/jobops                   # mounted private JobOps dashboard
+http://localhost:3000/jobops/about             # mounted public alpha page
+http://localhost:3002/                         # standalone private JobOps dashboard
+http://localhost:3002/portfolio                # standalone local portfolio route for dashboard QA
+```
+
+The public candidate-agent chat is embedded on the portfolio page. It posts to `/api/public/candidate-agent`, which calls FastAPI server-side at `/v1/public/portfolio/<profile-slug>/questions`. There is intentionally no `/portfolio/agent` or `/portfolio/<tenant-slug>/agent` page in this alpha slice.
+
+Production portfolio fallback behavior is intentionally conservative: if the portfolio app cannot reach the backend in production, it shows a generic unavailable message and logs details server-side. Local development may still fall back to the committed seed profile.

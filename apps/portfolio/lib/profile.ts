@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import type { CandidateProfile } from "@jobops/contracts";
 import { publicProfile } from "@jobops/profile";
 import { getServerEnvValue } from "./server-env";
+import { unavailableProfile } from "./unavailable-profile";
 
 const DEFAULT_LOCAL_HOSTNAME = "rebekahalove.dev";
 
@@ -22,7 +23,7 @@ export async function loadCandidateProfile(): Promise<ProfileLoadResult> {
     if (production) {
       const degradedReason = "JOBOPS_API_BASE_URL is not configured, so the public profile cannot be loaded from the backend.";
       console.error(`[JobOps portfolio] ${degradedReason}`);
-      return { profile: unavailableProfile(hostname, degradedReason), source: "unavailable", degradedReason };
+      return { profile: unavailableProfile(hostname), source: "unavailable", degradedReason };
     }
 
     return { profile: publicProfile, source: "seed" };
@@ -40,7 +41,7 @@ export async function loadCandidateProfile(): Promise<ProfileLoadResult> {
       if (production) {
         const degradedReason = `Backend profile lookup failed for ${hostname}: ${response.status} ${response.statusText || "request failed"}.`;
         console.error(`[JobOps portfolio] ${degradedReason}`);
-        return { profile: unavailableProfile(hostname, degradedReason), source: "unavailable", degradedReason };
+        return { profile: unavailableProfile(hostname), source: "unavailable", degradedReason };
       }
 
       return { profile: publicProfile, source: "seed" };
@@ -54,7 +55,7 @@ export async function loadCandidateProfile(): Promise<ProfileLoadResult> {
     if (production) {
       const degradedReason = `Backend profile lookup failed for ${hostname}.`;
       console.error("[JobOps portfolio]", degradedReason, error);
-      return { profile: unavailableProfile(hostname, degradedReason), source: "unavailable", degradedReason };
+      return { profile: unavailableProfile(hostname), source: "unavailable", degradedReason };
     }
 
     return { profile: publicProfile, source: "seed" };
@@ -115,21 +116,4 @@ function emptyTenantProfile(tenantSlug: string): CandidateProfile {
 
 function isProductionLike(appEnv?: string) {
   return process.env.NODE_ENV === "production" || appEnv?.toLowerCase() === "prod" || appEnv?.toLowerCase() === "production";
-}
-
-function unavailableProfile(hostname: string, reason: string): CandidateProfile {
-  return {
-    id: hostname,
-    slug: hostname,
-    displayName: "Portfolio temporarily unavailable",
-    headline: "Public profile data could not be loaded.",
-    summary: reason,
-    profileStatus: "draft",
-    facts: [],
-    skillClaims: [],
-    experienceAndProjects: [],
-    evidenceLinks: [],
-    hasPublishedPublicContent: false,
-    updatedAt: new Date(0).toISOString()
-  };
 }
