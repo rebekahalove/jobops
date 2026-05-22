@@ -71,6 +71,59 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
     }
 
 
+def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
+    session = object_session(candidate_profile)
+    fact_rows = (
+        list(
+            session.scalars(
+                select(ProfileFact)
+                .where(
+                    ProfileFact.candidate_profile_id == candidate_profile.id,
+                    ProfileFact.visibility.in_(("private", "public")),
+                    ProfileFact.verification_status == "published",
+                )
+                .order_by(ProfileFact.created_at.asc())
+            )
+        )
+        if session is not None
+        else [fact for fact in candidate_profile.facts if fact.verification_status == "published"]
+    )
+    published_facts = [
+        {
+            "id": fact.id,
+            "claim": fact.claim,
+            "category": fact.fact_type,
+            "source": fact.source,
+            "visibility": fact.visibility,
+            "verificationStatus": fact.verification_status,
+        }
+        for fact in fact_rows
+    ]
+    published_role_target = latest_published_role_target(candidate_profile)
+    published_skills = published_skills_for_internal_context(candidate_profile.id, candidate_profile)
+    published_experiences = published_experience_for_internal_context(candidate_profile.id, candidate_profile)
+    published_links = published_links_for_internal_context(candidate_profile.id, candidate_profile)
+
+    return {
+        "id": candidate_profile.id,
+        "slug": candidate_profile.slug,
+        "displayName": candidate_profile.display_name,
+        "headline": candidate_profile.headline,
+        "summary": candidate_profile.summary,
+        "profileStatus": candidate_profile.profile_status,
+        "updatedAt": candidate_profile.updated_at.isoformat(),
+        "facts": published_facts,
+        "targetRoleIntent": serialize_published_role_target(published_role_target),
+        "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
+        "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
+        "evidenceLinks": [serialize_public_link(item) for item in published_links],
+        "hasPublishedPublicContent": any(
+            item.get("visibility") == "public"
+            for item in [*published_facts, *[serialize_public_skill(skill) for skill in published_skills], *[serialize_public_experience(item) for item in published_experiences], *[serialize_public_link(item) for item in published_links]]
+        ),
+    }
+
+
 def get_candidate_profile_by_slug(session: Session, slug: str, *, tenant_id: str | None = None) -> CandidateProfile | None:
     statement = select(CandidateProfile).where(CandidateProfile.slug == slug)
     if tenant_id is not None:
@@ -131,6 +184,22 @@ def latest_published_public_role_target(candidate_profile: CandidateProfile) -> 
     )
 
 
+def latest_published_role_target(candidate_profile: CandidateProfile) -> RoleTarget | None:
+    session = object_session(candidate_profile)
+    if session is None:
+        return None
+    return session.scalar(
+        select(RoleTarget)
+        .where(
+            RoleTarget.candidate_profile_id == candidate_profile.id,
+            RoleTarget.visibility.in_(("private", "public")),
+            RoleTarget.publication_status == "published",
+            RoleTarget.is_active.is_(True),
+        )
+        .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
+    )
+
+
 def published_public_skills(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[SkillClaim]:
     session = object_session(candidate_profile)
     if session is None:
@@ -141,6 +210,24 @@ def published_public_skills(candidate_profile_id: str, candidate_profile: Candid
             .where(
                 SkillClaim.candidate_profile_id == candidate_profile_id,
                 SkillClaim.visibility == "public",
+                SkillClaim.publication_status == "published",
+                SkillClaim.verification_status == "published",
+            )
+            .order_by(SkillClaim.skill_category.asc(), SkillClaim.skill_name.asc())
+        )
+    )
+
+
+def published_skills_for_internal_context(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[SkillClaim]:
+    session = object_session(candidate_profile)
+    if session is None:
+        return []
+    return list(
+        session.scalars(
+            select(SkillClaim)
+            .where(
+                SkillClaim.candidate_profile_id == candidate_profile_id,
+                SkillClaim.visibility.in_(("private", "public")),
                 SkillClaim.publication_status == "published",
                 SkillClaim.verification_status == "published",
             )
@@ -166,6 +253,23 @@ def published_public_experience(candidate_profile_id: str, candidate_profile: Ca
     )
 
 
+def published_experience_for_internal_context(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[ExperienceProjectDraft]:
+    session = object_session(candidate_profile)
+    if session is None:
+        return []
+    return list(
+        session.scalars(
+            select(ExperienceProjectDraft)
+            .where(
+                ExperienceProjectDraft.candidate_profile_id == candidate_profile_id,
+                ExperienceProjectDraft.visibility.in_(("private", "public")),
+                ExperienceProjectDraft.publication_status == "published",
+            )
+            .order_by(ExperienceProjectDraft.created_at.asc())
+        )
+    )
+
+
 def published_public_links(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[EvidenceArtifact]:
     session = object_session(candidate_profile)
     if session is None:
@@ -183,6 +287,23 @@ def published_public_links(candidate_profile_id: str, candidate_profile: Candida
     )
 
 
+def published_links_for_internal_context(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[EvidenceArtifact]:
+    session = object_session(candidate_profile)
+    if session is None:
+        return []
+    return list(
+        session.scalars(
+            select(EvidenceArtifact)
+            .where(
+                EvidenceArtifact.candidate_profile_id == candidate_profile_id,
+                EvidenceArtifact.visibility.in_(("private", "public")),
+                EvidenceArtifact.publication_status == "published",
+            )
+            .order_by(EvidenceArtifact.created_at.asc())
+        )
+    )
+
+
 def serialize_public_role_target(role_target: RoleTarget | None) -> dict[str, Any]:
     if role_target is None:
         return {}
@@ -193,6 +314,17 @@ def serialize_public_role_target(role_target: RoleTarget | None) -> dict[str, An
         "preferredLocations": role_target.preferred_locations,
         "workModes": role_target.work_modes,
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
+    }
+
+
+def serialize_published_role_target(role_target: RoleTarget | None) -> dict[str, Any]:
+    if role_target is None:
+        return {}
+    return {
+        **serialize_public_role_target(role_target),
+        "id": role_target.id,
+        "visibility": role_target.visibility,
+        "publicationStatus": role_target.publication_status,
     }
 
 

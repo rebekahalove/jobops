@@ -19,7 +19,7 @@ from .db.models import (
 )
 from .db.session import get_db_session
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
-from .profiles import candidate_profile_to_public_dict
+from .profiles import candidate_profile_to_public_dict, candidate_profile_to_published_dict
 from .security import require_internal_api_key
 
 
@@ -49,6 +49,7 @@ class DraftItemUpdate(BaseModel):
         default=None,
         alias="reviewStatus",
     )
+    publish_visibility: Literal["private", "public"] | None = Field(default=None, alias="publishVisibility")
 
 
 @router.get("/current")
@@ -130,6 +131,9 @@ def update_draft_item(
         if request.review_status is not None:
             item.review_status = request.review_status
 
+    if request.publish_visibility is not None:
+        publish_single_item_as(session, profile, item_type, item, request.publish_visibility)
+
     session.commit()
     return current_profile_payload(session, profile, auth.tenant.slug)
 
@@ -140,8 +144,8 @@ def publish_current_profile(
     auth: AuthContext = Depends(require_auth_context),
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
-    published_count = publish_approved_public_items(session, profile)
-    if public_content_count(session, profile.id) > 0:
+    published_count = publish_approved_items(session, profile)
+    if published_content_count(session, profile.id) > 0:
         profile.profile_status = "published"
     session.commit()
     return {
@@ -164,8 +168,10 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
                 "tenantSlug": tenant_slug,
             },
             "draft": get_latest_profile_draft_snapshot(session, profile),
+            "publishedProfile": candidate_profile_to_published_dict(profile),
             "publicProfile": candidate_profile_to_public_dict(profile),
             "publicPortfolioPath": f"/portfolio/{tenant_slug}",
+            "publishedItemCount": published_content_count(session, profile.id),
             "publishedPublicItemCount": public_content_count(session, profile.id),
         },
     }
@@ -190,12 +196,11 @@ def get_owned_draft_item(session: Session, candidate_profile_id: str, item_type:
     return item
 
 
-def publish_approved_public_items(session: Session, profile: CandidateProfile) -> int:
+def publish_approved_items(session: Session, profile: CandidateProfile) -> int:
     count = 0
     for fact in session.scalars(
         select(ProfileFactDraft).where(
             ProfileFactDraft.candidate_profile_id == profile.id,
-            ProfileFactDraft.suggested_visibility == "public",
             ProfileFactDraft.review_status.in_(("candidate_approved", "reviewed")),
         )
     ):
@@ -208,7 +213,7 @@ def publish_approved_public_items(session: Session, profile: CandidateProfile) -
             claim=fact.claim,
             structured_value={"derivedFromDraftFactId": fact.id},
             source=fact.source,
-            visibility="public",
+            visibility=fact.suggested_visibility,
             verification_status="published",
         )
         session.add(published_fact)
@@ -219,7 +224,6 @@ def publish_approved_public_items(session: Session, profile: CandidateProfile) -
     for skill in session.scalars(
         select(SkillClaim).where(
             SkillClaim.candidate_profile_id == profile.id,
-            SkillClaim.visibility == "public",
             SkillClaim.verification_status.in_(("candidate_approved", "reviewed")),
         )
     ):
@@ -231,7 +235,6 @@ def publish_approved_public_items(session: Session, profile: CandidateProfile) -
     for item in session.scalars(
         select(ExperienceProjectDraft).where(
             ExperienceProjectDraft.candidate_profile_id == profile.id,
-            ExperienceProjectDraft.visibility == "public",
             ExperienceProjectDraft.review_status.in_(("candidate_approved", "reviewed")),
         )
     ):
@@ -243,7 +246,6 @@ def publish_approved_public_items(session: Session, profile: CandidateProfile) -
     for link in session.scalars(
         select(EvidenceArtifact).where(
             EvidenceArtifact.candidate_profile_id == profile.id,
-            EvidenceArtifact.visibility == "public",
             EvidenceArtifact.review_status.in_(("candidate_approved", "reviewed")),
         )
     ):
@@ -253,6 +255,50 @@ def publish_approved_public_items(session: Session, profile: CandidateProfile) -
         link.publication_status = "published"
 
     return count
+
+
+def publish_single_item_as(
+    session: Session,
+    profile: CandidateProfile,
+    item_type: DraftItemType,
+    item,
+    visibility: Literal["private", "public"],
+) -> None:
+    if isinstance(item, ProfileFactDraft):
+        item.suggested_visibility = visibility
+        item.review_status = "reviewed"
+        structured_value = item.structured_value if isinstance(item.structured_value, dict) else {}
+        if structured_value.get("published") is not True:
+            published_fact = ProfileFact(
+                candidate_profile_id=profile.id,
+                fact_type=item.fact_type,
+                claim=item.claim,
+                structured_value={"derivedFromDraftFactId": item.id},
+                source=item.source,
+                visibility=visibility,
+                verification_status="published",
+            )
+            session.add(published_fact)
+            session.flush()
+            item.structured_value = {**structured_value, "published": True, "publishedFactId": published_fact.id}
+    elif isinstance(item, SkillClaim):
+        item.visibility = visibility
+        item.verification_status = "published"
+        item.publication_status = "published"
+    elif isinstance(item, ExperienceProjectDraft):
+        item.visibility = visibility
+        item.review_status = "reviewed"
+        item.publication_status = "published"
+    elif isinstance(item, EvidenceArtifact):
+        item.visibility = visibility
+        item.review_status = "reviewed"
+        item.publication_status = "published"
+    elif isinstance(item, RoleTarget):
+        item.visibility = visibility
+        item.review_status = "reviewed"
+        item.publication_status = "published"
+    if published_content_count(session, profile.id) > 0:
+        profile.profile_status = "published"
 
 
 def public_content_count(session: Session, candidate_profile_id: str) -> int:
@@ -296,6 +342,55 @@ def public_content_count(session: Session, candidate_profile_id: str) -> int:
                 select(EvidenceArtifact.id).where(
                     EvidenceArtifact.candidate_profile_id == candidate_profile_id,
                     EvidenceArtifact.visibility == "public",
+                    EvidenceArtifact.publication_status == "published",
+                )
+            )
+        )
+    )
+    return fact_count + skill_count + experience_count + link_count
+
+
+def published_content_count(session: Session, candidate_profile_id: str) -> int:
+    fact_count = len(
+        list(
+            session.scalars(
+                select(ProfileFact.id).where(
+                    ProfileFact.candidate_profile_id == candidate_profile_id,
+                    ProfileFact.visibility.in_(("private", "public")),
+                    ProfileFact.verification_status == "published",
+                )
+            )
+        )
+    )
+    skill_count = len(
+        list(
+            session.scalars(
+                select(SkillClaim.id).where(
+                    SkillClaim.candidate_profile_id == candidate_profile_id,
+                    SkillClaim.visibility.in_(("private", "public")),
+                    SkillClaim.verification_status == "published",
+                    SkillClaim.publication_status == "published",
+                )
+            )
+        )
+    )
+    experience_count = len(
+        list(
+            session.scalars(
+                select(ExperienceProjectDraft.id).where(
+                    ExperienceProjectDraft.candidate_profile_id == candidate_profile_id,
+                    ExperienceProjectDraft.visibility.in_(("private", "public")),
+                    ExperienceProjectDraft.publication_status == "published",
+                )
+            )
+        )
+    )
+    link_count = len(
+        list(
+            session.scalars(
+                select(EvidenceArtifact.id).where(
+                    EvidenceArtifact.candidate_profile_id == candidate_profile_id,
+                    EvidenceArtifact.visibility.in_(("private", "public")),
                     EvidenceArtifact.publication_status == "published",
                 )
             )

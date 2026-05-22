@@ -15,7 +15,7 @@ describe("Profile intake workspace", () => {
   it("renders the profile page", () => {
     const html = renderToStaticMarkup(<ProfilePage />);
 
-    expect(html).toContain("Review your JobOps profile draft.");
+    expect(html).toContain("Review and publish profile knowledge.");
   });
 
   it("does not render a standalone chat composer", () => {
@@ -33,11 +33,15 @@ describe("Profile intake workspace", () => {
   it("keeps structured fields as review/edit surfaces", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("Structured review");
-    expect(html).toContain("Review your JobOps profile draft.");
+    expect(html).toContain("Profile workspace");
+    expect(html).toContain("Review and publish profile knowledge.");
+    expect(html).toContain("Drafts");
+    expect(html).toContain("Published");
+    expect(html).toContain("Internal JobOps context");
+    expect(html).toContain("Public portfolio preview");
+    expect(html).toContain("Internal only");
     expect(html).toContain("Targets");
-    expect(html).toContain("Current Draft");
-    expect(html).toContain("Current published profile");
+    expect(html).toContain("Overview");
     expect(html).toContain("Experience &amp; Projects");
     expect(html).toContain("Skills");
     expect(html).toContain("Achievements &amp; Outcomes");
@@ -46,10 +50,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Education");
     expect(html).toContain("Certifications");
     expect(html).toContain("aria-orientation=\"vertical\"");
-    expect(html).toContain("aria-label=\"Needs verification\"");
-    expect(html).toContain("title=\"Private\"");
-    expect(html).toContain("title=\"Not published\"");
-    expect(html).toContain("title=\"Agent draft\"");
+    expect(html).toContain("Profile section navigation");
     expect(html).not.toContain("Review section");
     expect(html).not.toContain("Human-approved facts");
     expect(html).not.toContain("Public facts");
@@ -57,16 +58,16 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("experience containers");
     expect(html).not.toContain("Latest profile intake");
     expect(html).not.toContain("Draft review queues");
-    expect(html).not.toContain("<p class=\"eyebrow\">Profile workspace</p>");
     expect(html).not.toContain("Review &amp; verify profile data");
   });
 
-  it("keeps review sections in collapsible panels", () => {
+  it("keeps profile review and context summaries visible without nested collapsible panels", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("aria-label=\"Collapse What changed\"");
-    expect(html).toContain("aria-label=\"Collapse Review your JobOps profile draft.\"");
-    expect(html).toContain("aria-label=\"Collapse Clarifying questions\"");
+    expect(html).toContain("Recent changes");
+    expect(html).toContain("Follow-up queue");
+    expect(html).toContain("Published knowledge active internally");
+    expect(html).not.toContain("aria-label=\"Collapse What changed\"");
     expect(html).toContain("Targets");
     expect(html).toContain("No questions yet");
   });
@@ -75,8 +76,8 @@ describe("Profile intake workspace", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
     expect(html).toContain("Use the JobOps command center above to update your profile draft.");
-    expect(html).toContain("No experience &amp; projects drafted yet.");
-    expect(html).toContain("Command-center profile intake should pull these answers forward over time.");
+    expect(html).toContain("Draft items are pending review");
+    expect(html).toContain("Follow-up queue");
     expect(html).not.toContain("Send a message or attach a resume");
     expect(html).not.toContain("Use the conversation panel");
     expect(html).not.toContain("local summary");
@@ -242,6 +243,73 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Remote - Louisville, KY");
     expect(html).toContain("Type: experience");
     expect(html).not.toContain("<dt>Type</dt>");
+  });
+
+  it("labels draft lifecycle actions as publish internal, publish public, and reject", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [
+        {
+          claim: "Built an LLM eval harness.",
+          category: "evals",
+          source: "chat",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      skillClaims: [],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList activeLifecycle="drafts" activeTab="facts" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(html).toContain("Publish internal");
+    expect(html).toContain("Publish public");
+    expect(html).toContain("Reject");
+    expect(html).not.toContain(">Approve<");
+  });
+
+  it("badges published internal-only and public items separately", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="published"
+        activeTab="facts"
+        draft={null}
+        onTabChange={() => undefined}
+        publishedProfile={{
+          facts: [
+            {
+              id: "internal-fact",
+              claim: "Internal active fact.",
+              category: "internal",
+              source: "resume",
+              visibility: "private",
+              verificationStatus: "published"
+            },
+            {
+              id: "public-fact",
+              claim: "Public active fact.",
+              category: "public",
+              source: "resume",
+              visibility: "public",
+              verificationStatus: "published"
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(html).toContain("Internal only");
+    expect(html).toContain("Public");
+    expect(html).toContain("Internal active fact.");
+    expect(html).toContain("Public active fact.");
   });
 
   it("shows review placeholders for missing experience dates and location", () => {

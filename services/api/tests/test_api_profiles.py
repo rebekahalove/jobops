@@ -208,6 +208,10 @@ def test_profile_publish_promotes_only_authenticated_users_approved_public_facts
     payload = response.json()["result"]
     assert payload["profile"]["profileStatus"] == "published"
     assert [fact["claim"] for fact in payload["publicProfile"]["facts"]] == ["Approved public fact."]
+    assert sorted(fact["claim"] for fact in payload["publishedProfile"]["facts"]) == [
+        "Approved public fact.",
+        "Private approved fact.",
+    ]
 
 
 class app_with_session:

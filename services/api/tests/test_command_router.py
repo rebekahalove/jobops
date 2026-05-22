@@ -33,9 +33,9 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 work_modes=["remote"],
                 constraints={"domainsOrIndustries": "progressive politics"},
                 source="model",
-                review_status="needs_review",
+                review_status="reviewed",
                 visibility="private",
-                publication_status="not_published",
+                publication_status="published",
                 is_active=True,
             )
         )
