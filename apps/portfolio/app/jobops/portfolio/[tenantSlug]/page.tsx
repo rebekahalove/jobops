@@ -7,5 +7,5 @@ export default async function TenantPortfolioPage({ params }: { params: Promise<
   const { tenantSlug } = await params;
   const { profile, source } = await loadTenantPortfolioProfile(tenantSlug);
 
-  return <PublicPortfolio agentHref={`/jobops/portfolio/${tenantSlug}/agent`} profile={profile} source={source} />;
+  return <PublicPortfolio profile={profile} source={source} />;
 }

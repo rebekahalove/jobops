@@ -1,13 +1,14 @@
 import type { CandidateProfile } from "@jobops/contracts";
 import { AgentWorkspace } from "./agent-workspace";
 
+type ProfileSource = "api" | "seed" | "unavailable";
+
 export function PublicPortfolio({
   profile,
   source
 }: {
-  agentHref?: string | null;
   profile: CandidateProfile;
-  source: "api" | "seed";
+  source: ProfileSource;
 }) {
   const facts = publicFacts(profile);
   const skills = (profile.skillClaims ?? []).filter((skill) => skill.visibility === "public" && skill.publicationStatus === "published");
@@ -23,24 +24,31 @@ export function PublicPortfolio({
   const hasProfileDetails = Boolean(education.length || certifications.length || links.length);
   const hasProofRail = Boolean(skills.length || achievements.length);
   const isPublished = profile.profileStatus === "published" && Boolean(profile.hasPublishedPublicContent || facts.length || skills.length || experience.length || links.length);
+  const unavailable = source === "unavailable";
 
   if (!isPublished) {
     return (
       <main className="page-shell">
         <section className="hero portfolio-hero">
-          <p className="eyebrow">JobOps public portfolio</p>
-          <h1>Profile not published yet</h1>
-          <p className="lede">This alpha portfolio exists, but approved public profile facts have not been published.</p>
-          <div className="status-grid">
-            <div>
-              <dt>Profile state</dt>
-              <dd>{profile.profileStatus}</dd>
+          <p className="eyebrow">{unavailable ? "JobOps public portfolio degraded" : "JobOps public portfolio"}</p>
+          <h1>{unavailable ? profile.displayName : "Profile not published yet"}</h1>
+          <p className="lede">
+            {unavailable
+              ? profile.summary || profile.headline
+              : "This alpha portfolio exists, but approved public profile facts have not been published."}
+          </p>
+          {!unavailable ? (
+            <div className="status-grid">
+              <div>
+                <dt>Profile state</dt>
+                <dd>{profile.profileStatus}</dd>
+              </div>
+              <div>
+                <dt>Published facts</dt>
+                <dd>0</dd>
+              </div>
             </div>
-            <div>
-              <dt>Published facts</dt>
-              <dd>0</dd>
-            </div>
-          </div>
+          ) : null}
         </section>
       </main>
     );

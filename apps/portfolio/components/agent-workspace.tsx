@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { CandidateAnswer, CandidateProfile, RoleFitAnalysis } from "@jobops/contracts";
 
 type ActivePanel = "question" | "role-fit";
+type ProfileSource = "api" | "seed" | "unavailable";
 
 const emptyAnswer: CandidateAnswer = {
   answer:
@@ -43,7 +44,7 @@ export function AgentWorkspace({
   backHref?: string;
   variant?: "page" | "embedded";
   profile: CandidateProfile;
-  source: "api" | "seed";
+  source: ProfileSource;
 }) {
   const [activePanel, setActivePanel] = useState<ActivePanel>("question");
   const [question, setQuestion] = useState("");
@@ -196,7 +197,7 @@ export function AgentWorkspace({
           </p>
         </div>
         <div className="fact-pill">
-          {publishedFactCount} published facts / {source === "api" ? "API" : "seed"}
+          {publishedFactCount} published facts / {sourceLabel(source)}
         </div>
         {embeddedWorkflow}
       </section>
@@ -218,13 +219,23 @@ export function AgentWorkspace({
           </p>
         </div>
         <div className="fact-pill">
-          {publishedFactCount} published facts / {source === "api" ? "API" : "seed"}
+          {publishedFactCount} published facts / {sourceLabel(source)}
         </div>
       </section>
 
       {workflow}
     </main>
   );
+}
+
+function sourceLabel(source: ProfileSource) {
+  if (source === "api") {
+    return "API";
+  }
+  if (source === "unavailable") {
+    return "unavailable";
+  }
+  return "seed";
 }
 
 function AnswerResult({ answer }: { answer: CandidateAnswer }) {
