@@ -26,6 +26,7 @@ from .security import require_internal_api_key
 router = APIRouter(prefix="/v1/profile", tags=["profile"], dependencies=[Depends(require_internal_api_key)])
 
 DraftItemType = Literal["fact", "skill", "experience", "evidence", "target-role"]
+PublishedItemType = DraftItemType
 
 
 class ProfileFieldsUpdate(BaseModel):
@@ -50,6 +51,11 @@ class DraftItemUpdate(BaseModel):
         alias="reviewStatus",
     )
     publish_visibility: Literal["private", "public"] | None = Field(default=None, alias="publishVisibility")
+
+
+class PublishedItemUpdate(BaseModel):
+    visibility: Literal["private", "public"] | None = None
+    archive: bool = False
 
 
 @router.get("/current")
@@ -138,6 +144,26 @@ def update_draft_item(
     return current_profile_payload(session, profile, auth.tenant.slug)
 
 
+@router.patch("/published-items/{item_type}/{item_id}")
+def update_published_item(
+    item_type: PublishedItemType,
+    item_id: str,
+    request: PublishedItemUpdate,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    profile = auth.candidate_profile
+    item = get_owned_published_item(session, profile.id, item_type, item_id)
+
+    if request.visibility is not None:
+        set_item_visibility(item, request.visibility)
+    if request.archive:
+        archive_published_item(item)
+
+    session.commit()
+    return current_profile_payload(session, profile, auth.tenant.slug)
+
+
 @router.post("/publish")
 def publish_current_profile(
     session: Session = Depends(get_db_session),
@@ -173,6 +199,7 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
             "publicPortfolioPath": f"/portfolio/{tenant_slug}",
             "publishedItemCount": published_content_count(session, profile.id),
             "publishedPublicItemCount": public_content_count(session, profile.id),
+            "archivedItemCount": archived_content_count(session, profile.id),
         },
     }
 
@@ -194,6 +221,63 @@ def get_owned_draft_item(session: Session, candidate_profile_id: str, item_type:
     if item is None:
         raise HTTPException(status_code=404, detail="Draft profile item not found.")
     return item
+
+
+def get_owned_published_item(session: Session, candidate_profile_id: str, item_type: PublishedItemType, item_id: str):
+    model = {
+        "fact": ProfileFact,
+        "skill": SkillClaim,
+        "experience": ExperienceProjectDraft,
+        "evidence": EvidenceArtifact,
+        "target-role": RoleTarget,
+    }[item_type]
+    item = session.scalar(
+        select(model).where(
+            model.id == item_id,
+            model.candidate_profile_id == candidate_profile_id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Published profile item not found.")
+    return item
+
+
+def set_item_visibility(item, visibility: Literal["private", "public"]) -> None:
+    if isinstance(item, ProfileFact):
+        if item.verification_status != "published":
+            raise HTTPException(status_code=400, detail="Only published facts can change visibility.")
+        item.visibility = visibility
+        return
+    if isinstance(item, (SkillClaim, ExperienceProjectDraft, EvidenceArtifact, RoleTarget)):
+        if getattr(item, "publication_status", None) != "published":
+            raise HTTPException(status_code=400, detail="Only published items can change visibility.")
+        item.visibility = visibility
+        return
+    raise HTTPException(status_code=400, detail="Unsupported profile item type.")
+
+
+def archive_published_item(item) -> None:
+    # Archived items are not active JobOps knowledge and are excluded from public serialization.
+    if isinstance(item, ProfileFact):
+        item.visibility = "private"
+        item.verification_status = "rejected"
+    elif isinstance(item, SkillClaim):
+        item.visibility = "private"
+        item.verification_status = "rejected"
+        item.publication_status = "archived"
+    elif isinstance(item, ExperienceProjectDraft):
+        item.visibility = "private"
+        item.review_status = "rejected"
+        item.publication_status = "archived"
+    elif isinstance(item, EvidenceArtifact):
+        item.visibility = "private"
+        item.review_status = "rejected"
+        item.publication_status = "archived"
+    elif isinstance(item, RoleTarget):
+        item.visibility = "private"
+        item.review_status = "rejected"
+        item.publication_status = "archived"
+        item.is_active = False
 
 
 def publish_approved_items(session: Session, profile: CandidateProfile) -> int:
@@ -347,7 +431,19 @@ def public_content_count(session: Session, candidate_profile_id: str) -> int:
             )
         )
     )
-    return fact_count + skill_count + experience_count + link_count
+    target_count = len(
+        list(
+            session.scalars(
+                select(RoleTarget.id).where(
+                    RoleTarget.candidate_profile_id == candidate_profile_id,
+                    RoleTarget.visibility == "public",
+                    RoleTarget.publication_status == "published",
+                    RoleTarget.is_active.is_(True),
+                )
+            )
+        )
+    )
+    return fact_count + skill_count + experience_count + link_count + target_count
 
 
 def published_content_count(session: Session, candidate_profile_id: str) -> int:
@@ -396,7 +492,83 @@ def published_content_count(session: Session, candidate_profile_id: str) -> int:
             )
         )
     )
-    return fact_count + skill_count + experience_count + link_count
+    target_count = len(
+        list(
+            session.scalars(
+                select(RoleTarget.id).where(
+                    RoleTarget.candidate_profile_id == candidate_profile_id,
+                    RoleTarget.visibility.in_(("private", "public")),
+                    RoleTarget.publication_status == "published",
+                    RoleTarget.is_active.is_(True),
+                )
+            )
+        )
+    )
+    return fact_count + skill_count + experience_count + link_count + target_count
+
+
+def archived_content_count(session: Session, candidate_profile_id: str) -> int:
+    fact_count = len(
+        list(
+            session.scalars(
+                select(ProfileFact.id).where(
+                    ProfileFact.candidate_profile_id == candidate_profile_id,
+                    ProfileFact.verification_status == "rejected",
+                )
+            )
+        )
+    )
+    draft_fact_count = len(
+        list(
+            session.scalars(
+                select(ProfileFactDraft.id).where(
+                    ProfileFactDraft.candidate_profile_id == candidate_profile_id,
+                    ProfileFactDraft.review_status == "rejected",
+                )
+            )
+        )
+    )
+    skill_count = len(
+        list(
+            session.scalars(
+                select(SkillClaim.id).where(
+                    SkillClaim.candidate_profile_id == candidate_profile_id,
+                    SkillClaim.verification_status == "rejected",
+                )
+            )
+        )
+    )
+    experience_count = len(
+        list(
+            session.scalars(
+                select(ExperienceProjectDraft.id).where(
+                    ExperienceProjectDraft.candidate_profile_id == candidate_profile_id,
+                    ExperienceProjectDraft.review_status == "rejected",
+                )
+            )
+        )
+    )
+    link_count = len(
+        list(
+            session.scalars(
+                select(EvidenceArtifact.id).where(
+                    EvidenceArtifact.candidate_profile_id == candidate_profile_id,
+                    EvidenceArtifact.review_status == "rejected",
+                )
+            )
+        )
+    )
+    target_count = len(
+        list(
+            session.scalars(
+                select(RoleTarget.id).where(
+                    RoleTarget.candidate_profile_id == candidate_profile_id,
+                    RoleTarget.review_status == "rejected",
+                )
+            )
+        )
+    )
+    return fact_count + draft_fact_count + skill_count + experience_count + link_count + target_count
 
 
 def required_trimmed(value: str, field_name: str) -> str:

@@ -312,12 +312,17 @@ def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, 
 
     constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
     payload = {
+        "id": role_target.id,
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
         "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
         "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
+        "source": role_target.source,
+        "status": role_target.review_status,
+        "visibility": role_target.visibility,
+        "published": role_target.publication_status == "published",
     }
     return {key: value for key, value in payload.items() if value}
 

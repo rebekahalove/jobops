@@ -11,6 +11,7 @@ from jobops_api.db.models import (
     EvidenceArtifact,
     ExperienceProjectDraft,
     ProfileFact,
+    ProfileFactDraft,
     RoleTarget,
     SkillClaim,
     Tenant,
@@ -67,7 +68,9 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
-        "hasPublishedPublicContent": bool(published_facts or published_skills or published_experiences or published_links),
+        "hasPublishedPublicContent": bool(
+            published_facts or published_skills or published_experiences or published_links or published_role_target
+        ),
     }
 
 
@@ -122,6 +125,134 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
             for item in [*published_facts, *[serialize_public_skill(skill) for skill in published_skills], *[serialize_public_experience(item) for item in published_experiences], *[serialize_public_link(item) for item in published_links]]
         ),
     }
+
+
+def candidate_profile_to_private_context_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
+    """Private command-center context: active published knowledge plus labeled inactive review context."""
+    published = candidate_profile_to_published_dict(candidate_profile)
+    session = object_session(candidate_profile)
+    draft_items: list[dict[str, Any]] = []
+    archived_items: list[dict[str, Any]] = []
+    if session is not None:
+        draft_items = [
+            *[
+                {
+                    "type": "fact",
+                    "id": item.id,
+                    "claim": item.claim,
+                    "category": item.fact_type,
+                    "visibility": item.suggested_visibility,
+                    "state": "draft",
+                }
+                for item in session.scalars(
+                    select(ProfileFactDraft)
+                    .where(
+                        ProfileFactDraft.candidate_profile_id == candidate_profile.id,
+                        ProfileFactDraft.review_status.in_(("draft", "needs_review", "candidate_approved")),
+                    )
+                    .order_by(ProfileFactDraft.created_at.asc())
+                )
+            ],
+            *[
+                {
+                    "type": "skill",
+                    "id": item.id,
+                    "skill": item.skill_name,
+                    "category": item.skill_category,
+                    "visibility": item.visibility,
+                    "state": "draft",
+                }
+                for item in session.scalars(
+                    select(SkillClaim)
+                    .where(
+                        SkillClaim.candidate_profile_id == candidate_profile.id,
+                        SkillClaim.publication_status != "published",
+                        SkillClaim.verification_status.in_(("draft", "needs_review", "candidate_approved", "reviewed")),
+                    )
+                    .order_by(SkillClaim.created_at.asc())
+                )
+            ],
+            *[
+                {
+                    "type": "experience",
+                    "id": item.id,
+                    "title": item.title,
+                    "organization": item.organization,
+                    "visibility": item.visibility,
+                    "state": "draft",
+                }
+                for item in session.scalars(
+                    select(ExperienceProjectDraft)
+                    .where(
+                        ExperienceProjectDraft.candidate_profile_id == candidate_profile.id,
+                        ExperienceProjectDraft.publication_status != "published",
+                        ExperienceProjectDraft.review_status.in_(("draft", "needs_review", "candidate_approved", "reviewed")),
+                    )
+                    .order_by(ExperienceProjectDraft.created_at.asc())
+                )
+            ],
+        ]
+        archived_items = [
+            *[
+                {"type": "fact", "id": item.id, "claim": item.claim, "category": item.fact_type, "state": "archived"}
+                for item in session.scalars(
+                    select(ProfileFactDraft)
+                    .where(
+                        ProfileFactDraft.candidate_profile_id == candidate_profile.id,
+                        ProfileFactDraft.review_status == "rejected",
+                    )
+                    .order_by(ProfileFactDraft.created_at.asc())
+                )
+            ],
+            *[
+                {"type": "fact", "id": item.id, "claim": item.claim, "category": item.fact_type, "state": "archived"}
+                for item in session.scalars(
+                    select(ProfileFact)
+                    .where(
+                        ProfileFact.candidate_profile_id == candidate_profile.id,
+                        ProfileFact.verification_status == "rejected",
+                    )
+                    .order_by(ProfileFact.created_at.asc())
+                )
+            ],
+        ]
+
+    public_items, internal_items = partition_published_items(published)
+    return {
+        "profile_basics": {
+            "id": candidate_profile.id,
+            "slug": candidate_profile.slug,
+            "displayName": candidate_profile.display_name,
+            "headline": candidate_profile.headline,
+            "summary": candidate_profile.summary,
+            "profileStatus": candidate_profile.profile_status,
+        },
+        "targets": published.get("targetRoleIntent") or {},
+        "published_public_items": public_items,
+        "published_internal_items": internal_items,
+        "draft_items": draft_items,
+        "archived_suppressed_items_summary": archived_items[:25],
+    }
+
+
+def partition_published_items(published_profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    public_items: list[dict[str, Any]] = []
+    internal_items: list[dict[str, Any]] = []
+    for collection_name in ("facts", "skillClaims", "experienceAndProjects", "evidenceLinks"):
+        for item in published_profile.get(collection_name) or []:
+            decorated = {"collection": collection_name, **item}
+            if item.get("visibility") == "public":
+                public_items.append(decorated)
+            else:
+                internal_items.append(decorated)
+    target = published_profile.get("targetRoleIntent") or {}
+    if target:
+        decorated_target = {"collection": "targetRoleIntent", **target}
+        if target.get("visibility") == "public":
+            public_items.append(decorated_target)
+        else:
+            internal_items.append(decorated_target)
+    return public_items, internal_items
 
 
 def get_candidate_profile_by_slug(session: Session, slug: str, *, tenant_id: str | None = None) -> CandidateProfile | None:

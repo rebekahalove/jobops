@@ -73,8 +73,12 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
     assert router_context["current_saved_companies"][0]["id"]
     assert router_context["current_saved_companies"][0]["domains"] == ["civicactions.com"]
     assert router_context["target_summary"]["target_role_titles"] == ["Applied AI Engineer"]
+    assert router_context["profile_context"]["profile_basics"]["displayName"] == "Rebekah Love"
+    assert router_context["profile_context"]["published_internal_items"][0]["collection"] == "targetRoleIntent"
+    assert router_context["profile_context"]["published_public_items"] == []
+    assert router_context["profile_context"]["draft_items"] == []
+    assert router_context["privacy_rules"]["private_profile_context_is_authenticated_only"] is True
     assert router_context["context_caps"]["current_companies"] == 50
-    assert "Verified public profile facts" not in request.messages[1].content
 
 
 def test_mock_command_router_routes_examples(tmp_path: Path) -> None:

@@ -1,12 +1,17 @@
 import type { ProfileExperienceItemType, ProfileIntakeOutput, ProfileIntakeSource } from "./profile-intake-contract";
 
 export type TargetRoleIntent = {
+  id?: string;
   targetTitles: string;
   roleFamilies: string;
   preferredWorkMode: "remote" | "hybrid" | "onsite" | "flexible";
   preferredLocations: string;
   domainsOfInterest: string;
   constraints: string;
+  source?: ProfileIntakeSource;
+  status?: DraftGeneratedStatus;
+  visibility?: "private" | "public";
+  published?: boolean;
 };
 
 export type DraftGeneratedStatus = "draft" | "needs_review" | "candidate_approved" | "reviewed" | "rejected" | "published";
@@ -383,12 +388,17 @@ export function applyProfileIntakeOutputToState(
   turn: MockIntakeTurn;
 } {
   const intent = mergeIntent(currentIntent, {
+    id: output.targetRoleIntent.id,
     targetTitles: output.targetRoleIntent.targetTitles,
     roleFamilies: output.targetRoleIntent.targetRoleFamilies,
     preferredWorkMode: output.targetRoleIntent.preferredWorkMode,
     preferredLocations: output.targetRoleIntent.preferredLocations,
     domainsOfInterest: output.targetRoleIntent.domainsOrIndustries,
-    constraints: output.targetRoleIntent.constraints
+    constraints: output.targetRoleIntent.constraints,
+    source: output.targetRoleIntent.source,
+    status: output.targetRoleIntent.status,
+    visibility: output.targetRoleIntent.visibility,
+    published: output.targetRoleIntent.published
   });
   const draft: MockProfileDraft = {
     resumeTextLength: 0,
@@ -513,7 +523,9 @@ function mergeIntent(currentIntent: TargetRoleIntent, derivedIntent: Partial<Tar
   return {
     ...currentIntent,
     ...Object.fromEntries(
-      Object.entries(derivedIntent).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+      Object.entries(derivedIntent).filter(([, value]) =>
+        typeof value === "string" ? value.trim().length > 0 : typeof value === "boolean"
+      )
     )
   };
 }

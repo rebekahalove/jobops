@@ -30,6 +30,7 @@ from .model_connector import (
     read_model_connector_config_from_settings,
     route_model_request,
 )
+from .profiles import candidate_profile_to_private_context_dict
 from .settings import Settings
 
 
@@ -276,9 +277,11 @@ def build_command_router_context(
     db_session: Session,
 ) -> dict[str, Any]:
     target_summary: dict[str, Any] = {}
+    private_profile_context: dict[str, Any] = {}
     current_companies: list[dict[str, Any]] = []
     if request.candidate_profile is not None:
         target_summary = build_candidate_target_context(db_session, request.candidate_profile)
+        private_profile_context = candidate_profile_to_private_context_dict(request.candidate_profile)
         current_companies = serialize_router_companies(
             db_session,
             request.candidate_profile.id,
@@ -292,6 +295,7 @@ def build_command_router_context(
         "available_actions": available_router_actions(),
         "current_saved_companies": current_companies,
         "target_summary": target_summary,
+        "profile_context": private_profile_context,
         "context_caps": {
             "current_companies": COMPANY_CONTEXT_CAP,
             "future_current_jobs": 25,
@@ -302,8 +306,9 @@ def build_command_router_context(
             "recent_applications": [],
         },
         "privacy_rules": {
-            "do_not_include_full_private_profile_or_resume": True,
-            "router_only_selects_action_and_minimal_arguments": True,
+            "private_profile_context_is_authenticated_only": True,
+            "public_portfolio_agent_must_not_receive_profile_context": True,
+            "draft_and_archived_items_are_labeled_inactive": True,
         },
     }
 

@@ -214,6 +214,160 @@ def test_profile_publish_promotes_only_authenticated_users_approved_public_facts
     ]
 
 
+def test_profile_item_lifecycle_publishes_and_archives_individual_drafts(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        public_draft = ProfileFactDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            claim="Public item-by-item fact.",
+            fact_type="impact",
+            structured_value={"published": False},
+            source="resume",
+            confidence="unknown",
+            suggested_visibility="private",
+            review_status="needs_review",
+        )
+        internal_draft = ProfileFactDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            claim="Internal item-by-item fact.",
+            fact_type="private",
+            structured_value={"published": False},
+            source="resume",
+            confidence="unknown",
+            suggested_visibility="private",
+            review_status="needs_review",
+        )
+        archived_draft = ProfileFactDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            claim="Suppress this fact.",
+            fact_type="obsolete",
+            structured_value={"published": False},
+            source="resume",
+            confidence="unknown",
+            suggested_visibility="public",
+            review_status="needs_review",
+        )
+        session.add_all([public_draft, internal_draft, archived_draft])
+        session.flush()
+        public_draft_id = public_draft.id
+        internal_draft_id = internal_draft.id
+        archived_draft_id = archived_draft.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        public_response = client.patch(
+            f"/v1/profile/draft-items/fact/{public_draft_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "public"},
+        )
+        internal_response = client.patch(
+            f"/v1/profile/draft-items/fact/{internal_draft_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "private"},
+        )
+        archive_response = client.patch(
+            f"/v1/profile/draft-items/fact/{archived_draft_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"reviewStatus": "rejected", "visibility": "private"},
+        )
+
+    assert public_response.status_code == 200
+    assert internal_response.status_code == 200
+    assert archive_response.status_code == 200
+    final_payload = archive_response.json()["result"]
+    assert [fact["claim"] for fact in final_payload["publicProfile"]["facts"]] == ["Public item-by-item fact."]
+    assert sorted(fact["claim"] for fact in final_payload["publishedProfile"]["facts"]) == [
+        "Internal item-by-item fact.",
+        "Public item-by-item fact.",
+    ]
+    assert final_payload["archivedItemCount"] == 1
+
+
+def test_published_item_visibility_and_archive_update_public_serialization(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        fact = ProfileFact(
+            candidate_profile_id=auth.candidate_profile.id,
+            fact_type="impact",
+            claim="Published public fact.",
+            structured_value={},
+            source="resume",
+            visibility="public",
+            verification_status="published",
+        )
+        session.add(fact)
+        session.flush()
+        fact_id = fact.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        private_response = client.patch(
+            f"/v1/profile/published-items/fact/{fact_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"visibility": "private"},
+        )
+        archive_response = client.patch(
+            f"/v1/profile/published-items/fact/{fact_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"archive": True},
+        )
+
+    assert private_response.status_code == 200
+    private_payload = private_response.json()["result"]
+    assert private_payload["publicProfile"]["facts"] == []
+    assert private_payload["publishedProfile"]["facts"][0]["claim"] == "Published public fact."
+    assert archive_response.status_code == 200
+    archive_payload = archive_response.json()["result"]
+    assert archive_payload["publicProfile"]["facts"] == []
+    assert archive_payload["publishedProfile"]["facts"] == []
+    assert archive_payload["archivedItemCount"] == 1
+
+
 class app_with_session:
     def __init__(self, engine) -> None:
         self.engine = engine

@@ -41,7 +41,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Public portfolio preview");
     expect(html).toContain("Internal only");
     expect(html).toContain("Targets");
-    expect(html).toContain("Overview");
+    expect(html).toContain("Profile basics");
     expect(html).toContain("Experience &amp; Projects");
     expect(html).toContain("Skills");
     expect(html).toContain("Achievements &amp; Outcomes");
@@ -245,7 +245,7 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("<dt>Type</dt>");
   });
 
-  it("labels draft lifecycle actions as publish internal, publish public, and reject", () => {
+  it("labels draft lifecycle actions as publish internal, publish public, and archive", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
       targetRoleIntent: {},
@@ -272,7 +272,8 @@ describe("Profile intake workspace", () => {
 
     expect(html).toContain("Publish internal");
     expect(html).toContain("Publish public");
-    expect(html).toContain("Reject");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("Reject");
     expect(html).not.toContain(">Approve<");
   });
 

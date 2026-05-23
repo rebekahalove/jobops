@@ -17,12 +17,17 @@ export type ProfileIntakeMetadata = {
 export type ProfileIntakeOutput = {
   assistantMessage: string;
   targetRoleIntent: {
+    id?: string;
     targetTitles?: string;
     targetRoleFamilies?: string;
     preferredWorkMode?: ProfileIntakeWorkMode;
     preferredLocations?: string;
     domainsOrIndustries?: string;
     constraints?: string;
+    source?: ProfileIntakeSource;
+    status?: ProfileIntakeItemStatus;
+    visibility?: "private" | "public";
+    published?: boolean;
   };
   draftFacts: Array<
     ProfileIntakeMetadata & {
