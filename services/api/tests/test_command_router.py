@@ -13,7 +13,7 @@ from jobops_api.command_router import (
     build_command_router_model_request,
     run_command_router,
 )
-from jobops_api.db.models import Base, RoleTarget, TargetCompany
+from jobops_api.db.models import Base, ProfileFactDraft, RoleTarget, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.settings import Settings
@@ -50,6 +50,18 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 source_urls=["https://civicactions.com"],
             )
         )
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=profile.id,
+                claim="Do not recreate this stale claim.",
+                fact_type="obsolete",
+                structured_value={},
+                source="model",
+                confidence="unknown",
+                suggested_visibility="private",
+                review_status="rejected",
+            )
+        )
         session.commit()
 
         context = build_command_router_context(
@@ -77,6 +89,7 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
     assert router_context["profile_context"]["published_internal_items"][0]["collection"] == "targetRoleIntent"
     assert router_context["profile_context"]["published_public_items"] == []
     assert router_context["profile_context"]["draft_items"] == []
+    assert router_context["profile_context"]["archived_suppressed_items_summary"][0]["claim"] == "Do not recreate this stale claim."
     assert router_context["privacy_rules"]["private_profile_context_is_authenticated_only"] is True
     assert router_context["context_caps"]["current_companies"] == 50
 

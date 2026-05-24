@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useMemo, useState } from "react";
 import type { CandidateAnswer, CandidateProfile, RoleFitAnalysis } from "@jobops/contracts";
 

@@ -1,3 +1,4 @@
+import React from "react";
 import type { CandidateProfile } from "@jobops/contracts";
 import { AgentWorkspace } from "./agent-workspace";
 

@@ -22,7 +22,7 @@ type ReviewTabId =
   | "education"
   | "certifications";
 
-type LifecycleTab = "drafts" | "published";
+type LifecycleTab = "generated" | "private" | "archived";
 
 const reviewTabs: Array<{ id: ReviewTabId; label: string }> = [
   { id: "basics", label: "Profile basics" },
@@ -147,7 +147,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [editedFields, setEditedFields] = useState<Set<IntentField>>(() => new Set());
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<ReviewTabId>("basics");
-  const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("drafts");
+  const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
 
   async function loadProfileState(options: { cancelled?: () => boolean } = {}) {
     try {
@@ -235,7 +235,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     });
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
-      setWorkspaceMessage(payload.ok === false ? payload.error : "Draft item update failed.");
+      setWorkspaceMessage(payload.ok === false ? payload.error : "Generated item update failed.");
       return;
     }
     applyProfilePayload(payload.result);
@@ -259,6 +259,10 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     setWorkspaceMessage(patch.archive ? "Published item archived." : "Published item visibility updated.");
   }
 
+  function startPublishedEdit() {
+    setWorkspaceMessage("Editing published items will create a generated replacement item in a follow-up slice.");
+  }
+
   const draftItemCount = totalDraftCount(draft);
   const internalPublishedCount = Math.max(0, publishedItemCount - publishedPublicItemCount);
 
@@ -269,14 +273,14 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           <p className="eyebrow">Profile workspace</p>
           <h2 id="profile-workspace-title">Review and publish profile knowledge.</h2>
           <p>
-            Draft items are pending review. Published items are active for Internal JobOps context, and Public published
-            items also power the portfolio and public portfolio agent.
+            Generated items are pending review. Private items are active for private JobOps context, and Public items
+            power the portfolio and public portfolio agent.
           </p>
         </div>
         <div className="profile-status-metrics" aria-label="Profile lifecycle status">
           <SummaryMetric label="Published public" value={publishedPublicItemCount} />
-          <SummaryMetric label="Published internal" value={internalPublishedCount} />
-          <SummaryMetric label="Draft needs review" value={draftItemCount} />
+          <SummaryMetric label="Published private" value={internalPublishedCount} />
+          <SummaryMetric label="Generated needs review" value={draftItemCount} />
           <SummaryMetric label="Archived" value={archivedItemCount} />
         </div>
         <div className="profile-command-actions">
@@ -301,6 +305,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           onIntentChange={updateIntent}
           onLifecycleChange={setActiveLifecycle}
           onProfileSave={updateProfileFields}
+          onPublishedEdit={startPublishedEdit}
           onPublishedItemUpdate={updatePublishedItem}
           onTabChange={setActiveSection}
           profile={profile}
@@ -308,7 +313,13 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           publicProfile={publicProfile}
         />
         <aside className="profile-context-rail" aria-label="Profile context summaries">
-          <PublicPortfolioPreview publicPortfolioPath={publicPortfolioPath} publishedPublicItemCount={publishedPublicItemCount} />
+          <PublicPortfolioPreview
+            onEdit={startPublishedEdit}
+            onPublishedItemUpdate={updatePublishedItem}
+            publicPortfolioPath={publicPortfolioPath}
+            publicProfile={publicProfile}
+            publishedPublicItemCount={publishedPublicItemCount}
+          />
           <InternalContextSummary
             publishedItemCount={publishedItemCount}
             publishedProfile={publishedProfile}
@@ -418,8 +429,8 @@ function ProfileStatusIcons() {
   return (
     <span className="profile-status-bar icon-badge-row" aria-label="Profile-level statuses">
       <IconBadge kind="review" label="Needs verification" />
-      <IconBadge kind="private" label="Internal only" />
-      <IconBadge kind="unpublished" label="Draft" />
+      <IconBadge kind="private" label="Private" />
+      <IconBadge kind="unpublished" label="Generated" />
     </span>
   );
 }
@@ -438,7 +449,7 @@ function TargetsCard({
   return (
     <section className="profile-review-card target-settings-card" aria-labelledby="target-settings-title">
       <div>
-        <p className="eyebrow">Draft settings</p>
+        <p className="eyebrow">Generated target suggestion</p>
         <h4 id="target-settings-title">Targets</h4>
       </div>
       <div className="intent-form review-form" aria-label="Target settings review form">
@@ -507,7 +518,7 @@ function TargetsCard({
         />
       ) : (
         <p className="profile-lifecycle-note">
-          Target intent edits are saved through profile intake. Publish controls appear when a target draft row is loaded.
+          Target intent edits are saved through profile intake. Publish controls appear when a generated target row is loaded.
         </p>
       )}
     </section>
@@ -588,7 +599,7 @@ function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
     return (
       <div className="empty-state-block">
         <h3>No changes yet</h3>
-        <p>Use the JobOps command center above to update your profile draft.</p>
+        <p>Use the JobOps command center above to update your generated profile items.</p>
       </div>
     );
   }
@@ -620,7 +631,7 @@ export function DraftProfilePreview({
   publicProfile?: PublicProfileSnapshot | null;
 }) {
   const [activeTab, setActiveTab] = useState<ReviewTabId>("experience");
-  const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("drafts");
+  const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
 
   if (!draft) {
     return (
@@ -652,7 +663,7 @@ export function DraftProfilePreview({
 }
 
 export function ReviewTabbedList({
-  activeLifecycle = "drafts",
+  activeLifecycle = "generated",
   activeTab,
   draft,
   editedFields = new Set<IntentField>(),
@@ -660,6 +671,7 @@ export function ReviewTabbedList({
   onDraftItemUpdate,
   onIntentChange,
   onLifecycleChange = () => undefined,
+  onPublishedEdit,
   onProfileSave,
   onPublishedItemUpdate,
   onTabChange,
@@ -675,6 +687,7 @@ export function ReviewTabbedList({
   onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
   onIntentChange?: (field: IntentField, value: string) => void;
   onLifecycleChange?: (tab: LifecycleTab) => void;
+  onPublishedEdit?: () => void;
   onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => void;
   onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
   onTabChange: (tab: ReviewTabId) => void;
@@ -683,7 +696,8 @@ export function ReviewTabbedList({
   publicProfile?: PublicProfileSnapshot | null;
 }) {
   const draftCounts = buildReviewCounts(draft);
-  const publishedCounts = buildPublishedReviewCounts(publishedProfile);
+  const privateCounts = buildPublishedReviewCounts(publishedProfile, "private");
+  const archivedCounts = buildArchivedReviewCounts(draft);
   const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
 
   return (
@@ -702,9 +716,9 @@ export function ReviewTabbedList({
             type="button"
           >
             <span>{tab.label}</span>
-            <strong aria-label={`${draftCounts[tab.id]} Draft, ${publishedCounts[tab.id]} Published`}>
+            <strong aria-label={`${draftCounts[tab.id]} Generated, ${privateCounts[tab.id]} Private`}>
               <span>{draftCounts[tab.id]}</span>
-              <small>{publishedCounts[tab.id]}</small>
+              <small>{privateCounts[tab.id]}</small>
             </strong>
           </button>
         ))}
@@ -718,36 +732,45 @@ export function ReviewTabbedList({
         <div className="profile-review-panel-header">
           <div>
             <h3>{activeLabel}</h3>
-            <p>Draft is pending review. Published is active Internal JobOps context; Public items also appear externally.</p>
+            <p>Generated items need review. Private items are active internally. Public items are managed in the preview.</p>
           </div>
-          <span>{draftCounts[activeTab]} Draft / {publishedCounts[activeTab]} Published</span>
+          <span>{draftCounts[activeTab]} Generated / {privateCounts[activeTab]} Private</span>
         </div>
         <div className="profile-lifecycle-tabs" role="tablist" aria-label={`${activeLabel} lifecycle`}>
           <button
-            aria-selected={activeLifecycle === "drafts"}
-            className={activeLifecycle === "drafts" ? "active" : ""}
-            onClick={() => onLifecycleChange("drafts")}
+            aria-selected={activeLifecycle === "generated"}
+            className={activeLifecycle === "generated" ? "active" : ""}
+            onClick={() => onLifecycleChange("generated")}
             role="tab"
             type="button"
           >
-            Drafts
+            <GeneratedIcon /> Generated
           </button>
           <button
-            aria-selected={activeLifecycle === "published"}
-            className={activeLifecycle === "published" ? "active" : ""}
-            onClick={() => onLifecycleChange("published")}
+            aria-selected={activeLifecycle === "private"}
+            className={activeLifecycle === "private" ? "active" : ""}
+            onClick={() => onLifecycleChange("private")}
             role="tab"
             type="button"
           >
-            Published
+            Private
+          </button>
+          <button
+            aria-selected={activeLifecycle === "archived"}
+            className={`archived-link-tab${activeLifecycle === "archived" ? " active" : ""}`}
+            onClick={() => onLifecycleChange("archived")}
+            role="tab"
+            type="button"
+          >
+            Archived
           </button>
         </div>
-        <section className="profile-review-card" aria-label={`${activeLifecycle === "drafts" ? "Draft" : "Published"} ${activeLabel}`}>
+        <section className="profile-review-card" aria-label={`${lifecycleLabel(activeLifecycle)} ${activeLabel}`}>
           <div className="profile-review-card-header">
-            <h4>{activeLifecycle === "drafts" ? "Draft" : "Published"}</h4>
-            <span>{activeLifecycle === "drafts" ? `${draftCounts[activeTab]} Draft` : `${publishedCounts[activeTab]} Published`}</span>
+            <h4>{lifecycleLabel(activeLifecycle)}</h4>
+            <span>{lifecycleCount(activeLifecycle, activeTab, draftCounts, privateCounts, archivedCounts)}</span>
           </div>
-          {activeLifecycle === "drafts" ? (
+          {activeLifecycle === "generated" ? (
             <ProfileReviewTabContent
               activeTab={activeTab}
               draft={draft}
@@ -758,13 +781,16 @@ export function ReviewTabbedList({
               onProfileSave={onProfileSave}
               profile={profile ?? null}
             />
-          ) : (
+          ) : activeLifecycle === "private" ? (
             <PublishedProfileTabContent
               activeTab={activeTab}
+              onEdit={onPublishedEdit}
               onPublishedItemUpdate={onPublishedItemUpdate}
               publishedProfile={publishedProfile}
               publicProfile={publicProfile}
             />
+          ) : (
+            <ArchivedProfileTabContent activeTab={activeTab} draft={draft} />
           )}
         </section>
       </section>
@@ -799,7 +825,7 @@ function ProfileReviewTabContent({
     return onIntentChange ? (
       <TargetsCard editedFields={editedFields} intent={intent} onChange={onIntentChange} onDraftItemUpdate={onDraftItemUpdate} />
     ) : (
-      <EmptyMessage>No target draft loaded yet.</EmptyMessage>
+      <EmptyMessage>No generated target loaded yet.</EmptyMessage>
     );
   }
 
@@ -811,13 +837,13 @@ function ProfileReviewTabContent({
     const items = draft.experienceSummaries.filter(
       (item) => isPendingDraftItem(item) && (item.itemType === "experience" || item.itemType === "project")
     );
-    return <ExperienceList emptyLabel="No experience or project items drafted yet." items={items} onDraftItemUpdate={onDraftItemUpdate} showType />;
+    return <ExperienceList emptyLabel="No generated experience or project items yet." items={items} onDraftItemUpdate={onDraftItemUpdate} showType />;
   }
 
   if (activeTab === "education") {
     return (
       <ExperienceList
-        emptyLabel="No education items drafted yet."
+        emptyLabel="No generated education items yet."
         items={draft.experienceSummaries.filter((item) => isPendingDraftItem(item) && item.itemType === "education")}
         onDraftItemUpdate={onDraftItemUpdate}
       />
@@ -827,7 +853,7 @@ function ProfileReviewTabContent({
   if (activeTab === "certifications") {
     return (
       <ExperienceList
-        emptyLabel="No certification items drafted yet."
+        emptyLabel="No generated certification items yet."
         items={draft.experienceSummaries.filter((item) => isPendingDraftItem(item) && item.itemType === "certification")}
         onDraftItemUpdate={onDraftItemUpdate}
       />
@@ -861,18 +887,18 @@ function ProfileReviewTabContent({
         ))}
       </ul>
     ) : (
-      <EmptyMessage>No skill claims drafted yet.</EmptyMessage>
+      <EmptyMessage>No generated skill claims yet.</EmptyMessage>
     );
   }
 
   if (activeTab === "achievements") {
     const achievements = draft.facts.filter((fact) => isPendingDraftItem(fact) && looksLikeAchievement(fact.claim, fact.category));
-    return achievements.length ? <FactList facts={achievements} onDraftItemUpdate={onDraftItemUpdate} /> : <EmptyMessage>No achievement or outcome items drafted yet.</EmptyMessage>;
+    return achievements.length ? <FactList facts={achievements} onDraftItemUpdate={onDraftItemUpdate} /> : <EmptyMessage>No generated achievement or outcome items yet.</EmptyMessage>;
   }
 
   if (activeTab === "facts") {
     const facts = draft.facts.filter(isPendingDraftItem);
-    return facts.length ? <FactList facts={facts} onDraftItemUpdate={onDraftItemUpdate} /> : <EmptyMessage>No facts or claims drafted yet.</EmptyMessage>;
+    return facts.length ? <FactList facts={facts} onDraftItemUpdate={onDraftItemUpdate} /> : <EmptyMessage>No generated facts or claims yet.</EmptyMessage>;
   }
 
   const links = draft.links.filter(isPendingDraftItem);
@@ -893,7 +919,7 @@ function ProfileReviewTabContent({
       ))}
     </ul>
   ) : (
-    <EmptyMessage>No evidence links drafted yet.</EmptyMessage>
+    <EmptyMessage>No generated evidence links yet.</EmptyMessage>
   );
 }
 
@@ -957,13 +983,86 @@ function FactList({
   );
 }
 
+function ArchivedProfileTabContent({ activeTab, draft }: { activeTab: ReviewTabId; draft: MockProfileDraft | null }) {
+  if (!draft) {
+    return <EmptyReviewList activeTab={activeTab} />;
+  }
+  if (activeTab === "basics" || activeTab === "targets") {
+    return <EmptyMessage>No archived {reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} yet.</EmptyMessage>;
+  }
+  if (activeTab === "skills") {
+    const skills = draft.skillClaims.filter(isArchivedDraftItem);
+    return skills.length ? (
+      <ul className="profile-review-list muted-list">
+        {skills.map((skill) => (
+          <li className="profile-review-item archived-review-card" key={skill.id}>
+            <TitleWithBadges title={skill.skill}>
+              <ItemIconSet item={skill} />
+            </TitleWithBadges>
+            <p>{skill.evidence || skill.category}</p>
+          </li>
+        ))}
+      </ul>
+    ) : <EmptyMessage>No archived skills yet.</EmptyMessage>;
+  }
+  if (activeTab === "experience" || activeTab === "education" || activeTab === "certifications") {
+    const itemTypes =
+      activeTab === "experience" ? ["experience", "project"] : activeTab === "education" ? ["education"] : ["certification"];
+    const items = draft.experienceSummaries.filter((item) => isArchivedDraftItem(item) && itemTypes.includes(item.itemType));
+    return items.length ? (
+      <ul className="profile-review-list muted-list">
+        {items.map((item) => (
+          <li className="profile-review-item archived-review-card" key={item.id}>
+            <TitleWithBadges title={item.title}>
+              <ItemIconSet item={item} />
+            </TitleWithBadges>
+            <p>{item.summary}</p>
+          </li>
+        ))}
+      </ul>
+    ) : <EmptyMessage>No archived {reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} yet.</EmptyMessage>;
+  }
+  if (activeTab === "evidence") {
+    const links = draft.links.filter(isArchivedDraftItem);
+    return links.length ? (
+      <ul className="profile-review-list muted-list">
+        {links.map((link) => (
+          <li className="profile-review-item archived-review-card" key={link.id}>
+            <TitleWithBadges title={link.label}>
+              <ItemIconSet item={link} />
+            </TitleWithBadges>
+            <a href={link.url} rel="noreferrer" target="_blank">{link.url}</a>
+          </li>
+        ))}
+      </ul>
+    ) : <EmptyMessage>No archived evidence links yet.</EmptyMessage>;
+  }
+  const facts = draft.facts.filter((fact) =>
+    isArchivedDraftItem(fact) && (activeTab === "achievements" ? looksLikeAchievement(fact.claim, fact.category) : true)
+  );
+  return facts.length ? (
+    <ul className="profile-review-list muted-list">
+      {facts.map((fact) => (
+        <li className="profile-review-item archived-review-card" key={fact.id}>
+          <TitleWithBadges title={fact.category}>
+            <ItemIconSet item={fact} />
+          </TitleWithBadges>
+          <p>{fact.claim}</p>
+        </li>
+      ))}
+    </ul>
+  ) : <EmptyMessage>No archived {activeTab === "achievements" ? "achievements" : "facts"} yet.</EmptyMessage>;
+}
+
 function PublishedProfileTabContent({
   activeTab,
+  onEdit,
   onPublishedItemUpdate,
   publishedProfile,
   publicProfile
 }: {
   activeTab: ReviewTabId;
+  onEdit?: () => void;
   onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
   publishedProfile?: PublishedProfileSnapshot | null;
   publicProfile?: PublicProfileSnapshot | null;
@@ -978,11 +1077,11 @@ function PublishedProfileTabContent({
   }
 
   if (activeTab === "targets") {
-    return <PublishedTargets onPublishedItemUpdate={onPublishedItemUpdate} publishedProfile={profile} />;
+    return <PublishedTargets onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} publishedProfile={profile} />;
   }
 
   if (activeTab === "skills") {
-    const skills = profile.skillClaims ?? [];
+    const skills = (profile.skillClaims ?? []).filter((skill) => skill.visibility === "private");
     return skills.length ? (
       <ul className="profile-review-list">
         {skills.map((skill) => (
@@ -992,19 +1091,19 @@ function PublishedProfileTabContent({
             </TitleWithBadges>
             <span>{skill.category}</span>
             {skill.evidence ? <p>{skill.evidence}</p> : null}
-            <PublishedActions itemId={skill.id} itemType="skill" onPublishedItemUpdate={onPublishedItemUpdate} visibility={skill.visibility} />
+            <PublishedActions itemId={skill.id} itemType="skill" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={skill.visibility} />
           </li>
         ))}
       </ul>
     ) : (
-      <EmptyMessage>No published skills yet.</EmptyMessage>
+      <EmptyMessage>No private skills yet.</EmptyMessage>
     );
   }
 
   if (activeTab === "experience" || activeTab === "education" || activeTab === "certifications") {
     const itemTypes =
       activeTab === "experience" ? ["experience", "project"] : activeTab === "education" ? ["education"] : ["certification"];
-    const items = (profile.experienceAndProjects ?? []).filter((item) => itemTypes.includes(item.itemType || "experience"));
+    const items = (profile.experienceAndProjects ?? []).filter((item) => itemTypes.includes(item.itemType || "experience") && item.visibility === "private");
     return items.length ? (
       <ul className="profile-review-list">
         {items.map((item) => (
@@ -1014,17 +1113,17 @@ function PublishedProfileTabContent({
             </TitleWithBadges>
             {item.organization ? <span>{item.organization}</span> : null}
             <p>{item.summary}</p>
-            <PublishedActions itemId={item.id} itemType="experience" onPublishedItemUpdate={onPublishedItemUpdate} visibility={item.visibility} />
+            <PublishedActions itemId={item.id} itemType="experience" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={item.visibility} />
           </li>
         ))}
       </ul>
     ) : (
-      <EmptyMessage>No published {reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} yet.</EmptyMessage>
+      <EmptyMessage>No private {reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} yet.</EmptyMessage>
     );
   }
 
   if (activeTab === "evidence") {
-    const links = profile.evidenceLinks ?? [];
+    const links = (profile.evidenceLinks ?? []).filter((link) => link.visibility === "private");
     return links.length ? (
       <ul className="profile-review-list">
         {links.map((link) => (
@@ -1035,17 +1134,17 @@ function PublishedProfileTabContent({
             <a href={link.url} rel="noreferrer" target="_blank">
               {link.url}
             </a>
-            <PublishedActions itemId={link.id} itemType="evidence" onPublishedItemUpdate={onPublishedItemUpdate} visibility={link.visibility} />
+            <PublishedActions itemId={link.id} itemType="evidence" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={link.visibility} />
           </li>
         ))}
       </ul>
     ) : (
-      <EmptyMessage>No published evidence links yet.</EmptyMessage>
+      <EmptyMessage>No private evidence links yet.</EmptyMessage>
     );
   }
 
   const facts = (profile.facts ?? []).filter((fact) =>
-    activeTab === "achievements" ? looksLikeAchievement(fact.claim, fact.category) : true
+    fact.visibility === "private" && (activeTab === "achievements" ? looksLikeAchievement(fact.claim, fact.category) : true)
   );
   return facts.length ? (
     <ul className="profile-review-list">
@@ -1055,12 +1154,12 @@ function PublishedProfileTabContent({
             <VisibilityTextBadge visibility={fact.visibility} />
           </TitleWithBadges>
           <span>{fact.claim}</span>
-          <PublishedActions itemId={fact.id} itemType="fact" onPublishedItemUpdate={onPublishedItemUpdate} visibility={fact.visibility} />
+          <PublishedActions itemId={fact.id} itemType="fact" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={fact.visibility} />
         </li>
       ))}
     </ul>
   ) : (
-    <EmptyMessage>No published {activeTab === "achievements" ? "achievements" : "facts"} yet.</EmptyMessage>
+    <EmptyMessage>No private {activeTab === "achievements" ? "achievements" : "facts"} yet.</EmptyMessage>
   );
 }
 
@@ -1088,15 +1187,17 @@ function SummaryText({ label, value }: { label: string; value: string }) {
 }
 
 function PublishedTargets({
+  onEdit,
   onPublishedItemUpdate,
   publishedProfile
 }: {
+  onEdit?: () => void;
   onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
   publishedProfile: PublishedProfileSnapshot;
 }) {
   const target = publishedProfile.targetRoleIntent;
-  if (!target || !hasTargetRoleIntent(target)) {
-    return <EmptyMessage>No published targets yet.</EmptyMessage>;
+  if (!target || !hasTargetRoleIntent(target) || target.visibility !== "private") {
+    return <EmptyMessage>No private targets yet.</EmptyMessage>;
   }
 
   return (
@@ -1115,6 +1216,7 @@ function PublishedTargets({
         <PublishedActions
           itemId={target.id}
           itemType="target-role"
+          onEdit={onEdit}
           onPublishedItemUpdate={onPublishedItemUpdate}
           visibility={target.visibility ?? "private"}
         />
@@ -1123,35 +1225,232 @@ function PublishedTargets({
   );
 }
 
-function PublicPortfolioPreview({
+export function PublicPortfolioPreview({
+  onEdit,
+  onPublishedItemUpdate,
   publicPortfolioPath,
+  publicProfile,
   publishedPublicItemCount
 }: {
+  onEdit?: () => void;
+  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
   publicPortfolioPath: string | null;
+  publicProfile: PublicProfileSnapshot | null;
   publishedPublicItemCount: number;
 }) {
   const previewPath = publicPortfolioPath || "/portfolio";
+  const facts = (publicProfile?.facts ?? []).filter((fact) => fact.visibility === "public" && fact.verificationStatus === "published");
+  const skills = (publicProfile?.skillClaims ?? []).filter(
+    (skill) => skill.visibility === "public" && skill.publicationStatus === "published" && skill.verificationStatus === "published"
+  );
+  const experience = (publicProfile?.experienceAndProjects ?? []).filter(
+    (item) => item.visibility === "public" && item.publicationStatus === "published"
+  );
+  const links = (publicProfile?.evidenceLinks ?? []).filter((link) => link.visibility === "public" && link.publicationStatus === "published");
+  const target = publicProfile?.targetRoleIntent;
+  const selectedWork = experience.filter((item) => item.itemType === "experience" || item.itemType === "project");
+  const education = experience.filter((item) => item.itemType === "education");
+  const certifications = experience.filter((item) => item.itemType === "certification");
+  const achievements = facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
+  const hasPublicContent = Boolean(facts.length || skills.length || experience.length || links.length || hasTargetRoleIntent(target));
+
   return (
     <section className="profile-side-card public-preview-card">
       <div className="profile-side-card-header">
         <div>
           <p className="eyebrow">Public portfolio preview</p>
-          <h3>Live published-public view</h3>
+          <h3>Manage public profile items</h3>
         </div>
         <a href={previewPath}>Open</a>
       </div>
-      <div className="portfolio-preview-frame-wrap">
-        <iframe
-          className="portfolio-preview-frame"
-          src={previewPath}
-          title="Public portfolio preview"
-        />
-      </div>
+      {hasPublicContent ? (
+        <div className="admin-portfolio-preview">
+          <section className="admin-portfolio-hero">
+            <p className="section-kicker">Public profile</p>
+            <h2>{publicProfile?.displayName || "Published portfolio"}</h2>
+            {publicProfile?.headline ? <p>{publicProfile.headline}</p> : null}
+            {publicProfile?.summary ? <p>{publicProfile.summary}</p> : null}
+          </section>
+          {hasTargetRoleIntent(target) && target?.id ? (
+            <AdminPreviewBlock title="Target direction">
+              <article className="admin-preview-item">
+                <ChipList items={target.targetTitles ?? []} />
+                <AdminPreviewControls
+                  itemId={target.id}
+                  itemType="target-role"
+                  onEdit={onEdit}
+                  onPublishedItemUpdate={onPublishedItemUpdate}
+                  visibility={target.visibility ?? "public"}
+                />
+              </article>
+            </AdminPreviewBlock>
+          ) : null}
+          {facts.length ? (
+            <AdminPreviewBlock title="Approved facts">
+              {facts.slice(0, 8).map((fact) => (
+                <article className="admin-preview-item fact-callout" key={fact.id}>
+                  <p>{fact.claim}</p>
+                  <span>{fact.category}</span>
+                  <AdminPreviewControls
+                    itemId={fact.id}
+                    itemType="fact"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={fact.visibility}
+                  />
+                </article>
+              ))}
+            </AdminPreviewBlock>
+          ) : null}
+          {selectedWork.length ? (
+            <AdminPreviewBlock title="Featured work">
+              {selectedWork.slice(0, 6).map((item) => (
+                <article className="admin-preview-item" key={item.id}>
+                  <h4>{item.title}</h4>
+                  {item.organization ? <span>{item.organization}</span> : null}
+                  <p>{item.summary}</p>
+                  <AdminPreviewControls
+                    itemId={item.id}
+                    itemType="experience"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={item.visibility}
+                  />
+                </article>
+              ))}
+            </AdminPreviewBlock>
+          ) : null}
+          {skills.length ? (
+            <AdminPreviewBlock title="Skills">
+              {skills.slice(0, 10).map((skill) => (
+                <article className="admin-preview-item compact" key={skill.id}>
+                  <h4>{skill.skill}</h4>
+                  <p>{skill.evidence || skill.category}</p>
+                  <AdminPreviewControls
+                    itemId={skill.id}
+                    itemType="skill"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={skill.visibility}
+                  />
+                </article>
+              ))}
+            </AdminPreviewBlock>
+          ) : null}
+          {achievements.length ? (
+            <AdminPreviewBlock title="Achievements">
+              {achievements.slice(0, 6).map((fact) => (
+                <article className="admin-preview-item compact" key={fact.id}>
+                  <p>{fact.claim}</p>
+                  <AdminPreviewControls
+                    itemId={fact.id}
+                    itemType="fact"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={fact.visibility}
+                  />
+                </article>
+              ))}
+            </AdminPreviewBlock>
+          ) : null}
+          {education.length || certifications.length || links.length ? (
+            <AdminPreviewBlock title="Education, certifications, links">
+              {[...education, ...certifications].map((item) => (
+                <article className="admin-preview-item compact" key={item.id}>
+                  <h4>{item.title}</h4>
+                  {item.organization ? <p>{item.organization}</p> : null}
+                  <AdminPreviewControls
+                    itemId={item.id}
+                    itemType="experience"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={item.visibility}
+                  />
+                </article>
+              ))}
+              {links.map((link) => (
+                <article className="admin-preview-item compact" key={link.id}>
+                  <a href={link.url} rel="noreferrer" target="_blank">{link.label || link.url}</a>
+                  <AdminPreviewControls
+                    itemId={link.id}
+                    itemType="evidence"
+                    onEdit={onEdit}
+                    onPublishedItemUpdate={onPublishedItemUpdate}
+                    visibility={link.visibility}
+                  />
+                </article>
+              ))}
+            </AdminPreviewBlock>
+          ) : null}
+        </div>
+      ) : (
+        <EmptyMessage>No public published profile items yet.</EmptyMessage>
+      )}
       <p className="profile-lifecycle-note">
-        This preview uses the public portfolio route and should only show Published Public items. Published public item
+        This preview uses only the publicProfile payload from the public serializer. Published public item
         count: {publishedPublicItemCount}.
       </p>
     </section>
+  );
+}
+
+function AdminPreviewBlock({ children, title }: { children: React.ReactNode; title: string }) {
+  return (
+    <section className="admin-preview-block">
+      <h3>{title}</h3>
+      <div className="admin-preview-stack">{children}</div>
+    </section>
+  );
+}
+
+function ChipList({ items }: { items: string[] }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <div className="portfolio-chip-list">
+      {items.map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+    </div>
+  );
+}
+
+function AdminPreviewControls({
+  itemId,
+  itemType,
+  onEdit,
+  onPublishedItemUpdate,
+  visibility
+}: {
+  itemId: string;
+  itemType: ProfileItemType;
+  onEdit?: () => void;
+  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  visibility: "private" | "public";
+}) {
+  return (
+    <div className="admin-preview-controls" aria-label="Public preview admin controls">
+      <button
+        className="button-action"
+        disabled={!onPublishedItemUpdate || visibility === "private"}
+        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "private" })}
+        type="button"
+      >
+        Make private
+      </button>
+      <button className="button-action" disabled={!onEdit} onClick={onEdit} type="button">
+        Edit
+      </button>
+      <button
+        className="button-action subtle-danger"
+        disabled={!onPublishedItemUpdate}
+        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { archive: true })}
+        type="button"
+      >
+        Archive
+      </button>
+    </div>
   );
 }
 
@@ -1171,12 +1470,12 @@ function InternalContextSummary({
       <h3>Published knowledge active internally</h3>
       <div className="profile-summary-grid compact">
         <SummaryMetric label="Published" value={publishedItemCount} />
-        <SummaryMetric label="Internal only" value={internalOnlyCount || countVisibility(publishedProfile, "private")} />
+        <SummaryMetric label="Private" value={internalOnlyCount || countVisibility(publishedProfile, "private")} />
         <SummaryMetric label="Public" value={publishedPublicItemCount} />
       </div>
       <p className="profile-lifecycle-note">
-        Internal JobOps context includes published Internal only and published Public items. Drafts are reserved for
-        profile editing and review flows.
+        Internal JobOps context includes published Private and published Public items. Generated items are reserved for
+        profile editing and review flows unless clearly labeled as pending review.
       </p>
     </section>
   );
@@ -1192,7 +1491,7 @@ function SummaryMetric({ label, value }: { label: string; value: number }) {
 }
 
 function VisibilityTextBadge({ visibility }: { visibility: "private" | "public" }) {
-  return <span className={`visibility-text-badge ${visibility}`}>{visibility === "public" ? "Public" : "Internal only"}</span>;
+  return <span className={`visibility-text-badge ${visibility}`}>{visibility === "public" ? "Public" : "Private"}</span>;
 }
 
 function EditableFactRow({
@@ -1257,7 +1556,7 @@ function ReviewActions({
         onClick={() => onDraftItemUpdate?.(itemType, item.id, { publishVisibility: "private" })}
         type="button"
       >
-        Publish internal
+        Publish private
       </button>
       <button
         className="secondary-action button-action"
@@ -1282,11 +1581,13 @@ function ReviewActions({
 function PublishedActions({
   itemId,
   itemType,
+  onEdit,
   onPublishedItemUpdate,
   visibility
 }: {
   itemId: string;
   itemType: ProfileItemType;
+  onEdit?: () => void;
   onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
   visibility: "private" | "public";
 }) {
@@ -1298,7 +1599,7 @@ function PublishedActions({
         onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "private" })}
         type="button"
       >
-        Internal only
+        Make private
       </button>
       <button
         className="secondary-action button-action"
@@ -1306,7 +1607,15 @@ function PublishedActions({
         onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "public" })}
         type="button"
       >
-        Public
+        Make public
+      </button>
+      <button
+        className="secondary-action button-action"
+        disabled={!onEdit}
+        onClick={onEdit}
+        type="button"
+      >
+        Edit
       </button>
       <button
         className="secondary-action button-action subtle-danger"
@@ -1358,7 +1667,7 @@ function CompactMeta({ items }: { items: Array<[string, string]> }) {
 
 function EmptyReviewList({ activeTab }: { activeTab: ReviewTabId }) {
   const label = reviewTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || "items";
-  return <EmptyMessage>No {label} drafted yet.</EmptyMessage>;
+  return <EmptyMessage>No generated {label} yet.</EmptyMessage>;
 }
 
 function EmptyMessage({ children }: { children: React.ReactNode }) {
@@ -1385,21 +1694,62 @@ function buildReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, 
   return counts;
 }
 
-function buildPublishedReviewCounts(publishedProfile?: PublishedProfileSnapshot | null): Record<ReviewTabId, number> {
-  const facts = publishedProfile?.facts ?? [];
-  const experience = publishedProfile?.experienceAndProjects ?? [];
+function buildPublishedReviewCounts(
+  publishedProfile?: PublishedProfileSnapshot | null,
+  visibility?: "private" | "public"
+): Record<ReviewTabId, number> {
+  const facts = (publishedProfile?.facts ?? []).filter((item) => !visibility || item.visibility === visibility);
+  const experience = (publishedProfile?.experienceAndProjects ?? []).filter((item) => !visibility || item.visibility === visibility);
   const counts = {
     basics: publishedProfile ? 1 : 0,
-    targets: hasTargetRoleIntent(publishedProfile?.targetRoleIntent) ? 1 : 0,
+    targets: hasTargetRoleIntent(publishedProfile?.targetRoleIntent) && (!visibility || publishedProfile?.targetRoleIntent?.visibility === visibility) ? 1 : 0,
     experience: experience.filter((item) => (item.itemType || "experience") === "experience" || item.itemType === "project").length,
-    skills: publishedProfile?.skillClaims?.length ?? 0,
+    skills: (publishedProfile?.skillClaims ?? []).filter((item) => !visibility || item.visibility === visibility).length,
     achievements: facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length,
     facts: facts.length,
-    evidence: publishedProfile?.evidenceLinks?.length ?? 0,
+    evidence: (publishedProfile?.evidenceLinks ?? []).filter((item) => !visibility || item.visibility === visibility).length,
     education: experience.filter((item) => item.itemType === "education").length,
     certifications: experience.filter((item) => item.itemType === "certification").length
   };
   return counts;
+}
+
+function buildArchivedReviewCounts(draft: MockProfileDraft | null): Record<ReviewTabId, number> {
+  const facts = draft?.facts.filter(isArchivedDraftItem) ?? [];
+  const skills = draft?.skillClaims.filter(isArchivedDraftItem) ?? [];
+  const experience = draft?.experienceSummaries.filter(isArchivedDraftItem) ?? [];
+  const links = draft?.links.filter(isArchivedDraftItem) ?? [];
+  return {
+    basics: 0,
+    targets: 0,
+    experience: experience.filter((item) => item.itemType === "experience" || item.itemType === "project").length,
+    skills: skills.length,
+    achievements: facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category)).length,
+    facts: facts.length,
+    evidence: links.length,
+    education: experience.filter((item) => item.itemType === "education").length,
+    certifications: experience.filter((item) => item.itemType === "certification").length
+  };
+}
+
+function lifecycleLabel(lifecycle: LifecycleTab) {
+  return lifecycle === "generated" ? "Generated" : lifecycle === "private" ? "Private" : "Archived";
+}
+
+function lifecycleCount(
+  lifecycle: LifecycleTab,
+  activeTab: ReviewTabId,
+  generatedCounts: Record<ReviewTabId, number>,
+  privateCounts: Record<ReviewTabId, number>,
+  archivedCounts: Record<ReviewTabId, number>
+) {
+  if (lifecycle === "generated") {
+    return `${generatedCounts[activeTab]} Generated`;
+  }
+  if (lifecycle === "private") {
+    return `${privateCounts[activeTab]} Private`;
+  }
+  return `${archivedCounts[activeTab]} Archived`;
 }
 
 function totalDraftCount(draft: MockProfileDraft | null) {
@@ -1409,15 +1759,15 @@ function totalDraftCount(draft: MockProfileDraft | null) {
 
 function buildDraftActionMessage(patch: DraftItemPatch) {
   if (patch.publishVisibility === "public") {
-    return "Draft item published public.";
+    return "Generated item published public.";
   }
   if (patch.publishVisibility === "private") {
-    return "Draft item published internal.";
+    return "Generated item published private.";
   }
   if (patch.reviewStatus === "rejected") {
-    return "Draft item archived.";
+    return "Generated item archived.";
   }
-  return "Draft item updated.";
+  return "Generated item updated.";
 }
 
 export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
@@ -1481,6 +1831,19 @@ function ItemIconSet({ item }: { item: BadgeableDraftItem }) {
   );
 }
 
+function GeneratedIcon() {
+  return (
+    <svg className="generated-tab-icon" aria-hidden="true" viewBox="0 0 24 24">
+      <rect x="6" y="8" width="12" height="9" rx="3" />
+      <path d="M12 8V5" />
+      <path d="M9.5 5h5" />
+      <circle cx="10" cy="12" r=".7" />
+      <circle cx="14" cy="12" r=".7" />
+      <path d="M10 15h4" />
+    </svg>
+  );
+}
+
 function DraftIconSet({
   author,
   status,
@@ -1504,7 +1867,7 @@ function ReviewIcon({ status }: { status: BadgeableDraftItem["status"] }) {
     return null;
   }
 
-  return <IconBadge kind="review" label={status === "draft" ? "Draft" : "Needs review"} />;
+  return <IconBadge kind="review" label={status === "draft" ? "Generated" : "Needs review"} />;
 }
 
 function VisibilityIcon({ visibility }: { visibility: BadgeableDraftItem["visibility"] }) {
@@ -1512,7 +1875,7 @@ function VisibilityIcon({ visibility }: { visibility: BadgeableDraftItem["visibi
 }
 
 function PublicationIcon({ published }: { published: BadgeableDraftItem["published"] }) {
-  return <IconBadge kind={published ? "published" : "unpublished"} label={published ? "Published" : "Draft"} />;
+  return <IconBadge kind={published ? "published" : "unpublished"} label={published ? "Published" : "Generated"} />;
 }
 
 function SourceIcon({ source }: { source: BadgeableDraftItem["source"] }) {
@@ -1520,7 +1883,7 @@ function SourceIcon({ source }: { source: BadgeableDraftItem["source"] }) {
 }
 
 function AuthorIcon({ author }: { author: "agent" | "user" }) {
-  return <IconBadge kind={author} label={author === "user" ? "Edited by you" : "Agent draft"} />;
+  return <IconBadge kind={author} label={author === "user" ? "Edited by you" : "Agent generated"} />;
 }
 
 function IconBadge({ kind, label }: { kind: IconBadgeKind; label: string }) {
@@ -1607,7 +1970,7 @@ function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
 }
 
 function visibilityLabel(visibility: BadgeableDraftItem["visibility"]) {
-  return visibility === "private" ? "Internal only" : "Public";
+  return visibility === "private" ? "Private" : "Public";
 }
 
 function buildExperienceDetails(experience: MockProfileDraft["experienceSummaries"][number], showType: boolean) {
@@ -1636,6 +1999,10 @@ function formatYears(yearsMin?: number, yearsMax?: number) {
 
 function isPendingDraftItem(item: BadgeableDraftItem) {
   return !item.published && item.status !== "rejected";
+}
+
+function isArchivedDraftItem(item: BadgeableDraftItem) {
+  return !item.published && item.status === "rejected";
 }
 
 function hasTargetIntentDraft(draft: MockProfileDraft | null) {

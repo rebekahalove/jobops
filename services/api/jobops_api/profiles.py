@@ -215,6 +215,50 @@ def candidate_profile_to_private_context_dict(candidate_profile: CandidateProfil
                     .order_by(ProfileFact.created_at.asc())
                 )
             ],
+            *[
+                {"type": "skill", "id": item.id, "skill": item.skill_name, "category": item.skill_category, "state": "archived"}
+                for item in session.scalars(
+                    select(SkillClaim)
+                    .where(
+                        SkillClaim.candidate_profile_id == candidate_profile.id,
+                        SkillClaim.verification_status == "rejected",
+                    )
+                    .order_by(SkillClaim.created_at.asc())
+                )
+            ],
+            *[
+                {"type": "experience", "id": item.id, "title": item.title, "organization": item.organization, "state": "archived"}
+                for item in session.scalars(
+                    select(ExperienceProjectDraft)
+                    .where(
+                        ExperienceProjectDraft.candidate_profile_id == candidate_profile.id,
+                        ExperienceProjectDraft.review_status == "rejected",
+                    )
+                    .order_by(ExperienceProjectDraft.created_at.asc())
+                )
+            ],
+            *[
+                {"type": "evidence", "id": item.id, "label": item.label, "url": item.uri, "state": "archived"}
+                for item in session.scalars(
+                    select(EvidenceArtifact)
+                    .where(
+                        EvidenceArtifact.candidate_profile_id == candidate_profile.id,
+                        EvidenceArtifact.review_status == "rejected",
+                    )
+                    .order_by(EvidenceArtifact.created_at.asc())
+                )
+            ],
+            *[
+                {"type": "target-role", "id": item.id, "targetTitles": item.target_titles, "state": "archived"}
+                for item in session.scalars(
+                    select(RoleTarget)
+                    .where(
+                        RoleTarget.candidate_profile_id == candidate_profile.id,
+                        RoleTarget.review_status == "rejected",
+                    )
+                    .order_by(RoleTarget.created_at.asc())
+                )
+            ],
         ]
 
     public_items, internal_items = partition_published_items(published)
@@ -440,11 +484,14 @@ def serialize_public_role_target(role_target: RoleTarget | None) -> dict[str, An
         return {}
     constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
     return {
+        "id": role_target.id,
         "targetTitles": role_target.target_titles,
         "roleFamilies": role_target.role_families,
         "preferredLocations": role_target.preferred_locations,
         "workModes": role_target.work_modes,
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
+        "visibility": role_target.visibility,
+        "publicationStatus": role_target.publication_status,
     }
 
 

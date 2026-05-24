@@ -1,7 +1,9 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import ProfilePage from "../app/profile/page";
+import { PublicPortfolio } from "../../portfolio/components/public-portfolio";
 import {
   applyProfileIntakeOutputToState,
   createMockIntakeTurn,
@@ -9,13 +11,20 @@ import {
   emptyTargetRoleIntent,
   initialProfilePrompt
 } from "../lib/profile-intake";
-import { ClarifyingQuestions, ProfileWorkspace, ReviewTabbedList } from "./profile-workspace";
+import { ClarifyingQuestions, ProfileWorkspace, PublicPortfolioPreview, ReviewTabbedList } from "./profile-workspace";
 
 describe("Profile intake workspace", () => {
   it("renders the profile page", () => {
     const html = renderToStaticMarkup(<ProfilePage />);
 
     expect(html).toContain("Review and publish profile knowledge.");
+  });
+
+  it("uses the shared full-width workspace shell for command center pages", () => {
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+    expect(css).toContain("--workspace-width: min(100% - 24px, 1680px)");
+    expect(css).toContain("width: var(--workspace-width)");
   });
 
   it("does not render a standalone chat composer", () => {
@@ -35,11 +44,12 @@ describe("Profile intake workspace", () => {
 
     expect(html).toContain("Profile workspace");
     expect(html).toContain("Review and publish profile knowledge.");
-    expect(html).toContain("Drafts");
-    expect(html).toContain("Published");
+    expect(html).toContain("Generated");
+    expect(html).toContain("Private");
+    expect(html).toContain("Archived");
     expect(html).toContain("Internal JobOps context");
     expect(html).toContain("Public portfolio preview");
-    expect(html).toContain("Internal only");
+    expect(html).toContain("Private");
     expect(html).toContain("Targets");
     expect(html).toContain("Profile basics");
     expect(html).toContain("Experience &amp; Projects");
@@ -75,8 +85,8 @@ describe("Profile intake workspace", () => {
   it("points empty profile states to command-center intake instead of stale page chat copy", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 
-    expect(html).toContain("Use the JobOps command center above to update your profile draft.");
-    expect(html).toContain("Draft items are pending review");
+    expect(html).toContain("Use the JobOps command center above to update your generated profile items.");
+    expect(html).toContain("Generated items are pending review");
     expect(html).toContain("Follow-up queue");
     expect(html).not.toContain("Send a message or attach a resume");
     expect(html).not.toContain("Use the conversation panel");
@@ -245,7 +255,7 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("<dt>Type</dt>");
   });
 
-  it("labels draft lifecycle actions as publish internal, publish public, and archive", () => {
+  it("labels generated lifecycle actions as publish private, publish public, and archive", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
       targetRoleIntent: {},
@@ -267,20 +277,20 @@ describe("Profile intake workspace", () => {
     });
 
     const html = renderToStaticMarkup(
-      <ReviewTabbedList activeLifecycle="drafts" activeTab="facts" draft={nextState.draft} onTabChange={() => undefined} />
+      <ReviewTabbedList activeLifecycle="generated" activeTab="facts" draft={nextState.draft} onTabChange={() => undefined} />
     );
 
-    expect(html).toContain("Publish internal");
+    expect(html).toContain("Publish private");
     expect(html).toContain("Publish public");
     expect(html).toContain("Archive");
     expect(html).not.toContain("Reject");
     expect(html).not.toContain(">Approve<");
   });
 
-  it("badges published internal-only and public items separately", () => {
+  it("shows internal-only published items in the Private tab without public items", () => {
     const html = renderToStaticMarkup(
       <ReviewTabbedList
-        activeLifecycle="published"
+        activeLifecycle="private"
         activeTab="facts"
         draft={null}
         onTabChange={() => undefined}
@@ -307,10 +317,92 @@ describe("Profile intake workspace", () => {
       />
     );
 
-    expect(html).toContain("Internal only");
-    expect(html).toContain("Public");
+    expect(html).toContain("Private");
+    expect(html).toContain("Make public");
     expect(html).toContain("Internal active fact.");
+    expect(html).not.toContain("Public active fact.");
+  });
+
+  it("renders public published items with admin preview controls only in JobOps", () => {
+    const html = renderToStaticMarkup(
+      <PublicPortfolioPreview
+        onEdit={() => undefined}
+        onPublishedItemUpdate={() => undefined}
+        publicPortfolioPath="/portfolio/chance-alpha"
+        publishedPublicItemCount={1}
+        publicProfile={{
+          displayName: "Chance Alpha",
+          headline: "Applied AI Engineer",
+          summary: "Public summary.",
+          profileStatus: "published",
+          facts: [
+            {
+              id: "public-fact",
+              claim: "Public active fact.",
+              category: "impact",
+              source: "resume",
+              visibility: "public",
+              verificationStatus: "published"
+            },
+            {
+              id: "draft-fact",
+              claim: "Draft public fact.",
+              category: "draft",
+              source: "resume",
+              visibility: "public",
+              verificationStatus: "draft"
+            },
+            {
+              id: "private-fact",
+              claim: "Private fact.",
+              category: "private",
+              source: "resume",
+              visibility: "private",
+              verificationStatus: "published"
+            }
+          ]
+        }}
+      />
+    );
+
     expect(html).toContain("Public active fact.");
+    expect(html).toContain("Make private");
+    expect(html).toContain("Edit");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("Draft public fact.");
+    expect(html).not.toContain("Private fact.");
+  });
+
+  it("does not render admin controls on the public portfolio component", () => {
+    const html = renderToStaticMarkup(
+      <PublicPortfolio
+        source="api"
+        profile={{
+          id: "profile-1",
+          slug: "chance-alpha",
+          displayName: "Chance Alpha",
+          headline: "Applied AI Engineer",
+          summary: "Public summary.",
+          profileStatus: "published",
+          updatedAt: "2026-05-23T00:00:00.000Z",
+          hasPublishedPublicContent: true,
+          facts: [
+            {
+              id: "public-fact",
+              claim: "Public active fact.",
+              category: "impact",
+              source: "resume",
+              visibility: "public",
+              verificationStatus: "published"
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(html).toContain("Public active fact.");
+    expect(html).not.toContain("Make private");
+    expect(html).not.toContain("Archive");
   });
 
   it("shows review placeholders for missing experience dates and location", () => {
