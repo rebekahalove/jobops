@@ -33,6 +33,9 @@ export async function PATCH(
       }
     );
     const payload = await apiResponse.json();
+    if (!apiResponse.ok && payload && typeof payload === "object" && "detail" in payload) {
+      return NextResponse.json({ ok: false, error: String(payload.detail) }, { status: apiResponse.status });
+    }
     return NextResponse.json(payload, { status: apiResponse.status });
   } catch {
     return NextResponse.json(

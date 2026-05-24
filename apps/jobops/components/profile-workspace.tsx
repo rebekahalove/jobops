@@ -44,6 +44,11 @@ type ProfileSummary = {
   tenantSlug?: string;
 };
 
+type WorkspaceMessage = {
+  kind: "success" | "error" | "info";
+  text: string;
+};
+
 type ProfileWorkspacePayload = {
   profile?: ProfileSummary;
   draft: ProfileIntakeOutput & { statusSummary?: string };
@@ -180,10 +185,9 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [publicPortfolioPath, setPublicPortfolioPath] = useState<string | null>(null);
   const [publishedItemCount, setPublishedItemCount] = useState(0);
   const [publishedPublicItemCount, setPublishedPublicItemCount] = useState(0);
-  const [archivedItemCount, setArchivedItemCount] = useState(0);
   const [lastTurn, setLastTurn] = useState<MockIntakeTurn | null>(null);
   const [editedFields, setEditedFields] = useState<Set<IntentField>>(() => new Set());
-  const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
+  const [workspaceMessage, setWorkspaceMessage] = useState<WorkspaceMessage | null>(null);
   const [activeSection, setActiveSection] = useState<ReviewTabId>("basics");
   const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
 
@@ -219,7 +223,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     setPublicPortfolioPath(result.publicPortfolioPath ?? null);
     setPublishedItemCount(result.publishedItemCount ?? 0);
     setPublishedPublicItemCount(result.publishedPublicItemCount ?? 0);
-    setArchivedItemCount(result.archivedItemCount ?? 0);
   }
 
   useEffect(() => {
@@ -237,6 +240,18 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
       window.removeEventListener("jobops:profile-draft-updated", refreshLatestDraft);
     };
   }, [apiBasePath]);
+
+  useEffect(() => {
+    if (!workspaceMessage) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setWorkspaceMessage(null), workspaceMessage.kind === "error" ? 9000 : 5200);
+    return () => window.clearTimeout(timeout);
+  }, [workspaceMessage]);
+
+  function showWorkspaceMessage(text: string, kind: WorkspaceMessage["kind"] = "info") {
+    setWorkspaceMessage({ kind, text });
+  }
 
   function updateIntent(field: IntentField, value: string) {
     setIntent((current) => ({
@@ -256,11 +271,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     });
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
-      setWorkspaceMessage(payload.ok === false ? payload.error : "Profile update failed.");
+      showWorkspaceMessage(payload.ok === false ? payload.error : "Profile update failed.", "error");
       return false;
     }
     applyProfilePayload(payload.result);
-    setWorkspaceMessage("Profile basics saved.");
+    showWorkspaceMessage("Profile basics saved.", "success");
     return true;
   }
 
@@ -274,11 +289,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     });
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
-      setWorkspaceMessage(payload.ok === false ? payload.error : "Generated item update failed.");
+      showWorkspaceMessage(payload.ok === false ? payload.error : "Generated item update failed.", "error");
       return false;
     }
     applyProfilePayload(payload.result);
-    setWorkspaceMessage(buildDraftActionMessage(patch));
+    showWorkspaceMessage(buildDraftActionMessage(patch), "success");
     return true;
   }
 
@@ -290,18 +305,19 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
       },
       body: JSON.stringify(patch)
     });
-    const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
+    const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error?: string; detail?: string };
     if (!response.ok || !payload.ok) {
-      setWorkspaceMessage(payload.ok === false ? payload.error : "Published item update failed.");
+      const error = payload.ok === false ? (payload.error || payload.detail || "Published item update failed.") : "Published item update failed.";
+      showWorkspaceMessage(error, "error");
       return false;
     }
     applyProfilePayload(payload.result);
-    setWorkspaceMessage(buildPublishedActionMessage(patch));
+    showWorkspaceMessage(buildPublishedActionMessage(patch), "success");
     return true;
   }
 
   function startPublishedEdit() {
-    setWorkspaceMessage("Editing published items will create a generated replacement item in a follow-up slice.");
+    showWorkspaceMessage("Editing published items will create a generated replacement item in a follow-up slice.", "info");
   }
 
   const draftItemCount = totalDraftCount(draft);
@@ -322,11 +338,14 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           <SummaryMetric label="Published public" value={publishedPublicItemCount} />
           <SummaryMetric label="Published private" value={internalPublishedCount} />
           <SummaryMetric label="Generated needs review" value={draftItemCount} />
-          <SummaryMetric label="Archived" value={archivedItemCount} />
         </div>
+        <section className="profile-header-recent" aria-label="Recent profile changes">
+          <p className="eyebrow">Recent changes</p>
+          <ChangeSummary turn={lastTurn} />
+        </section>
       </section>
 
-      {workspaceMessage ? <p className="profile-workspace-message">{workspaceMessage}</p> : null}
+      {workspaceMessage ? <p className={`profile-workspace-message ${workspaceMessage.kind}`}>{workspaceMessage.text}</p> : null}
 
       <div className="profile-lifecycle-layout">
         <ReviewTabbedList
@@ -359,10 +378,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
             publishedProfile={publishedProfile}
             publishedPublicItemCount={publishedPublicItemCount}
           />
-          <section className="profile-side-card">
-            <p className="eyebrow">Recent changes</p>
-            <ChangeSummary turn={lastTurn} />
-          </section>
           <section className="profile-side-card">
             <p className="eyebrow">Follow-up queue</p>
             <ClarifyingQuestions draft={draft} />
@@ -463,7 +478,7 @@ function IntentFieldControl({
   return (
     <label>
       <span className="field-label-row">
-        <FieldLabel edited={editedFields.has(field)} label={label} />
+        <FieldLabel edited={editedFields.has(field)} label={label} visibility={targetFieldDefaultVisibility(field)} />
         <SaveStatus status={status} />
       </span>
       {multiline ? <textarea
@@ -500,11 +515,19 @@ function IntentFieldControl({
   );
 }
 
-function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
+function FieldLabel({
+  edited,
+  label,
+  visibility = "private"
+}: {
+  edited: boolean;
+  label: string;
+  visibility?: BadgeableDraftItem["visibility"];
+}) {
   return (
     <span className="field-label">
       {label}
-      <DraftIconSet author={edited ? "user" : "agent"} status="needs_review" visibility="private" />
+      <DraftIconSet author={edited ? "user" : "agent"} visibility={visibility} />
     </span>
   );
 }
@@ -512,9 +535,9 @@ function FieldLabel({ edited, label }: { edited: boolean; label: string }) {
 function ProfileStatusIcons() {
   return (
     <span className="profile-status-bar icon-badge-row" aria-label="Profile-level statuses">
-      <IconBadge kind="review" label="Needs verification" />
+      <IconBadge kind="agent" label="Generated" />
       <IconBadge kind="private" label="Private" />
-      <IconBadge kind="unpublished" label="Generated" />
+      <IconBadge kind="published" label="Ready for review" />
     </span>
   );
 }
@@ -539,11 +562,7 @@ function TargetsCard({
   };
 
   return (
-    <section className="profile-review-card target-settings-card" aria-labelledby="target-settings-title">
-      <div>
-        <p className="eyebrow">Generated target suggestion</p>
-        <h4 id="target-settings-title">Targets</h4>
-      </div>
+    <section className="profile-review-card target-settings-card" aria-label="Target settings">
       <div className="intent-form review-form" aria-label="Target settings review form">
         <IntentFieldControl
           editedFields={editedFields}
@@ -562,7 +581,11 @@ function TargetsCard({
           value={intent.roleFamilies}
         />
         <label>
-          <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
+          <FieldLabel
+            edited={editedFields.has("preferredWorkMode")}
+            label="Preferred work mode"
+            visibility={targetFieldDefaultVisibility("preferredWorkMode")}
+          />
           <select
             onChange={(event) => {
               onChange("preferredWorkMode", event.target.value);
@@ -609,11 +632,12 @@ function TargetsCard({
             id: intent.id,
             source: intent.source ?? "model",
             status: intent.status ?? "needs_review",
-            visibility: intent.visibility ?? "private",
+            visibility: intent.visibility ?? "public",
             published: false
           }}
           itemType="target-role"
           onDraftItemUpdate={onDraftItemUpdate}
+          showArchive={false}
         />
       ) : (
         <p className="profile-lifecycle-note">
@@ -632,12 +656,7 @@ function ProfileBasicsPanel({
   profile: ProfileSummary | null;
 }) {
   return (
-    <section className="profile-basics-panel" aria-labelledby="profile-basics-title">
-      <div>
-        <p className="eyebrow">Profile basics</p>
-        <h2 id="profile-basics-title">Public profile shell</h2>
-        <p>These fields can appear on the public portfolio once you publish approved public content.</p>
-      </div>
+    <section className="profile-basics-panel" aria-label="Profile basics fields">
       <div className="profile-basics-form">
         <EditableField label="Display name" onSave={(displayName) => onSave({ displayName })} value={profile?.displayName ?? ""} />
         <EditableField label="Headline" onSave={(headline) => onSave({ headline })} value={profile?.headline ?? ""} />
@@ -661,6 +680,30 @@ function ProfileBasicsPanel({
         <label className="full-span">
           <span>Mailing address</span>
           <input disabled placeholder="Private cover-letter support field pending" />
+        </label>
+        <label>
+          <span>Compensation min</span>
+          <input disabled placeholder="Private by default" />
+        </label>
+        <label>
+          <span>Dealbreakers / constraints</span>
+          <input disabled placeholder="Private by default" />
+        </label>
+        <label>
+          <span>Work authorization / sponsorship details</span>
+          <input disabled placeholder="Private unless intentionally public" />
+        </label>
+        <label>
+          <span>Must avoid companies / industries</span>
+          <input disabled placeholder="Private" />
+        </label>
+        <label>
+          <span>Ranking of locations</span>
+          <input disabled placeholder="Private" />
+        </label>
+        <label>
+          <span>Relocation conditions</span>
+          <input disabled placeholder="Private or selectively public" />
         </label>
       </div>
     </section>
@@ -772,6 +815,8 @@ export function ReviewTabbedList({
   const privateCounts = buildPublishedReviewCounts(publishedProfile, "private");
   const archivedCounts = buildArchivedReviewCounts(draft);
   const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
+  const showArchivedTab = activeTab !== "basics" && activeTab !== "targets";
+  const effectiveLifecycle = !showArchivedTab && activeLifecycle === "archived" ? "generated" : activeLifecycle;
 
   return (
     <div className="profile-review-tabs profile-section-rail">
@@ -780,7 +825,7 @@ export function ReviewTabbedList({
           <button
             aria-controls={`profile-review-panel-${tab.id}`}
             aria-selected={activeTab === tab.id}
-            className={`profile-review-tab${tab.id === "basics" ? " profile-basics-tab" : ""}${activeTab === tab.id ? " active" : ""}`}
+            className={`profile-review-tab${activeTab === tab.id ? " active" : ""}`}
             id={`profile-review-tab-${tab.id}`}
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
@@ -804,15 +849,15 @@ export function ReviewTabbedList({
       >
         <div className="profile-review-panel-header">
           <div>
-            <h3>{activeLabel}</h3>
+            <h3 className="profile-panel-kicker">{activeLabel}</h3>
             <p>Generated items need review. Private items are active internally. Public items are managed in the preview.</p>
           </div>
           <span>{draftCounts[activeTab]} Generated / {privateCounts[activeTab]} Private</span>
         </div>
         <div className="profile-lifecycle-tabs" role="tablist" aria-label={`${activeLabel} lifecycle`}>
           <button
-            aria-selected={activeLifecycle === "generated"}
-            className={activeLifecycle === "generated" ? "active" : ""}
+            aria-selected={effectiveLifecycle === "generated"}
+            className={effectiveLifecycle === "generated" ? "active" : ""}
             onClick={() => onLifecycleChange("generated")}
             role="tab"
             type="button"
@@ -821,8 +866,8 @@ export function ReviewTabbedList({
             <small className="profile-lifecycle-count">{draftCounts[activeTab]}</small>
           </button>
           <button
-            aria-selected={activeLifecycle === "private"}
-            className={activeLifecycle === "private" ? "active" : ""}
+            aria-selected={effectiveLifecycle === "private"}
+            className={effectiveLifecycle === "private" ? "active" : ""}
             onClick={() => onLifecycleChange("private")}
             role="tab"
             type="button"
@@ -830,18 +875,20 @@ export function ReviewTabbedList({
             <span className="profile-lifecycle-label">Private</span>{" "}
             <small className="profile-lifecycle-count">{privateCounts[activeTab]}</small>
           </button>
-          <button
-            aria-selected={activeLifecycle === "archived"}
-            className={`archived-link-tab${activeLifecycle === "archived" ? " active" : ""}`}
-            onClick={() => onLifecycleChange("archived")}
-            role="tab"
-            type="button"
-          >
-            Archived
-          </button>
+          {showArchivedTab ? (
+            <button
+              aria-selected={effectiveLifecycle === "archived"}
+              className={`archived-link-tab${effectiveLifecycle === "archived" ? " active" : ""}`}
+              onClick={() => onLifecycleChange("archived")}
+              role="tab"
+              type="button"
+            >
+              Archived
+            </button>
+          ) : null}
         </div>
-        <section className="profile-review-card" aria-label={`${lifecycleLabel(activeLifecycle)} ${activeLabel}`}>
-          {activeLifecycle === "generated" ? (
+        <section className="profile-review-card" aria-label={`${lifecycleLabel(effectiveLifecycle)} ${activeLabel}`}>
+          {effectiveLifecycle === "generated" ? (
             <ProfileReviewTabContent
               activeTab={activeTab}
               draft={draft}
@@ -852,7 +899,7 @@ export function ReviewTabbedList({
               onProfileSave={onProfileSave}
               profile={profile ?? null}
             />
-          ) : activeLifecycle === "private" ? (
+          ) : effectiveLifecycle === "private" ? (
             <PublishedProfileTabContent
               activeTab={activeTab}
               onEdit={onPublishedEdit}
@@ -1341,6 +1388,7 @@ function PublishedTargets({
           itemType="target-role"
           onEdit={onEdit}
           onPublishedItemUpdate={onPublishedItemUpdate}
+          showArchive={false}
           visibility={target.visibility ?? "private"}
         />
       ) : null}
@@ -1403,6 +1451,7 @@ export function PublicPortfolioPreview({
                   itemType="target-role"
                   onEdit={onEdit}
                   onPublishedItemUpdate={onPublishedItemUpdate}
+                  showArchive={false}
                   visibility={target.visibility ?? "public"}
                 />
               </article>
@@ -1544,14 +1593,17 @@ function AdminPreviewControls({
   itemType,
   onEdit,
   onPublishedItemUpdate,
+  showArchive = true,
   visibility
 }: {
   itemId: string;
   itemType: ProfileItemType;
   onEdit?: () => void;
   onPublishedItemUpdate?: PublishedItemUpdateHandler;
+  showArchive?: boolean;
   visibility: "private" | "public";
 }) {
+  const canArchive = showArchive && itemType !== "target-role";
   return (
     <div className="admin-preview-controls" aria-label="Public preview admin controls">
       <button
@@ -1565,14 +1617,16 @@ function AdminPreviewControls({
       <button className="button-action" disabled={!onEdit} onClick={onEdit} type="button">
         Edit
       </button>
-      <button
-        className="button-action subtle-danger"
-        disabled={!onPublishedItemUpdate}
-        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { archive: true })}
-        type="button"
-      >
-        Archive
-      </button>
+      {canArchive ? (
+        <button
+          className="button-action subtle-danger"
+          disabled={!onPublishedItemUpdate}
+          onClick={() => onPublishedItemUpdate?.(itemType, itemId, { archive: true })}
+          type="button"
+        >
+          Archive
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1739,12 +1793,15 @@ function EditableFactRow({
 function ReviewActions({
   item,
   itemType,
-  onDraftItemUpdate
+  onDraftItemUpdate,
+  showArchive = true
 }: {
   item: BadgeableDraftItem & { id: string };
   itemType: ProfileItemType;
   onDraftItemUpdate?: DraftItemUpdateHandler;
+  showArchive?: boolean;
 }) {
+  const canArchive = showArchive && itemType !== "target-role";
   return (
     <div className="review-action-row">
       <button
@@ -1763,14 +1820,16 @@ function ReviewActions({
       >
         Publish public
       </button>
-      <button
-        className="secondary-action button-action subtle-danger"
-        disabled={!onDraftItemUpdate || item.published}
-        onClick={() => onDraftItemUpdate?.(itemType, item.id, { reviewStatus: "rejected", visibility: "private" })}
-        type="button"
-      >
-        Archive
-      </button>
+      {canArchive ? (
+        <button
+          className="secondary-action button-action subtle-danger"
+          disabled={!onDraftItemUpdate || item.published}
+          onClick={() => onDraftItemUpdate?.(itemType, item.id, { reviewStatus: "rejected", visibility: "private" })}
+          type="button"
+        >
+          Archive
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1780,14 +1839,17 @@ function PublishedActions({
   itemType,
   onEdit,
   onPublishedItemUpdate,
-  visibility
+  visibility,
+  showArchive = true
 }: {
   itemId: string;
   itemType: ProfileItemType;
   onEdit?: () => void;
   onPublishedItemUpdate?: PublishedItemUpdateHandler;
+  showArchive?: boolean;
   visibility: "private" | "public";
 }) {
+  const canArchive = showArchive && itemType !== "target-role";
   return (
     <div className="review-action-row published-action-row">
       <button
@@ -1814,14 +1876,16 @@ function PublishedActions({
       >
         Edit
       </button>
-      <button
-        className="secondary-action button-action subtle-danger"
-        disabled={!onPublishedItemUpdate}
-        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { archive: true })}
-        type="button"
-      >
-        Archive
-      </button>
+      {canArchive ? (
+        <button
+          className="secondary-action button-action subtle-danger"
+          disabled={!onPublishedItemUpdate}
+          onClick={() => onPublishedItemUpdate?.(itemType, itemId, { archive: true })}
+          type="button"
+        >
+          Archive
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1971,6 +2035,10 @@ function targetFieldPatch(field: IntentField, value: string): DraftItemPatch {
   return { [field]: value } as DraftItemPatch;
 }
 
+function targetFieldDefaultVisibility(field: IntentField): BadgeableDraftItem["visibility"] {
+  return field === "constraints" ? "private" : "public";
+}
+
 function splitLines(value: string) {
   return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
@@ -2041,10 +2109,9 @@ function TitleWithBadges({ children, title }: { children: React.ReactNode; title
 function ItemIconSet({ item }: { item: BadgeableDraftItem }) {
   return (
     <span className="icon-badge-row">
-      <ReviewIcon status={item.status} />
+      <LifecycleSourceIcon item={item} />
       <VisibilityIcon visibility={item.visibility} />
-      <PublicationIcon published={item.published} />
-      <SourceIcon source={item.source} />
+      {item.published ? <PublicationIcon published={item.published} /> : null}
     </span>
   );
 }
@@ -2064,31 +2131,28 @@ function GeneratedIcon() {
 
 function DraftIconSet({
   author,
-  status,
   visibility
 }: {
   author: "agent" | "user";
-  status: BadgeableDraftItem["status"];
   visibility: BadgeableDraftItem["visibility"];
 }) {
   return (
     <span className="icon-badge-row">
       <AuthorIcon author={author} />
-      <ReviewIcon status={status} />
       <VisibilityIcon visibility={visibility} />
     </span>
   );
 }
 
-function ReviewIcon({ status }: { status: BadgeableDraftItem["status"] }) {
-  if (status === "candidate_approved") {
-    return <IconBadge kind="user" label="Edited" />;
+function LifecycleSourceIcon({ item }: { item: BadgeableDraftItem }) {
+  if (item.published) {
+    return <IconBadge kind="published" label="Published" />;
   }
-  if (status !== "needs_review" && status !== "draft") {
+  if (item.status === "rejected") {
     return null;
   }
 
-  return <IconBadge kind="review" label={status === "draft" ? "Generated" : "Needs review"} />;
+  return <IconBadge kind={item.status === "candidate_approved" ? "user" : "agent"} label={item.status === "candidate_approved" ? "Edited" : "Generated"} />;
 }
 
 function VisibilityIcon({ visibility }: { visibility: BadgeableDraftItem["visibility"] }) {
@@ -2099,12 +2163,8 @@ function PublicationIcon({ published }: { published: BadgeableDraftItem["publish
   return <IconBadge kind={published ? "published" : "unpublished"} label={published ? "Published" : "Generated"} />;
 }
 
-function SourceIcon({ source }: { source: BadgeableDraftItem["source"] }) {
-  return <IconBadge kind={source} label={sourceLabel(source)} />;
-}
-
 function AuthorIcon({ author }: { author: "agent" | "user" }) {
-  return <IconBadge kind={author} label={author === "user" ? "Edited by you" : "Agent generated"} />;
+  return <IconBadge kind={author} label={author === "user" ? "Edited" : "Generated"} />;
 }
 
 function IconBadge({ kind, label }: { kind: IconBadgeKind; label: string }) {
@@ -2184,10 +2244,6 @@ function IconGlyph({ kind }: { kind: IconBadgeKind }) {
       <path d="M10 15h4" />
     </svg>
   );
-}
-
-function sourceLabel(source: MockProfileDraft["facts"][number]["source"]) {
-  return source === "resume" ? "Source: Resume" : source === "model" ? "Source: Model" : "Source: Chat";
 }
 
 function visibilityLabel(visibility: BadgeableDraftItem["visibility"]) {

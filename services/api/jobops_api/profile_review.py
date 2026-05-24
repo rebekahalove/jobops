@@ -123,6 +123,8 @@ def update_draft_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_draft_item(session, profile.id, item_type, item_id)
+    if isinstance(item, RoleTarget) and request.review_status == "rejected":
+        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
     edited = apply_editable_fields(item, request)
 
     if isinstance(item, ProfileFactDraft):
@@ -171,6 +173,8 @@ def update_published_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_published_item(session, profile.id, item_type, item_id)
+    if isinstance(item, RoleTarget) and request.archive:
+        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
     apply_editable_fields(item, request)
 
     if request.visibility is not None:
@@ -211,7 +215,7 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
                 "profileStatus": profile.profile_status,
                 "tenantSlug": tenant_slug,
             },
-            "draft": get_latest_profile_draft_snapshot(session, profile),
+            "draft": generated_profile_review_snapshot(session, profile),
             "publishedProfile": candidate_profile_to_published_dict(profile),
             "publicProfile": candidate_profile_to_public_dict(profile),
             "publicPortfolioPath": f"/portfolio/{tenant_slug}",
@@ -219,6 +223,19 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
             "publishedPublicItemCount": public_content_count(session, profile.id),
             "archivedItemCount": archived_content_count(session, profile.id),
         },
+    }
+
+
+def generated_profile_review_snapshot(session: Session, profile: CandidateProfile) -> dict[str, Any]:
+    """Profile review shows only pending generated rows; published rows live in Published/Public surfaces."""
+    snapshot = get_latest_profile_draft_snapshot(session, profile)
+    return {
+        **snapshot,
+        "targetRoleIntent": {} if snapshot.get("targetRoleIntent", {}).get("published") else snapshot.get("targetRoleIntent", {}),
+        "draftFacts": [item for item in snapshot.get("draftFacts", []) if not item.get("published")],
+        "skillClaims": [item for item in snapshot.get("skillClaims", []) if not item.get("published")],
+        "experienceAndProjects": [item for item in snapshot.get("experienceAndProjects", []) if not item.get("published")],
+        "evidenceLinks": [item for item in snapshot.get("evidenceLinks", []) if not item.get("published")],
     }
 
 
@@ -392,10 +409,7 @@ def archive_published_item(item) -> None:
         item.review_status = "rejected"
         item.publication_status = "archived"
     elif isinstance(item, RoleTarget):
-        item.visibility = "private"
-        item.review_status = "rejected"
-        item.publication_status = "archived"
-        item.is_active = False
+        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
 
 
 def publish_approved_items(session: Session, profile: CandidateProfile) -> int:

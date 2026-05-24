@@ -417,7 +417,7 @@ def sync_role_target(
             },
             source="model",
             review_status="needs_review",
-            visibility="private",
+            visibility="public",
             publication_status="not_published",
             is_active=True,
         )

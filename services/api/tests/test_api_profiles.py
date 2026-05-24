@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileIntakeSession, SkillClaim
+from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -507,6 +507,178 @@ def test_published_item_visibility_and_archive_update_public_serialization(monke
     assert archive_private_payload["publishedProfile"].get("skillClaims", []) == []
     assert archive_payload["archivedItemCount"] == 1
     assert archive_private_payload["archivedItemCount"] == 2
+
+
+def test_experience_publish_private_and_public_move_out_of_generated(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        intake_session = ProfileIntakeSession(candidate_profile_id=auth.candidate_profile.id, status="active")
+        session.add(intake_session)
+        session.flush()
+        private_experience = ExperienceProjectDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            title="Private project",
+            organization="Internal Org",
+            summary="Private summary.",
+            source="model",
+            visibility="private",
+            review_status="needs_review",
+            publication_status="not_published",
+            structured_value={"itemType": "project"},
+        )
+        public_experience = ExperienceProjectDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            title="Public project",
+            organization="Public Org",
+            summary="Public summary.",
+            source="model",
+            visibility="private",
+            review_status="needs_review",
+            publication_status="not_published",
+            structured_value={"itemType": "project"},
+        )
+        session.add_all([intake_session, private_experience, public_experience])
+        session.flush()
+        private_experience_id = private_experience.id
+        public_experience_id = public_experience.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        private_response = client.patch(
+            f"/v1/profile/draft-items/experience/{private_experience_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "private"},
+        )
+        public_response = client.patch(
+            f"/v1/profile/draft-items/experience/{public_experience_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "public"},
+        )
+
+    assert private_response.status_code == 200
+    private_payload = private_response.json()["result"]
+    assert [item["id"] for item in private_payload["draft"]["experienceAndProjects"]] == [public_experience_id]
+    assert private_payload["publishedProfile"]["experienceAndProjects"][0]["id"] == private_experience_id
+    assert private_payload["publishedProfile"]["experienceAndProjects"][0]["visibility"] == "private"
+    assert private_payload["publicProfile"]["experienceAndProjects"] == []
+
+    assert public_response.status_code == 200
+    public_payload = public_response.json()["result"]
+    assert public_payload["draft"]["experienceAndProjects"] == []
+    published_by_id = {item["id"]: item for item in public_payload["publishedProfile"]["experienceAndProjects"]}
+    assert published_by_id[private_experience_id]["visibility"] == "private"
+    assert published_by_id[public_experience_id]["visibility"] == "public"
+    assert public_payload["publicProfile"]["experienceAndProjects"][0]["id"] == public_experience_id
+    assert public_payload["publicProfile"]["experienceAndProjects"][0]["visibility"] == "public"
+
+
+def test_role_targets_cannot_be_archived_through_profile_review_routes(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        intake_session = ProfileIntakeSession(candidate_profile_id=auth.candidate_profile.id, status="active")
+        session.add(intake_session)
+        session.flush()
+        draft_target = RoleTarget(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            target_titles=["Applied AI Engineer"],
+            role_families=["Applied AI"],
+            preferred_locations=[],
+            work_modes=["remote"],
+            constraints={},
+            source="model",
+            review_status="needs_review",
+            visibility="public",
+            publication_status="not_published",
+            is_active=True,
+        )
+        published_target = RoleTarget(
+            candidate_profile_id=auth.candidate_profile.id,
+            target_titles=["AI Systems Engineer"],
+            role_families=["Applied AI"],
+            preferred_locations=[],
+            work_modes=["remote"],
+            constraints={},
+            source="model",
+            review_status="approved",
+            visibility="public",
+            publication_status="published",
+            is_active=True,
+        )
+        session.add_all([intake_session, draft_target, published_target])
+        session.flush()
+        draft_target_id = draft_target.id
+        published_target_id = published_target.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        draft_archive_response = client.patch(
+            f"/v1/profile/draft-items/target-role/{draft_target_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"reviewStatus": "rejected"},
+        )
+        published_archive_response = client.patch(
+            f"/v1/profile/published-items/target-role/{published_target_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"archive": True},
+        )
+
+    assert draft_archive_response.status_code == 400
+    assert draft_archive_response.json()["detail"] == "Targets cannot be archived."
+    assert published_archive_response.status_code == 400
+    assert published_archive_response.json()["detail"] == "Targets cannot be archived."
+
+    with Session(engine) as session:
+        targets = {target.id: target for target in session.query(RoleTarget).all()}
+        assert targets[draft_target_id].review_status == "needs_review"
+        assert targets[published_target_id].publication_status == "published"
+        assert targets[published_target_id].is_active is True
 
 
 class app_with_session:

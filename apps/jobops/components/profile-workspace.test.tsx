@@ -25,6 +25,11 @@ describe("Profile intake workspace", () => {
 
     expect(css).toContain("--workspace-width: min(100% - 24px, 1680px)");
     expect(css).toContain("width: var(--workspace-width)");
+    expect(css).toContain("position: fixed");
+    expect(css).toContain("@keyframes profile-toast-slide");
+    expect(css).toContain(".profile-header-recent");
+    expect(css).toContain("grid-template-columns: 1fr");
+    expect(css).not.toContain("profile-basics-tab");
   });
 
   it("does not render a standalone chat composer", () => {
@@ -46,7 +51,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Review and publish profile knowledge.");
     expect(html).toContain("Generated");
     expect(html).toContain("Private");
-    expect(html).toContain("Archived");
+    expect(html).not.toContain("Archived</span>");
     expect(html).toContain("Internal JobOps context");
     expect(html).toContain("Public portfolio preview");
     expect(html).toContain("Private");
@@ -287,6 +292,82 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain(">Approve<");
   });
 
+  it("uses consistent generated and edited status icons", () => {
+    const generatedState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates.",
+      targetRoleIntent: {},
+      draftFacts: [
+        {
+          claim: "Generated fact.",
+          category: "impact",
+          source: "chat",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        },
+        {
+          claim: "Edited fact.",
+          category: "impact",
+          source: "chat",
+          status: "candidate_approved",
+          visibility: "private",
+          published: false
+        }
+      ],
+      skillClaims: [],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList activeLifecycle="generated" activeTab="facts" draft={generatedState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(html).toContain("aria-label=\"Generated\"");
+    expect(html).toContain("aria-label=\"Edited\"");
+    expect(html).not.toContain("Needs review");
+    expect(html).not.toContain("Edited by you");
+  });
+
+  it("does not expose archived tabs or archive actions for targets", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted target direction.",
+      targetRoleIntent: {
+        id: "target-1",
+        targetTitles: "Applied AI Engineer",
+        targetRoleFamilies: "Applied AI",
+        preferredWorkMode: "remote",
+        source: "model",
+        status: "needs_review",
+        visibility: "public",
+        published: false
+      },
+      draftFacts: [],
+      skillClaims: [],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="targets"
+        draft={nextState.draft}
+        intent={nextState.intent}
+        onIntentChange={() => undefined}
+        onTabChange={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Publish public");
+    expect(html).not.toContain("Archived");
+    expect(html).not.toContain("Archive");
+  });
+
   it("renders generated items as autosaving form fields", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
@@ -413,6 +494,35 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Archive");
     expect(html).not.toContain("Draft public fact.");
     expect(html).not.toContain("Private fact.");
+  });
+
+  it("does not expose archive controls for public target preview items", () => {
+    const html = renderToStaticMarkup(
+      <PublicPortfolioPreview
+        onEdit={() => undefined}
+        onPublishedItemUpdate={() => undefined}
+        publicPortfolioPath="/portfolio/chance-alpha"
+        publishedPublicItemCount={1}
+        publicProfile={{
+          displayName: "Chance Alpha",
+          headline: "Applied AI Engineer",
+          summary: "Public summary.",
+          profileStatus: "published",
+          targetRoleIntent: {
+            id: "target-1",
+            targetTitles: ["Applied AI Engineer"],
+            roleFamilies: ["Applied AI"],
+            visibility: "public",
+            publicationStatus: "published"
+          }
+        }}
+      />
+    );
+
+    expect(html).toContain("Applied AI Engineer");
+    expect(html).toContain("Make private");
+    expect(html).toContain("Edit");
+    expect(html).not.toContain("Archive");
   });
 
   it("does not render admin controls on the public portfolio component", () => {
