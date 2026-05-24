@@ -283,13 +283,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           <SummaryMetric label="Generated needs review" value={draftItemCount} />
           <SummaryMetric label="Archived" value={archivedItemCount} />
         </div>
-        <div className="profile-command-actions">
-          {publicPortfolioPath && publishedPublicItemCount > 0 ? (
-            <a className="secondary-action" href={publicPortfolioPath}>
-              Public portfolio preview
-            </a>
-          ) : null}
-        </div>
       </section>
 
       {workspaceMessage ? <p className="profile-workspace-message">{workspaceMessage}</p> : null}
@@ -744,7 +737,8 @@ export function ReviewTabbedList({
             role="tab"
             type="button"
           >
-            <GeneratedIcon /> Generated
+            <span className="profile-lifecycle-label"><GeneratedIcon /> Generated</span>{" "}
+            <small className="profile-lifecycle-count">{draftCounts[activeTab]}</small>
           </button>
           <button
             aria-selected={activeLifecycle === "private"}
@@ -753,7 +747,8 @@ export function ReviewTabbedList({
             role="tab"
             type="button"
           >
-            Private
+            <span className="profile-lifecycle-label">Private</span>{" "}
+            <small className="profile-lifecycle-count">{privateCounts[activeTab]}</small>
           </button>
           <button
             aria-selected={activeLifecycle === "archived"}
@@ -766,10 +761,6 @@ export function ReviewTabbedList({
           </button>
         </div>
         <section className="profile-review-card" aria-label={`${lifecycleLabel(activeLifecycle)} ${activeLabel}`}>
-          <div className="profile-review-card-header">
-            <h4>{lifecycleLabel(activeLifecycle)}</h4>
-            <span>{lifecycleCount(activeLifecycle, activeTab, draftCounts, privateCounts, archivedCounts)}</span>
-          </div>
           {activeLifecycle === "generated" ? (
             <ProfileReviewTabContent
               activeTab={activeTab}
@@ -993,9 +984,9 @@ function ArchivedProfileTabContent({ activeTab, draft }: { activeTab: ReviewTabI
   if (activeTab === "skills") {
     const skills = draft.skillClaims.filter(isArchivedDraftItem);
     return skills.length ? (
-      <ul className="profile-review-list muted-list">
+      <ul className="profile-review-list">
         {skills.map((skill) => (
-          <li className="profile-review-item archived-review-card" key={skill.id}>
+          <li className="profile-review-item" key={skill.id}>
             <TitleWithBadges title={skill.skill}>
               <ItemIconSet item={skill} />
             </TitleWithBadges>
@@ -1010,9 +1001,9 @@ function ArchivedProfileTabContent({ activeTab, draft }: { activeTab: ReviewTabI
       activeTab === "experience" ? ["experience", "project"] : activeTab === "education" ? ["education"] : ["certification"];
     const items = draft.experienceSummaries.filter((item) => isArchivedDraftItem(item) && itemTypes.includes(item.itemType));
     return items.length ? (
-      <ul className="profile-review-list muted-list">
+      <ul className="profile-review-list">
         {items.map((item) => (
-          <li className="profile-review-item archived-review-card" key={item.id}>
+          <li className="profile-review-item" key={item.id}>
             <TitleWithBadges title={item.title}>
               <ItemIconSet item={item} />
             </TitleWithBadges>
@@ -1025,9 +1016,9 @@ function ArchivedProfileTabContent({ activeTab, draft }: { activeTab: ReviewTabI
   if (activeTab === "evidence") {
     const links = draft.links.filter(isArchivedDraftItem);
     return links.length ? (
-      <ul className="profile-review-list muted-list">
+      <ul className="profile-review-list">
         {links.map((link) => (
-          <li className="profile-review-item archived-review-card" key={link.id}>
+          <li className="profile-review-item" key={link.id}>
             <TitleWithBadges title={link.label}>
               <ItemIconSet item={link} />
             </TitleWithBadges>
@@ -1041,9 +1032,9 @@ function ArchivedProfileTabContent({ activeTab, draft }: { activeTab: ReviewTabI
     isArchivedDraftItem(fact) && (activeTab === "achievements" ? looksLikeAchievement(fact.claim, fact.category) : true)
   );
   return facts.length ? (
-    <ul className="profile-review-list muted-list">
+    <ul className="profile-review-list">
       {facts.map((fact) => (
-        <li className="profile-review-item archived-review-card" key={fact.id}>
+        <li className="profile-review-item" key={fact.id}>
           <TitleWithBadges title={fact.category}>
             <ItemIconSet item={fact} />
           </TitleWithBadges>
@@ -1734,22 +1725,6 @@ function buildArchivedReviewCounts(draft: MockProfileDraft | null): Record<Revie
 
 function lifecycleLabel(lifecycle: LifecycleTab) {
   return lifecycle === "generated" ? "Generated" : lifecycle === "private" ? "Private" : "Archived";
-}
-
-function lifecycleCount(
-  lifecycle: LifecycleTab,
-  activeTab: ReviewTabId,
-  generatedCounts: Record<ReviewTabId, number>,
-  privateCounts: Record<ReviewTabId, number>,
-  archivedCounts: Record<ReviewTabId, number>
-) {
-  if (lifecycle === "generated") {
-    return `${generatedCounts[activeTab]} Generated`;
-  }
-  if (lifecycle === "private") {
-    return `${privateCounts[activeTab]} Private`;
-  }
-  return `${archivedCounts[activeTab]} Archived`;
 }
 
 function totalDraftCount(draft: MockProfileDraft | null) {
