@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
+from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileFieldValue, ProfileIntakeSession, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -596,7 +596,7 @@ def test_experience_publish_private_and_public_move_out_of_generated(monkeypatch
     assert public_payload["publicProfile"]["experienceAndProjects"][0]["visibility"] == "public"
 
 
-def test_role_targets_cannot_be_archived_through_profile_review_routes(monkeypatch) -> None:
+def test_target_field_archive_does_not_archive_whole_target_record(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     engine = create_engine(
@@ -620,20 +620,6 @@ def test_role_targets_cannot_be_archived_through_profile_review_routes(monkeypat
         intake_session = ProfileIntakeSession(candidate_profile_id=auth.candidate_profile.id, status="active")
         session.add(intake_session)
         session.flush()
-        draft_target = RoleTarget(
-            candidate_profile_id=auth.candidate_profile.id,
-            profile_intake_session_id=intake_session.id,
-            target_titles=["Applied AI Engineer"],
-            role_families=["Applied AI"],
-            preferred_locations=[],
-            work_modes=["remote"],
-            constraints={},
-            source="model",
-            review_status="needs_review",
-            visibility="public",
-            publication_status="not_published",
-            is_active=True,
-        )
         published_target = RoleTarget(
             candidate_profile_id=auth.candidate_profile.id,
             target_titles=["AI Systems Engineer"],
@@ -647,38 +633,291 @@ def test_role_targets_cannot_be_archived_through_profile_review_routes(monkeypat
             publication_status="published",
             is_active=True,
         )
-        session.add_all([intake_session, draft_target, published_target])
+        generated_field = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="targets",
+            field_name="targetTitles",
+            value_text="Applied AI Engineer",
+            source="model",
+            lifecycle_status="generated",
+        )
+        session.add_all([intake_session, published_target, generated_field])
         session.flush()
-        draft_target_id = draft_target.id
         published_target_id = published_target.id
+        generated_field_id = generated_field.id
         _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
         session.commit()
 
     with app_with_session(engine):
         client = TestClient(app)
-        draft_archive_response = client.patch(
-            f"/v1/profile/draft-items/target-role/{draft_target_id}",
+        field_archive_response = client.patch(
+            "/v1/profile/fields/targets/targetTitles",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
             cookies={SESSION_COOKIE_NAME: token},
-            json={"reviewStatus": "rejected"},
-        )
-        published_archive_response = client.patch(
-            f"/v1/profile/published-items/target-role/{published_target_id}",
-            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
-            cookies={SESSION_COOKIE_NAME: token},
-            json={"archive": True},
+            json={"archive": True, "lifecycleStatus": "generated"},
         )
 
-    assert draft_archive_response.status_code == 400
-    assert draft_archive_response.json()["detail"] == "Targets cannot be archived."
-    assert published_archive_response.status_code == 400
-    assert published_archive_response.json()["detail"] == "Targets cannot be archived."
+    assert field_archive_response.status_code == 200
+    payload = field_archive_response.json()["result"]
+    target_field = next(field for field in payload["profileFields"]["targets"] if field["name"] == "targetTitles")
+    assert target_field["generated"] is None
+    assert target_field["archived"][0]["archiveReason"] == "dismissed"
 
     with Session(engine) as session:
-        targets = {target.id: target for target in session.query(RoleTarget).all()}
-        assert targets[draft_target_id].review_status == "needs_review"
-        assert targets[published_target_id].publication_status == "published"
-        assert targets[published_target_id].is_active is True
+        target = session.get(RoleTarget, published_target_id)
+        archived_field = session.get(ProfileFieldValue, generated_field_id)
+        assert target is not None
+        assert target.publication_status == "published"
+        assert target.is_active is True
+        assert archived_field is not None
+        assert archived_field.lifecycle_status == "archived"
+
+
+def test_profile_basic_field_publish_replaces_previous_with_archived_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        published = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="profile_basics",
+            field_name="headline",
+            value_text="Old headline",
+            source="user",
+            lifecycle_status="published",
+            visibility="public",
+        )
+        generated = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="profile_basics",
+            field_name="headline",
+            value_text="New headline",
+            source="model",
+            lifecycle_status="generated",
+        )
+        session.add_all([published, generated])
+        session.flush()
+        published_id = published.id
+        generated_id = generated.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        response = client.patch(
+            "/v1/profile/fields/profile_basics/headline",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "public"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["result"]
+    assert payload["publicProfile"]["headline"] == "New headline"
+    field = next(item for item in payload["profileFields"]["profileBasics"] if item["name"] == "headline")
+    assert field["published"]["id"] == generated_id
+    assert field["published"]["visibility"] == "public"
+    assert field["archived"][0]["id"] == published_id
+    assert field["archived"][0]["archiveReason"] == "replaced"
+    assert {field["published"]["lifecycleStatus"], field["archived"][0]["lifecycleStatus"]} == {"published", "archived"}
+
+
+def test_profile_private_only_fields_publish_private_and_never_public(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        mailing = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="profile_basics",
+            field_name="mailingAddress",
+            value_text="123 Private Street",
+            source="model",
+            lifecycle_status="generated",
+        )
+        compensation = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="targets",
+            field_name="compensationMin",
+            value_text="150000",
+            source="model",
+            lifecycle_status="generated",
+        )
+        session.add_all([mailing, compensation])
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        mailing_public_response = client.patch(
+            "/v1/profile/fields/profile_basics/mailingAddress",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "public"},
+        )
+        mailing_private_response = client.patch(
+            "/v1/profile/fields/profile_basics/mailingAddress",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "private"},
+        )
+        compensation_response = client.patch(
+            "/v1/profile/fields/targets/compensationMin",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "private"},
+        )
+
+    assert mailing_public_response.status_code == 400
+    assert mailing_public_response.json()["detail"] == "This field cannot be public."
+    assert mailing_private_response.status_code == 200
+    assert compensation_response.status_code == 200
+    payload = compensation_response.json()["result"]
+    assert "mailingAddress" not in payload["publicProfile"].get("profileFields", {}).get("profileBasics", {})
+    assert "compensationMin" not in payload["publicProfile"].get("profileFields", {}).get("targets", {})
+    assert "123 Private Street" not in str(payload["publicProfile"])
+    assert "150000" not in str(payload["publicProfile"])
+
+
+def test_profile_contact_fields_accept_blank_values(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        for field_name in ("emailAddress", "telephoneNumber", "calendlyLink", "currentLocation"):
+            response = client.patch(
+                f"/v1/profile/fields/profile_basics/{field_name}",
+                headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+                cookies={SESSION_COOKIE_NAME: token},
+                json={"value": "", "lifecycleStatus": "generated"},
+            )
+            assert response.status_code == 200
+            payload = response.json()["result"]
+            field = next(item for item in payload["profileFields"]["profileBasics"] if item["name"] == field_name)
+            assert field["generated"]["value"] == ""
+
+
+def test_target_field_publish_and_visibility_are_field_level(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        target_titles = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="targets",
+            field_name="targetTitles",
+            value_text="Applied AI Engineer",
+            source="model",
+            lifecycle_status="generated",
+        )
+        role_families = ProfileFieldValue(
+            candidate_profile_id=auth.candidate_profile.id,
+            field_group="targets",
+            field_name="roleFamilies",
+            value_text="Applied AI",
+            source="model",
+            lifecycle_status="generated",
+        )
+        session.add_all([target_titles, role_families])
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        publish_response = client.patch(
+            "/v1/profile/fields/targets/targetTitles",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "public"},
+        )
+        make_private_response = client.patch(
+            "/v1/profile/fields/targets/targetTitles",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"visibility": "private"},
+        )
+
+    assert publish_response.status_code == 200
+    publish_payload = publish_response.json()["result"]
+    assert publish_payload["publicProfile"]["targetRoleIntent"]["targetTitles"] == ["Applied AI Engineer"]
+    role_family_field = next(field for field in publish_payload["profileFields"]["targets"] if field["name"] == "roleFamilies")
+    assert role_family_field["generated"]["value"] == "Applied AI"
+    assert role_family_field["published"] is None
+
+    assert make_private_response.status_code == 200
+    private_payload = make_private_response.json()["result"]
+    assert private_payload["publicProfile"]["targetRoleIntent"] == {}
+    target_title_field = next(field for field in private_payload["profileFields"]["targets"] if field["name"] == "targetTitles")
+    assert target_title_field["published"]["visibility"] == "private"
 
 
 class app_with_session:

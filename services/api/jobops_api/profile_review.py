@@ -19,6 +19,18 @@ from .db.models import (
 )
 from .db.session import get_db_session
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
+from .profile_fields import (
+    archive_field_value,
+    change_published_field_visibility,
+    ensure_generated_field,
+    field_rows_snapshot,
+    get_field_definition,
+    latest_field_row,
+    latest_published_field,
+    publish_generated_field,
+    require_visibility_allowed,
+    update_published_field,
+)
 from .profiles import candidate_profile_to_public_dict, candidate_profile_to_published_dict
 from .security import require_internal_api_key
 
@@ -91,6 +103,14 @@ class PublishedItemUpdate(BaseModel):
     archive: bool = False
 
 
+class ProfileFieldUpdate(BaseModel):
+    value: str | None = Field(default=None, max_length=4000)
+    lifecycle_status: Literal["generated", "published"] | None = Field(default=None, alias="lifecycleStatus")
+    publish_visibility: Literal["private", "public"] | None = Field(default=None, alias="publishVisibility")
+    visibility: Literal["private", "public"] | None = None
+    archive: bool = False
+
+
 @router.get("/current")
 def get_current_profile(session: Session = Depends(get_db_session), auth: AuthContext = Depends(require_auth_context)) -> dict[str, Any]:
     return current_profile_payload(session, auth.candidate_profile, auth.tenant.slug)
@@ -113,6 +133,53 @@ def update_current_profile(
     return current_profile_payload(session, profile, auth.tenant.slug)
 
 
+@router.patch("/fields/{field_group}/{field_name}")
+def update_profile_field(
+    field_group: str,
+    field_name: str,
+    request: ProfileFieldUpdate,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    definition = get_field_definition(field_group, field_name)
+    profile = auth.candidate_profile
+
+    if request.value is not None:
+        if request.lifecycle_status == "published":
+            row = latest_published_field(session, profile.id, definition.group, definition.name)
+            if row is None:
+                row = ensure_generated_field(session, profile, definition, request.value)
+                publish_generated_field(session, profile, row, definition, "private")
+            else:
+                update_published_field(row, request.value)
+                if row.visibility is not None:
+                    require_visibility_allowed(definition, row.visibility)
+        else:
+            ensure_generated_field(session, profile, definition, request.value)
+
+    if request.publish_visibility is not None:
+        row = latest_field_row(session, profile.id, definition.group, definition.name, "generated")
+        if row is None:
+            raise HTTPException(status_code=400, detail="No generated field value is available to publish.")
+        publish_generated_field(session, profile, row, definition, request.publish_visibility)
+
+    if request.visibility is not None:
+        row = latest_published_field(session, profile.id, definition.group, definition.name)
+        if row is None:
+            raise HTTPException(status_code=400, detail="No published field value is available.")
+        change_published_field_visibility(row, definition, request.visibility)
+
+    if request.archive:
+        lifecycle = request.lifecycle_status or "generated"
+        row = latest_field_row(session, profile.id, definition.group, definition.name, lifecycle)
+        if row is None:
+            raise HTTPException(status_code=400, detail="No field value is available to archive.")
+        archive_field_value(row)
+
+    session.commit()
+    return current_profile_payload(session, profile, auth.tenant.slug)
+
+
 @router.patch("/draft-items/{item_type}/{item_id}")
 def update_draft_item(
     item_type: DraftItemType,
@@ -123,8 +190,6 @@ def update_draft_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_draft_item(session, profile.id, item_type, item_id)
-    if isinstance(item, RoleTarget) and request.review_status == "rejected":
-        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
     edited = apply_editable_fields(item, request)
 
     if isinstance(item, ProfileFactDraft):
@@ -173,8 +238,6 @@ def update_published_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_published_item(session, profile.id, item_type, item_id)
-    if isinstance(item, RoleTarget) and request.archive:
-        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
     apply_editable_fields(item, request)
 
     if request.visibility is not None:
@@ -218,6 +281,7 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
             "draft": generated_profile_review_snapshot(session, profile),
             "publishedProfile": candidate_profile_to_published_dict(profile),
             "publicProfile": candidate_profile_to_public_dict(profile),
+            "profileFields": field_rows_snapshot(session, profile),
             "publicPortfolioPath": f"/portfolio/{tenant_slug}",
             "publishedItemCount": published_content_count(session, profile.id),
             "publishedPublicItemCount": public_content_count(session, profile.id),
@@ -409,7 +473,10 @@ def archive_published_item(item) -> None:
         item.review_status = "rejected"
         item.publication_status = "archived"
     elif isinstance(item, RoleTarget):
-        raise HTTPException(status_code=400, detail="Targets cannot be archived.")
+        item.visibility = "private"
+        item.review_status = "rejected"
+        item.publication_status = "archived"
+        item.is_active = False
 
 
 def publish_approved_items(session: Session, profile: CandidateProfile) -> int:

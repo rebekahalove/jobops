@@ -16,10 +16,14 @@ from jobops_api.db.models import (
     SkillClaim,
     Tenant,
 )
+from jobops_api.profile_fields import private_context_field_items, published_field_values
 
 
 def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
     session = object_session(candidate_profile)
+    public_basics = published_field_values(session, candidate_profile.id, "profile_basics", visibility="public", public_only=True) if session is not None else {}
+    all_published_basics = published_field_values(session, candidate_profile.id, "profile_basics", public_only=True) if session is not None else {}
+    public_targets = published_field_values(session, candidate_profile.id, "targets", visibility="public", public_only=True) if session is not None else {}
     fact_rows = (
         list(
             session.scalars(
@@ -50,7 +54,7 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
         }
         for fact in fact_rows
     ]
-    published_role_target = latest_published_public_role_target(candidate_profile)
+    published_role_target = None if public_targets else latest_published_public_role_target(candidate_profile)
     published_skills = published_public_skills(candidate_profile.id, candidate_profile)
     published_experiences = published_public_experience(candidate_profile.id, candidate_profile)
     published_links = published_public_links(candidate_profile.id, candidate_profile)
@@ -58,24 +62,35 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
     return {
         "id": candidate_profile.id,
         "slug": candidate_profile.slug,
-        "displayName": candidate_profile.display_name,
-        "headline": candidate_profile.headline,
-        "summary": candidate_profile.summary,
+        "displayName": public_basics.get("displayName", "" if "displayName" in all_published_basics else candidate_profile.display_name),
+        "headline": public_basics.get("headline", "" if "headline" in all_published_basics else candidate_profile.headline),
+        "summary": public_basics.get("summary", "" if "summary" in all_published_basics else candidate_profile.summary),
         "profileStatus": candidate_profile.profile_status,
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
-        "targetRoleIntent": serialize_public_role_target(published_role_target),
+        "profileFields": {"profileBasics": public_basics, "targets": public_targets},
+        "targetRoleIntent": serialize_field_role_target(public_targets) if public_targets else serialize_public_role_target(published_role_target),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
         "hasPublishedPublicContent": bool(
-            published_facts or published_skills or published_experiences or published_links or published_role_target
+            published_facts
+            or published_skills
+            or published_experiences
+            or published_links
+            or published_role_target
+            or public_basics
+            or public_targets
         ),
     }
 
 
 def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
     session = object_session(candidate_profile)
+    published_basics = published_field_values(session, candidate_profile.id, "profile_basics") if session is not None else {}
+    published_targets = published_field_values(session, candidate_profile.id, "targets") if session is not None else {}
+    public_basics = published_field_values(session, candidate_profile.id, "profile_basics", visibility="public", public_only=True) if session is not None else {}
+    public_targets = published_field_values(session, candidate_profile.id, "targets", visibility="public", public_only=True) if session is not None else {}
     fact_rows = (
         list(
             session.scalars(
@@ -102,7 +117,7 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
         }
         for fact in fact_rows
     ]
-    published_role_target = latest_published_role_target(candidate_profile)
+    published_role_target = None if published_targets else latest_published_role_target(candidate_profile)
     published_skills = published_skills_for_internal_context(candidate_profile.id, candidate_profile)
     published_experiences = published_experience_for_internal_context(candidate_profile.id, candidate_profile)
     published_links = published_links_for_internal_context(candidate_profile.id, candidate_profile)
@@ -110,17 +125,18 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
     return {
         "id": candidate_profile.id,
         "slug": candidate_profile.slug,
-        "displayName": candidate_profile.display_name,
-        "headline": candidate_profile.headline,
-        "summary": candidate_profile.summary,
+        "displayName": published_basics.get("displayName", candidate_profile.display_name),
+        "headline": published_basics.get("headline", candidate_profile.headline),
+        "summary": published_basics.get("summary", candidate_profile.summary),
         "profileStatus": candidate_profile.profile_status,
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
-        "targetRoleIntent": serialize_published_role_target(published_role_target),
+        "profileFields": {"profileBasics": published_basics, "targets": published_targets},
+        "targetRoleIntent": serialize_field_role_target(published_targets) if published_targets else serialize_published_role_target(published_role_target),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
-        "hasPublishedPublicContent": any(
+        "hasPublishedPublicContent": bool(public_basics or public_targets) or any(
             item.get("visibility") == "public"
             for item in [*published_facts, *[serialize_public_skill(skill) for skill in published_skills], *[serialize_public_experience(item) for item in published_experiences], *[serialize_public_link(item) for item in published_links]]
         ),
@@ -134,7 +150,9 @@ def candidate_profile_to_private_context_dict(candidate_profile: CandidateProfil
     draft_items: list[dict[str, Any]] = []
     archived_items: list[dict[str, Any]] = []
     if session is not None:
+        published_fields, generated_fields, archived_fields = private_context_field_items(session, candidate_profile)
         draft_items = [
+            *generated_fields,
             *[
                 {
                     "type": "fact",
@@ -193,6 +211,7 @@ def candidate_profile_to_private_context_dict(candidate_profile: CandidateProfil
             ],
         ]
         archived_items = [
+            *archived_fields,
             *[
                 {"type": "fact", "id": item.id, "claim": item.claim, "category": item.fact_type, "state": "archived"}
                 for item in session.scalars(
@@ -297,6 +316,26 @@ def partition_published_items(published_profile: dict[str, Any]) -> tuple[list[d
         else:
             internal_items.append(decorated_target)
     return public_items, internal_items
+
+
+def serialize_field_role_target(values: dict[str, str]) -> dict[str, Any]:
+    if not values:
+        return {}
+    return {
+        "id": "field-targets",
+        "targetTitles": split_field_list(values.get("targetTitles", "")),
+        "roleFamilies": split_field_list(values.get("roleFamilies", "")),
+        "preferredLocations": split_field_list(values.get("preferredLocations", "")),
+        "workModes": split_field_list(values.get("preferredWorkMode", "")),
+        "domainsOrIndustries": values.get("domainsOrIndustries"),
+        "constraints": values.get("constraints"),
+        "visibility": "public" if values else "private",
+        "publicationStatus": "published",
+    }
+
+
+def split_field_list(value: str) -> list[str]:
+    return [part.strip() for part in value.replace("\n", ";").split(";") if part.strip()]
 
 
 def get_candidate_profile_by_slug(session: Session, slug: str, *, tenant_id: str | None = None) -> CandidateProfile | None:

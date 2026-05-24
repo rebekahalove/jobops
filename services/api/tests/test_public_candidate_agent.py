@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, EvidenceArtifact, ExperienceProjectDraft, ProfileFact, RoleTarget, SkillClaim
+from jobops_api.db.models import Base, EvidenceArtifact, ExperienceProjectDraft, ProfileFact, ProfileFieldValue, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -33,12 +33,15 @@ def test_public_profile_context_exposes_only_public_published_items() -> None:
 
     context_text = json.dumps(context)
     assert "Published public fact." in context_text
+    assert "Public profile headline." in context_text
     assert "Public Python evidence." in context_text
     assert "Published project summary." in context_text
     assert "https://example.com/public" in context_text
     assert "Private draft fact." not in context_text
     assert "Candidate approved unpublished fact." not in context_text
     assert "Private Python evidence." not in context_text
+    assert "Private mailing address." not in context_text
+    assert "Private compensation floor." not in context_text
     assert "Draft project summary." not in context_text
     assert "https://example.com/private" not in context_text
 
@@ -209,6 +212,33 @@ def seed_public_items(session: Session):
                 uri="https://example.com/private",
                 visibility="private",
                 publication_status="published",
+            ),
+            ProfileFieldValue(
+                candidate_profile_id=profile.id,
+                field_group="profile_basics",
+                field_name="headline",
+                value_text="Public profile headline.",
+                source="user",
+                lifecycle_status="published",
+                visibility="public",
+            ),
+            ProfileFieldValue(
+                candidate_profile_id=profile.id,
+                field_group="profile_basics",
+                field_name="mailingAddress",
+                value_text="Private mailing address.",
+                source="user",
+                lifecycle_status="published",
+                visibility="private",
+            ),
+            ProfileFieldValue(
+                candidate_profile_id=profile.id,
+                field_group="targets",
+                field_name="compensationMin",
+                value_text="Private compensation floor.",
+                source="user",
+                lifecycle_status="published",
+                visibility="private",
             ),
             RoleTarget(
                 candidate_profile_id=profile.id,

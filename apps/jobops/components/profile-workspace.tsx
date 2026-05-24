@@ -54,10 +54,38 @@ type ProfileWorkspacePayload = {
   draft: ProfileIntakeOutput & { statusSummary?: string };
   publishedProfile?: PublishedProfileSnapshot;
   publicProfile?: PublicProfileSnapshot;
+  profileFields?: ProfileFieldGroups;
   publicPortfolioPath?: string;
   publishedItemCount?: number;
   publishedPublicItemCount?: number;
   archivedItemCount?: number;
+};
+
+type ProfileFieldGroups = {
+  profileBasics: ProfileFieldState[];
+  targets: ProfileFieldState[];
+};
+
+type ProfileFieldValue = {
+  id: string;
+  value: string;
+  source: string;
+  lifecycleStatus: "generated" | "published" | "archived";
+  visibility?: "private" | "public" | null;
+  archiveReason?: string | null;
+  originalValue?: string | null;
+};
+
+type ProfileFieldState = {
+  group: "profile_basics" | "targets";
+  name: string;
+  label: string;
+  publicAllowed: boolean;
+  privateOnly: boolean;
+  multiline: boolean;
+  generated?: ProfileFieldValue | null;
+  published?: ProfileFieldValue | null;
+  archived: ProfileFieldValue[];
 };
 
 type PublicProfileSnapshot = {
@@ -173,8 +201,17 @@ type PublishedItemPatch = {
   archive?: boolean;
 };
 
+type ProfileFieldPatch = {
+  value?: string;
+  lifecycleStatus?: "generated" | "published";
+  publishVisibility?: "private" | "public";
+  visibility?: "private" | "public";
+  archive?: boolean;
+};
+
 type DraftItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => Promise<boolean> | boolean | void;
 type PublishedItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => Promise<boolean> | boolean | void;
+type ProfileFieldUpdateHandler = (fieldGroup: ProfileFieldState["group"], fieldName: string, patch: ProfileFieldPatch) => Promise<boolean> | boolean | void;
 
 export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
@@ -182,6 +219,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [publishedProfile, setPublishedProfile] = useState<PublishedProfileSnapshot | null>(null);
   const [publicProfile, setPublicProfile] = useState<PublicProfileSnapshot | null>(null);
+  const [profileFields, setProfileFields] = useState<ProfileFieldGroups | null>(null);
   const [publicPortfolioPath, setPublicPortfolioPath] = useState<string | null>(null);
   const [publishedItemCount, setPublishedItemCount] = useState(0);
   const [publishedPublicItemCount, setPublishedPublicItemCount] = useState(0);
@@ -220,6 +258,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     setProfile(result.profile ?? null);
     setPublishedProfile(result.publishedProfile ?? null);
     setPublicProfile(result.publicProfile ?? null);
+    setProfileFields(result.profileFields ?? null);
     setPublicPortfolioPath(result.publicPortfolioPath ?? null);
     setPublishedItemCount(result.publishedItemCount ?? 0);
     setPublishedPublicItemCount(result.publishedPublicItemCount ?? 0);
@@ -316,6 +355,25 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     return true;
   }
 
+  async function updateProfileField(fieldGroup: ProfileFieldState["group"], fieldName: string, patch: ProfileFieldPatch) {
+    const response = await fetch(`${apiBasePath}/profile/fields/${fieldGroup}/${fieldName}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patch)
+    });
+    const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error?: string; detail?: string };
+    if (!response.ok || !payload.ok) {
+      const error = payload.ok === false ? (payload.error || payload.detail || "Profile field update failed.") : "Profile field update failed.";
+      showWorkspaceMessage(error, "error");
+      return false;
+    }
+    applyProfilePayload(payload.result);
+    showWorkspaceMessage(buildProfileFieldActionMessage(patch), "success");
+    return true;
+  }
+
   function startPublishedEdit() {
     showWorkspaceMessage("Editing published items will create a generated replacement item in a follow-up slice.", "info");
   }
@@ -360,8 +418,10 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           onProfileSave={updateProfileFields}
           onPublishedEdit={startPublishedEdit}
           onPublishedItemUpdate={updatePublishedItem}
+          onProfileFieldUpdate={updateProfileField}
           onTabChange={setActiveSection}
           profile={profile}
+          profileFields={profileFields}
           publishedProfile={publishedProfile}
           publicProfile={publicProfile}
         />
@@ -710,6 +770,189 @@ function ProfileBasicsPanel({
   );
 }
 
+function FieldGroupPanel({
+  fields,
+  lifecycle,
+  onProfileFieldUpdate
+}: {
+  fields: ProfileFieldState[];
+  lifecycle: LifecycleTab;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+}) {
+  if (!fields.length) {
+    return <EmptyMessage>No field-level profile data loaded yet.</EmptyMessage>;
+  }
+
+  return (
+    <ul className="profile-review-list field-group-list">
+      {fields.map((field) => (
+        <FieldLifecycleRow
+          field={field}
+          key={`${field.group}-${field.name}`}
+          lifecycle={lifecycle}
+          onProfileFieldUpdate={onProfileFieldUpdate}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function FieldLifecycleRow({
+  field,
+  lifecycle,
+  onProfileFieldUpdate
+}: {
+  field: ProfileFieldState;
+  lifecycle: LifecycleTab;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+}) {
+  const archived = field.archived[0] ?? null;
+  const activeValue = lifecycle === "generated" ? field.generated : lifecycle === "private" ? field.published : archived;
+  const value = activeValue?.value ?? "";
+  const editable = lifecycle !== "archived";
+  const publishedVisibility = field.published?.visibility ?? null;
+
+  return (
+    <li className={`profile-review-item editable-review-card field-lifecycle-row ${lifecycle}`}>
+      <div className="field-lifecycle-header">
+        <TitleWithBadges title={field.label}>
+          <FieldLifecycleBadges field={field} lifecycle={lifecycle} value={activeValue} />
+        </TitleWithBadges>
+        <FieldLifecycleActions
+          field={field}
+          lifecycle={lifecycle}
+          onProfileFieldUpdate={onProfileFieldUpdate}
+          publishedVisibility={publishedVisibility}
+          value={activeValue}
+        />
+      </div>
+      {editable ? (
+        <EditableField
+          className="full-span"
+          label={field.label}
+          multiline={field.multiline}
+          onSave={(nextValue) =>
+            onProfileFieldUpdate?.(field.group, field.name, {
+              lifecycleStatus: lifecycle === "private" ? "published" : "generated",
+              value: nextValue
+            })
+          }
+          value={value}
+        />
+      ) : (
+        <div className="archived-field-value">
+          <span>{activeValue?.archiveReason ? `Archived: ${activeValue.archiveReason}` : "Archived"}</span>
+          <p>{value || "Blank value"}</p>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function FieldLifecycleBadges({
+  field,
+  lifecycle,
+  value
+}: {
+  field: ProfileFieldState;
+  lifecycle: LifecycleTab;
+  value?: ProfileFieldValue | null;
+}) {
+  return (
+    <span className="icon-badge-row">
+      {lifecycle === "generated" ? (
+        value?.source === "user" ? <IconBadge kind="user" label="Edited" /> : <IconBadge kind="agent" label="Generated" />
+      ) : null}
+      {lifecycle === "archived" ? <IconBadge kind="unpublished" label="Archived" /> : null}
+      {lifecycle === "private" && value?.visibility ? <VisibilityIcon visibility={value.visibility} /> : null}
+      {field.privateOnly ? <span className="visibility-text-badge private">Private only</span> : null}
+    </span>
+  );
+}
+
+function FieldLifecycleActions({
+  field,
+  lifecycle,
+  onProfileFieldUpdate,
+  publishedVisibility,
+  value
+}: {
+  field: ProfileFieldState;
+  lifecycle: LifecycleTab;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+  publishedVisibility?: "private" | "public" | null;
+  value?: ProfileFieldValue | null;
+}) {
+  if (lifecycle === "archived") {
+    return null;
+  }
+  if (lifecycle === "generated") {
+    return (
+      <div className="review-action-row field-action-row">
+        <button
+          className="secondary-action button-action"
+          disabled={!onProfileFieldUpdate || !value}
+          onClick={() => onProfileFieldUpdate?.(field.group, field.name, { publishVisibility: "private" })}
+          type="button"
+        >
+          Publish private
+        </button>
+        {field.publicAllowed ? (
+          <button
+            className="secondary-action button-action"
+            disabled={!onProfileFieldUpdate || !value}
+            onClick={() => onProfileFieldUpdate?.(field.group, field.name, { publishVisibility: "public" })}
+            type="button"
+          >
+            Publish public
+          </button>
+        ) : null}
+        <button
+          className="secondary-action button-action subtle-danger"
+          disabled={!onProfileFieldUpdate || !value}
+          onClick={() => onProfileFieldUpdate?.(field.group, field.name, { archive: true, lifecycleStatus: "generated" })}
+          type="button"
+        >
+          Archive
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="review-action-row field-action-row">
+      {field.publicAllowed && publishedVisibility === "private" ? (
+        <button
+          className="secondary-action button-action"
+          disabled={!onProfileFieldUpdate || !value}
+          onClick={() => onProfileFieldUpdate?.(field.group, field.name, { visibility: "public" })}
+          type="button"
+        >
+          Make public
+        </button>
+      ) : null}
+      {publishedVisibility === "public" ? (
+        <button
+          className="secondary-action button-action"
+          disabled={!onProfileFieldUpdate || !value}
+          onClick={() => onProfileFieldUpdate?.(field.group, field.name, { visibility: "private" })}
+          type="button"
+        >
+          Make private
+        </button>
+      ) : null}
+      <button
+        className="secondary-action button-action subtle-danger"
+        disabled={!onProfileFieldUpdate || !value}
+        onClick={() => onProfileFieldUpdate?.(field.group, field.name, { archive: true, lifecycleStatus: "published" })}
+        type="button"
+      >
+        Archive
+      </button>
+    </div>
+  );
+}
+
 function ChangeSummary({ turn }: { turn: MockIntakeTurn | null }) {
   if (!turn) {
     return (
@@ -789,9 +1032,11 @@ export function ReviewTabbedList({
   onLifecycleChange = () => undefined,
   onPublishedEdit,
   onProfileSave,
+  onProfileFieldUpdate,
   onPublishedItemUpdate,
   onTabChange,
   profile,
+  profileFields,
   publishedProfile,
   publicProfile
 }: {
@@ -805,18 +1050,24 @@ export function ReviewTabbedList({
   onLifecycleChange?: (tab: LifecycleTab) => void;
   onPublishedEdit?: () => void;
   onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
   onPublishedItemUpdate?: PublishedItemUpdateHandler;
   onTabChange: (tab: ReviewTabId) => void;
   profile?: ProfileSummary | null;
+  profileFields?: ProfileFieldGroups | null;
   publishedProfile?: PublishedProfileSnapshot | null;
   publicProfile?: PublicProfileSnapshot | null;
 }) {
   const draftCounts = buildReviewCounts(draft);
   const privateCounts = buildPublishedReviewCounts(publishedProfile, "private");
   const archivedCounts = buildArchivedReviewCounts(draft);
+  const fieldCounts = buildFieldReviewCounts(profileFields);
+  const generatedCounts = { ...draftCounts, ...fieldCounts.generated };
+  const publishedPrivateCounts = { ...privateCounts, ...fieldCounts.published };
   const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
-  const showArchivedTab = activeTab !== "basics" && activeTab !== "targets";
-  const effectiveLifecycle = !showArchivedTab && activeLifecycle === "archived" ? "generated" : activeLifecycle;
+  const showArchivedTab = true;
+  const effectiveLifecycle = activeLifecycle;
+  const fieldGroup = activeTab === "basics" ? "profile_basics" : activeTab === "targets" ? "targets" : null;
 
   return (
     <div className="profile-review-tabs profile-section-rail">
@@ -834,9 +1085,9 @@ export function ReviewTabbedList({
             type="button"
           >
             <span>{tab.label}</span>
-            <strong aria-label={`${draftCounts[tab.id]} Generated, ${privateCounts[tab.id]} Private`}>
-              <span>{draftCounts[tab.id]}</span>
-              <small>{privateCounts[tab.id]}</small>
+            <strong aria-label={`${generatedCounts[tab.id]} Generated, ${publishedPrivateCounts[tab.id]} Private`}>
+              <span>{generatedCounts[tab.id]}</span>
+              <small>{publishedPrivateCounts[tab.id]}</small>
             </strong>
           </button>
         ))}
@@ -852,7 +1103,7 @@ export function ReviewTabbedList({
             <h3 className="profile-panel-kicker">{activeLabel}</h3>
             <p>Generated items need review. Private items are active internally. Public items are managed in the preview.</p>
           </div>
-          <span>{draftCounts[activeTab]} Generated / {privateCounts[activeTab]} Private</span>
+          <span>{generatedCounts[activeTab]} Generated / {publishedPrivateCounts[activeTab]} Private</span>
         </div>
         <div className="profile-lifecycle-tabs" role="tablist" aria-label={`${activeLabel} lifecycle`}>
           <button
@@ -863,7 +1114,7 @@ export function ReviewTabbedList({
             type="button"
           >
             <span className="profile-lifecycle-label"><GeneratedIcon /> Generated</span>{" "}
-            <small className="profile-lifecycle-count">{draftCounts[activeTab]}</small>
+            <small className="profile-lifecycle-count">{generatedCounts[activeTab]}</small>
           </button>
           <button
             aria-selected={effectiveLifecycle === "private"}
@@ -873,7 +1124,7 @@ export function ReviewTabbedList({
             type="button"
           >
             <span className="profile-lifecycle-label">Private</span>{" "}
-            <small className="profile-lifecycle-count">{privateCounts[activeTab]}</small>
+            <small className="profile-lifecycle-count">{publishedPrivateCounts[activeTab]}</small>
           </button>
           {showArchivedTab ? (
             <button
@@ -888,7 +1139,13 @@ export function ReviewTabbedList({
           ) : null}
         </div>
         <section className="profile-review-card" aria-label={`${lifecycleLabel(effectiveLifecycle)} ${activeLabel}`}>
-          {effectiveLifecycle === "generated" ? (
+          {fieldGroup ? (
+            <FieldGroupPanel
+              fields={fieldGroup === "profile_basics" ? profileFields?.profileBasics ?? [] : profileFields?.targets ?? []}
+              lifecycle={effectiveLifecycle}
+              onProfileFieldUpdate={onProfileFieldUpdate}
+            />
+          ) : effectiveLifecycle === "generated" ? (
             <ProfileReviewTabContent
               activeTab={activeTab}
               draft={draft}
@@ -1993,6 +2250,29 @@ function buildArchivedReviewCounts(draft: MockProfileDraft | null): Record<Revie
   };
 }
 
+function buildFieldReviewCounts(profileFields?: ProfileFieldGroups | null): {
+  generated: Partial<Record<ReviewTabId, number>>;
+  published: Partial<Record<ReviewTabId, number>>;
+  archived: Partial<Record<ReviewTabId, number>>;
+} {
+  const basics = profileFields?.profileBasics ?? [];
+  const targets = profileFields?.targets ?? [];
+  return {
+    generated: {
+      basics: basics.filter((field) => field.generated).length,
+      targets: targets.filter((field) => field.generated).length
+    },
+    published: {
+      basics: basics.filter((field) => field.published).length,
+      targets: targets.filter((field) => field.published).length
+    },
+    archived: {
+      basics: basics.reduce((count, field) => count + field.archived.length, 0),
+      targets: targets.reduce((count, field) => count + field.archived.length, 0)
+    }
+  };
+}
+
 function lifecycleLabel(lifecycle: LifecycleTab) {
   return lifecycle === "generated" ? "Generated" : lifecycle === "private" ? "Private" : "Archived";
 }
@@ -2026,6 +2306,25 @@ function buildPublishedActionMessage(patch: PublishedItemPatch) {
     return "Published item made private.";
   }
   return "Published item saved.";
+}
+
+function buildProfileFieldActionMessage(patch: ProfileFieldPatch) {
+  if (patch.archive) {
+    return "Profile field archived.";
+  }
+  if (patch.publishVisibility === "public") {
+    return "Profile field published public.";
+  }
+  if (patch.publishVisibility === "private") {
+    return "Profile field published private.";
+  }
+  if (patch.visibility === "public") {
+    return "Profile field made public.";
+  }
+  if (patch.visibility === "private") {
+    return "Profile field made private.";
+  }
+  return "Profile field saved.";
 }
 
 function targetFieldPatch(field: IntentField, value: string): DraftItemPatch {

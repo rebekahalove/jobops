@@ -46,8 +46,18 @@ RESUME_INTAKE_CAPACITY = IntakeCapacity(
     change_summary=12,
 )
 
+COMPACT_RESUME_RETRY_CAPACITY = IntakeCapacity(
+    draft_facts=12,
+    skill_claims=20,
+    experience_and_projects=8,
+    evidence_links=8,
+    clarifying_questions=3,
+    change_summary=6,
+)
+
 CHAT_UPDATE_MAX_OUTPUT_TOKENS = 5000
 RESUME_INTAKE_MAX_OUTPUT_TOKENS = 16000
+COMPACT_RESUME_RETRY_MAX_OUTPUT_TOKENS = 12000
 
 SECTION_HEADING_PATTERN = re.compile(
     r"(?im)^\s*((?:professional|selected|core|additional)\s+)?"

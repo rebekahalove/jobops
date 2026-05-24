@@ -1351,6 +1351,52 @@ input:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.field-group-list {
+  gap: 10px;
+}
+
+.field-lifecycle-row {
+  display: grid;
+  gap: 12px;
+}
+
+.field-lifecycle-row.generated {
+  border-color: rgba(124, 92, 43, 0.28);
+}
+
+.field-lifecycle-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field-action-row {
+  justify-content: flex-end;
+}
+
+.archived-field-value {
+  display: grid;
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 12px;
+}
+
+.archived-field-value span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.archived-field-value p {
+  margin: 0;
+  color: var(--ink);
+}
+
 .review-action-row {
   display: flex;
   flex-wrap: wrap;

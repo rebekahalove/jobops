@@ -331,41 +331,43 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("Edited by you");
   });
 
-  it("does not expose archived tabs or archive actions for targets", () => {
-    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
-      assistantMessage: "I drafted target direction.",
-      targetRoleIntent: {
-        id: "target-1",
-        targetTitles: "Applied AI Engineer",
-        targetRoleFamilies: "Applied AI",
-        preferredWorkMode: "remote",
-        source: "model",
-        status: "needs_review",
-        visibility: "public",
-        published: false
-      },
-      draftFacts: [],
-      skillClaims: [],
-      experienceAndProjects: [],
-      evidenceLinks: [],
-      clarifyingQuestions: [],
-      changeSummary: []
-    });
-
+  it("renders target fields with field-level generated publish and archive actions", () => {
     const html = renderToStaticMarkup(
       <ReviewTabbedList
         activeLifecycle="generated"
         activeTab="targets"
-        draft={nextState.draft}
-        intent={nextState.intent}
-        onIntentChange={() => undefined}
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
         onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [],
+          targets: [
+            {
+              group: "targets",
+              name: "targetTitles",
+              label: "Target titles",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: {
+                id: "target-field-1",
+                value: "Applied AI Engineer",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: null,
+              archived: []
+            }
+          ]
+        }}
       />
     );
 
     expect(html).toContain("Publish public");
-    expect(html).not.toContain("Archived");
-    expect(html).not.toContain("Archive");
+    expect(html).toContain("Publish private");
+    expect(html).toContain("Archive");
+    expect(html).toContain("Applied AI Engineer");
   });
 
   it("renders generated items as autosaving form fields", () => {

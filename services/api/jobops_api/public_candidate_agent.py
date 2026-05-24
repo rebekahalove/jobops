@@ -213,6 +213,19 @@ Return strict JSON with exactly these keys:
 
 def build_public_candidate_context(public_profile: dict[str, Any]) -> dict[str, Any]:
     published_items: list[dict[str, Any]] = []
+    profile_fields = public_profile.get("profileFields") if isinstance(public_profile.get("profileFields"), dict) else {}
+    profile_basics = profile_fields.get("profileBasics") if isinstance(profile_fields.get("profileBasics"), dict) else {}
+    for field_name, value in profile_basics.items():
+        if isinstance(value, str) and value.strip():
+            published_items.append(
+                {
+                    "id": f"profile-field-profile_basics-{field_name}",
+                    "type": "profile_field",
+                    "field": field_name,
+                    "value": value,
+                }
+            )
+
     for fact in public_profile.get("facts") or []:
         if fact.get("visibility") == "public" and fact.get("verificationStatus") == "published":
             published_items.append(
