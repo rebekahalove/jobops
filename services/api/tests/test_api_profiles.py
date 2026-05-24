@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, ProfileFact, ProfileFactDraft
+from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileIntakeSession, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -306,6 +306,116 @@ def test_profile_item_lifecycle_publishes_and_archives_individual_drafts(monkeyp
     assert final_payload["archivedItemCount"] == 1
 
 
+def test_profile_item_autosave_values_flow_into_publish_and_archive(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        intake_session = ProfileIntakeSession(candidate_profile_id=auth.candidate_profile.id, status="active")
+        session.add(intake_session)
+        session.flush()
+        fact = ProfileFactDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            claim="Original public fact.",
+            fact_type="impact",
+            structured_value={"published": False},
+            source="model",
+            confidence="unknown",
+            suggested_visibility="private",
+            review_status="needs_review",
+        )
+        skill = SkillClaim(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            skill_name="Original skill",
+            skill_category="ai_systems",
+            evidence_summary="Original evidence.",
+            source="model",
+            visibility="private",
+            verification_status="needs_review",
+            publication_status="not_published",
+        )
+        experience = ExperienceProjectDraft(
+            candidate_profile_id=auth.candidate_profile.id,
+            profile_intake_session_id=intake_session.id,
+            title="Original project",
+            organization="Original org",
+            summary="Original summary.",
+            source="model",
+            visibility="private",
+            review_status="needs_review",
+            publication_status="not_published",
+            structured_value={"itemType": "project", "bullets": ["Old bullet"]},
+        )
+        session.add_all([fact, skill, experience])
+        session.flush()
+        fact_id = fact.id
+        skill_id = skill.id
+        experience_id = experience.id
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        fact_response = client.patch(
+            f"/v1/profile/draft-items/fact/{fact_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"claim": "Edited public fact.", "category": "proof", "publishVisibility": "public"},
+        )
+        skill_edit_response = client.patch(
+            f"/v1/profile/draft-items/skill/{skill_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"skill": "Edited skill", "evidence": "Edited evidence."},
+        )
+        skill_publish_response = client.patch(
+            f"/v1/profile/draft-items/skill/{skill_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"publishVisibility": "private"},
+        )
+        experience_archive_response = client.patch(
+            f"/v1/profile/draft-items/experience/{experience_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"title": "Edited project", "bullets": ["New bullet"], "reviewStatus": "rejected", "visibility": "private"},
+        )
+
+    assert fact_response.status_code == 200
+    fact_payload = fact_response.json()["result"]
+    assert [fact["claim"] for fact in fact_payload["publicProfile"]["facts"]] == ["Edited public fact."]
+    assert fact_payload["publicProfile"]["facts"][0]["category"] == "proof"
+    assert skill_edit_response.status_code == 200
+    assert skill_edit_response.json()["result"]["draft"]["skillClaims"][0]["status"] == "candidate_approved"
+    assert skill_publish_response.status_code == 200
+    skill_payload = skill_publish_response.json()["result"]
+    assert skill_payload["publicProfile"].get("skillClaims", []) == []
+    assert skill_payload["publishedProfile"]["skillClaims"][0]["skill"] == "Edited skill"
+    assert skill_payload["publishedProfile"]["skillClaims"][0]["evidence"] == "Edited evidence."
+    assert experience_archive_response.status_code == 200
+    archive_payload = experience_archive_response.json()["result"]
+    assert archive_payload["archivedItemCount"] == 1
+    assert archive_payload["publicProfile"].get("experienceAndProjects", []) == []
+
+
 def test_published_item_visibility_and_archive_update_public_serialization(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -336,14 +446,31 @@ def test_published_item_visibility_and_archive_update_public_serialization(monke
             visibility="public",
             verification_status="published",
         )
-        session.add(fact)
+        private_skill = SkillClaim(
+            candidate_profile_id=auth.candidate_profile.id,
+            skill_name="Private skill",
+            skill_category="ai_systems",
+            evidence_summary="Private evidence.",
+            source="model",
+            visibility="private",
+            verification_status="published",
+            publication_status="published",
+        )
+        session.add_all([fact, private_skill])
         session.flush()
         fact_id = fact.id
+        private_skill_id = private_skill.id
         _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
         session.commit()
 
     with app_with_session(engine):
         client = TestClient(app)
+        make_public_response = client.patch(
+            f"/v1/profile/published-items/skill/{private_skill_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"visibility": "public"},
+        )
         private_response = client.patch(
             f"/v1/profile/published-items/fact/{fact_id}",
             headers={INTERNAL_API_KEY_HEADER: "test-secret"},
@@ -356,7 +483,16 @@ def test_published_item_visibility_and_archive_update_public_serialization(monke
             cookies={SESSION_COOKIE_NAME: token},
             json={"archive": True},
         )
+        archive_private_response = client.patch(
+            f"/v1/profile/published-items/skill/{private_skill_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+            json={"archive": True},
+        )
 
+    assert make_public_response.status_code == 200
+    make_public_payload = make_public_response.json()["result"]
+    assert make_public_payload["publicProfile"]["skillClaims"][0]["skill"] == "Private skill"
     assert private_response.status_code == 200
     private_payload = private_response.json()["result"]
     assert private_payload["publicProfile"]["facts"] == []
@@ -365,7 +501,12 @@ def test_published_item_visibility_and_archive_update_public_serialization(monke
     archive_payload = archive_response.json()["result"]
     assert archive_payload["publicProfile"]["facts"] == []
     assert archive_payload["publishedProfile"]["facts"] == []
+    assert archive_private_response.status_code == 200
+    archive_private_payload = archive_private_response.json()["result"]
+    assert archive_private_payload["publicProfile"].get("skillClaims", []) == []
+    assert archive_private_payload["publishedProfile"].get("skillClaims", []) == []
     assert archive_payload["archivedItemCount"] == 1
+    assert archive_private_payload["archivedItemCount"] == 2
 
 
 class app_with_session:

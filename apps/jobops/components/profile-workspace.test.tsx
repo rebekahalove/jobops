@@ -287,6 +287,48 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain(">Approve<");
   });
 
+  it("renders generated items as autosaving form fields", () => {
+    const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
+      assistantMessage: "I drafted updates and kept them private.",
+      targetRoleIntent: {},
+      draftFacts: [],
+      skillClaims: [
+        {
+          skill: "LLM evals",
+          category: "ai_systems",
+          evidence: "Built eval workflows.",
+          source: "chat",
+          status: "needs_review",
+          visibility: "private",
+          published: false
+        }
+      ],
+      experienceAndProjects: [],
+      evidenceLinks: [],
+      clarifyingQuestions: [],
+      changeSummary: []
+    });
+
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList activeLifecycle="generated" activeTab="skills" draft={nextState.draft} onTabChange={() => undefined} />
+    );
+
+    expect(html).toContain("Skill");
+    expect(html).toContain("Category");
+    expect(html).toContain("Evidence");
+    expect(html).toContain("Years min");
+    expect(html).not.toContain("Save fact");
+  });
+
+  it("wires autosave to blur, Enter, and Cmd/Ctrl+Enter without keystroke saves", () => {
+    const source = readFileSync(new URL("./profile-workspace.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("onBlur: () => void saveIfChanged()");
+    expect(source).toContain('event.key === "Enter"');
+    expect(source).toContain("event.metaKey || event.ctrlKey");
+    expect(source).not.toContain("onChange={(event) => onDraftItemUpdate");
+  });
+
   it("shows internal-only published items in the Private tab without public items", () => {
     const html = renderToStaticMarkup(
       <ReviewTabbedList
@@ -435,7 +477,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("From");
     expect(html).toContain("To");
     expect(html).toContain("Location");
-    expect(html.match(/Needs review/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(html).toContain("Organization");
     expect(html).toContain("Type: project");
   });
 

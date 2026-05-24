@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { ProfileIntakeOutput } from "../lib/profile-intake-contract";
 import {
   applyProfileIntakeOutputToState,
@@ -73,6 +73,8 @@ type PublicProfileSnapshot = {
     skill: string;
     category: string;
     evidence?: string | null;
+    yearsMin?: number | null;
+    yearsMax?: number | null;
     visibility: "private" | "public";
     verificationStatus: string;
     publicationStatus: string;
@@ -116,11 +118,23 @@ type DraftItemPatch = {
   category?: string;
   skill?: string;
   evidence?: string;
+  yearsMin?: number | null;
+  yearsMax?: number | null;
   title?: string;
   organization?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
   summary?: string;
+  bullets?: string[];
   url?: string;
   label?: string;
+  targetTitles?: string;
+  roleFamilies?: string;
+  preferredWorkMode?: string;
+  preferredLocations?: string;
+  domainsOrIndustries?: string;
+  constraints?: string;
   visibility?: "private" | "public";
   reviewStatus?: MockProfileDraft["facts"][number]["status"];
   publishVisibility?: "private" | "public";
@@ -129,9 +143,33 @@ type DraftItemPatch = {
 type ProfileItemType = "fact" | "skill" | "experience" | "evidence" | "target-role";
 
 type PublishedItemPatch = {
+  claim?: string;
+  category?: string;
+  skill?: string;
+  evidence?: string;
+  yearsMin?: number | null;
+  yearsMax?: number | null;
+  title?: string;
+  organization?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
+  summary?: string;
+  bullets?: string[];
+  url?: string;
+  label?: string;
+  targetTitles?: string;
+  roleFamilies?: string;
+  preferredWorkMode?: string;
+  preferredLocations?: string;
+  domainsOrIndustries?: string;
+  constraints?: string;
   visibility?: "private" | "public";
   archive?: boolean;
 };
+
+type DraftItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => Promise<boolean> | boolean | void;
+type PublishedItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => Promise<boolean> | boolean | void;
 
 export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
   const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
@@ -219,10 +257,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
       setWorkspaceMessage(payload.ok === false ? payload.error : "Profile update failed.");
-      return;
+      return false;
     }
     applyProfilePayload(payload.result);
     setWorkspaceMessage("Profile basics saved.");
+    return true;
   }
 
   async function updateDraftItem(itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) {
@@ -236,10 +275,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
       setWorkspaceMessage(payload.ok === false ? payload.error : "Generated item update failed.");
-      return;
+      return false;
     }
     applyProfilePayload(payload.result);
     setWorkspaceMessage(buildDraftActionMessage(patch));
+    return true;
   }
 
   async function updatePublishedItem(itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) {
@@ -253,10 +293,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
     if (!response.ok || !payload.ok) {
       setWorkspaceMessage(payload.ok === false ? payload.error : "Published item update failed.");
-      return;
+      return false;
     }
     applyProfilePayload(payload.result);
-    setWorkspaceMessage(patch.archive ? "Published item archived." : "Published item visibility updated.");
+    setWorkspaceMessage(buildPublishedActionMessage(patch));
+    return true;
   }
 
   function startPublishedEdit() {
@@ -388,23 +429,73 @@ function IntentFieldControl({
   editedFields,
   field,
   label,
+  onSave,
   onChange,
+  multiline = false,
   value
 }: {
   editedFields: Set<IntentField>;
   field: IntentField;
   label: string;
+  onSave?: (value: string) => Promise<boolean> | boolean | void;
   onChange: (field: IntentField, value: string) => void;
+  multiline?: boolean;
   value: string;
 }) {
+  const lastSavedValue = useRef<string | null>(null);
+  const [status, setStatus] = useState<AutosaveStatus>("idle");
+  async function saveValue(nextValue: string) {
+    if (!onSave || lastSavedValue.current === nextValue) {
+      return;
+    }
+    lastSavedValue.current = nextValue;
+    setStatus("saving");
+    try {
+      const result = await onSave(nextValue);
+      setStatus(result === false ? "error" : "saved");
+    } catch {
+      setStatus("error");
+    } finally {
+      lastSavedValue.current = null;
+    }
+  }
+
   return (
     <label>
-      <FieldLabel edited={editedFields.has(field)} label={label} />
-      <input
-        onChange={(event) => onChange(field, event.target.value)}
+      <span className="field-label-row">
+        <FieldLabel edited={editedFields.has(field)} label={label} />
+        <SaveStatus status={status} />
+      </span>
+      {multiline ? <textarea
+        className="small-textarea"
+        onBlur={(event) => void saveValue(event.currentTarget.value)}
+        onChange={(event) => {
+          setStatus("idle");
+          onChange(field, event.target.value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            void saveValue(event.currentTarget.value);
+          }
+        }}
         suppressHydrationWarning
         value={value}
-      />
+      /> : <input
+        onBlur={(event) => void saveValue(event.currentTarget.value)}
+        onChange={(event) => {
+          setStatus("idle");
+          onChange(field, event.target.value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void saveValue(event.currentTarget.value);
+          }
+        }}
+        suppressHydrationWarning
+        value={value}
+      />}
     </label>
   );
 }
@@ -437,8 +528,16 @@ function TargetsCard({
   editedFields: Set<IntentField>;
   intent: TargetRoleIntent;
   onChange: (field: IntentField, value: string) => void;
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
 }) {
+  const targetId = intent.id;
+  const saveTargetField = (field: IntentField) => (value: string) => {
+    if (!targetId || !onDraftItemUpdate) {
+      return false;
+    }
+    return onDraftItemUpdate("target-role", targetId, targetFieldPatch(field, value));
+  };
+
   return (
     <section className="profile-review-card target-settings-card" aria-labelledby="target-settings-title">
       <div>
@@ -451,6 +550,7 @@ function TargetsCard({
           field="targetTitles"
           label="Target titles"
           onChange={onChange}
+          onSave={saveTargetField("targetTitles")}
           value={intent.targetTitles}
         />
         <IntentFieldControl
@@ -458,12 +558,16 @@ function TargetsCard({
           field="roleFamilies"
           label="Target role families"
           onChange={onChange}
+          onSave={saveTargetField("roleFamilies")}
           value={intent.roleFamilies}
         />
         <label>
           <FieldLabel edited={editedFields.has("preferredWorkMode")} label="Preferred work mode" />
           <select
-            onChange={(event) => onChange("preferredWorkMode", event.target.value)}
+            onChange={(event) => {
+              onChange("preferredWorkMode", event.target.value);
+              void saveTargetField("preferredWorkMode")(event.target.value);
+            }}
             suppressHydrationWarning
             value={intent.preferredWorkMode}
           >
@@ -478,6 +582,7 @@ function TargetsCard({
           field="preferredLocations"
           label="Preferred locations"
           onChange={onChange}
+          onSave={saveTargetField("preferredLocations")}
           value={intent.preferredLocations}
         />
         <IntentFieldControl
@@ -485,17 +590,18 @@ function TargetsCard({
           field="domainsOfInterest"
           label="Domains or industries of interest"
           onChange={onChange}
+          onSave={saveTargetField("domainsOfInterest")}
           value={intent.domainsOfInterest}
         />
-        <label>
-          <FieldLabel edited={editedFields.has("constraints")} label="Dealbreakers or constraints" />
-          <textarea
-            className="small-textarea"
-            onChange={(event) => onChange("constraints", event.target.value)}
-            suppressHydrationWarning
-            value={intent.constraints}
-          />
-        </label>
+        <IntentFieldControl
+          editedFields={editedFields}
+          field="constraints"
+          label="Dealbreakers or constraints"
+          multiline
+          onChange={onChange}
+          onSave={saveTargetField("constraints")}
+          value={intent.constraints}
+        />
       </div>
       {intent.id && intent.published !== true && intent.status !== "rejected" ? (
         <ReviewActions
@@ -522,19 +628,9 @@ function ProfileBasicsPanel({
   onSave,
   profile
 }: {
-  onSave: (patch: { displayName?: string; headline?: string; summary?: string }) => void;
+  onSave: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
   profile: ProfileSummary | null;
 }) {
-  const [displayName, setDisplayName] = useState(profile?.displayName ?? "");
-  const [headline, setHeadline] = useState(profile?.headline ?? "");
-  const [summary, setSummary] = useState(profile?.summary ?? "");
-
-  useEffect(() => {
-    setDisplayName(profile?.displayName ?? "");
-    setHeadline(profile?.headline ?? "");
-    setSummary(profile?.summary ?? "");
-  }, [profile]);
-
   return (
     <section className="profile-basics-panel" aria-labelledby="profile-basics-title">
       <div>
@@ -543,18 +639,9 @@ function ProfileBasicsPanel({
         <p>These fields can appear on the public portfolio once you publish approved public content.</p>
       </div>
       <div className="profile-basics-form">
-        <label>
-          <span>Display name</span>
-          <input onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
-        </label>
-        <label>
-          <span>Headline</span>
-          <input onChange={(event) => setHeadline(event.target.value)} value={headline} />
-        </label>
-        <label className="full-span">
-          <span>Summary</span>
-          <textarea onChange={(event) => setSummary(event.target.value)} value={summary} />
-        </label>
+        <EditableField label="Display name" onSave={(displayName) => onSave({ displayName })} value={profile?.displayName ?? ""} />
+        <EditableField label="Headline" onSave={(headline) => onSave({ headline })} value={profile?.headline ?? ""} />
+        <EditableField className="full-span" label="Summary" multiline onSave={(summary) => onSave({ summary })} value={profile?.summary ?? ""} />
         <label>
           <span>Telephone number</span>
           <input disabled placeholder="Private contact field schema pending" />
@@ -575,13 +662,6 @@ function ProfileBasicsPanel({
           <span>Mailing address</span>
           <input disabled placeholder="Private cover-letter support field pending" />
         </label>
-        <button
-          className="secondary-action button-action"
-          onClick={() => onSave({ displayName, headline, summary })}
-          type="button"
-        >
-          Save profile basics
-        </button>
       </div>
     </section>
   );
@@ -619,7 +699,7 @@ export function DraftProfilePreview({
   publicProfile
 }: {
   draft: MockProfileDraft | null;
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
   publishedProfile?: PublishedProfileSnapshot | null;
   publicProfile?: PublicProfileSnapshot | null;
 }) {
@@ -677,12 +757,12 @@ export function ReviewTabbedList({
   draft: MockProfileDraft | null;
   editedFields?: Set<IntentField>;
   intent?: TargetRoleIntent;
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
   onIntentChange?: (field: IntentField, value: string) => void;
   onLifecycleChange?: (tab: LifecycleTab) => void;
   onPublishedEdit?: () => void;
-  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   onTabChange: (tab: ReviewTabId) => void;
   profile?: ProfileSummary | null;
   publishedProfile?: PublishedProfileSnapshot | null;
@@ -803,9 +883,9 @@ function ProfileReviewTabContent({
   draft: MockProfileDraft | null;
   editedFields: Set<IntentField>;
   intent: TargetRoleIntent;
-  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => void;
+  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
   onIntentChange?: (field: IntentField, value: string) => void;
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
   profile: ProfileSummary | null;
 }) {
   if (activeTab === "basics") {
@@ -856,18 +936,24 @@ function ProfileReviewTabContent({
     return skills.length ? (
       <ul className="profile-review-list">
         {skills.map((skill) => (
-          <li className="profile-review-item profile-review-row draft-review-card" key={skill.id}>
+          <li className="profile-review-item draft-review-card editable-review-card" key={skill.id}>
             <div className="profile-review-primary">
               <TitleWithBadges title={skill.skill}>
                 <ItemIconSet item={skill} />
               </TitleWithBadges>
-              <span>{skill.category}</span>
             </div>
-            <CompactMeta
-              items={[
-                ["Years", formatYears(skill.yearsMin, skill.yearsMax)],
-                ["Evidence", skill.evidence]
-              ]}
+            <div className="editable-card-grid">
+              <EditableField label="Skill" onSave={(value) => onDraftItemUpdate?.("skill", skill.id, { skill: value })} value={skill.skill} />
+              <EditableField label="Category" onSave={(value) => onDraftItemUpdate?.("skill", skill.id, { category: value })} value={skill.category} />
+              <EditableField label="Years min" onSave={(value) => onDraftItemUpdate?.("skill", skill.id, { yearsMin: nullableNumber(value) })} value={formatOptionalNumber(skill.yearsMin)} />
+              <EditableField label="Years max" onSave={(value) => onDraftItemUpdate?.("skill", skill.id, { yearsMax: nullableNumber(value) })} value={formatOptionalNumber(skill.yearsMax)} />
+            </div>
+            <EditableField
+              className="full-span"
+              label="Evidence"
+              multiline
+              onSave={(value) => onDraftItemUpdate?.("skill", skill.id, { evidence: value })}
+              value={skill.evidence}
             />
             <ReviewActions
               item={skill}
@@ -896,14 +982,15 @@ function ProfileReviewTabContent({
   return links.length ? (
     <ul className="profile-review-list">
       {links.map((link) => (
-        <li className="profile-review-item profile-review-row draft-review-card" key={link.id}>
+        <li className="profile-review-item draft-review-card editable-review-card" key={link.id}>
           <div className="profile-review-primary">
             <TitleWithBadges title={link.label}>
               <ItemIconSet item={link} />
             </TitleWithBadges>
-            <a href={link.url} rel="noreferrer" target="_blank">
-              {link.url}
-            </a>
+          </div>
+          <div className="editable-card-grid">
+            <EditableField label="Label" onSave={(value) => onDraftItemUpdate?.("evidence", link.id, { label: value })} value={link.label} />
+            <EditableField label="URL" onSave={(value) => onDraftItemUpdate?.("evidence", link.id, { url: value })} value={link.url} />
           </div>
           <ReviewActions item={link} itemType="evidence" onDraftItemUpdate={onDraftItemUpdate} />
         </li>
@@ -922,7 +1009,7 @@ function ExperienceList({
 }: {
   emptyLabel: string;
   items: MockProfileDraft["experienceSummaries"];
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
   showType?: boolean;
 }) {
   if (!items.length) {
@@ -932,24 +1019,33 @@ function ExperienceList({
   return (
     <ul className="profile-review-list">
       {items.map((experience) => (
-        <li className="profile-review-item draft-review-card" key={experience.id}>
+        <li className="profile-review-item draft-review-card editable-review-card" key={experience.id}>
           <div className="profile-review-primary">
             <TitleWithBadges title={experience.title}>
               <ItemIconSet item={experience} />
             </TitleWithBadges>
-            <span>{experience.organization}</span>
           </div>
-          <DetailGrid
-            items={buildExperienceDetails(experience, showType)}
+          <div className="editable-card-grid">
+            <EditableField label="Title" onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { title: value })} value={experience.title} />
+            <EditableField label="Organization" onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { organization: value })} value={experience.organization} />
+            <EditableField label="From" onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { startDate: value })} value={experience.startDate} />
+            <EditableField label="To" onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { endDate: value })} value={experience.endDate} />
+            <EditableField label="Location" onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { location: value })} value={experience.location} />
+          </div>
+          <EditableField
+            className="full-span"
+            label="Summary"
+            multiline
+            onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { summary: value })}
+            value={experience.summary}
           />
-          <p>{experience.summary}</p>
-          {experience.bullets.length ? (
-            <ul className="profile-review-bullets">
-              {experience.bullets.map((bullet) => (
-                <li key={bullet}>{bullet}</li>
-              ))}
-            </ul>
-          ) : null}
+          <EditableField
+            className="full-span"
+            label="Bullets"
+            multiline
+            onSave={(value) => onDraftItemUpdate?.("experience", experience.id, { bullets: splitLines(value) })}
+            value={experience.bullets.join("\n")}
+          />
           {showType ? <p className="profile-item-type">Type: {experience.itemType}</p> : null}
           <ReviewActions item={experience} itemType="experience" onDraftItemUpdate={onDraftItemUpdate} />
         </li>
@@ -963,7 +1059,7 @@ function FactList({
   onDraftItemUpdate
 }: {
   facts: MockProfileDraft["facts"];
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
 }) {
   return (
     <ul className="profile-review-list">
@@ -1054,7 +1150,7 @@ function PublishedProfileTabContent({
 }: {
   activeTab: ReviewTabId;
   onEdit?: () => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   publishedProfile?: PublishedProfileSnapshot | null;
   publicProfile?: PublicProfileSnapshot | null;
 }) {
@@ -1076,12 +1172,21 @@ function PublishedProfileTabContent({
     return skills.length ? (
       <ul className="profile-review-list">
         {skills.map((skill) => (
-          <li className="profile-review-item" key={skill.id}>
+          <li className="profile-review-item editable-review-card" key={skill.id}>
             <TitleWithBadges title={skill.skill}>
               <VisibilityTextBadge visibility={skill.visibility} />
             </TitleWithBadges>
-            <span>{skill.category}</span>
-            {skill.evidence ? <p>{skill.evidence}</p> : null}
+            <div className="editable-card-grid">
+              <EditableField label="Skill" onSave={(value) => onPublishedItemUpdate?.("skill", skill.id, { skill: value })} value={skill.skill} />
+              <EditableField label="Category" onSave={(value) => onPublishedItemUpdate?.("skill", skill.id, { category: value })} value={skill.category} />
+            </div>
+            <EditableField
+              className="full-span"
+              label="Evidence"
+              multiline
+              onSave={(value) => onPublishedItemUpdate?.("skill", skill.id, { evidence: value })}
+              value={skill.evidence ?? ""}
+            />
             <PublishedActions itemId={skill.id} itemType="skill" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={skill.visibility} />
           </li>
         ))}
@@ -1098,12 +1203,31 @@ function PublishedProfileTabContent({
     return items.length ? (
       <ul className="profile-review-list">
         {items.map((item) => (
-          <li className="profile-review-item" key={item.id}>
+          <li className="profile-review-item editable-review-card" key={item.id}>
             <TitleWithBadges title={item.title}>
               <VisibilityTextBadge visibility={item.visibility} />
             </TitleWithBadges>
-            {item.organization ? <span>{item.organization}</span> : null}
-            <p>{item.summary}</p>
+            <div className="editable-card-grid">
+              <EditableField label="Title" onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { title: value })} value={item.title} />
+              <EditableField label="Organization" onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { organization: value })} value={item.organization ?? ""} />
+              <EditableField label="From" onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { startDate: value })} value={item.startDate ?? ""} />
+              <EditableField label="To" onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { endDate: value })} value={item.endDate ?? ""} />
+              <EditableField label="Location" onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { location: value })} value={item.location ?? ""} />
+            </div>
+            <EditableField
+              className="full-span"
+              label="Summary"
+              multiline
+              onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { summary: value })}
+              value={item.summary}
+            />
+            <EditableField
+              className="full-span"
+              label="Bullets"
+              multiline
+              onSave={(value) => onPublishedItemUpdate?.("experience", item.id, { bullets: splitLines(value) })}
+              value={(item.bullets ?? []).join("\n")}
+            />
             <PublishedActions itemId={item.id} itemType="experience" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={item.visibility} />
           </li>
         ))}
@@ -1118,13 +1242,14 @@ function PublishedProfileTabContent({
     return links.length ? (
       <ul className="profile-review-list">
         {links.map((link) => (
-          <li className="profile-review-item" key={link.id}>
+          <li className="profile-review-item editable-review-card" key={link.id}>
             <TitleWithBadges title={link.label}>
               <VisibilityTextBadge visibility={link.visibility} />
             </TitleWithBadges>
-            <a href={link.url} rel="noreferrer" target="_blank">
-              {link.url}
-            </a>
+            <div className="editable-card-grid">
+              <EditableField label="Label" onSave={(value) => onPublishedItemUpdate?.("evidence", link.id, { label: value })} value={link.label} />
+              <EditableField label="URL" onSave={(value) => onPublishedItemUpdate?.("evidence", link.id, { url: value })} value={link.url} />
+            </div>
             <PublishedActions itemId={link.id} itemType="evidence" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={link.visibility} />
           </li>
         ))}
@@ -1140,11 +1265,18 @@ function PublishedProfileTabContent({
   return facts.length ? (
     <ul className="profile-review-list">
       {facts.map((fact) => (
-        <li className="profile-review-item" key={fact.id}>
+        <li className="profile-review-item editable-review-card" key={fact.id}>
           <TitleWithBadges title={fact.category}>
             <VisibilityTextBadge visibility={fact.visibility} />
           </TitleWithBadges>
-          <span>{fact.claim}</span>
+          <EditableField
+            className="full-span"
+            label="Claim"
+            multiline
+            onSave={(value) => onPublishedItemUpdate?.("fact", fact.id, { claim: value })}
+            value={fact.claim}
+          />
+          <EditableField label="Category" onSave={(value) => onPublishedItemUpdate?.("fact", fact.id, { category: value })} value={fact.category} />
           <PublishedActions itemId={fact.id} itemType="fact" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={fact.visibility} />
         </li>
       ))}
@@ -1183,7 +1315,7 @@ function PublishedTargets({
   publishedProfile
 }: {
   onEdit?: () => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   publishedProfile: PublishedProfileSnapshot;
 }) {
   const target = publishedProfile.targetRoleIntent;
@@ -1192,17 +1324,17 @@ function PublishedTargets({
   }
 
   return (
-    <div className="published-target-card">
+    <div className="published-target-card editable-review-card">
       <VisibilityTextBadge visibility={target.visibility ?? "private"} />
-      <DetailGrid
-        items={[
-          ["Target titles", (target.targetTitles ?? []).join(", ")],
-          ["Role families", (target.roleFamilies ?? []).join(", ")],
-          ["Work modes", (target.workModes ?? []).join(", ")],
-          ["Locations", (target.preferredLocations ?? []).join(", ")],
-          ["Domains", target.domainsOrIndustries ?? ""]
-        ]}
-      />
+      {target.id ? (
+        <div className="editable-card-grid">
+          <EditableField label="Target titles" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { targetTitles: value })} value={(target.targetTitles ?? []).join(", ")} />
+          <EditableField label="Role families" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { roleFamilies: value })} value={(target.roleFamilies ?? []).join(", ")} />
+          <EditableField label="Preferred work mode" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { preferredWorkMode: value })} value={(target.workModes ?? []).join(", ")} />
+          <EditableField label="Locations" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { preferredLocations: value })} value={(target.preferredLocations ?? []).join(", ")} />
+          <EditableField label="Domains" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { domainsOrIndustries: value })} value={target.domainsOrIndustries ?? ""} />
+        </div>
+      ) : null}
       {target.id ? (
         <PublishedActions
           itemId={target.id}
@@ -1224,7 +1356,7 @@ export function PublicPortfolioPreview({
   publishedPublicItemCount
 }: {
   onEdit?: () => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   publicPortfolioPath: string | null;
   publicProfile: PublicProfileSnapshot | null;
   publishedPublicItemCount: number;
@@ -1417,7 +1549,7 @@ function AdminPreviewControls({
   itemId: string;
   itemType: ProfileItemType;
   onEdit?: () => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   visibility: "private" | "public";
 }) {
   return (
@@ -1485,45 +1617,119 @@ function VisibilityTextBadge({ visibility }: { visibility: "private" | "public" 
   return <span className={`visibility-text-badge ${visibility}`}>{visibility === "public" ? "Public" : "Private"}</span>;
 }
 
+type AutosaveStatus = "idle" | "saving" | "saved" | "error";
+
+function EditableField({
+  className,
+  label,
+  multiline = false,
+  onSave,
+  value
+}: {
+  className?: string;
+  label: string;
+  multiline?: boolean;
+  onSave?: (value: string) => Promise<boolean> | boolean | void;
+  value: string;
+}) {
+  const [draftValue, setDraftValue] = useState(value);
+  const [status, setStatus] = useState<AutosaveStatus>("idle");
+  const baseline = useRef(value);
+  const inFlightValue = useRef<string | null>(null);
+
+  useEffect(() => {
+    baseline.current = value;
+    setDraftValue(value);
+    setStatus("idle");
+  }, [value]);
+
+  async function saveIfChanged() {
+    if (!onSave || draftValue === baseline.current || inFlightValue.current === draftValue) {
+      return;
+    }
+    const valueToSave = draftValue;
+    inFlightValue.current = valueToSave;
+    setStatus("saving");
+    try {
+      const result = await onSave(valueToSave);
+      if (result === false) {
+        setStatus("error");
+        return;
+      }
+      baseline.current = valueToSave;
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    } finally {
+      if (inFlightValue.current === valueToSave) {
+        inFlightValue.current = null;
+      }
+    }
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    if (!multiline && event.key === "Enter") {
+      event.preventDefault();
+      void saveIfChanged();
+      return;
+    }
+    if (multiline && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void saveIfChanged();
+    }
+  }
+
+  const fieldProps = {
+    onBlur: () => void saveIfChanged(),
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setDraftValue(event.target.value);
+      setStatus("idle");
+    },
+    onKeyDown: handleKeyDown,
+    value: draftValue
+  };
+
+  return (
+    <label className={className}>
+      <span className="editable-field-label">
+        {label}
+        <SaveStatus status={status} />
+      </span>
+      {multiline ? <textarea className="small-textarea" {...fieldProps} /> : <input {...fieldProps} />}
+    </label>
+  );
+}
+
+function SaveStatus({ status }: { status: AutosaveStatus }) {
+  if (status === "idle") {
+    return null;
+  }
+  return <small className={`autosave-status ${status}`}>{status === "saving" ? "Saving..." : status === "saved" ? "Saved" : "Save failed"}</small>;
+}
+
 function EditableFactRow({
   fact,
   onDraftItemUpdate
 }: {
   fact: MockProfileDraft["facts"][number];
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
 }) {
-  const [claim, setClaim] = useState(fact.claim);
-  const [category, setCategory] = useState(fact.category);
-
-  useEffect(() => {
-    setClaim(fact.claim);
-    setCategory(fact.category);
-  }, [fact]);
-
   return (
-    <li className="profile-review-item fact-edit-row draft-review-card">
+    <li className="profile-review-item fact-edit-row draft-review-card editable-review-card">
       <div className="profile-review-primary">
         <TitleWithBadges title={fact.category}>
           <ItemIconSet item={fact} />
         </TitleWithBadges>
       </div>
-      <label>
-        <span>Claim</span>
-        <textarea className="small-textarea" onChange={(event) => setClaim(event.target.value)} value={claim} />
-      </label>
-      <label>
-        <span>Category</span>
-        <input onChange={(event) => setCategory(event.target.value)} value={category} />
-      </label>
+      <EditableField
+        className="full-span"
+        label="Claim"
+        multiline
+        onSave={(value) => onDraftItemUpdate?.("fact", fact.id, { claim: value })}
+        value={fact.claim}
+      />
+      <EditableField label="Category" onSave={(value) => onDraftItemUpdate?.("fact", fact.id, { category: value })} value={fact.category} />
       <div className="review-action-row">
-        <button
-          className="secondary-action button-action"
-          disabled={!onDraftItemUpdate}
-          onClick={() => onDraftItemUpdate?.("fact", fact.id, { claim, category })}
-          type="button"
-        >
-          Save fact
-        </button>
         <ReviewActions item={fact} itemType="fact" onDraftItemUpdate={onDraftItemUpdate} />
       </div>
     </li>
@@ -1537,7 +1743,7 @@ function ReviewActions({
 }: {
   item: BadgeableDraftItem & { id: string };
   itemType: ProfileItemType;
-  onDraftItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) => void;
+  onDraftItemUpdate?: DraftItemUpdateHandler;
 }) {
   return (
     <div className="review-action-row">
@@ -1579,7 +1785,7 @@ function PublishedActions({
   itemId: string;
   itemType: ProfileItemType;
   onEdit?: () => void;
-  onPublishedItemUpdate?: (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
   visibility: "private" | "public";
 }) {
   return (
@@ -1745,6 +1951,43 @@ function buildDraftActionMessage(patch: DraftItemPatch) {
   return "Generated item updated.";
 }
 
+function buildPublishedActionMessage(patch: PublishedItemPatch) {
+  if (patch.archive) {
+    return "Published item archived.";
+  }
+  if (patch.visibility === "public") {
+    return "Published item made public.";
+  }
+  if (patch.visibility === "private") {
+    return "Published item made private.";
+  }
+  return "Published item saved.";
+}
+
+function targetFieldPatch(field: IntentField, value: string): DraftItemPatch {
+  if (field === "domainsOfInterest") {
+    return { domainsOrIndustries: value };
+  }
+  return { [field]: value } as DraftItemPatch;
+}
+
+function splitLines(value: string) {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function nullableNumber(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatOptionalNumber(value?: number | null) {
+  return typeof value === "number" ? String(value) : "";
+}
+
 export function ClarifyingQuestions({ draft }: { draft: MockProfileDraft | null }) {
   if (!draft) {
     return (
@@ -1838,6 +2081,9 @@ function DraftIconSet({
 }
 
 function ReviewIcon({ status }: { status: BadgeableDraftItem["status"] }) {
+  if (status === "candidate_approved") {
+    return <IconBadge kind="user" label="Edited" />;
+  }
   if (status !== "needs_review" && status !== "draft") {
     return null;
   }

@@ -941,6 +941,13 @@ input:disabled {
   font-weight: 700;
 }
 
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .field-label .icon-badge-row {
   justify-content: flex-end;
   margin-left: auto;
@@ -1013,14 +1020,55 @@ input:disabled {
 }
 
 .profile-basics-form label,
-.fact-edit-row label {
+.fact-edit-row label,
+.editable-review-card label {
   display: grid;
   gap: 7px;
 }
 
 .profile-basics-form .full-span,
-.fact-edit-row label:first-of-type {
+.fact-edit-row .full-span,
+.editable-review-card .full-span {
   grid-column: 1 / -1;
+}
+
+.editable-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.editable-field-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.autosave-status {
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  padding: 2px 7px;
+}
+
+.autosave-status.saving {
+  background: #eef6f5;
+  color: var(--accent-strong);
+}
+
+.autosave-status.saved {
+  background: #edf7ee;
+  color: #25612b;
+}
+
+.autosave-status.error {
+  background: #fff1f1;
+  color: #8f2f2f;
 }
 
 .profile-workspace-message,

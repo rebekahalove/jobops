@@ -40,11 +40,23 @@ class DraftItemUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=120)
     skill: str | None = Field(default=None, max_length=160)
     evidence: str | None = Field(default=None, max_length=1000)
+    years_min: int | None = Field(default=None, alias="yearsMin")
+    years_max: int | None = Field(default=None, alias="yearsMax")
     title: str | None = Field(default=None, max_length=200)
     organization: str | None = Field(default=None, max_length=200)
+    start_date: str | None = Field(default=None, alias="startDate", max_length=80)
+    end_date: str | None = Field(default=None, alias="endDate", max_length=80)
+    location: str | None = Field(default=None, max_length=160)
     summary: str | None = Field(default=None, max_length=1200)
+    bullets: list[str] | None = None
     url: str | None = Field(default=None, max_length=1000)
     label: str | None = Field(default=None, max_length=255)
+    target_titles: str | None = Field(default=None, alias="targetTitles", max_length=1000)
+    role_families: str | None = Field(default=None, alias="roleFamilies", max_length=1000)
+    preferred_work_mode: str | None = Field(default=None, alias="preferredWorkMode", max_length=80)
+    preferred_locations: str | None = Field(default=None, alias="preferredLocations", max_length=1000)
+    domains_or_industries: str | None = Field(default=None, alias="domainsOrIndustries", max_length=1000)
+    constraints: str | None = Field(default=None, max_length=2000)
     visibility: Literal["private", "public"] | None = None
     review_status: Literal["draft", "needs_review", "candidate_approved", "reviewed", "rejected"] | None = Field(
         default=None,
@@ -54,6 +66,27 @@ class DraftItemUpdate(BaseModel):
 
 
 class PublishedItemUpdate(BaseModel):
+    claim: str | None = Field(default=None, max_length=1200)
+    category: str | None = Field(default=None, max_length=120)
+    skill: str | None = Field(default=None, max_length=160)
+    evidence: str | None = Field(default=None, max_length=1000)
+    years_min: int | None = Field(default=None, alias="yearsMin")
+    years_max: int | None = Field(default=None, alias="yearsMax")
+    title: str | None = Field(default=None, max_length=200)
+    organization: str | None = Field(default=None, max_length=200)
+    start_date: str | None = Field(default=None, alias="startDate", max_length=80)
+    end_date: str | None = Field(default=None, alias="endDate", max_length=80)
+    location: str | None = Field(default=None, max_length=160)
+    summary: str | None = Field(default=None, max_length=1200)
+    bullets: list[str] | None = None
+    url: str | None = Field(default=None, max_length=1000)
+    label: str | None = Field(default=None, max_length=255)
+    target_titles: str | None = Field(default=None, alias="targetTitles", max_length=1000)
+    role_families: str | None = Field(default=None, alias="roleFamilies", max_length=1000)
+    preferred_work_mode: str | None = Field(default=None, alias="preferredWorkMode", max_length=80)
+    preferred_locations: str | None = Field(default=None, alias="preferredLocations", max_length=1000)
+    domains_or_industries: str | None = Field(default=None, alias="domainsOrIndustries", max_length=1000)
+    constraints: str | None = Field(default=None, max_length=2000)
     visibility: Literal["private", "public"] | None = None
     archive: bool = False
 
@@ -90,43 +123,24 @@ def update_draft_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_draft_item(session, profile.id, item_type, item_id)
+    edited = apply_editable_fields(item, request)
 
     if isinstance(item, ProfileFactDraft):
-        if request.claim is not None:
-            item.claim = required_trimmed(request.claim, "claim")
-        if request.category is not None:
-            item.fact_type = required_trimmed(request.category, "category")
         if request.visibility is not None:
             item.suggested_visibility = request.visibility
         if request.review_status is not None:
             item.review_status = request.review_status
     elif isinstance(item, SkillClaim):
-        if request.skill is not None:
-            item.skill_name = required_trimmed(request.skill, "skill")
-        if request.category is not None:
-            item.skill_category = required_trimmed(request.category, "category")
-        if request.evidence is not None:
-            item.evidence_summary = request.evidence.strip()
         if request.visibility is not None:
             item.visibility = request.visibility
         if request.review_status is not None:
             item.verification_status = request.review_status
     elif isinstance(item, ExperienceProjectDraft):
-        if request.title is not None:
-            item.title = required_trimmed(request.title, "title")
-        if request.organization is not None:
-            item.organization = request.organization.strip() or None
-        if request.summary is not None:
-            item.summary = required_trimmed(request.summary, "summary")
         if request.visibility is not None:
             item.visibility = request.visibility
         if request.review_status is not None:
             item.review_status = request.review_status
     elif isinstance(item, EvidenceArtifact):
-        if request.url is not None:
-            item.uri = request.url.strip()
-        if request.label is not None:
-            item.label = required_trimmed(request.label, "label")
         if request.visibility is not None:
             item.visibility = request.visibility
         if request.review_status is not None:
@@ -136,6 +150,9 @@ def update_draft_item(
             item.visibility = request.visibility
         if request.review_status is not None:
             item.review_status = request.review_status
+
+    if edited and request.review_status is None and request.publish_visibility is None:
+        mark_draft_item_edited(item)
 
     if request.publish_visibility is not None:
         publish_single_item_as(session, profile, item_type, item, request.publish_visibility)
@@ -154,6 +171,7 @@ def update_published_item(
 ) -> dict[str, Any]:
     profile = auth.candidate_profile
     item = get_owned_published_item(session, profile.id, item_type, item_id)
+    apply_editable_fields(item, request)
 
     if request.visibility is not None:
         set_item_visibility(item, request.visibility)
@@ -240,6 +258,106 @@ def get_owned_published_item(session: Session, candidate_profile_id: str, item_t
     if item is None:
         raise HTTPException(status_code=404, detail="Published profile item not found.")
     return item
+
+
+def apply_editable_fields(item, request: DraftItemUpdate | PublishedItemUpdate) -> bool:
+    edited = False
+    if isinstance(item, (ProfileFact, ProfileFactDraft)):
+        if request.claim is not None:
+            item.claim = required_trimmed(request.claim, "claim")
+            edited = True
+        if request.category is not None:
+            item.fact_type = required_trimmed(request.category, "category")
+            edited = True
+        return edited
+
+    if isinstance(item, SkillClaim):
+        if request.skill is not None:
+            item.skill_name = required_trimmed(request.skill, "skill")
+            edited = True
+        if request.category is not None:
+            item.skill_category = required_trimmed(request.category, "category")
+            edited = True
+        if request.evidence is not None:
+            item.evidence_summary = request.evidence.strip()
+            edited = True
+        if request.years_min is not None:
+            item.years_min = request.years_min
+            edited = True
+        if request.years_max is not None:
+            item.years_max = request.years_max
+            edited = True
+        return edited
+
+    if isinstance(item, ExperienceProjectDraft):
+        if request.title is not None:
+            item.title = required_trimmed(request.title, "title")
+            edited = True
+        if request.organization is not None:
+            item.organization = request.organization.strip() or None
+            edited = True
+        if request.start_date is not None:
+            item.start_date = request.start_date.strip() or None
+            edited = True
+        if request.end_date is not None:
+            item.end_date = request.end_date.strip() or None
+            edited = True
+        if request.location is not None:
+            item.location = request.location.strip() or None
+            edited = True
+        if request.summary is not None:
+            item.summary = required_trimmed(request.summary, "summary")
+            edited = True
+        if request.bullets is not None:
+            structured_value = item.structured_value if isinstance(item.structured_value, dict) else {}
+            item.structured_value = {**structured_value, "bullets": clean_text_list(request.bullets)}
+            edited = True
+        return edited
+
+    if isinstance(item, EvidenceArtifact):
+        if request.url is not None:
+            item.uri = request.url.strip()
+            edited = True
+        if request.label is not None:
+            item.label = required_trimmed(request.label, "label")
+            edited = True
+        return edited
+
+    if isinstance(item, RoleTarget):
+        if request.target_titles is not None:
+            item.target_titles = split_text_list(request.target_titles)
+            edited = True
+        if request.role_families is not None:
+            item.role_families = split_text_list(request.role_families)
+            edited = True
+        if request.preferred_work_mode is not None:
+            item.work_modes = split_text_list(request.preferred_work_mode)
+            edited = True
+        if request.preferred_locations is not None:
+            item.preferred_locations = split_text_list(request.preferred_locations)
+            edited = True
+        constraints = item.constraints if isinstance(item.constraints, dict) else {}
+        if request.domains_or_industries is not None:
+            item.constraints = {**constraints, "domainsOrIndustries": request.domains_or_industries.strip()}
+            constraints = item.constraints
+            edited = True
+        if request.constraints is not None:
+            item.constraints = {**constraints, "constraints": request.constraints.strip()}
+            edited = True
+        return edited
+
+    return False
+
+
+def mark_draft_item_edited(item) -> None:
+    if isinstance(item, ProfileFactDraft):
+        item.review_status = "candidate_approved"
+        return
+    if isinstance(item, SkillClaim):
+        item.verification_status = "candidate_approved"
+        return
+    if isinstance(item, (ExperienceProjectDraft, EvidenceArtifact, RoleTarget)):
+        item.review_status = "candidate_approved"
 
 
 def set_item_visibility(item, visibility: Literal["private", "public"]) -> None:
@@ -576,3 +694,11 @@ def required_trimmed(value: str, field_name: str) -> str:
     if not trimmed:
         raise HTTPException(status_code=400, detail=f"{field_name} cannot be empty.")
     return trimmed
+
+
+def split_text_list(value: str) -> list[str]:
+    return clean_text_list(value.replace(";", ",").split(","))
+
+
+def clean_text_list(values: list[str]) -> list[str]:
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
