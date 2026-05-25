@@ -172,6 +172,27 @@ class RoleTarget(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class ProfileFieldValue(Base, TimestampMixin):
+    __tablename__ = "profile_field_values"
+    __table_args__ = (
+        Index("ix_profile_field_values_profile_field", "candidate_profile_id", "field_group", "field_name", "lifecycle_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    field_group: Mapped[str] = mapped_column(String(80))
+    field_name: Mapped[str] = mapped_column(String(120))
+    value_text: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(40), default="user")
+    lifecycle_status: Mapped[str] = mapped_column(String(40), default="generated")
+    visibility: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    original_value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archive_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    field_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class TargetCompany(Base, TimestampMixin):
     __tablename__ = "target_companies"
     __table_args__ = (

@@ -1,15 +1,20 @@
 import type { ProfileExperienceItemType, ProfileIntakeOutput, ProfileIntakeSource } from "./profile-intake-contract";
 
 export type TargetRoleIntent = {
+  id?: string;
   targetTitles: string;
   roleFamilies: string;
   preferredWorkMode: "remote" | "hybrid" | "onsite" | "flexible";
   preferredLocations: string;
   domainsOfInterest: string;
   constraints: string;
+  source?: ProfileIntakeSource;
+  status?: DraftGeneratedStatus;
+  visibility?: "private" | "public";
+  published?: boolean;
 };
 
-export type DraftGeneratedStatus = "draft" | "needs_review";
+export type DraftGeneratedStatus = "draft" | "needs_review" | "candidate_approved" | "reviewed" | "rejected" | "published";
 
 export type DraftProfileFact = {
   id: string;
@@ -17,8 +22,8 @@ export type DraftProfileFact = {
   category: string;
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
-  visibility: "private";
-  published: false;
+  visibility: "private" | "public";
+  published: boolean;
 };
 
 export type DraftSkillClaim = {
@@ -30,8 +35,8 @@ export type DraftSkillClaim = {
   yearsMax?: number;
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
-  visibility: "private";
-  published: false;
+  visibility: "private" | "public";
+  published: boolean;
 };
 
 export type DraftExperienceSummary = {
@@ -46,8 +51,8 @@ export type DraftExperienceSummary = {
   bullets: string[];
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
-  visibility: "private";
-  published: false;
+  visibility: "private" | "public";
+  published: boolean;
 };
 
 export type DraftEvidenceLink = {
@@ -56,8 +61,8 @@ export type DraftEvidenceLink = {
   label: string;
   source: ProfileIntakeSource;
   status: DraftGeneratedStatus;
-  visibility: "private";
-  published: false;
+  visibility: "private" | "public";
+  published: boolean;
 };
 
 export type ClarifyingQuestion = {
@@ -383,16 +388,21 @@ export function applyProfileIntakeOutputToState(
   turn: MockIntakeTurn;
 } {
   const intent = mergeIntent(currentIntent, {
+    id: output.targetRoleIntent.id,
     targetTitles: output.targetRoleIntent.targetTitles,
     roleFamilies: output.targetRoleIntent.targetRoleFamilies,
     preferredWorkMode: output.targetRoleIntent.preferredWorkMode,
     preferredLocations: output.targetRoleIntent.preferredLocations,
     domainsOfInterest: output.targetRoleIntent.domainsOrIndustries,
-    constraints: output.targetRoleIntent.constraints
+    constraints: output.targetRoleIntent.constraints,
+    source: output.targetRoleIntent.source,
+    status: output.targetRoleIntent.status,
+    visibility: output.targetRoleIntent.visibility,
+    published: output.targetRoleIntent.published
   });
   const draft: MockProfileDraft = {
     resumeTextLength: 0,
-    facts: output.draftFacts.map((fact, index) => ({
+    facts: output.draftFacts.filter((fact) => !fact.published).map((fact, index) => ({
       id: fact.id || nextGeneratedId(`fact-${index + 1}`),
       claim: fact.claim,
       category: fact.category || "general",
@@ -401,7 +411,7 @@ export function applyProfileIntakeOutputToState(
       visibility: fact.visibility,
       published: fact.published
     })),
-    skillClaims: output.skillClaims.map((skill, index) => ({
+    skillClaims: output.skillClaims.filter((skill) => !skill.published).map((skill, index) => ({
       id: skill.id || nextGeneratedId(`skill-${index + 1}`),
       skill: skill.skill,
       category: skill.category || "general",
@@ -413,7 +423,7 @@ export function applyProfileIntakeOutputToState(
       visibility: skill.visibility,
       published: skill.published
     })),
-    experienceSummaries: output.experienceAndProjects.map((experience, index) => ({
+    experienceSummaries: output.experienceAndProjects.filter((experience) => !experience.published).map((experience, index) => ({
       id: experience.id || nextGeneratedId(`experience-${index + 1}`),
       itemType: experience.itemType || inferExperienceItemType(`${experience.title} ${experience.summary}`),
       title: experience.title,
@@ -428,7 +438,7 @@ export function applyProfileIntakeOutputToState(
       visibility: experience.visibility,
       published: experience.published
     })),
-    links: output.evidenceLinks.map((link, index) => ({
+    links: output.evidenceLinks.filter((link) => !link.published).map((link, index) => ({
       id: link.id || nextGeneratedId(`evidence-${index + 1}`),
       url: link.url,
       label: link.label || link.url,
@@ -513,7 +523,9 @@ function mergeIntent(currentIntent: TargetRoleIntent, derivedIntent: Partial<Tar
   return {
     ...currentIntent,
     ...Object.fromEntries(
-      Object.entries(derivedIntent).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+      Object.entries(derivedIntent).filter(([, value]) =>
+        typeof value === "string" ? value.trim().length > 0 : typeof value === "boolean"
+      )
     )
   };
 }

@@ -247,7 +247,7 @@ def get_latest_profile_draft_snapshot(session: Session, candidate_profile: Candi
 def get_profile_draft_snapshot_for_session(session: Session, intake_session: ProfileIntakeSession) -> dict[str, Any]:
     redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
     latest_snapshot = redacted_state.get("latestDraftSnapshot")
-    if isinstance(latest_snapshot, dict):
+    if isinstance(latest_snapshot, dict) and not has_profile_intake_draft_rows(session, intake_session.id):
         return {
             **empty_profile_draft_snapshot(),
             **latest_snapshot,
@@ -312,12 +312,17 @@ def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, 
 
     constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
     payload = {
+        "id": role_target.id,
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
         "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
         "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
+        "source": role_target.source,
+        "status": role_target.review_status,
+        "visibility": role_target.visibility,
+        "published": role_target.publication_status == "published",
     }
     return {key: value for key, value in payload.items() if value}
 
@@ -412,7 +417,7 @@ def sync_role_target(
             },
             source="model",
             review_status="needs_review",
-            visibility="private",
+            visibility="public",
             publication_status="not_published",
             is_active=True,
         )

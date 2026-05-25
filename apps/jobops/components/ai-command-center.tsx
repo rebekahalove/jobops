@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   createPlannedAction,
   formatWorkspaceLabel,
@@ -49,7 +49,9 @@ export function AiCommandCenter({
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<CommandMessage[]>(initialMessages);
   const [actions, setActions] = useState<PlannedCommandAction[]>(initialActions);
+  const [attachmentStatus, setAttachmentStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const latestAction = actions[0];
   const transcriptLabel = useMemo(
@@ -133,6 +135,41 @@ export function AiCommandCenter({
     }
   }
 
+  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!isTextUpload(file, extension)) {
+      setAttachmentStatus(`${file.name} selected, but PDF/DOCX extraction is not wired yet. Export or paste text for now.`);
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const trimmed = text.trim();
+      if (!trimmed) {
+        setAttachmentStatus(`${file.name} did not contain readable text.`);
+        return;
+      }
+      setCommand((current) =>
+        [
+          current.trim(),
+          `Resume/profile source from uploaded file "${file.name}":`,
+          trimmed
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      );
+      setAttachmentStatus(`${file.name} added to the command. Run command when ready.`);
+    } catch {
+      setAttachmentStatus(`${file.name} could not be read in the browser.`);
+    }
+  }
+
   return (
     <section className="ai-command-center" aria-labelledby="ai-command-center-title">
       <div className="command-center-header">
@@ -184,12 +221,29 @@ export function AiCommandCenter({
           suppressHydrationWarning
           value={command}
         />
-        <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
-          {isSubmitting ? "Working..." : "Run command"}
-        </button>
+        <div className="command-composer-actions">
+          <input
+            accept=".txt,.md,.markdown,.rtf,.csv,.json,text/*"
+            className="visually-hidden"
+            onChange={handleFileChange}
+            ref={fileInputRef}
+            type="file"
+          />
+          <button className="secondary-action button-action" onClick={() => fileInputRef.current?.click()} type="button">
+            Add file
+          </button>
+          <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
+            {isSubmitting ? "Working..." : "Run command"}
+          </button>
+        </div>
+        {attachmentStatus ? <p className="attachment-state">{attachmentStatus}</p> : null}
       </form>
     </section>
   );
+}
+
+function isTextUpload(file: File, extension: string) {
+  return file.type.startsWith("text/") || ["txt", "md", "markdown", "rtf", "csv", "json"].includes(extension);
 }
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {

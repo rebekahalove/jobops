@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
+import type { JobOpsServerSession } from "../lib/jobops-session-contract";
 import type { PublicJobOpsMetric } from "../lib/public-jobops";
 
 type FormState =
@@ -38,9 +39,11 @@ const comingNextItems = [
 ];
 
 export function PublicAlphaLanding({
+  auth = { isAuthenticated: false },
   basePath = "",
   initialMetrics
 }: {
+  auth?: JobOpsServerSession;
   basePath?: "" | "/jobops";
   initialMetrics: PublicJobOpsMetric[];
 }) {
@@ -48,6 +51,7 @@ export function PublicAlphaLanding({
   const metrics = useMemo(() => initialMetrics, [initialMetrics]);
   const loginHref = `${basePath}/login?returnTo=${encodeURIComponent(basePath || "/")}`;
   const dashboardHref = basePath || "/";
+  const isAuthenticated = auth.isAuthenticated;
 
   async function submitAccessRequest(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -101,7 +105,9 @@ export function PublicAlphaLanding({
         </Link>
         <nav>
           <a href="https://github.com/rebekahalove/jobops">View the public repo</a>
-          <Link href={loginHref}>Log in</Link>
+          <Link href={isAuthenticated ? dashboardHref : loginHref}>
+            {isAuthenticated ? "Open command center" : "Log in"}
+          </Link>
         </nav>
       </header>
 
@@ -114,12 +120,12 @@ export function PublicAlphaLanding({
             with each next step using the context you already gave it.
           </p>
           <div className="public-alpha-actions">
-            <a className="primary-action" href="#alpha-access">
+            <Link className="primary-action" href={isAuthenticated ? dashboardHref : loginHref}>
+              {isAuthenticated ? "Back to command center" : "Log in"}
+            </Link>
+            <a className="secondary-action" href="#alpha-access">
               Request alpha access
             </a>
-            <Link className="secondary-action" href={loginHref}>
-              Log in
-            </Link>
             <a className="secondary-action" href="https://github.com/rebekahalove/jobops">
               View the public repo
             </a>

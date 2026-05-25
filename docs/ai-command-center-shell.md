@@ -88,7 +88,7 @@ The Profile tab is no longer a separate chat experience. It is a structured revi
 - Clarifying questions.
 - Latest profile intake status.
 
-The Profile tab loads the latest saved draft through the thin Next.js proxy at `/api/profile-draft`, backed by FastAPI's `/v1/command-center/profile-draft/{slug}`.
+The Profile tab loads the latest saved draft through the thin Next.js proxy at `/api/profile-draft`, backed by FastAPI's `/v1/command-center/profile-draft/current`. Field/item review state is served through `/api/profile`, backed by `/v1/profile/current`.
 
 ## Deferred Features
 
@@ -98,4 +98,4 @@ The Profile tab loads the latest saved draft through the thin Next.js proxy at `
 - Fit analysis.
 - Generated materials.
 - Browser automation.
-- Auth.
+- OAuth, teams/RBAC, and account recovery beyond alpha sessions.

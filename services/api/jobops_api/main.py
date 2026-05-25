@@ -15,7 +15,14 @@ from .company_discovery import router as companies_router
 from .command_center import router as command_center_router
 from .db.session import get_db_session
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
-from .profiles import candidate_profile_to_public_dict, get_candidate_profile_by_hostname, get_candidate_profile_by_slug
+from .profile_review import router as profile_review_router
+from .profiles import (
+    candidate_profile_to_public_dict,
+    get_candidate_profile_by_hostname,
+    get_candidate_profile_by_slug,
+    get_candidate_profile_by_tenant_or_profile_slug,
+)
+from .public_candidate_agent import router as public_candidate_agent_router
 from .public_jobops import router as public_jobops_router
 from .security import INTERNAL_API_KEY_HEADER, require_internal_api_key
 from .settings import load_settings
@@ -51,6 +58,8 @@ app.include_router(applications_router)
 app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
+app.include_router(profile_review_router)
+app.include_router(public_candidate_agent_router)
 app.include_router(public_jobops_router)
 
 
@@ -85,6 +94,14 @@ def get_profile(slug: str, session: Session = Depends(get_db_session)) -> dict[s
 @app.get("/v1/profile-by-hostname/{hostname}")
 def get_profile_by_hostname(hostname: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
     candidate_profile = get_candidate_profile_by_hostname(session, hostname)
+    if candidate_profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return candidate_profile_to_public_dict(candidate_profile)
+
+
+@app.get("/v1/public/portfolio/{tenant_slug}")
+def get_public_portfolio_by_tenant_slug(tenant_slug: str, session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    candidate_profile = get_candidate_profile_by_tenant_or_profile_slug(session, tenant_slug)
     if candidate_profile is None:
         raise HTTPException(status_code=404, detail="Profile not found.")
     return candidate_profile_to_public_dict(candidate_profile)

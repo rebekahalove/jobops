@@ -179,7 +179,15 @@ function isPublicDashboardPath(pathname: string | null, basePath: string) {
   }
 
   const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
-  return localPath === "/about" || localPath === "/login" || localPath === "/reset-password" || localPath === "/privacy" || localPath.startsWith("/invite/");
+  return (
+    localPath === "/about" ||
+    localPath === "/login" ||
+    localPath === "/reset-password" ||
+    localPath === "/privacy" ||
+    localPath.startsWith("/invite/") ||
+    localPath === "/portfolio" ||
+    localPath.startsWith("/portfolio/")
+  );
 }
 
 export function isActiveWorkspace(pathname: string | null, href: string) {

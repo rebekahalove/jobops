@@ -372,6 +372,67 @@ def test_router_unavailable_uses_conservative_fallback(tmp_path: Path, monkeypat
     assert response.target_workspace == "companies"
 
 
+def test_router_unavailable_still_executes_profile_intake_fallback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: Settings(
+        app_env="test",
+        cheap_model="mock-cheap",
+        company_discovery_search_grounding_enabled=True,
+        database_url=None,
+        default_model="mock-default",
+        gemini_api_key="test-key",
+        model_provider="gemini",
+        profile_intake_save_artifacts=False,
+        profile_intake_save_raw_text=False,
+        repo_root=tmp_path,
+    ))
+    engine = create_seeded_engine()
+
+    monkeypatch.setattr(
+        command_center_module,
+        "run_command_router",
+        lambda *args, **kwargs: SimpleNamespace(
+            decision=None,
+            body={"ok": False, "error": "router unavailable"},
+            status_code=503,
+            unavailable=True,
+        ),
+    )
+
+    def fake_run_profile_intake_extraction(request, *, db_session, settings, candidate_profile=None):
+        return SimpleNamespace(
+            status_code=200,
+            body={
+                "ok": True,
+                "result": {
+                    "assistantMessage": "I updated your profile draft from the pasted resume text.",
+                    "targetRoleIntent": {},
+                    "draftFacts": [],
+                    "skillClaims": [],
+                    "experienceAndProjects": [],
+                    "evidenceLinks": [],
+                    "clarifyingQuestions": [],
+                    "changeSummary": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fake_run_profile_intake_extraction)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="Resume\nExperience\nApplied AI Engineer\nBuilt model evaluation workflows.",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_intake"
+    assert response.actions[0].status == "completed"
+    assert response.target_workspace == "profile"
+    assert "updated your profile draft" in response.assistant_message
+
+
 def test_executable_command_without_candidate_slug_or_default_fails_clearly(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_engine(

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from ..model_connector import ModelRequest
-from .intake_mode import CHAT_UPDATE_CAPACITY, ProfileIntakeMode, RESUME_INTAKE_CAPACITY, capacity_for_mode
+from .intake_mode import CHAT_UPDATE_CAPACITY, COMPACT_RESUME_RETRY_CAPACITY, ProfileIntakeMode, RESUME_INTAKE_CAPACITY, capacity_for_mode
 from .models import ProfileIntakeExtractRequest
 
 
@@ -202,20 +202,31 @@ def build_profile_intake_user_prompt(
     authoritative_current_draft: dict[str, Any] | None = None,
     authoritative_current_draft_source: str = "database",
     detected_intake_mode: ProfileIntakeMode = "chat_update",
+    compact_resume_retry: bool = False,
 ) -> str:
-    capacity = capacity_for_mode(detected_intake_mode)
+    capacity = COMPACT_RESUME_RETRY_CAPACITY if compact_resume_retry else capacity_for_mode(detected_intake_mode)
     prompt_payload: dict[str, Any] = {
         "task": "update_profile_draft",
-        "instruction": "Return the complete updated draft profile after applying latest_user_message.",
+        "instruction": (
+            "Return a compact first-pass updated draft profile after applying latest_user_message. The previous attempt "
+            "was too large, so prioritize the strongest representative items and stay comfortably under the caps."
+            if compact_resume_retry
+            else "Return the complete updated draft profile after applying latest_user_message."
+        ),
         "detected_intake_mode": detected_intake_mode,
+        "compact_resume_retry": compact_resume_retry,
         "capacity_guidance": {
             "active": capacity.to_json(),
             "chat_update": CHAT_UPDATE_CAPACITY.to_json(),
             "resume_intake": RESUME_INTAKE_CAPACITY.to_json(),
+            "compact_resume_retry": COMPACT_RESUME_RETRY_CAPACITY.to_json(),
             "mode_rules": {
                 "chat_update": "Use compact extraction for short conversational updates; preserve existing draft items.",
                 "resume_intake": (
                     "Use fuller extraction for normal 2-3 page resumes while deduplicating and staying within caps."
+                ),
+                "compact_resume_retry": (
+                    "Use a smaller representative first pass when the full resume extraction would exceed model output limits."
                 ),
             },
         },
@@ -282,7 +293,12 @@ def build_profile_intake_user_prompt(
         },
         "required_output": (
             "Return only valid JSON matching the exact shape from the system prompt. "
-            "Use bounded arrays and concise strings. Start with { and end with }."
+            "Use bounded arrays and concise strings. Start with { and end with }. "
+            + (
+                "For this compact retry, fewer complete, high-signal items are better than a truncated exhaustive draft."
+                if compact_resume_retry
+                else ""
+            )
         ),
     }
     if request.existing_draft is not None:

@@ -822,9 +822,11 @@ def normalize_dispatch_action(action_type: CommandActionType | RouterActionType)
 
 
 def should_use_deterministic_fallback(settings, action_type: CommandActionType) -> bool:
+    if action_type == "profile_intake":
+        return True
     if settings.model_provider.strip().lower() == "mock":
         return True
-    return action_type not in {"profile_intake", "company_discovery", "follow_company", "company_update"}
+    return action_type not in {"company_discovery", "follow_company", "company_update"}
 
 
 def meaningful_text(value: str | None) -> str | None:

@@ -13,7 +13,7 @@ from jobops_api.command_router import (
     build_command_router_model_request,
     run_command_router,
 )
-from jobops_api.db.models import Base, RoleTarget, TargetCompany
+from jobops_api.db.models import Base, ProfileFactDraft, ProfileFieldValue, RoleTarget, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.settings import Settings
@@ -33,11 +33,33 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 work_modes=["remote"],
                 constraints={"domainsOrIndustries": "progressive politics"},
                 source="model",
-                review_status="needs_review",
+                review_status="reviewed",
                 visibility="private",
-                publication_status="not_published",
+                publication_status="published",
                 is_active=True,
             )
+        )
+        session.add_all(
+            [
+                ProfileFieldValue(
+                    candidate_profile_id=profile.id,
+                    field_group="targets",
+                    field_name="targetTitles",
+                    value_text="Applied AI Engineer",
+                    source="user",
+                    lifecycle_status="published",
+                    visibility="private",
+                ),
+                ProfileFieldValue(
+                    candidate_profile_id=profile.id,
+                    field_group="targets",
+                    field_name="roleFamilies",
+                    value_text="Applied AI",
+                    source="user",
+                    lifecycle_status="published",
+                    visibility="private",
+                ),
+            ]
         )
         session.add(
             TargetCompany(
@@ -48,6 +70,18 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 careers_url="https://civicactions.com/careers",
                 job_listings_url="https://civicactions.com/jobs",
                 source_urls=["https://civicactions.com"],
+            )
+        )
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=profile.id,
+                claim="Do not recreate this stale claim.",
+                fact_type="obsolete",
+                structured_value={},
+                source="model",
+                confidence="unknown",
+                suggested_visibility="private",
+                review_status="rejected",
             )
         )
         session.commit()
@@ -73,8 +107,13 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
     assert router_context["current_saved_companies"][0]["id"]
     assert router_context["current_saved_companies"][0]["domains"] == ["civicactions.com"]
     assert router_context["target_summary"]["target_role_titles"] == ["Applied AI Engineer"]
+    assert router_context["profile_context"]["profile_basics"]["displayName"] == "Rebekah Love"
+    assert router_context["profile_context"]["published_internal_items"][0]["collection"] == "targetRoleIntent"
+    assert router_context["profile_context"]["published_public_items"] == []
+    assert router_context["profile_context"]["draft_items"] == []
+    assert router_context["profile_context"]["archived_suppressed_items_summary"][0]["claim"] == "Do not recreate this stale claim."
+    assert router_context["privacy_rules"]["private_profile_context_is_authenticated_only"] is True
     assert router_context["context_caps"]["current_companies"] == 50
-    assert "Verified public profile facts" not in request.messages[1].content
 
 
 def test_mock_command_router_routes_examples(tmp_path: Path) -> None:

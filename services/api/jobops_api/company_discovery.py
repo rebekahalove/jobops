@@ -23,7 +23,6 @@ from .model_connector import (
     read_model_connector_config_from_settings,
     route_model_request,
 )
-from .profile_intake.persistence import get_latest_profile_draft_snapshot
 from .profiles import get_candidate_profile_by_slug
 from .security import require_internal_api_key
 from .settings import Settings, load_settings
@@ -502,14 +501,14 @@ def serialize_current_saved_companies(session: Session, candidate_profile_id: st
 
 
 def build_candidate_target_context(session: Session, candidate_profile: CandidateProfile) -> dict[str, Any]:
-    draft = get_latest_profile_draft_snapshot(session, candidate_profile)
-    target_role_intent = draft.get("targetRoleIntent") if isinstance(draft, dict) else None
-    if isinstance(target_role_intent, dict) and any(target_role_intent.values()):
-        return compact_target_role_intent(target_role_intent)
-
     role_target = session.scalar(
         select(RoleTarget)
-        .where(RoleTarget.candidate_profile_id == candidate_profile.id, RoleTarget.is_active.is_(True))
+        .where(
+            RoleTarget.candidate_profile_id == candidate_profile.id,
+            RoleTarget.is_active.is_(True),
+            RoleTarget.publication_status == "published",
+            RoleTarget.visibility.in_(("private", "public")),
+        )
         .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
     )
     if role_target is None:

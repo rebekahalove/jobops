@@ -39,27 +39,41 @@ The architecture should optimize for:
 
 The portfolio and JobOps apps should be server-rendered Next.js applications. They should call the FastAPI backend for candidate profile data, agent workflows, role-fit analysis, and private JobOps operations.
 
-Initial public candidate-agent request flow:
+Current public candidate-agent request flow:
 
-1. User asks a candidate question or submits a job description.
-2. The portfolio app resolves the request hostname to a candidate profile.
-3. The portfolio app calls the backend API server-side.
-4. The backend loads verified public profile facts for that candidate from Postgres.
-5. The backend validates the profile facts and request payload.
-6. The backend builds a constrained agent request.
-7. The agent calls the model through a provider adapter.
-8. The response is validated against a strict output schema.
-9. The response is returned with grounding metadata.
+1. User asks a candidate question in the embedded portfolio chat.
+2. The browser calls the local Next.js route `/api/public/candidate-agent`.
+3. The Next.js route calls FastAPI server-side; model keys and backend details never go to the browser.
+4. FastAPI resolves the candidate by tenant/profile slug.
+5. FastAPI serializes only published public profile data for that candidate.
+6. FastAPI builds a dedicated public candidate-agent model request.
+7. The model is called through `services/api/jobops_api/model_connector`.
+8. The response is validated and sanitized into the `CandidateAnswer` contract.
+9. Unsupported questions return a clear unknown answer rather than invented details.
 
 The browser should never receive secrets, raw environment variables, private notes, private application data, or privileged operational records.
+
+The public agent context may include only:
+
+- facts where `visibility == "public"` and `verification_status == "published"`;
+- skill claims where `visibility == "public"`, `verification_status == "published"`, and `publication_status == "published"`;
+- experience/project/education/certification rows where `visibility == "public"` and `publication_status == "published"`;
+- evidence links where `visibility == "public"` and `publication_status == "published"`;
+- a public, published role target.
+
+It must not include draft facts, private facts, candidate-approved but unpublished facts, application history, target companies, compensation constraints, private notes, raw session data, or command-center state.
 
 ## Product Surfaces
 
 `apps/portfolio` owns public candidate profile pages:
 
 - `rebekahalove.dev` for the first tenant.
+- `/portfolio` as the explicit default portfolio route for the current hostname.
+- `/portfolio/<tenant-slug>` as the alpha path-based tenant portfolio route.
 - Future JobOps-hosted subdomains, if a JobOps product domain is added.
 - Future custom domains, such as a candidate's personal domain.
+
+The separate `/portfolio/.../agent` page is intentionally absent in the current alpha slice. Candidate chat is embedded directly in the portfolio page.
 
 `apps/jobops` owns the private operations dashboard:
 

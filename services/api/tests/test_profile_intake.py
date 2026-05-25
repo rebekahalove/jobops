@@ -56,16 +56,18 @@ class RecordingProvider(StaticProvider):
 
 
 class RecordingSequenceProvider:
-    def __init__(self, texts: list[str], finish_reason: str | None = "stop") -> None:
+    def __init__(self, texts: list[str], finish_reason: str | None = "stop", finish_reasons: list[str | None] | None = None) -> None:
         self.texts = texts
         self.finish_reason = finish_reason
+        self.finish_reasons = finish_reasons
         self.requests: list[ModelRequest] = []
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
         text_index = min(len(self.requests) - 1, len(self.texts) - 1)
+        finish_reason = self.finish_reasons[text_index] if self.finish_reasons else self.finish_reason
         return ModelResponse(
-            finish_reason=self.finish_reason,
+            finish_reason=finish_reason,
             model=request.model,
             provider="test",
             text=self.texts[text_index],
@@ -316,7 +318,44 @@ def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
     }
 
 
-def test_truncated_resume_response_returns_specific_actionable_error(tmp_path: Path) -> None:
+def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: Path) -> None:
+    full_response = json.dumps(realistic_resume_output())
+    truncated_response = full_response[:4000]
+    provider = RecordingSequenceProvider(
+        [truncated_response, json.dumps(valid_output())],
+        finish_reasons=["MAX_TOKENS", "stop"],
+    )
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path, save_artifacts=True, save_raw_text=True),
+    )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert len(provider.requests) == 2
+    assert provider.requests[0].max_output_tokens == 16000
+    assert provider.requests[1].max_output_tokens == 12000
+    assert provider.requests[1].metadata["compact_resume_retry"] is True
+    retry_prompt = json.loads(provider.requests[1].messages[1].content)
+    assert retry_prompt["compact_resume_retry"] is True
+    assert retry_prompt["capacity_guidance"]["active"] == {
+        "draftFacts": 12,
+        "skillClaims": 20,
+        "experienceAndProjects": 8,
+        "evidenceLinks": 8,
+        "clarifyingQuestions": 3,
+        "changeSummary": 6,
+    }
+    assert result.body["modelRequest"]["maxOutputTokens"] == 12000
+    assert result.body["modelResponse"]["finishReason"] == "stop"
+    run_dir = only_run_dir(tmp_path)
+    assert (run_dir / "raw-response-truncated-before-retry.txt").exists()
+    assert (run_dir / "request-metadata-compact-retry.json").exists()
+
+
+def test_truncated_resume_retry_failure_returns_specific_actionable_error(tmp_path: Path) -> None:
     full_response = json.dumps(realistic_resume_output())
     truncated_response = full_response[:4000]
 
@@ -333,7 +372,7 @@ def test_truncated_resume_response_returns_specific_actionable_error(tmp_path: P
         "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
     )
     assert "Model response appears to have been truncated before valid JSON completed." in result.body["issues"]
-    assert result.body["modelRequest"]["maxOutputTokens"] == 16000
+    assert result.body["modelRequest"]["maxOutputTokens"] == 12000
     assert result.body["modelResponse"]["finishReason"] == "MAX_TOKENS"
     run_dir = only_run_dir(tmp_path)
     validation_error = json.loads((run_dir / "validation-error.json").read_text(encoding="utf-8"))

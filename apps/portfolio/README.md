@@ -1,19 +1,12 @@
 # JobOps Portfolio App
 
-Public candidate-agent portfolio for `rebekahalove.dev`.
+Public portfolio and embedded candidate-agent app for `rebekahalove.dev` and alpha tenant portfolio routes.
 
-Initial scaffold status:
+This app README is intentionally short so it does not become a second source of truth. Use the root [README.md](../../README.md) for quickstart and high-level routes, and `docs/` for detailed documentation:
 
-- Local-only.
-- Uses approved public seed profile data from `packages/profile`.
-- Uses mock candidate-agent and role-fit behavior.
-- Does not call a live model.
-- Does not connect to a database.
-- Does not include auth, scraping, email, or ATS integration.
+- [Local Development](../../docs/local-development.md)
+- [Architecture](../../docs/architecture.md)
+- [Candidate Profile Intake](../../docs/candidate-profile-intake.md)
+- [Environment Configuration](../../docs/environment.md)
 
-Run from the repo root:
-
-```powershell
-corepack pnpm install
-corepack pnpm dev
-```
+Current alpha public portfolio routes are `/`, `/portfolio`, and `/portfolio/[tenantSlug]`. Candidate chat is embedded in the portfolio page; `/portfolio/.../agent` routes are intentionally not part of this alpha slice.

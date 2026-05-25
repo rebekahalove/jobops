@@ -28,7 +28,7 @@ from .artifacts import (
     build_run_metadata,
     create_profile_intake_artifact_run,
 )
-from .intake_mode import detect_profile_intake_mode, max_output_tokens_for_mode
+from .intake_mode import COMPACT_RESUME_RETRY_MAX_OUTPUT_TOKENS, detect_profile_intake_mode, max_output_tokens_for_mode
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
 from .persistence import (
     ensure_editable_profile_intake_draft,
@@ -195,6 +195,22 @@ def run_profile_intake_extraction(
     response = None
     try:
         response = active_connector.generate(routed_request)
+        if response_indicates_truncation(response) and should_retry_with_compact_resume(model_request):
+            artifact_run.write_raw_text("raw-response-truncated-before-retry.txt", response.text)
+            compact_model_request = build_profile_intake_model_request(
+                request,
+                authoritative_current_draft=authoritative_current_draft,
+                authoritative_current_draft_source=authoritative_current_draft_source,
+                compact_resume_retry=True,
+                seeded_editable_draft_from_published=seeded_editable_draft_from_published,
+            )
+            routed_request = route_model_request(compact_model_request, connector_config.routing)
+            artifact_run.write_json(
+                "request-metadata-compact-retry.json",
+                build_request_metadata(routed_request, input_metrics.to_json()),
+            )
+            artifact_run.write_raw_text("prompt-compact-retry.txt", build_prompt_artifact(routed_request))
+            response = active_connector.generate(routed_request)
         latency_ms = round((time.perf_counter() - started_at) * 1000)
     except ModelProviderError as error:
         latency_ms = round((time.perf_counter() - started_at) * 1000)
@@ -321,11 +337,18 @@ def build_profile_intake_model_request(
     *,
     authoritative_current_draft: dict[str, Any] | None = None,
     authoritative_current_draft_source: str = "database",
+    compact_resume_retry: bool = False,
     seeded_editable_draft_from_published: bool = False,
 ) -> ModelRequest:
     current_draft = authoritative_current_draft if isinstance(authoritative_current_draft, dict) else {}
     intake_mode = detect_profile_intake_mode(request.latest_user_message)
     max_output_tokens, output_token_budget_reason = max_output_tokens_for_mode(intake_mode, current_draft)
+    if compact_resume_retry:
+        max_output_tokens = COMPACT_RESUME_RETRY_MAX_OUTPUT_TOKENS
+        output_token_budget_reason = (
+            "The first resume intake attempt hit the model output limit, so JobOps retried with smaller first-pass "
+            "resume caps that fit comfortably in a bounded JSON response."
+        )
     current_draft_status = (
         "initialized_from_published_profile"
         if seeded_editable_draft_from_published
@@ -346,6 +369,7 @@ def build_profile_intake_model_request(
             "client_existing_draft_authoritative": False,
             "feature": "profile_intake",
             "intake_mode": intake_mode,
+            "compact_resume_retry": compact_resume_retry,
             "output_token_budget_reason": output_token_budget_reason,
             "profile_intake_contract": "full_draft_update",
             "seeded_editable_draft_from_published": seeded_editable_draft_from_published,
@@ -359,6 +383,7 @@ def build_profile_intake_model_request(
                     authoritative_current_draft=current_draft,
                     authoritative_current_draft_source=authoritative_current_draft_source,
                     detected_intake_mode=intake_mode,
+                    compact_resume_retry=compact_resume_retry,
                 ),
             ),
         ],
@@ -647,6 +672,15 @@ def validation_issues_indicate_truncation(issues: list[str]) -> bool:
 
 def validation_issues_indicate_capacity_overflow(issues: list[str]) -> bool:
     return any("list should have at most" in issue.lower() for issue in issues)
+
+
+def response_indicates_truncation(response) -> bool:
+    finish_reason = getattr(response, "finish_reason", None)
+    return bool(finish_reason and ("max" in finish_reason.lower() or "length" in finish_reason.lower() or "token" in finish_reason.lower()))
+
+
+def should_retry_with_compact_resume(request: ModelRequest) -> bool:
+    return request.metadata.get("intake_mode") == "resume_intake" and request.metadata.get("compact_resume_retry") is not True
 
 
 def get_only_candidate_profile(session: Session) -> CandidateProfile | Literal["missing"] | None:

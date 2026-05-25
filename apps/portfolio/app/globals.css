@@ -147,6 +147,418 @@ h3 {
   align-items: start;
 }
 
+.portfolio-page {
+  max-width: 1180px;
+}
+
+.portfolio-hero {
+  min-height: clamp(560px, 72svh, 760px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.44fr);
+  align-items: center;
+  column-gap: clamp(36px, 7vw, 96px);
+  padding: 0;
+}
+
+.portfolio-hero.solo {
+  grid-template-columns: minmax(0, 820px);
+}
+
+.portfolio-hero-copy {
+  display: grid;
+  gap: 18px;
+}
+
+.portfolio-summary {
+  max-width: 780px;
+  color: var(--ink);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.portfolio-verification-panel {
+  display: grid;
+  gap: 18px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(223, 243, 239, 0.86), rgba(255, 255, 255, 0.96)),
+    var(--panel);
+  box-shadow: 0 24px 70px rgba(31, 41, 51, 0.08);
+  padding: clamp(22px, 3vw, 30px);
+}
+
+.portfolio-panel-header {
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-panel-header h2 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2vw, 2rem);
+}
+
+.portfolio-panel-header p,
+.portfolio-panel-block p {
+  margin-bottom: 0;
+}
+
+.portfolio-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.portfolio-status-grid div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+  padding: 14px;
+}
+
+.portfolio-status-grid div:last-child {
+  grid-column: 1 / -1;
+}
+
+.portfolio-panel-block {
+  display: grid;
+  gap: 10px;
+}
+
+.portfolio-panel-block.scrollable {
+  max-height: 190px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.portfolio-detail-list,
+.portfolio-achievement-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-detail-list li {
+  display: grid;
+  gap: 3px;
+}
+
+.portfolio-detail-list strong {
+  color: var(--ink);
+}
+
+.portfolio-detail-list span,
+.portfolio-detail-list small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.portfolio-agent-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 860px);
+  align-items: start;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  border-top: 1px solid rgba(15, 118, 110, 0.12);
+  border-bottom: 1px solid rgba(15, 118, 110, 0.12);
+  background:
+    linear-gradient(135deg, rgba(223, 243, 239, 0.92), rgba(255, 255, 255, 0.82)),
+    var(--panel);
+  padding: clamp(28px, 5vw, 52px);
+}
+
+.portfolio-agent-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-agent-heading h2 {
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.8rem);
+}
+
+.portfolio-agent-panel .fact-pill {
+  align-self: start;
+  justify-self: center;
+  width: fit-content;
+  margin: 0;
+}
+
+.portfolio-agent-panel .workspace,
+.portfolio-chat-panel {
+  width: 100%;
+  padding: 0;
+  text-align: left;
+}
+
+.portfolio-agent-panel .workflow-panel,
+.portfolio-chat-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.portfolio-agent-panel textarea {
+  min-height: 150px;
+}
+
+.portfolio-conversation {
+  display: grid;
+  gap: 14px;
+}
+
+.portfolio-chat-message {
+  display: grid;
+  gap: 8px;
+  max-width: min(100%, 760px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 16px;
+}
+
+.portfolio-chat-message.user {
+  justify-self: end;
+  width: min(100%, 620px);
+  background: #ffffff;
+}
+
+.portfolio-chat-message.agent {
+  justify-self: start;
+  width: min(100%, 760px);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.portfolio-chat-message span {
+  color: var(--warm);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.portfolio-chat-message p {
+  margin: 0;
+}
+
+.portfolio-chat-note {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.portfolio-chat-note ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.form-error {
+  margin: 0;
+  color: #8f2f2f;
+  font-weight: 800;
+}
+
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.portfolio-facts-band {
+  position: relative;
+  display: grid;
+  gap: 24px;
+  margin: 32px 0;
+  padding: clamp(28px, 5vw, 54px);
+  background:
+    linear-gradient(135deg, rgba(232, 243, 241, 0.96), rgba(248, 247, 244, 0.8) 48%, rgba(239, 242, 250, 0.9)),
+    var(--accent-soft);
+  border: 1px solid rgba(15, 94, 89, 0.12);
+  border-radius: 8px;
+}
+
+.portfolio-facts-band h2 {
+  max-width: 760px;
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.6rem);
+  line-height: 1;
+}
+
+.portfolio-fact-callouts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.portfolio-fact-callout {
+  display: grid;
+  align-content: space-between;
+  gap: 18px;
+  min-height: 180px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 22px;
+}
+
+.portfolio-fact-callout p {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(1.15rem, 2vw, 1.55rem);
+  font-weight: 800;
+  line-height: 1.22;
+}
+
+.portfolio-fact-callout span {
+  color: var(--warm);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.portfolio-evidence-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: clamp(24px, 5vw, 64px);
+  align-items: start;
+  padding: 32px 0;
+}
+
+.portfolio-work-column,
+.portfolio-proof-rail,
+.portfolio-rail-section,
+.portfolio-skill-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.portfolio-proof-rail {
+  position: sticky;
+  top: 24px;
+}
+
+.portfolio-achievement-list li {
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 800;
+  line-height: 1.45;
+  padding: 12px 14px;
+}
+
+.portfolio-section {
+  grid-template-columns: minmax(240px, 0.42fr) minmax(0, 1fr);
+}
+
+.portfolio-card-grid,
+.portfolio-timeline,
+.portfolio-fact-list,
+.portfolio-link-list,
+.portfolio-chip-list {
+  display: grid;
+  gap: 12px;
+}
+
+.portfolio-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.portfolio-card,
+.portfolio-fact-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.portfolio-card p,
+.portfolio-card li {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.portfolio-meta {
+  font-weight: 700;
+}
+
+.portfolio-fact-list,
+.portfolio-link-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-mini-link-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-mini-link-list a,
+.portfolio-link-list a {
+  color: var(--accent-strong);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.portfolio-mini-link-list a:hover,
+.portfolio-mini-link-list a:focus-visible,
+.portfolio-link-list a:hover,
+.portfolio-link-list a:focus-visible {
+  text-decoration: underline;
+}
+
+.portfolio-fact-list li {
+  display: grid;
+  gap: 6px;
+}
+
+.portfolio-fact-list strong {
+  color: var(--warm);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.portfolio-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.portfolio-chip-list span {
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.portfolio-role-intent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.portfolio-role-intent-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.portfolio-role-intent-group h3 {
+  margin: 0 0 10px;
+}
+
+.portfolio-role-intent-group p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -278,8 +690,42 @@ textarea {
 
   .content-band,
   .agent-header,
+  .portfolio-section,
   .status-grid {
     grid-template-columns: 1fr;
+  }
+
+  .portfolio-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-role-intent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-fact-callouts,
+  .portfolio-evidence-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-proof-rail {
+    position: static;
+  }
+
+  .portfolio-hero {
+    min-height: auto;
+    grid-template-columns: 1fr;
+    gap: 28px;
+    padding: 46px 0;
+  }
+
+  .portfolio-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-agent-panel,
+  .portfolio-facts-band {
+    padding: 22px;
   }
 
   .fact-pill {

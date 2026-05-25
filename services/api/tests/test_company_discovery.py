@@ -12,6 +12,7 @@ from jobops_api.company_discovery import (
     CompanyDiscoveryOutput,
     CompanyDiscoveryRecord,
     CompanyDiscoveryRequest,
+    build_candidate_target_context,
     build_company_discovery_model_request,
     parse_company_discovery_json,
     run_company_discovery,
@@ -38,9 +39,9 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
                 work_modes=["remote"],
                 constraints={"domainsOrIndustries": "progressive politics, civic tech"},
                 source="model",
-                review_status="needs_review",
+                review_status="reviewed",
                 visibility="private",
-                publication_status="not_published",
+                publication_status="published",
                 is_active=True,
             )
         )
@@ -86,6 +87,47 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     with Session(engine) as session:
         saved = list(session.scalars(select(TargetCompany).order_by(TargetCompany.name.asc())))
         assert [company.name for company in saved] == ["CivicActions", "Higher Ground Labs"]
+
+
+def test_candidate_target_context_uses_only_published_internal_or_public_targets() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add_all(
+            [
+                RoleTarget(
+                    candidate_profile_id=profile.id,
+                    target_titles=["Draft-only target"],
+                    role_families=["Draft"],
+                    preferred_locations=["Draft City"],
+                    work_modes=["remote"],
+                    source="model",
+                    review_status="needs_review",
+                    visibility="private",
+                    publication_status="not_published",
+                    is_active=True,
+                ),
+                RoleTarget(
+                    candidate_profile_id=profile.id,
+                    target_titles=["Published internal target"],
+                    role_families=["Applied AI"],
+                    preferred_locations=["Remote US"],
+                    work_modes=["remote"],
+                    source="model",
+                    review_status="reviewed",
+                    visibility="private",
+                    publication_status="published",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        context = build_candidate_target_context(session, profile)
+
+    assert context["target_role_titles"] == ["Published internal target"]
+    assert "Draft-only target" not in json.dumps(context)
 
 
 def test_company_discovery_request_uses_search_grounding_and_context() -> None:

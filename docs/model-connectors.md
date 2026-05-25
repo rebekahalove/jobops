@@ -63,6 +63,7 @@ Task routing:
 | `profile_extract` | default model |
 | `profile_draft_update` | default model |
 | `intake_followup` | default model |
+| `public_candidate_qa` | default model |
 | `role_fit` | default model |
 | `bulk_triage` | cheap model |
 | `eval_harness` | cheap model |
@@ -104,6 +105,33 @@ The older `/api/profile-intake` and `/v1/profile-intake/extract` boundaries rema
 Profile intake owns its prompt, Pydantic output schema, artifact saving, validation behavior, and profile-specific mock response. The shared connector owns provider-neutral request/response types, task routing, provider creation, mock provider behavior, and Gemini HTTP behavior.
 
 The profile intake contract requires generated facts, skill claims, experience/project items, and evidence links to remain private, unpublished, and marked for review. Model output cannot become verified, public, or published data through this boundary.
+
+## Public Candidate-Agent Usage
+
+The embedded public portfolio chat uses the shared Python model connector through FastAPI:
+
+```text
+Portfolio page
+-> Next.js /api/public/candidate-agent proxy
+-> FastAPI POST /v1/public/portfolio/<profile-slug>/questions
+-> public_candidate_agent service
+-> shared Python model_connector
+-> configured provider
+```
+
+This workflow uses the `public_candidate_qa` task and a dedicated public prompt. It must not reuse private command-center prompts or include private JobOps state. Before the model call, FastAPI serializes the profile into a public-only context containing only published public facts, skills, experience/project/education/certification items, evidence links, and role target data.
+
+The response is validated into the `CandidateAnswer` contract:
+
+```text
+answer
+verifiedFactsUsed
+inferences
+unknowns
+caveats
+```
+
+If the model is unavailable or returns invalid output, the public endpoint returns a safe generic fallback without backend URLs, environment variable names, exception text, or private data.
 
 ## Local Profile Intake Artifacts
 

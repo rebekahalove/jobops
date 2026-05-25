@@ -1,17 +1,17 @@
 # Local Development
 
-This first scaffold is intentionally small. It does not include:
+This alpha stack is intentionally local-first. It includes alpha username/password sessions, invite-based onboarding, tenant-scoped persistence, public portfolio routes, and backend-backed public candidate Q&A. It still does not include:
 
 - Paid services.
-- Auth.
 - Scraping.
 - Email integration.
+- Billing, OAuth, teams/RBAC, or automated job intake.
 
 ## Prerequisites
 
 - Node.js 22 or newer.
 - `pnpm` through Corepack.
-- Python 3.14 if you want to run the FastAPI scaffold.
+- Python 3.14 if you want to run the FastAPI service.
 
 PowerShell may block `npm.ps1` or `pnpm.ps1` shims. If so, use `npm.cmd` or run package manager commands through Corepack.
 
@@ -80,17 +80,18 @@ Then open:
 http://localhost:3000
 ```
 
-The candidate-agent UI is available at:
+The public portfolio and embedded candidate-agent chat are available at:
 
 ```text
-http://localhost:3000/agent
+http://localhost:3000/
+http://localhost:3000/portfolio
 ```
 
-The app uses local mock behavior until verified public profile facts and the real backend workflow are implemented.
+When `JOBOPS_API_BASE_URL` is configured, the portfolio loads published public profile data from FastAPI and the embedded candidate-agent posts through the Next server route to the public FastAPI candidate-agent endpoint. Local development may still fall back to the committed seed profile when the API is unavailable; production shows a generic unavailable state instead of silently relying on seed data.
 
-## Run The JobOps Dashboard Stub
+## Run The JobOps Dashboard
 
-The dashboard shell is the private JobOps app scaffold. It uses persisted alpha user sessions, not full product auth. It does not include OAuth, password reset, billing, complex RBAC, job intake, fit scoring, material generation, or review-management workflows yet. The primary command center can execute the first real tool: profile intake through FastAPI.
+The dashboard is the private JobOps command center. It uses persisted alpha user sessions backed by FastAPI, invite-based onboarding, and tenant-scoped profile/application data. It does not include OAuth, billing, teams/RBAC, automated job intake, or password-reset email recovery. The command center can run profile intake through FastAPI, and the Profile workspace supports field/item-level Generated, Private, Public, and Archived review workflows.
 
 ```powershell
 corepack pnpm dev:jobops
@@ -110,19 +111,18 @@ JOBOPS_DASHBOARD_AUTH_DISABLED=true
 
 Do not set that bypass in production.
 
-The stub includes placeholder workflow areas for:
+The dashboard includes active Profile, Companies, and Applications areas plus placeholder or early workflow areas for:
 
-- Profile.
 - Jobs.
 - Fit Scoring.
 - Materials.
-- Applications.
+- Follow-ups.
 
-The Profile area is emphasized as the recommended first step because the first real command-center tool is profile intake: natural-language profile updates, LLM extraction into draft structured data, and clarifying questions to fill gaps.
+The Profile area is emphasized as the recommended first step because profile intake turns pasted resume/profile/background text into generated field and item proposals for review.
 
-The `/profile` route is now a structured review/display surface. It no longer has its own chat composer. Use the AI Command Center above the workspace tabs to enter profile commands such as `I want to be an Applied AI Engineer.` The Profile route loads the latest saved draft snapshot, change summary, draft profile preview, evidence links, and clarifying questions.
+The `/profile` route is a structured review/display surface. It no longer has its own chat composer. Use the AI Command Center above the workspace tabs to enter profile commands such as `I want to be an Applied AI Engineer.` The Profile route loads the latest generated proposals, published private fields/items, public portfolio preview, archived/suppressed values, evidence links, and clarifying questions.
 
-The `/applications` route now includes the first manual Application Tracker MVP. It supports adding applications, listing saved applications, viewing status badges and next follow-up dates, keeping notes, and editing status. It intentionally does not scrape job posts, extract postings, score fit, generate cover letters, integrate Gmail/email, send reminders, or add auth.
+The `/applications` route now includes the first manual Application Tracker MVP. It supports adding applications, listing saved applications, viewing status badges and next follow-up dates, keeping notes, and editing status. It intentionally does not scrape job posts, extract postings, score fit, generate cover letters, integrate Gmail/email, send reminders, or add OAuth/RBAC beyond the dashboard session gate.
 
 The active command-center profile-intake backend lives in FastAPI at:
 
@@ -130,15 +130,18 @@ The active command-center profile-intake backend lives in FastAPI at:
 POST http://localhost:8000/v1/command-center/commands
 ```
 
-The Profile tab loads saved draft state from:
+Use the configured FastAPI port from `JOBOPS_API_BASE_URL` if your local API is not running on `8000`.
+
+The Profile workspace loads its field/item review state through:
 
 ```text
-GET http://localhost:8000/v1/command-center/profile-draft/{slug}
+GET http://localhost:8000/v1/profile/current
+GET http://localhost:8000/v1/command-center/profile-draft/current
 ```
 
-The Next.js app keeps only thin proxies such as `/api/command-center` and `/api/profile-draft`. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
+The Next.js app keeps only thin proxies such as `/api/command-center`, `/api/profile`, and `/api/profile-draft`. It does not build prompts, call model providers, validate model output, or save artifacts. FastAPI calls the shared Python `jobops_api.model_connector` module for provider/model routing.
 
-The temporary dashboard gate also protects the thin proxy routes used by the dashboard. It is a construction curtain, not full authentication: it does not support users, roles, password reset, account recovery, tenant isolation, audit trails, or per-user authorization. It is acceptable while the project is not intentionally shared, but it must be upgraded before publicly sharing the JobOps dashboard, onboarding other users, storing other people's private data, or using JobOps as a real multi-tenant product. Future replacement should be proper user authentication and authorization, likely owner-only auth first, then tenant/user auth later.
+The dashboard session gate also protects the thin proxy routes used by the dashboard. FastAPI remains the authority for identity, tenant scoping, authorization, validation, and persistence. Alpha auth is intentionally smaller than full product auth: OAuth, complex RBAC, account recovery, and audit tooling are deferred.
 
 For deterministic local mode:
 
@@ -159,7 +162,7 @@ JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
 ```
 
-The FastAPI boundary keeps the Gemini key server-side. The profile workspace now persists validated draft profile data to Postgres through FastAPI, but it still does not store raw resume/chat text by default. All generated claims are draft or needs review, source-labeled, private, unpublished, and unverified.
+The FastAPI boundary keeps the Gemini key server-side. The profile workspace persists validated generated profile data to Postgres through FastAPI, but it still does not store raw resume/chat text in the database by default. Generated claims are review-only until the user publishes them as Private or Public; public portfolio output and public candidate-agent context include only published public content.
 
 See [Command-Center Profile Workspace](profile-workspace-design.md).
 
@@ -222,6 +225,7 @@ Tables reused:
 
 Tables added for this slice:
 
+- `profile_field_values`
 - `profile_intake_events`
 - `experience_project_drafts`
 
@@ -256,16 +260,16 @@ Profile-intake draft persistence now merges each model turn into the active save
 
 Deferred profile work:
 
-- Human approval and publication workflow.
 - Durable resume artifact handling.
-- Full review controls.
-- Telemetry.
+- Richer profile revision history.
+- Public rate limiting/abuse controls for model-backed public Q&A.
+- Broader telemetry and observability.
 
-Recommended next step: add explicit review actions for approving/rejecting persisted draft profile sections and items, keeping publication as a separate later action.
+Review/publishing is implemented at alpha depth; future work should deepen revision history and file extraction rather than reintroducing batch publishing.
 
-## Run The API Scaffold
+## Run The API
 
-The API scaffold is optional for this first local run.
+The API service is required for authenticated dashboard workflows, profile publishing, public portfolio backend loading, and model-backed candidate Q&A.
 
 From `services/api`:
 
@@ -364,12 +368,12 @@ This creates the first tenant, candidate profile, and domain mapping. It does no
 
 ## Run The API And Portfolio Together
 
-Start the API:
+Start the API. Use the port configured by `JOBOPS_API_BASE_URL` in `.env.dev`; recent local JobOps work has commonly used `8002`, while older docs/examples used `8000`.
 
 ```powershell
 cd C:\Users\rasho\jobops\services\api
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn jobops_api.main:app --reload --port 8000
+python -m uvicorn jobops_api.main:app --reload --host 127.0.0.1 --port 8002
 ```
 
 In another terminal, start the portfolio:
@@ -379,4 +383,20 @@ cd C:\Users\rasho\jobops
 corepack pnpm dev
 ```
 
-With `JOBOPS_API_BASE_URL=http://localhost:8000` in `.env.dev`, the portfolio should show `Backend API` as its data source.
+With `JOBOPS_API_BASE_URL=http://localhost:8002` in `.env.dev`, the portfolio loads public profile data from FastAPI. If you use a different backend port, update `.env.dev` before starting the frontend.
+
+The current route structure is:
+
+```text
+http://localhost:3000/                         # portfolio app root, hostname-resolved portfolio
+http://localhost:3000/portfolio                # explicit default portfolio route
+http://localhost:3000/portfolio/<tenant-slug>  # alpha tenant portfolio
+http://localhost:3000/jobops                   # mounted private JobOps dashboard
+http://localhost:3000/jobops/about             # mounted public alpha page
+http://localhost:3002/                         # standalone private JobOps dashboard
+http://localhost:3002/portfolio                # standalone local portfolio route for dashboard QA
+```
+
+The public candidate-agent chat is embedded on the portfolio page. It posts to `/api/public/candidate-agent`, which calls FastAPI server-side at `/v1/public/portfolio/<profile-slug>/questions`. There is intentionally no `/portfolio/agent` or `/portfolio/<tenant-slug>/agent` page in this alpha slice.
+
+Production portfolio fallback behavior is intentionally conservative: if the portfolio app cannot reach the backend in production, it shows a generic unavailable message and logs details server-side. Local development may still fall back to the committed seed profile.

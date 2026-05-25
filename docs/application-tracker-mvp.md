@@ -47,7 +47,7 @@ The JobOps dashboard uses thin Next.js proxy routes under `/api/applications` so
 - Cover letter generation.
 - Email or Gmail integration.
 - Reminders and notifications.
-- Auth.
+- OAuth, teams/RBAC, and account recovery beyond alpha sessions.
 - Scraping or browser automation.
 
 ## Local Run

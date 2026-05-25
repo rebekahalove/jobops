@@ -227,7 +227,9 @@ Recommended levels:
 - `published`: allowed to power the public candidate-agent profile.
 - `inferred`: generated from other facts and never treated as a verified fact by itself.
 
-The public portfolio agent can use only facts that are both human-approved and public.
+The public portfolio agent can use only profile data that has been explicitly published for public use. In practice, the public serializer and candidate-agent endpoint include only public + published facts, public + published skill claims, public + published experience/project/education/certification items, public + published evidence links, and a public published role target.
+
+Draft, private, rejected, internal, and candidate-approved-but-unpublished items remain private JobOps data. They may appear in the authenticated command center/review workflow, but must not appear in public portfolio pages or public candidate-agent prompts.
 
 ## Command-Center Tooling
 
@@ -260,6 +262,27 @@ For now, some list-like target role fields remain strings. A location update may
 If the user instruction is ambiguous, the model should return the draft unchanged, include a clarifying question, and set `noChangeReason`. Existing draft items omitted from `updatedDraftProfile` are preserved unless the model also includes their IDs in `removedItems`, which prevents accidental deletion from a malformed or incomplete model response.
 
 Published profile rows must not be edited directly by profile intake. If profile changes are requested after the most recent profile state has been published and no active draft exists, JobOps should start a new private draft based on the published profile by default, or eventually ask whether to start from scratch versus from previous published values. The current backend seeds an unpublished draft copy for published role targets and published profile facts; broader published-profile edit semantics and UI choice remain deferred.
+
+## Publishing and Public Portfolio Flow
+
+The current alpha publishing flow is:
+
+1. The user updates profile material through the authenticated command-center/profile workflow.
+2. Generated draft items remain private, unpublished, and marked for review.
+3. The user edits facts, marks visibility public/private, and approves or rejects draft items.
+4. Publishing promotes approved public facts into published public profile facts and marks the profile published.
+5. Public portfolio routes render only the serialized published public profile.
+6. The embedded public candidate-agent uses the same published public serialization before calling the model.
+
+Public routes during alpha:
+
+```text
+/                         -> hostname-resolved public portfolio
+/portfolio                -> same hostname-resolved public portfolio
+/portfolio/<tenant-slug>  -> path-based alpha tenant portfolio
+```
+
+There is no separate `/portfolio/.../agent` route in this slice; the candidate-agent chat is embedded in the portfolio page.
 
 ## Intake Workflow
 

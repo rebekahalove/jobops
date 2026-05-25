@@ -21,8 +21,8 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 
 `users`
 
-- People who can sign in once auth is implemented.
-- May be deferred in the first migration if auth is not yet being built, but the model should leave room for it.
+- People who can sign in through alpha username/password auth.
+- Sessions are server-owned and tenant-scoped; OAuth, teams/RBAC, and account recovery remain deferred product work.
 
 `candidate_profiles`
 
