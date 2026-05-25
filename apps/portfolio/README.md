@@ -1,21 +1,12 @@
 # JobOps Portfolio App
 
-Public candidate-agent portfolio for `rebekahalove.dev`.
+Public portfolio and embedded candidate-agent app for `rebekahalove.dev` and alpha tenant portfolio routes.
 
-Alpha route status:
+This app README is intentionally short so it does not become a second source of truth. Use the root [README.md](../../README.md) for quickstart and high-level routes, and `docs/` for detailed documentation:
 
-- `/` and `/portfolio` render the public portfolio for the request hostname.
-- `/portfolio/[tenantSlug]` renders an alpha tenant portfolio by tenant or profile slug.
-- The embedded candidate-agent posts to the local Next route at `/api/public/candidate-agent`, which calls FastAPI server-side.
-- Public candidate-agent answers must be grounded only in published public profile data returned by the API.
-- Local development may use the seed profile when the API is unavailable. Production shows a generic unavailable state and logs diagnostics server-side.
-- The separate `/portfolio/.../agent` page is intentionally not present; chat is embedded in the portfolio page.
-- Does not include auth, scraping, email, ATS integration, or public rate limiting yet.
-- Does not include auth, scraping, email, or ATS integration.
+- [Local Development](../../docs/local-development.md)
+- [Architecture](../../docs/architecture.md)
+- [Candidate Profile Intake](../../docs/candidate-profile-intake.md)
+- [Environment Configuration](../../docs/environment.md)
 
-Run from the repo root:
-
-```powershell
-corepack pnpm install
-corepack pnpm dev
-```
+Current alpha public portfolio routes are `/`, `/portfolio`, and `/portfolio/[tenantSlug]`. Candidate chat is embedded in the portfolio page; `/portfolio/.../agent` routes are intentionally not part of this alpha slice.

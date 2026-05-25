@@ -1,9 +1,11 @@
 # jobops
 JobOps is an AI job-search operations platform for serious technical candidates, featuring a candidate-agent portfolio, role-fit analysis, and agent-readable hiring endpoints.
 
+This root README is the canonical quickstart and high-level route overview. Detailed architecture, local development, model, deployment, and product design docs live in [`docs/`](docs/).
+
 ## Local Quickstart
 
-This scaffold is local-first. It has alpha username/password auth, invite-based onboarding, tenant-scoped persistence, and no billing, scraping, or paid-service requirements. Model-assisted profile intake can run in deterministic mock mode, with live Gemini available only when configured server-side.
+JobOps is local-first during alpha. It has username/password auth, invite-based onboarding, tenant-scoped persistence, and no billing, scraping, or paid-service requirements. Model-assisted workflows can run in deterministic mock mode, with live Gemini available only when configured server-side.
 
 ```powershell
 corepack enable
@@ -18,11 +20,17 @@ Then open:
 http://localhost:3000
 ```
 
-The candidate-agent scaffold is at:
+The portfolio app routes are:
 
 ```text
-http://localhost:3000/agent
+/                         # public portfolio for the request hostname
+/portfolio                # explicit default public portfolio route
+/portfolio/<tenant-slug>  # alpha tenant/profile portfolio route
+/jobops/about             # mounted public alpha landing page
+/jobops                   # mounted private JobOps dashboard/command center
 ```
+
+The public candidate-agent chat is embedded in the portfolio page. There is intentionally no `/portfolio/.../agent` page in this alpha slice.
 
 The JobOps dashboard runs separately:
 
@@ -40,7 +48,7 @@ The JobOps experience now has a public alpha surface and a private authenticated
 
 The dashboard currently includes profile intake, profile review/publishing, company tracking, application tracking, AI-assisted workflow commands, and placeholders for jobs, fit scoring, materials, and follow-ups. Billing, OAuth, email recovery, teams/RBAC, and job intake are intentionally deferred.
 
-The Profile workspace at `/profile` includes a paste-first intake flow for resume text, LinkedIn profile text, portfolio bios, and other background material. Model-assisted draft extraction runs through FastAPI, includes the current draft profile in the model request, persists private draft rows, and keeps generated facts private/unpublished until the user reviews them. Users can edit facts, mark visibility public/private, approve items, and publish approved public information. File upload and URL extraction are not part of this alpha slice yet.
+The Profile workspace at `/profile` includes command-center intake for resume text, LinkedIn profile text, portfolio bios, and other background material. Model-assisted draft extraction runs through FastAPI, includes the current draft profile in the model request, persists private generated rows, and keeps generated content private/unpublished until the user reviews it. Users can edit generated items, publish field/item-level content as Private or Public, archive suppressed values, and manage public items through the portfolio preview. File upload and URL extraction are not part of this alpha slice yet.
 
 ## Alpha Operations
 
@@ -58,7 +66,7 @@ To test session-aware alpha landing locally:
 3. Log in through `http://localhost:3002/login`, then revisit `http://localhost:3002/about` and confirm it shows command-center CTAs.
 4. For the production-mounted route, run the portfolio app and test `http://localhost:3000/jobops/about`.
 
-Profile publishing works as an explicit review step: draft/model-generated items remain private and unpublished; public portfolio output only includes items with public visibility and published status. Approved public draft facts are promoted to published public profile facts when the user clicks publish.
+Profile publishing works item by item: generated items remain private and unpublished until the user publishes them as Private or Public, and public portfolio output only includes published Public content.
 
 During alpha, tenant portfolios live at:
 

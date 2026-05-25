@@ -62,7 +62,7 @@ Committed files may include approved public seed data, sanitized fixtures, eval 
 Postgres should store managed platform data, including:
 
 - Tenants.
-- Users, once auth is implemented.
+- Users and alpha auth sessions.
 - Candidate profiles.
 - Verified profile facts.
 - Domain mappings.

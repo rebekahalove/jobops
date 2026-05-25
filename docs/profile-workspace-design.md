@@ -240,12 +240,10 @@ Whole-profile actions:
 
 | Status dimension | Available actions |
 | --- | --- |
-| Review: `needs_verification` | Continue review, approve eligible sections/items. |
-| Review: `verified` | Edit profile, run another intake pass. |
-| Visibility: `private` | Review candidates for public-ready status later. |
-| Visibility: `public_ready` | Publish later. |
-| Publication: `not_published` | Publish only after explicit public-ready review. |
-| Publication: `published` | Unpublish or update later. |
+| Generated proposal | Edit, publish Private, publish Public when allowed, or archive. |
+| Published Private | Active for the private command center; make Public when allowed, edit, or archive. |
+| Published Public | Active for the public portfolio and public candidate agent; make Private, edit through a replacement proposal, or archive from the private preview. |
+| Archived | Suppressed/non-active; summarize only to avoid unwanted regeneration. |
 
 ### Review Queue Layout
 
@@ -261,9 +259,7 @@ Recommended queue groups:
 - Facts / Claims.
 - Evidence & Links.
 
-Each item should show status with compact badges, colored dots, or icons. Actions should stay compact and status-dependent. Do not add broad action bars or large button groups before the status model is implemented.
-
-Publishing is intentionally deferred. Public-ready and published states should exist in the model, but the MVP shell should not implement publish behavior yet.
+Each item should show status with compact badges, colored dots, or icons. Actions should stay compact and status-dependent. Publishing is item-by-item; broad batch-publish controls should not be the primary workflow.
 
 ## 4. Field-Level Change Indicators
 
