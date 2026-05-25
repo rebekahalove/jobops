@@ -475,6 +475,171 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Applied AI Engineer");
   });
 
+  it("keeps generated replacement proposals from hiding currently published private fields", () => {
+    const profileFields = {
+      profileBasics: [],
+      targets: [
+        {
+          group: "targets" as const,
+          name: "targetTitles",
+          label: "Target titles",
+          publicAllowed: true,
+          privateOnly: false,
+          multiline: false,
+          generated: {
+            id: "target-generated",
+            value: "Generated replacement title",
+            source: "model",
+            lifecycleStatus: "generated" as const,
+            visibility: null
+          },
+          published: {
+            id: "target-private",
+            value: "Current private title",
+            source: "user",
+            lifecycleStatus: "published" as const,
+            visibility: "private" as const
+          },
+          archived: []
+        }
+      ]
+    };
+    const generatedHtml = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="targets"
+        draft={null}
+        onTabChange={() => undefined}
+        profileFields={profileFields}
+      />
+    );
+    const privateHtml = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="targets"
+        draft={null}
+        onTabChange={() => undefined}
+        profileFields={profileFields}
+      />
+    );
+
+    expect(generatedHtml).toContain("Generated replacement title");
+    expect(generatedHtml).not.toContain("Current private title");
+    expect(privateHtml).toContain("Current private title");
+    expect(privateHtml).not.toContain("Generated replacement title");
+    expect(privateHtml).toContain("1 Generated / 1 Private / 0 Public");
+    expect(privateHtml).toContain("Make public");
+    expect(privateHtml).toContain("Archive");
+    expect(privateHtml).not.toContain("Make private");
+  });
+
+  it("keeps private-only published fields visible during generated replacement review with Archive only", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="targets"
+        draft={null}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [],
+          targets: [
+            {
+              group: "targets",
+              name: "compensationMin",
+              label: "Compensation min",
+              publicAllowed: false,
+              privateOnly: true,
+              multiline: false,
+              generated: {
+                id: "comp-generated",
+                value: "$180,000",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: {
+                id: "comp-private",
+                value: "$160,000",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "private"
+              },
+              archived: []
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(html).toContain("$160,000");
+    expect(html).not.toContain("$180,000");
+    expect(html).toContain("Private only");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("Make public");
+    expect(html).not.toContain("Make private");
+  });
+
+  it("keeps generated replacements from changing public preview until published", () => {
+    const generatedHtml = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="basics"
+        draft={null}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: {
+                id: "headline-generated",
+                value: "Generated replacement headline",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: {
+                id: "headline-public",
+                value: "Current public headline",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "public"
+              },
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+    const previewHtml = renderToStaticMarkup(
+      <PublicPortfolioPreview
+        onProfileFieldUpdate={() => undefined}
+        publicPortfolioPath="/portfolio/chance-alpha"
+        publishedPublicItemCount={1}
+        publicProfile={{
+          displayName: "Chance Alpha",
+          headline: "Current public headline",
+          summary: "",
+          profileStatus: "published",
+          profileFields: {
+            profileBasics: {
+              headline: "Current public headline"
+            }
+          }
+        }}
+      />
+    );
+
+    expect(generatedHtml).toContain("Generated replacement headline");
+    expect(previewHtml).toContain("Current public headline");
+    expect(previewHtml).not.toContain("Generated replacement headline");
+  });
+
   it("shows generated, private, and public counts in section headers and rail tabs", () => {
     const html = renderToStaticMarkup(
       <ReviewTabbedList
@@ -1191,6 +1356,26 @@ describe("Profile intake workspace", () => {
     expect(routeSource).not.toContain("buildProfileIntakeUserPrompt");
     expect(routeSource).not.toContain("generateProfileIntakeOutput");
     expect(routeSource).not.toContain("saveProfileIntake");
+  });
+
+  it("mounts the portfolio-hosted /jobops field update wrapper on the standalone JobOps route", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const wrapperSource = await readFile(
+      new URL("../../portfolio/app/jobops/api/profile/fields/[fieldGroup]/[fieldName]/route.ts", import.meta.url),
+      "utf-8"
+    );
+    const standaloneSource = await readFile(
+      new URL("../app/api/profile/fields/[fieldGroup]/[fieldName]/route.ts", import.meta.url),
+      "utf-8"
+    );
+
+    expect(wrapperSource).toContain(
+      'export { PATCH } from "../../../../../../../../jobops/app/api/profile/fields/[fieldGroup]/[fieldName]/route"'
+    );
+    expect(wrapperSource).toContain('export const runtime = "nodejs"');
+    expect(standaloneSource).toContain("/v1/profile/fields/");
+    expect(standaloneSource).toContain('"X-JobOps-Internal-Key"');
+    expect(standaloneSource).toContain("forwardCookieHeader(request)");
   });
 
   it("does not import server connector code into the client component", async () => {

@@ -526,7 +526,7 @@ function fieldLifecycleRows(fields: ProfileFieldState[], lifecycle: LifecycleTab
   }
 
   return fields
-    .filter((field) => !field.generated && field.published?.visibility === "private")
+    .filter((field) => field.published?.visibility === "private")
     .map((field) => ({
       field,
       rowKey: `${field.group}-${field.name}-private`,
@@ -2216,8 +2216,8 @@ function buildFieldReviewCounts(profileFields?: ProfileFieldGroups | null): {
       targets: targets.filter((field) => field.generated).length
     },
     published: {
-      basics: basics.filter((field) => !field.generated && field.published?.visibility === "private").length,
-      targets: targets.filter((field) => !field.generated && field.published?.visibility === "private").length
+      basics: basics.filter((field) => field.published?.visibility === "private").length,
+      targets: targets.filter((field) => field.published?.visibility === "private").length
     },
     public: {
       basics: basics.filter((field) => field.published?.visibility === "public").length,
