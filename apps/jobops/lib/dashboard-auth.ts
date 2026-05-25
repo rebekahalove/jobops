@@ -68,6 +68,19 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
   }
 
   const sessionCookieValue = readCookie(request.headers.get("cookie"), JOBOPS_SESSION_COOKIE_NAME);
+  if (isProtectedApiPath) {
+    if (sessionCookieValue) {
+      const backendSession = await validateBackendSession(request.headers.get("cookie"));
+      if (backendSession.ok) {
+        return undefined;
+      }
+
+      return authRequiredJsonResponse(env);
+    }
+
+    return authRequiredJsonResponse(env);
+  }
+
   if (sessionCookieValue && isProtectedUiPath) {
     const backendSession = await validateBackendSession(request.headers.get("cookie"));
     if (backendSession.ok) {
@@ -90,16 +103,6 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
 
   if (isDashboardLandingPath(pathname, dashboardBasePath)) {
     return Response.redirect(buildPublicInfoUrl(request.url, dashboardBasePath), 307);
-  }
-
-  if (isProtectedApiPath) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "JobOps authentication is required."
-      },
-      401
-    );
   }
 
   return Response.redirect(buildLoginRedirectUrl(request.url, loginPath, requestUrl), 307);
@@ -207,10 +210,22 @@ function stripDashboardBasePath(pathname: string, dashboardBasePath: "" | "/jobo
   return pathname.startsWith(`${dashboardBasePath}/`) ? pathname.slice(dashboardBasePath.length) : pathname;
 }
 
-function jsonResponse(body: unknown, status: number) {
+function authRequiredJsonResponse(env: DashboardAuthEnvironment) {
+  return jsonResponse(
+    {
+      ok: false,
+      error: "JobOps authentication is required."
+    },
+    401,
+    env.isProduction ? { "Set-Cookie": clearSessionCookieHeader(env.isProduction) } : undefined
+  );
+}
+
+function jsonResponse(body: unknown, status: number, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), {
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...headers
     },
     status
   });

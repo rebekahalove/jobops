@@ -89,7 +89,7 @@ export function AiCommandCenter({
           activeWorkspace
         })
       });
-      const payload = (await response.json()) as CommandCenterProxyResponse;
+      const payload = await readCommandCenterProxyResponse(response);
 
       if (!response.ok || !payload.ok) {
         throw new Error(payload.ok ? "Command-center request failed." : payload.error);
@@ -244,6 +244,15 @@ export function AiCommandCenter({
 
 function isTextUpload(file: File, extension: string) {
   return file.type.startsWith("text/") || ["txt", "md", "markdown", "rtf", "csv", "json"].includes(extension);
+}
+
+async function readCommandCenterProxyResponse(response: Response): Promise<CommandCenterProxyResponse> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    throw new Error("Command-center returned a sign-in or error page instead of JSON. Please refresh and sign in again.");
+  }
+
+  return (await response.json()) as CommandCenterProxyResponse;
 }
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {

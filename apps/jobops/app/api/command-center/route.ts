@@ -52,14 +52,32 @@ export async function POST(request: Request) {
         client_context: validation.value.clientContext ?? {}
       })
     });
-    const payload = await apiResponse.json();
+    const payload = await readJsonPayload(apiResponse);
+    if (!payload.ok) {
+      console.error("Command-center API returned a non-JSON response.", {
+        contentType: payload.contentType || "unknown",
+        status: apiResponse.status
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Command-center API returned an unexpected response. Please try again."
+        },
+        { status: 502 }
+      );
+    }
 
     return NextResponse.json(
       {
         ok: apiResponse.ok,
         ...(apiResponse.ok
-          ? { result: payload }
-          : { error: payload?.assistant_message ?? payload?.error ?? "Command-center API request failed.", result: payload })
+          ? { result: payload.value }
+          : {
+              error:
+                readErrorMessage(payload.value) ??
+                "Command-center API request failed.",
+              result: payload.value
+            })
       },
       { status: apiResponse.status }
     );
@@ -77,6 +95,39 @@ export async function POST(request: Request) {
 function forwardCookieHeader(request: Request): Record<string, string> {
   const cookie = request.headers.get("cookie");
   return cookie ? { Cookie: cookie } : {};
+}
+
+async function readJsonPayload(response: Response):
+  Promise<
+    | {
+        ok: true;
+        value: Record<string, unknown>;
+      }
+    | {
+        ok: false;
+        contentType: string | null;
+      }
+  > {
+  const contentType = response.headers.get("content-type");
+  const text = await response.text();
+  if (!contentType?.toLowerCase().includes("application/json")) {
+    return { ok: false, contentType };
+  }
+
+  try {
+    const value = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    return { ok: true, value };
+  } catch {
+    return { ok: false, contentType };
+  }
+}
+
+function readErrorMessage(payload: Record<string, unknown>) {
+  return typeof payload.assistant_message === "string"
+    ? payload.assistant_message
+    : typeof payload.error === "string"
+      ? payload.error
+      : undefined;
 }
 
 function serverConfigErrorResponse(error: unknown) {

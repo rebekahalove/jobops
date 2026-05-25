@@ -150,4 +150,50 @@ describe("command-center API proxy", () => {
     expect(fetchMock).toHaveBeenCalled();
     expect(response.status).toBe(200);
   });
+
+  it("returns a safe JSON error when FastAPI responds with HTML", async () => {
+    getJobOpsApiServerConfigMock.mockResolvedValueOnce({
+      apiBaseUrl: "http://fastapi.test/",
+      internalApiKey: "test-secret",
+      JOBOPS_API_BASE_URL: "http://fastapi.test/",
+      JOBOPS_INTERNAL_API_KEY: "test-secret"
+    });
+    const { POST } = await import("./route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("<html><head><title>Service unavailable</title></head></html>", {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8"
+        },
+        status: 502
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await POST(
+      new Request("http://next.test/api/command-center", {
+        body: JSON.stringify({
+          command: "I pasted my resume.",
+          activeWorkspace: "profile"
+        }),
+        headers: {
+          "Content-Type": "application/json"
+        },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Command-center API returned an unexpected response. Please try again."
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Command-center API returned a non-JSON response.",
+      expect.objectContaining({
+        contentType: "text/html; charset=utf-8",
+        status: 502
+      })
+    );
+  });
 });

@@ -45,6 +45,38 @@ describe("dashboard auth gate", () => {
     });
   });
 
+  it("returns JSON 401 for protected API proxy paths with a stale session instead of redirecting to login HTML", async () => {
+    process.env.JOBOPS_API_BASE_URL = "http://api.test";
+    process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "JobOps authentication is required." }), { status: 401 })
+    );
+
+    const response = await gateDashboardRequest(
+      new NextRequest("http://next.test/jobops/api/command-center", {
+        headers: {
+          cookie: `${JOBOPS_SESSION_COOKIE_NAME}=stale-session-token`
+        }
+      }),
+      {
+        dashboardBasePath: "/jobops",
+        env: configuredEnv,
+        loginPath: "/jobops/login"
+      }
+    );
+
+    if (!response) {
+      throw new Error("Expected dashboard gate response.");
+    }
+    expect(response.status).toBe(401);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("set-cookie")).toContain(`${JOBOPS_SESSION_COOKIE_NAME}=; Max-Age=0`);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "JobOps authentication is required."
+    });
+  });
+
   it("redirects an unauthenticated dashboard landing path to the public about page", async () => {
     const response = await gateDashboardRequest(new NextRequest("http://next.test/jobops"), {
       dashboardBasePath: "/jobops",
