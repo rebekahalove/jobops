@@ -13,7 +13,7 @@ from jobops_api.command_router import (
     build_command_router_model_request,
     run_command_router,
 )
-from jobops_api.db.models import Base, ProfileFactDraft, RoleTarget, TargetCompany
+from jobops_api.db.models import Base, ProfileFactDraft, ProfileFieldValue, RoleTarget, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.settings import Settings
@@ -38,6 +38,28 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 publication_status="published",
                 is_active=True,
             )
+        )
+        session.add_all(
+            [
+                ProfileFieldValue(
+                    candidate_profile_id=profile.id,
+                    field_group="targets",
+                    field_name="targetTitles",
+                    value_text="Applied AI Engineer",
+                    source="user",
+                    lifecycle_status="published",
+                    visibility="private",
+                ),
+                ProfileFieldValue(
+                    candidate_profile_id=profile.id,
+                    field_group="targets",
+                    field_name="roleFamilies",
+                    value_text="Applied AI",
+                    source="user",
+                    lifecycle_status="published",
+                    visibility="private",
+                ),
+            ]
         )
         session.add(
             TargetCompany(

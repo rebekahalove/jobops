@@ -15,7 +15,7 @@ from jobops_api.db.models import (
     SkillClaim,
     Tenant,
 )
-from jobops_api.profile_fields import private_context_field_items, published_field_values
+from jobops_api.profile_fields import private_context_field_items, published_field_group_visibility, published_field_values
 
 
 def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
@@ -66,7 +66,7 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
         "profileFields": {"profileBasics": public_basics, "targets": public_targets},
-        "targetRoleIntent": serialize_field_role_target(public_targets),
+        "targetRoleIntent": serialize_field_role_target(public_targets, visibility="public"),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
@@ -85,6 +85,7 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
     session = object_session(candidate_profile)
     published_basics = published_field_values(session, candidate_profile.id, "profile_basics") if session is not None else {}
     published_targets = published_field_values(session, candidate_profile.id, "targets") if session is not None else {}
+    published_target_visibility = published_field_group_visibility(session, candidate_profile.id, "targets") if session is not None else None
     public_basics = published_field_values(session, candidate_profile.id, "profile_basics", visibility="public", public_only=True) if session is not None else {}
     public_targets = published_field_values(session, candidate_profile.id, "targets", visibility="public", public_only=True) if session is not None else {}
     fact_rows = (
@@ -127,7 +128,7 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
         "profileFields": {"profileBasics": published_basics, "targets": published_targets},
-        "targetRoleIntent": serialize_field_role_target(published_targets),
+        "targetRoleIntent": serialize_field_role_target(published_targets, visibility=published_target_visibility or "private"),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
@@ -302,7 +303,7 @@ def partition_published_items(published_profile: dict[str, Any]) -> tuple[list[d
     return public_items, internal_items
 
 
-def serialize_field_role_target(values: dict[str, str]) -> dict[str, Any]:
+def serialize_field_role_target(values: dict[str, str], *, visibility: str = "public") -> dict[str, Any]:
     if not values:
         return {}
     return {
@@ -313,7 +314,7 @@ def serialize_field_role_target(values: dict[str, str]) -> dict[str, Any]:
         "workModes": split_field_list(values.get("preferredWorkMode", "")),
         "domainsOrIndustries": values.get("domainsOrIndustries"),
         "constraints": values.get("constraints"),
-        "visibility": "public" if values else "private",
+        "visibility": visibility,
         "publicationStatus": "published",
     }
 

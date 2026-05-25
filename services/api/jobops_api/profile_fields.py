@@ -244,6 +244,23 @@ def published_field_values(
     return values
 
 
+def published_field_group_visibility(
+    session: Session,
+    candidate_profile_id: str,
+    group: FieldGroup,
+) -> Visibility | None:
+    visibility: Visibility | None = None
+    names = {field.name for field in PROFILE_FIELD_DEFINITIONS if field.group == group}
+    for row in field_value_rows(session, candidate_profile_id, group=group):
+        if row.lifecycle_status != "published" or row.field_name not in names:
+            continue
+        if row.visibility == "private":
+            return "private"
+        if row.visibility == "public":
+            visibility = "public"
+    return visibility
+
+
 def private_context_field_items(session: Session, profile: CandidateProfile) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     published: list[dict[str, Any]] = []
     generated: list[dict[str, Any]] = []
