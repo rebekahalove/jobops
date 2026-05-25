@@ -52,7 +52,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Generated");
     expect(html).toContain("Private");
     expect(html).not.toContain("Archived</span>");
-    expect(html).toContain("Internal JobOps context");
+    expect(html).not.toContain("Internal JobOps context");
     expect(html).toContain("Public portfolio preview");
     expect(html).toContain("Private");
     expect(html).toContain("Targets");
@@ -81,7 +81,7 @@ describe("Profile intake workspace", () => {
 
     expect(html).toContain("Recent changes");
     expect(html).toContain("Follow-up queue");
-    expect(html).toContain("Published knowledge active internally");
+    expect(html).not.toContain("Published knowledge active internally");
     expect(html).not.toContain("aria-label=\"Collapse What changed\"");
     expect(html).toContain("Targets");
     expect(html).toContain("No questions yet");
@@ -370,6 +370,445 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Applied AI Engineer");
   });
 
+  it("does not render empty field definitions as generated proposals", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: null,
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).toContain("No generated field proposals yet.");
+    expect(html).not.toContain("Publish private");
+    expect(html).not.toContain("Headline");
+  });
+
+  it("does not render empty field definitions on the Private tab", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: null,
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).toContain("No private field values in this section.");
+    expect(html).not.toContain("Headline");
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("Make public");
+    expect(html).not.toContain(">Archive</button>");
+  });
+
+  it("renders private field rows with Make public, not Make private, when public is allowed", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="targets"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [],
+          targets: [
+            {
+              group: "targets",
+              name: "targetTitles",
+              label: "Target titles",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: {
+                id: "target-field-1",
+                value: "Applied AI Engineer",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "private"
+              },
+              archived: []
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(html).toContain("Make public");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("Make private");
+    expect(html).toContain("Applied AI Engineer");
+  });
+
+  it("shows generated, private, and public counts in section headers and rail tabs", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="targets"
+        draft={null}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [],
+          targets: [
+            {
+              group: "targets",
+              name: "targetTitles",
+              label: "Target titles",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: {
+                id: "target-generated",
+                value: "Applied AI Engineer",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: null,
+              archived: []
+            },
+            {
+              group: "targets",
+              name: "roleFamilies",
+              label: "Target role families",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: {
+                id: "target-private",
+                value: "AI systems",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "private"
+              },
+              archived: []
+            },
+            {
+              group: "targets",
+              name: "preferredWorkMode",
+              label: "Preferred work mode",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: {
+                id: "target-public",
+                value: "Remote",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "public"
+              },
+              archived: []
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(html).toContain("1 Generated / 1 Private / 1 Public");
+    expect(html).toContain("aria-label=\"1 Generated, 1 Private, 1 Public\"");
+  });
+
+  it("renders private-only field rows with Archive only on the Private tab", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "mailingAddress",
+              label: "Mailing address",
+              publicAllowed: false,
+              privateOnly: true,
+              multiline: true,
+              generated: null,
+              published: {
+                id: "mailing-field-1",
+                value: "123 Private Street",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "private"
+              },
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).toContain("Private only");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("Make public");
+    expect(html).not.toContain("Make private");
+  });
+
+  it("keeps public field rows out of the Private tab", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="private"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: {
+                id: "headline-field-1",
+                value: "Public headline",
+                source: "user",
+                lifecycleStatus: "published",
+                visibility: "public"
+              },
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).not.toContain("Public headline");
+    expect(html).not.toContain("Make private");
+    expect(html).toContain("Public values are managed in the preview");
+  });
+
+  it("renders generated public and private-only fields with the allowed action map", () => {
+    const publicAllowedHtml = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: {
+                id: "headline-generated",
+                value: "Generated headline",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: null,
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+    const privateOnlyHtml = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="generated"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "mailingAddress",
+              label: "Mailing address",
+              publicAllowed: false,
+              privateOnly: true,
+              multiline: true,
+              generated: {
+                id: "mailing-generated",
+                value: "Generated address",
+                source: "model",
+                lifecycleStatus: "generated",
+                visibility: null
+              },
+              published: null,
+              archived: []
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(publicAllowedHtml).toContain("Publish private");
+    expect(publicAllowedHtml).toContain("Publish public");
+    expect(publicAllowedHtml).toContain("Archive");
+    expect(privateOnlyHtml).toContain("Publish private");
+    expect(privateOnlyHtml).toContain("Archive");
+    expect(privateOnlyHtml).not.toContain("Publish public");
+  });
+
+  it("renders archived field rows as compact read-only rows", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="archived"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: null,
+              archived: [
+                {
+                  id: "headline-archived",
+                  value: "Old headline",
+                  source: "user",
+                  lifecycleStatus: "archived",
+                  visibility: null,
+                  archiveReason: "replaced"
+                }
+              ]
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).toContain("Archived: replaced");
+    expect(html).toContain("Old headline");
+    expect(html).toContain("archived-field-value");
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("<textarea");
+  });
+
+  it("renders only real archived field values and supports multiple old values for one field", () => {
+    const html = renderToStaticMarkup(
+      <ReviewTabbedList
+        activeLifecycle="archived"
+        activeTab="basics"
+        draft={null}
+        onProfileFieldUpdate={() => undefined}
+        onTabChange={() => undefined}
+        profileFields={{
+          profileBasics: [
+            {
+              group: "profile_basics",
+              name: "headline",
+              label: "Headline",
+              publicAllowed: true,
+              privateOnly: false,
+              multiline: false,
+              generated: null,
+              published: null,
+              archived: [
+                {
+                  id: "headline-archived-empty",
+                  value: "",
+                  source: "user",
+                  lifecycleStatus: "archived",
+                  visibility: null,
+                  archiveReason: "dismissed"
+                },
+                {
+                  id: "headline-archived-old",
+                  value: "Old headline",
+                  source: "user",
+                  lifecycleStatus: "archived",
+                  visibility: null,
+                  archiveReason: "replaced"
+                },
+                {
+                  id: "headline-archived-older",
+                  value: "Older headline",
+                  source: "user",
+                  lifecycleStatus: "archived",
+                  visibility: null,
+                  archiveReason: "replaced"
+                }
+              ]
+            }
+          ],
+          targets: []
+        }}
+      />
+    );
+
+    expect(html).toContain("Old headline");
+    expect(html).toContain("Older headline");
+    expect(html).not.toContain("Blank value");
+    expect(html.match(/Archived: replaced/g)?.length).toBe(2);
+  });
+
+  it("uses compact field row styling and removes stale Basics/Targets placeholders", () => {
+    const source = readFileSync(new URL("./profile-workspace.tsx", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+    expect(source).toContain("CompactEditableField");
+    expect(source).toContain("field-lifecycle-title");
+    expect(source).not.toContain("Private contact field schema pending");
+    expect(source).not.toContain("Private cover-letter support field pending");
+    expect(source).not.toContain("function TargetsCard");
+    expect(source).not.toContain("function ProfileBasicsPanel");
+    expect(css).toContain(".compact-field-editor");
+    expect(css).toContain(".field-lifecycle-title");
+  });
+
   it("renders generated items as autosaving form fields", () => {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, {
       assistantMessage: "I drafted updates and kept them private.",
@@ -445,6 +884,7 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("Private");
     expect(html).toContain("Make public");
     expect(html).toContain("Internal active fact.");
+    expect(html).not.toContain("Make private");
     expect(html).not.toContain("Public active fact.");
   });
 
@@ -498,22 +938,38 @@ describe("Profile intake workspace", () => {
     expect(html).not.toContain("Private fact.");
   });
 
-  it("does not expose archive controls for public target preview items", () => {
+  it("renders field-level public basics and target controls in the JobOps preview", () => {
+    const updates: Array<{ group: string; field: string; patch: unknown }> = [];
     const html = renderToStaticMarkup(
       <PublicPortfolioPreview
         onEdit={() => undefined}
+        onProfileFieldUpdate={(group, field, patch) => {
+          updates.push({ group, field, patch });
+        }}
         onPublishedItemUpdate={() => undefined}
         publicPortfolioPath="/portfolio/chance-alpha"
-        publishedPublicItemCount={1}
+        publishedPublicItemCount={4}
         publicProfile={{
           displayName: "Chance Alpha",
           headline: "Applied AI Engineer",
           summary: "Public summary.",
           profileStatus: "published",
+          profileFields: {
+            profileBasics: {
+              displayName: "Chance Alpha",
+              headline: "Applied AI Engineer",
+              summary: "Public summary."
+            },
+            targets: {
+              roleFamilies: "Applied AI; Forward deployed engineering",
+              preferredWorkMode: "Remote",
+              domainsOrIndustries: "Public-interest analytics"
+            }
+          },
           targetRoleIntent: {
-            id: "target-1",
-            targetTitles: ["Applied AI Engineer"],
-            roleFamilies: ["Applied AI"],
+            roleFamilies: ["Applied AI", "Forward deployed engineering"],
+            workModes: ["Remote"],
+            domainsOrIndustries: "Public-interest analytics",
             visibility: "public",
             publicationStatus: "published"
           }
@@ -521,10 +977,15 @@ describe("Profile intake workspace", () => {
       />
     );
 
-    expect(html).toContain("Applied AI Engineer");
+    expect(updates).toHaveLength(0);
+    expect(html).toContain("Name");
+    expect(html).toContain("Headline");
+    expect(html).toContain("Summary");
+    expect(html).toContain("Target role families");
+    expect(html).toContain("Preferred work mode");
+    expect(html).toContain("Public-interest analytics");
     expect(html).toContain("Make private");
-    expect(html).toContain("Edit");
-    expect(html).not.toContain("Archive");
+    expect(html).toContain("Archive");
   });
 
   it("does not render admin controls on the public portfolio component", () => {
@@ -540,6 +1001,14 @@ describe("Profile intake workspace", () => {
           profileStatus: "published",
           updatedAt: "2026-05-23T00:00:00.000Z",
           hasPublishedPublicContent: true,
+          targetRoleIntent: {
+            targetTitles: ["Applied AI Engineer"],
+            roleFamilies: ["Applied AI"],
+            workModes: ["Remote"],
+            preferredLocations: ["Louisville"],
+            domainsOrIndustries: "Public-interest analytics",
+            constraints: "Mission-driven teams"
+          },
           facts: [
             {
               id: "public-fact",
@@ -555,6 +1024,12 @@ describe("Profile intake workspace", () => {
     );
 
     expect(html).toContain("Public active fact.");
+    expect(html).toContain("Role families");
+    expect(html).toContain("Applied AI");
+    expect(html).toContain("Work mode");
+    expect(html).toContain("Remote");
+    expect(html).toContain("Domains or industries");
+    expect(html).toContain("Public-interest analytics");
     expect(html).not.toContain("Make private");
     expect(html).not.toContain("Archive");
   });

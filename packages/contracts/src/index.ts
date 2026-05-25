@@ -25,6 +25,13 @@ export type CandidateProfile = {
     preferredLocations?: string[];
     workModes?: string[];
     domainsOrIndustries?: string;
+    constraints?: string;
+    visibility?: Visibility;
+    publicationStatus?: "not_published" | "published";
+  };
+  profileFields?: {
+    profileBasics?: Record<string, string>;
+    targets?: Record<string, string>;
   };
   skillClaims?: Array<{
     id: string;

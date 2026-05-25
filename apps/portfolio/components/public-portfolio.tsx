@@ -17,7 +17,7 @@ export function PublicPortfolio({
     (item) => item.visibility === "public" && item.publicationStatus === "published"
   );
   const links = (profile.evidenceLinks ?? []).filter((link) => link.visibility === "public" && link.publicationStatus === "published");
-  const targetTitles = profile.targetRoleIntent?.targetTitles ?? [];
+  const roleIntentGroups = roleIntentDisplayGroups(profile.targetRoleIntent);
   const education = experience.filter((item) => item.itemType === "education");
   const certifications = experience.filter((item) => item.itemType === "certification");
   const selectedWork = experience.filter((item) => item.itemType === "experience" || item.itemType === "project");
@@ -86,11 +86,18 @@ export function PublicPortfolio({
         <AgentWorkspace variant="embedded" profile={profile} source={source} />
       </div>
 
-      {targetTitles.length ? (
+      {roleIntentGroups.length ? (
         <section className="content-band portfolio-section">
           <p className="section-kicker">Role intent</p>
           <h2>Target direction</h2>
-          <ChipList items={targetTitles} />
+          <div className="portfolio-role-intent-grid">
+            {roleIntentGroups.map((group) => (
+              <article className="portfolio-role-intent-group" key={group.label}>
+                <h3>{group.label}</h3>
+                {group.items.length ? <ChipList items={group.items} /> : <p>{group.value}</p>}
+              </article>
+            ))}
+          </div>
         </section>
       ) : null}
 
@@ -188,6 +195,27 @@ function ChipList({ items }: { items: string[] }) {
       ))}
     </div>
   );
+}
+
+function roleIntentDisplayGroups(target: CandidateProfile["targetRoleIntent"]) {
+  if (!target) {
+    return [];
+  }
+  return [
+    { label: "Target titles", items: target.targetTitles ?? [], value: "" },
+    { label: "Role families", items: target.roleFamilies ?? [], value: "" },
+    { label: "Work mode", items: target.workModes ?? [], value: "" },
+    { label: "Preferred locations", items: target.preferredLocations ?? [], value: "" },
+    { label: "Domains or industries", items: splitIntentText(target.domainsOrIndustries), value: target.domainsOrIndustries ?? "" },
+    { label: "Constraints", items: [], value: target.constraints ?? "" }
+  ].filter((group) => group.items.length || group.value.trim().length > 0);
+}
+
+function splitIntentText(value?: string) {
+  if (!value) {
+    return [];
+  }
+  return value.split(/[;\n,]/).map((item) => item.trim()).filter(Boolean);
 }
 
 function DetailList({

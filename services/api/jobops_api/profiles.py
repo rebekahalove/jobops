@@ -12,7 +12,6 @@ from jobops_api.db.models import (
     ExperienceProjectDraft,
     ProfileFact,
     ProfileFactDraft,
-    RoleTarget,
     SkillClaim,
     Tenant,
 )
@@ -22,7 +21,6 @@ from jobops_api.profile_fields import private_context_field_items, published_fie
 def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dict[str, Any]:
     session = object_session(candidate_profile)
     public_basics = published_field_values(session, candidate_profile.id, "profile_basics", visibility="public", public_only=True) if session is not None else {}
-    all_published_basics = published_field_values(session, candidate_profile.id, "profile_basics", public_only=True) if session is not None else {}
     public_targets = published_field_values(session, candidate_profile.id, "targets", visibility="public", public_only=True) if session is not None else {}
     fact_rows = (
         list(
@@ -54,7 +52,6 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
         }
         for fact in fact_rows
     ]
-    published_role_target = None if public_targets else latest_published_public_role_target(candidate_profile)
     published_skills = published_public_skills(candidate_profile.id, candidate_profile)
     published_experiences = published_public_experience(candidate_profile.id, candidate_profile)
     published_links = published_public_links(candidate_profile.id, candidate_profile)
@@ -62,14 +59,14 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
     return {
         "id": candidate_profile.id,
         "slug": candidate_profile.slug,
-        "displayName": public_basics.get("displayName", "" if "displayName" in all_published_basics else candidate_profile.display_name),
-        "headline": public_basics.get("headline", "" if "headline" in all_published_basics else candidate_profile.headline),
-        "summary": public_basics.get("summary", "" if "summary" in all_published_basics else candidate_profile.summary),
+        "displayName": public_basics.get("displayName", ""),
+        "headline": public_basics.get("headline", ""),
+        "summary": public_basics.get("summary", ""),
         "profileStatus": candidate_profile.profile_status,
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
         "profileFields": {"profileBasics": public_basics, "targets": public_targets},
-        "targetRoleIntent": serialize_field_role_target(public_targets) if public_targets else serialize_public_role_target(published_role_target),
+        "targetRoleIntent": serialize_field_role_target(public_targets),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
@@ -78,7 +75,6 @@ def candidate_profile_to_public_dict(candidate_profile: CandidateProfile) -> dic
             or published_skills
             or published_experiences
             or published_links
-            or published_role_target
             or public_basics
             or public_targets
         ),
@@ -117,7 +113,6 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
         }
         for fact in fact_rows
     ]
-    published_role_target = None if published_targets else latest_published_role_target(candidate_profile)
     published_skills = published_skills_for_internal_context(candidate_profile.id, candidate_profile)
     published_experiences = published_experience_for_internal_context(candidate_profile.id, candidate_profile)
     published_links = published_links_for_internal_context(candidate_profile.id, candidate_profile)
@@ -125,14 +120,14 @@ def candidate_profile_to_published_dict(candidate_profile: CandidateProfile) -> 
     return {
         "id": candidate_profile.id,
         "slug": candidate_profile.slug,
-        "displayName": published_basics.get("displayName", candidate_profile.display_name),
-        "headline": published_basics.get("headline", candidate_profile.headline),
-        "summary": published_basics.get("summary", candidate_profile.summary),
+        "displayName": published_basics.get("displayName", ""),
+        "headline": published_basics.get("headline", ""),
+        "summary": published_basics.get("summary", ""),
         "profileStatus": candidate_profile.profile_status,
         "updatedAt": candidate_profile.updated_at.isoformat(),
         "facts": published_facts,
         "profileFields": {"profileBasics": published_basics, "targets": published_targets},
-        "targetRoleIntent": serialize_field_role_target(published_targets) if published_targets else serialize_published_role_target(published_role_target),
+        "targetRoleIntent": serialize_field_role_target(published_targets),
         "skillClaims": [serialize_public_skill(skill) for skill in published_skills],
         "experienceAndProjects": [serialize_public_experience(item) for item in published_experiences],
         "evidenceLinks": [serialize_public_link(item) for item in published_links],
@@ -267,17 +262,6 @@ def candidate_profile_to_private_context_dict(candidate_profile: CandidateProfil
                     .order_by(EvidenceArtifact.created_at.asc())
                 )
             ],
-            *[
-                {"type": "target-role", "id": item.id, "targetTitles": item.target_titles, "state": "archived"}
-                for item in session.scalars(
-                    select(RoleTarget)
-                    .where(
-                        RoleTarget.candidate_profile_id == candidate_profile.id,
-                        RoleTarget.review_status == "rejected",
-                    )
-                    .order_by(RoleTarget.created_at.asc())
-                )
-            ],
         ]
 
     public_items, internal_items = partition_published_items(published)
@@ -382,38 +366,6 @@ def get_candidate_profile_by_tenant_or_profile_slug(session: Session, slug: str)
     return profiles[0] if len(profiles) == 1 else None
 
 
-def latest_published_public_role_target(candidate_profile: CandidateProfile) -> RoleTarget | None:
-    session = object_session(candidate_profile)
-    if session is None:
-        return None
-    return session.scalar(
-        select(RoleTarget)
-        .where(
-            RoleTarget.candidate_profile_id == candidate_profile.id,
-            RoleTarget.visibility == "public",
-            RoleTarget.publication_status == "published",
-            RoleTarget.is_active.is_(True),
-        )
-        .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
-    )
-
-
-def latest_published_role_target(candidate_profile: CandidateProfile) -> RoleTarget | None:
-    session = object_session(candidate_profile)
-    if session is None:
-        return None
-    return session.scalar(
-        select(RoleTarget)
-        .where(
-            RoleTarget.candidate_profile_id == candidate_profile.id,
-            RoleTarget.visibility.in_(("private", "public")),
-            RoleTarget.publication_status == "published",
-            RoleTarget.is_active.is_(True),
-        )
-        .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
-    )
-
-
 def published_public_skills(candidate_profile_id: str, candidate_profile: CandidateProfile) -> list[SkillClaim]:
     session = object_session(candidate_profile)
     if session is None:
@@ -516,33 +468,6 @@ def published_links_for_internal_context(candidate_profile_id: str, candidate_pr
             .order_by(EvidenceArtifact.created_at.asc())
         )
     )
-
-
-def serialize_public_role_target(role_target: RoleTarget | None) -> dict[str, Any]:
-    if role_target is None:
-        return {}
-    constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
-    return {
-        "id": role_target.id,
-        "targetTitles": role_target.target_titles,
-        "roleFamilies": role_target.role_families,
-        "preferredLocations": role_target.preferred_locations,
-        "workModes": role_target.work_modes,
-        "domainsOrIndustries": constraints.get("domainsOrIndustries"),
-        "visibility": role_target.visibility,
-        "publicationStatus": role_target.publication_status,
-    }
-
-
-def serialize_published_role_target(role_target: RoleTarget | None) -> dict[str, Any]:
-    if role_target is None:
-        return {}
-    return {
-        **serialize_public_role_target(role_target),
-        "id": role_target.id,
-        "visibility": role_target.visibility,
-        "publicationStatus": role_target.publication_status,
-    }
 
 
 def serialize_public_skill(skill: SkillClaim) -> dict[str, Any]:

@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, EvidenceArtifact, ExperienceProjectDraft, ProfileFact, ProfileFieldValue, RoleTarget, SkillClaim
+from jobops_api.db.models import Base, EvidenceArtifact, ExperienceProjectDraft, ProfileFact, ProfileFieldValue, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -34,6 +34,7 @@ def test_public_profile_context_exposes_only_public_published_items() -> None:
     context_text = json.dumps(context)
     assert "Published public fact." in context_text
     assert "Public profile headline." in context_text
+    assert "Applied AI" in context_text
     assert "Public Python evidence." in context_text
     assert "Published project summary." in context_text
     assert "https://example.com/public" in context_text
@@ -234,22 +235,20 @@ def seed_public_items(session: Session):
             ProfileFieldValue(
                 candidate_profile_id=profile.id,
                 field_group="targets",
+                field_name="roleFamilies",
+                value_text="Applied AI",
+                source="user",
+                lifecycle_status="published",
+                visibility="public",
+            ),
+            ProfileFieldValue(
+                candidate_profile_id=profile.id,
+                field_group="targets",
                 field_name="compensationMin",
                 value_text="Private compensation floor.",
                 source="user",
                 lifecycle_status="published",
                 visibility="private",
-            ),
-            RoleTarget(
-                candidate_profile_id=profile.id,
-                target_titles=["AI Engineer"],
-                role_families=["Applied AI"],
-                preferred_locations=["Remote"],
-                work_modes=["remote"],
-                constraints={"domainsOrIndustries": "Public sector analytics"},
-                visibility="public",
-                publication_status="published",
-                is_active=True,
             ),
         ]
     )

@@ -50,7 +50,9 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", database_url)
 
-    alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
     command.upgrade(alembic_config, "head")
 
     engine = create_engine(database_url)
@@ -58,7 +60,26 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
 
     assert "profile_intake_events" in inspector.get_table_names()
     assert "experience_project_drafts" in inspector.get_table_names()
+    assert "profile_field_values" in inspector.get_table_names()
     assert "last_turn_at" in {column["name"] for column in inspector.get_columns("profile_intake_sessions")}
+    field_value_columns = {column["name"] for column in inspector.get_columns("profile_field_values")}
+    assert {
+        "id",
+        "candidate_profile_id",
+        "field_group",
+        "field_name",
+        "value_text",
+        "source",
+        "lifecycle_status",
+        "visibility",
+        "original_value_text",
+        "archive_reason",
+        "metadata",
+        "published_at",
+        "archived_at",
+        "created_at",
+        "updated_at",
+    }.issubset(field_value_columns)
     experience_columns = {column["name"] for column in inspector.get_columns("experience_project_drafts")}
     assert {"start_date", "end_date", "location"}.issubset(experience_columns)
     company_columns = {column["name"] for column in inspector.get_columns("target_companies")}

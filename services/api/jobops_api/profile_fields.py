@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobops_api.db.models import CandidateProfile, ProfileFieldValue, RoleTarget
+from jobops_api.db.models import CandidateProfile, ProfileFieldValue
 
 
 FieldGroup = Literal["profile_basics", "targets"]
@@ -146,7 +146,7 @@ def publish_generated_field(
     row.visibility = visibility
     row.published_at = datetime.now(UTC)
     row.archive_reason = None
-    sync_legacy_field(profile, definition, row.value_text, visibility)
+    sync_profile_shell_field(profile, definition, row.value_text, visibility)
     return row
 
 
@@ -169,7 +169,7 @@ def require_visibility_allowed(definition: ProfileFieldDefinition, visibility: V
         raise HTTPException(status_code=400, detail="This field cannot be public.")
 
 
-def sync_legacy_field(profile: CandidateProfile, definition: ProfileFieldDefinition, value: str, visibility: Visibility) -> None:
+def sync_profile_shell_field(profile: CandidateProfile, definition: ProfileFieldDefinition, value: str, visibility: Visibility) -> None:
     if definition.group == "profile_basics":
         if definition.name == "displayName":
             profile.display_name = value
@@ -206,9 +206,6 @@ def field_rows_snapshot(session: Session, profile: CandidateProfile) -> dict[str
             grouped[key]["published"] = payload
         elif row.lifecycle_status == "archived":
             grouped[key]["archived"].append(payload)
-
-    seed_legacy_profile_fields(grouped, profile)
-    seed_legacy_target_fields(grouped, latest_legacy_role_target(session, profile.id))
 
     return {
         "profileBasics": [value for key, value in grouped.items() if key[0] == "profile_basics"],
@@ -267,58 +264,3 @@ def private_context_field_items(session: Session, profile: CandidateProfile) -> 
         elif row.lifecycle_status == "archived":
             archived.append({**item, "archiveReason": row.archive_reason})
     return published, generated, archived
-
-
-def latest_legacy_role_target(session: Session, candidate_profile_id: str) -> RoleTarget | None:
-    return session.scalar(
-        select(RoleTarget)
-        .where(RoleTarget.candidate_profile_id == candidate_profile_id, RoleTarget.is_active.is_(True))
-        .order_by(RoleTarget.updated_at.desc(), RoleTarget.created_at.desc())
-        .limit(1)
-    )
-
-
-def seed_legacy_profile_fields(grouped: dict[tuple[str, str], dict[str, Any]], profile: CandidateProfile) -> None:
-    legacy_values = {
-        "displayName": profile.display_name,
-        "headline": profile.headline,
-        "summary": profile.summary,
-    }
-    for field_name, value in legacy_values.items():
-        field = grouped.get(("profile_basics", field_name))
-        if field and field["published"] is None and value:
-            field["published"] = {
-                "id": f"legacy-profile-{field_name}",
-                "value": value,
-                "source": "legacy",
-                "lifecycleStatus": "published",
-                "visibility": "public",
-                "archiveReason": None,
-                "originalValue": value,
-            }
-
-
-def seed_legacy_target_fields(grouped: dict[tuple[str, str], dict[str, Any]], role_target: RoleTarget | None) -> None:
-    if role_target is None or role_target.publication_status != "published":
-        return
-    constraints = role_target.constraints if isinstance(role_target.constraints, dict) else {}
-    legacy_values = {
-        "targetTitles": "; ".join(role_target.target_titles or []),
-        "roleFamilies": "; ".join(role_target.role_families or []),
-        "preferredWorkMode": "; ".join(role_target.work_modes or []),
-        "preferredLocations": "; ".join(role_target.preferred_locations or []),
-        "domainsOrIndustries": constraints.get("domainsOrIndustries", ""),
-        "constraints": constraints.get("constraints", ""),
-    }
-    for field_name, value in legacy_values.items():
-        field = grouped.get(("targets", field_name))
-        if field and field["published"] is None and value:
-            field["published"] = {
-                "id": f"legacy-target-{field_name}",
-                "value": value,
-                "source": "legacy",
-                "lifecycleStatus": "published",
-                "visibility": role_target.visibility,
-                "archiveReason": None,
-                "originalValue": value,
-            }

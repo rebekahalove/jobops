@@ -1,16 +1,14 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import type { ProfileIntakeOutput } from "../lib/profile-intake-contract";
 import {
   applyProfileIntakeOutputToState,
   emptyTargetRoleIntent,
   type MockIntakeTurn,
-  type MockProfileDraft,
-  type TargetRoleIntent
+  type MockProfileDraft
 } from "../lib/profile-intake";
 
-type IntentField = keyof TargetRoleIntent;
 type ReviewTabId =
   | "basics"
   | "targets"
@@ -139,8 +137,13 @@ type PublicProfileSnapshot = {
     preferredLocations?: string[];
     workModes?: string[];
     domainsOrIndustries?: string;
+    constraints?: string;
     visibility?: "private" | "public";
     publicationStatus?: string;
+  };
+  profileFields?: {
+    profileBasics?: Record<string, string>;
+    targets?: Record<string, string>;
   };
 };
 
@@ -162,18 +165,12 @@ type DraftItemPatch = {
   bullets?: string[];
   url?: string;
   label?: string;
-  targetTitles?: string;
-  roleFamilies?: string;
-  preferredWorkMode?: string;
-  preferredLocations?: string;
-  domainsOrIndustries?: string;
-  constraints?: string;
   visibility?: "private" | "public";
   reviewStatus?: MockProfileDraft["facts"][number]["status"];
   publishVisibility?: "private" | "public";
 };
 
-type ProfileItemType = "fact" | "skill" | "experience" | "evidence" | "target-role";
+type ProfileItemType = "fact" | "skill" | "experience" | "evidence";
 
 type PublishedItemPatch = {
   claim?: string;
@@ -191,12 +188,6 @@ type PublishedItemPatch = {
   bullets?: string[];
   url?: string;
   label?: string;
-  targetTitles?: string;
-  roleFamilies?: string;
-  preferredWorkMode?: string;
-  preferredLocations?: string;
-  domainsOrIndustries?: string;
-  constraints?: string;
   visibility?: "private" | "public";
   archive?: boolean;
 };
@@ -213,10 +204,27 @@ type DraftItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch:
 type PublishedItemUpdateHandler = (itemType: ProfileItemType, itemId: string, patch: PublishedItemPatch) => Promise<boolean> | boolean | void;
 type ProfileFieldUpdateHandler = (fieldGroup: ProfileFieldState["group"], fieldName: string, patch: ProfileFieldPatch) => Promise<boolean> | boolean | void;
 
+const publicProfileBasicPreviewLabels: Record<string, string> = {
+  displayName: "Name",
+  headline: "Headline",
+  summary: "Summary",
+  emailAddress: "Email address",
+  telephoneNumber: "Telephone number",
+  calendlyLink: "Calendly link",
+  currentLocation: "Current location"
+};
+
+const publicTargetPreviewLabels: Record<string, string> = {
+  targetTitles: "Target titles",
+  roleFamilies: "Target role families",
+  preferredWorkMode: "Preferred work mode",
+  preferredLocations: "Preferred locations",
+  domainsOrIndustries: "Domains or industries",
+  constraints: "Constraints"
+};
+
 export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: string }) {
-  const [intent, setIntent] = useState<TargetRoleIntent>(emptyTargetRoleIntent);
   const [draft, setDraft] = useState<MockProfileDraft | null>(null);
-  const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [publishedProfile, setPublishedProfile] = useState<PublishedProfileSnapshot | null>(null);
   const [publicProfile, setPublicProfile] = useState<PublicProfileSnapshot | null>(null);
   const [profileFields, setProfileFields] = useState<ProfileFieldGroups | null>(null);
@@ -224,7 +232,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [publishedItemCount, setPublishedItemCount] = useState(0);
   const [publishedPublicItemCount, setPublishedPublicItemCount] = useState(0);
   const [lastTurn, setLastTurn] = useState<MockIntakeTurn | null>(null);
-  const [editedFields, setEditedFields] = useState<Set<IntentField>>(() => new Set());
   const [workspaceMessage, setWorkspaceMessage] = useState<WorkspaceMessage | null>(null);
   const [activeSection, setActiveSection] = useState<ReviewTabId>("basics");
   const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
@@ -252,10 +259,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
 
   function applyProfilePayload(result: ProfileWorkspacePayload) {
     const nextState = applyProfileIntakeOutputToState(emptyTargetRoleIntent, result.draft);
-    setIntent(nextState.intent);
     setDraft(nextState.draft);
     setLastTurn(nextState.turn);
-    setProfile(result.profile ?? null);
     setPublishedProfile(result.publishedProfile ?? null);
     setPublicProfile(result.publicProfile ?? null);
     setProfileFields(result.profileFields ?? null);
@@ -290,32 +295,6 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
 
   function showWorkspaceMessage(text: string, kind: WorkspaceMessage["kind"] = "info") {
     setWorkspaceMessage({ kind, text });
-  }
-
-  function updateIntent(field: IntentField, value: string) {
-    setIntent((current) => ({
-      ...current,
-      [field]: value
-    }));
-    setEditedFields((current) => new Set(current).add(field));
-  }
-
-  async function updateProfileFields(patch: { displayName?: string; headline?: string; summary?: string }) {
-    const response = await fetch(`${apiBasePath}/profile`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(patch)
-    });
-    const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error: string };
-    if (!response.ok || !payload.ok) {
-      showWorkspaceMessage(payload.ok === false ? payload.error : "Profile update failed.", "error");
-      return false;
-    }
-    applyProfilePayload(payload.result);
-    showWorkspaceMessage("Profile basics saved.", "success");
-    return true;
   }
 
   async function updateDraftItem(itemType: ProfileItemType, itemId: string, patch: DraftItemPatch) {
@@ -410,17 +389,12 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
           activeLifecycle={activeLifecycle}
           activeTab={activeSection}
           draft={draft}
-          editedFields={editedFields}
-          intent={intent}
           onDraftItemUpdate={updateDraftItem}
-          onIntentChange={updateIntent}
           onLifecycleChange={setActiveLifecycle}
-          onProfileSave={updateProfileFields}
           onPublishedEdit={startPublishedEdit}
           onPublishedItemUpdate={updatePublishedItem}
           onProfileFieldUpdate={updateProfileField}
           onTabChange={setActiveSection}
-          profile={profile}
           profileFields={profileFields}
           publishedProfile={publishedProfile}
           publicProfile={publicProfile}
@@ -428,14 +402,10 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
         <aside className="profile-context-rail" aria-label="Profile context summaries">
           <PublicPortfolioPreview
             onEdit={startPublishedEdit}
+            onProfileFieldUpdate={updateProfileField}
             onPublishedItemUpdate={updatePublishedItem}
             publicPortfolioPath={publicPortfolioPath}
             publicProfile={publicProfile}
-            publishedPublicItemCount={publishedPublicItemCount}
-          />
-          <InternalContextSummary
-            publishedItemCount={publishedItemCount}
-            publishedProfile={publishedProfile}
             publishedPublicItemCount={publishedPublicItemCount}
           />
           <section className="profile-side-card">
@@ -500,276 +470,6 @@ function CollapsiblePanel({
   );
 }
 
-function IntentFieldControl({
-  editedFields,
-  field,
-  label,
-  onSave,
-  onChange,
-  multiline = false,
-  value
-}: {
-  editedFields: Set<IntentField>;
-  field: IntentField;
-  label: string;
-  onSave?: (value: string) => Promise<boolean> | boolean | void;
-  onChange: (field: IntentField, value: string) => void;
-  multiline?: boolean;
-  value: string;
-}) {
-  const lastSavedValue = useRef<string | null>(null);
-  const [status, setStatus] = useState<AutosaveStatus>("idle");
-  async function saveValue(nextValue: string) {
-    if (!onSave || lastSavedValue.current === nextValue) {
-      return;
-    }
-    lastSavedValue.current = nextValue;
-    setStatus("saving");
-    try {
-      const result = await onSave(nextValue);
-      setStatus(result === false ? "error" : "saved");
-    } catch {
-      setStatus("error");
-    } finally {
-      lastSavedValue.current = null;
-    }
-  }
-
-  return (
-    <label>
-      <span className="field-label-row">
-        <FieldLabel edited={editedFields.has(field)} label={label} visibility={targetFieldDefaultVisibility(field)} />
-        <SaveStatus status={status} />
-      </span>
-      {multiline ? <textarea
-        className="small-textarea"
-        onBlur={(event) => void saveValue(event.currentTarget.value)}
-        onChange={(event) => {
-          setStatus("idle");
-          onChange(field, event.target.value);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            void saveValue(event.currentTarget.value);
-          }
-        }}
-        suppressHydrationWarning
-        value={value}
-      /> : <input
-        onBlur={(event) => void saveValue(event.currentTarget.value)}
-        onChange={(event) => {
-          setStatus("idle");
-          onChange(field, event.target.value);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            void saveValue(event.currentTarget.value);
-          }
-        }}
-        suppressHydrationWarning
-        value={value}
-      />}
-    </label>
-  );
-}
-
-function FieldLabel({
-  edited,
-  label,
-  visibility = "private"
-}: {
-  edited: boolean;
-  label: string;
-  visibility?: BadgeableDraftItem["visibility"];
-}) {
-  return (
-    <span className="field-label">
-      {label}
-      <DraftIconSet author={edited ? "user" : "agent"} visibility={visibility} />
-    </span>
-  );
-}
-
-function ProfileStatusIcons() {
-  return (
-    <span className="profile-status-bar icon-badge-row" aria-label="Profile-level statuses">
-      <IconBadge kind="agent" label="Generated" />
-      <IconBadge kind="private" label="Private" />
-      <IconBadge kind="published" label="Ready for review" />
-    </span>
-  );
-}
-
-function TargetsCard({
-  editedFields,
-  intent,
-  onChange,
-  onDraftItemUpdate
-}: {
-  editedFields: Set<IntentField>;
-  intent: TargetRoleIntent;
-  onChange: (field: IntentField, value: string) => void;
-  onDraftItemUpdate?: DraftItemUpdateHandler;
-}) {
-  const targetId = intent.id;
-  const saveTargetField = (field: IntentField) => (value: string) => {
-    if (!targetId || !onDraftItemUpdate) {
-      return false;
-    }
-    return onDraftItemUpdate("target-role", targetId, targetFieldPatch(field, value));
-  };
-
-  return (
-    <section className="profile-review-card target-settings-card" aria-label="Target settings">
-      <div className="intent-form review-form" aria-label="Target settings review form">
-        <IntentFieldControl
-          editedFields={editedFields}
-          field="targetTitles"
-          label="Target titles"
-          onChange={onChange}
-          onSave={saveTargetField("targetTitles")}
-          value={intent.targetTitles}
-        />
-        <IntentFieldControl
-          editedFields={editedFields}
-          field="roleFamilies"
-          label="Target role families"
-          onChange={onChange}
-          onSave={saveTargetField("roleFamilies")}
-          value={intent.roleFamilies}
-        />
-        <label>
-          <FieldLabel
-            edited={editedFields.has("preferredWorkMode")}
-            label="Preferred work mode"
-            visibility={targetFieldDefaultVisibility("preferredWorkMode")}
-          />
-          <select
-            onChange={(event) => {
-              onChange("preferredWorkMode", event.target.value);
-              void saveTargetField("preferredWorkMode")(event.target.value);
-            }}
-            suppressHydrationWarning
-            value={intent.preferredWorkMode}
-          >
-            <option value="flexible">Flexible</option>
-            <option value="remote">Remote</option>
-            <option value="hybrid">Hybrid</option>
-            <option value="onsite">Onsite</option>
-          </select>
-        </label>
-        <IntentFieldControl
-          editedFields={editedFields}
-          field="preferredLocations"
-          label="Preferred locations"
-          onChange={onChange}
-          onSave={saveTargetField("preferredLocations")}
-          value={intent.preferredLocations}
-        />
-        <IntentFieldControl
-          editedFields={editedFields}
-          field="domainsOfInterest"
-          label="Domains or industries of interest"
-          onChange={onChange}
-          onSave={saveTargetField("domainsOfInterest")}
-          value={intent.domainsOfInterest}
-        />
-        <IntentFieldControl
-          editedFields={editedFields}
-          field="constraints"
-          label="Dealbreakers or constraints"
-          multiline
-          onChange={onChange}
-          onSave={saveTargetField("constraints")}
-          value={intent.constraints}
-        />
-      </div>
-      {intent.id && intent.published !== true && intent.status !== "rejected" ? (
-        <ReviewActions
-          item={{
-            id: intent.id,
-            source: intent.source ?? "model",
-            status: intent.status ?? "needs_review",
-            visibility: intent.visibility ?? "public",
-            published: false
-          }}
-          itemType="target-role"
-          onDraftItemUpdate={onDraftItemUpdate}
-          showArchive={false}
-        />
-      ) : (
-        <p className="profile-lifecycle-note">
-          Target intent edits are saved through profile intake. Publish controls appear when a generated target row is loaded.
-        </p>
-      )}
-    </section>
-  );
-}
-
-function ProfileBasicsPanel({
-  onSave,
-  profile
-}: {
-  onSave: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
-  profile: ProfileSummary | null;
-}) {
-  return (
-    <section className="profile-basics-panel" aria-label="Profile basics fields">
-      <div className="profile-basics-form">
-        <EditableField label="Display name" onSave={(displayName) => onSave({ displayName })} value={profile?.displayName ?? ""} />
-        <EditableField label="Headline" onSave={(headline) => onSave({ headline })} value={profile?.headline ?? ""} />
-        <EditableField className="full-span" label="Summary" multiline onSave={(summary) => onSave({ summary })} value={profile?.summary ?? ""} />
-        <label>
-          <span>Telephone number</span>
-          <input disabled placeholder="Private contact field schema pending" />
-        </label>
-        <label>
-          <span>Email address</span>
-          <input disabled placeholder="Private contact field schema pending" />
-        </label>
-        <label>
-          <span>Calendly link</span>
-          <input disabled placeholder="Private by default" />
-        </label>
-        <label>
-          <span>Current location</span>
-          <input disabled placeholder="Private by default" />
-        </label>
-        <label className="full-span">
-          <span>Mailing address</span>
-          <input disabled placeholder="Private cover-letter support field pending" />
-        </label>
-        <label>
-          <span>Compensation min</span>
-          <input disabled placeholder="Private by default" />
-        </label>
-        <label>
-          <span>Dealbreakers / constraints</span>
-          <input disabled placeholder="Private by default" />
-        </label>
-        <label>
-          <span>Work authorization / sponsorship details</span>
-          <input disabled placeholder="Private unless intentionally public" />
-        </label>
-        <label>
-          <span>Must avoid companies / industries</span>
-          <input disabled placeholder="Private" />
-        </label>
-        <label>
-          <span>Ranking of locations</span>
-          <input disabled placeholder="Private" />
-        </label>
-        <label>
-          <span>Relocation conditions</span>
-          <input disabled placeholder="Private or selectively public" />
-        </label>
-      </div>
-    </section>
-  );
-}
-
 function FieldGroupPanel({
   fields,
   lifecycle,
@@ -782,42 +482,94 @@ function FieldGroupPanel({
   if (!fields.length) {
     return <EmptyMessage>No field-level profile data loaded yet.</EmptyMessage>;
   }
+  const visibleRows = fieldLifecycleRows(fields, lifecycle);
+  if (!visibleRows.length) {
+    return <EmptyMessage>{emptyFieldGroupMessage(lifecycle)}</EmptyMessage>;
+  }
 
   return (
     <ul className="profile-review-list field-group-list">
-      {fields.map((field) => (
+      {visibleRows.map(({ field, value, rowKey }) => (
         <FieldLifecycleRow
           field={field}
-          key={`${field.group}-${field.name}`}
+          key={rowKey}
           lifecycle={lifecycle}
           onProfileFieldUpdate={onProfileFieldUpdate}
+          value={value}
         />
       ))}
     </ul>
   );
 }
 
+function fieldLifecycleRows(fields: ProfileFieldState[], lifecycle: LifecycleTab) {
+  if (lifecycle === "generated") {
+    return fields
+      .filter((field) => field.generated)
+      .map((field) => ({
+        field,
+        rowKey: `${field.group}-${field.name}-generated`,
+        value: field.generated ?? null
+      }));
+  }
+
+  if (lifecycle === "archived") {
+    return fields.flatMap((field) =>
+      field.archived
+        .filter(isDisplayableArchivedFieldValue)
+        .map((value) => ({
+          field,
+          rowKey: `${field.group}-${field.name}-archived-${value.id}`,
+          value
+        }))
+    );
+  }
+
+  return fields
+    .filter((field) => !field.generated && field.published?.visibility === "private")
+    .map((field) => ({
+      field,
+      rowKey: `${field.group}-${field.name}-private`,
+      value: field.published ?? null
+    }));
+}
+
+function isDisplayableArchivedFieldValue(value: ProfileFieldValue) {
+  return value.value.trim().length > 0 || (value.originalValue ?? "").trim().length > 0;
+}
+
+function emptyFieldGroupMessage(lifecycle: LifecycleTab) {
+  if (lifecycle === "generated") {
+    return "No generated field proposals yet.";
+  }
+  if (lifecycle === "archived") {
+    return "No archived field values yet.";
+  }
+  return "No private field values in this section. Public values are managed in the preview.";
+}
+
 function FieldLifecycleRow({
   field,
   lifecycle,
-  onProfileFieldUpdate
+  onProfileFieldUpdate,
+  value: activeValue
 }: {
   field: ProfileFieldState;
   lifecycle: LifecycleTab;
   onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+  value: ProfileFieldValue | null;
 }) {
-  const archived = field.archived[0] ?? null;
-  const activeValue = lifecycle === "generated" ? field.generated : lifecycle === "private" ? field.published : archived;
   const value = activeValue?.value ?? "";
   const editable = lifecycle !== "archived";
-  const publishedVisibility = field.published?.visibility ?? null;
+  const publishedVisibility = activeValue?.visibility ?? null;
 
   return (
     <li className={`profile-review-item editable-review-card field-lifecycle-row ${lifecycle}`}>
       <div className="field-lifecycle-header">
-        <TitleWithBadges title={field.label}>
+        <div className="field-lifecycle-title">
+          <strong>{field.label}</strong>
           <FieldLifecycleBadges field={field} lifecycle={lifecycle} value={activeValue} />
-        </TitleWithBadges>
+        </div>
         <FieldLifecycleActions
           field={field}
           lifecycle={lifecycle}
@@ -827,8 +579,7 @@ function FieldLifecycleRow({
         />
       </div>
       {editable ? (
-        <EditableField
-          className="full-span"
+        <CompactEditableField
           label={field.label}
           multiline={field.multiline}
           onSave={(nextValue) =>
@@ -840,10 +591,7 @@ function FieldLifecycleRow({
           value={value}
         />
       ) : (
-        <div className="archived-field-value">
-          <span>{activeValue?.archiveReason ? `Archived: ${activeValue.archiveReason}` : "Archived"}</span>
-          <p>{value || "Blank value"}</p>
-        </div>
+        <p className="archived-field-value">{value || "Blank value"}</p>
       )}
     </li>
   );
@@ -866,6 +614,9 @@ function FieldLifecycleBadges({
       {lifecycle === "archived" ? <IconBadge kind="unpublished" label="Archived" /> : null}
       {lifecycle === "private" && value?.visibility ? <VisibilityIcon visibility={value.visibility} /> : null}
       {field.privateOnly ? <span className="visibility-text-badge private">Private only</span> : null}
+      {lifecycle === "archived" && value?.archiveReason ? (
+        <span className="visibility-text-badge archived-reason">Archived: {value.archiveReason}</span>
+      ) : null}
     </span>
   );
 }
@@ -884,6 +635,9 @@ function FieldLifecycleActions({
   value?: ProfileFieldValue | null;
 }) {
   if (lifecycle === "archived") {
+    return null;
+  }
+  if (lifecycle === "private" && !value) {
     return null;
   }
   if (lifecycle === "generated") {
@@ -929,16 +683,6 @@ function FieldLifecycleActions({
           type="button"
         >
           Make public
-        </button>
-      ) : null}
-      {publishedVisibility === "public" ? (
-        <button
-          className="secondary-action button-action"
-          disabled={!onProfileFieldUpdate || !value}
-          onClick={() => onProfileFieldUpdate?.(field.group, field.name, { visibility: "private" })}
-          type="button"
-        >
-          Make private
         </button>
       ) : null}
       <button
@@ -1025,17 +769,12 @@ export function ReviewTabbedList({
   activeLifecycle = "generated",
   activeTab,
   draft,
-  editedFields = new Set<IntentField>(),
-  intent = emptyTargetRoleIntent,
   onDraftItemUpdate,
-  onIntentChange,
   onLifecycleChange = () => undefined,
   onPublishedEdit,
-  onProfileSave,
   onProfileFieldUpdate,
   onPublishedItemUpdate,
   onTabChange,
-  profile,
   profileFields,
   publishedProfile,
   publicProfile
@@ -1043,27 +782,24 @@ export function ReviewTabbedList({
   activeLifecycle?: LifecycleTab;
   activeTab: ReviewTabId;
   draft: MockProfileDraft | null;
-  editedFields?: Set<IntentField>;
-  intent?: TargetRoleIntent;
   onDraftItemUpdate?: DraftItemUpdateHandler;
-  onIntentChange?: (field: IntentField, value: string) => void;
   onLifecycleChange?: (tab: LifecycleTab) => void;
   onPublishedEdit?: () => void;
-  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
   onProfileFieldUpdate?: ProfileFieldUpdateHandler;
   onPublishedItemUpdate?: PublishedItemUpdateHandler;
   onTabChange: (tab: ReviewTabId) => void;
-  profile?: ProfileSummary | null;
   profileFields?: ProfileFieldGroups | null;
   publishedProfile?: PublishedProfileSnapshot | null;
   publicProfile?: PublicProfileSnapshot | null;
 }) {
   const draftCounts = buildReviewCounts(draft);
   const privateCounts = buildPublishedReviewCounts(publishedProfile, "private");
+  const publicCounts = buildPublishedReviewCounts(publicProfile ?? publishedProfile, "public");
   const archivedCounts = buildArchivedReviewCounts(draft);
   const fieldCounts = buildFieldReviewCounts(profileFields);
   const generatedCounts = { ...draftCounts, ...fieldCounts.generated };
   const publishedPrivateCounts = { ...privateCounts, ...fieldCounts.published };
+  const publishedPublicCounts = { ...publicCounts, ...fieldCounts.public };
   const activeLabel = reviewTabs.find((tab) => tab.id === activeTab)?.label || "Profile data";
   const showArchivedTab = true;
   const effectiveLifecycle = activeLifecycle;
@@ -1085,9 +821,13 @@ export function ReviewTabbedList({
             type="button"
           >
             <span>{tab.label}</span>
-            <strong aria-label={`${generatedCounts[tab.id]} Generated, ${publishedPrivateCounts[tab.id]} Private`}>
+            <strong
+              aria-label={`${generatedCounts[tab.id]} Generated, ${publishedPrivateCounts[tab.id]} Private, ${publishedPublicCounts[tab.id]} Public`}
+              className="profile-section-counts"
+            >
               <span>{generatedCounts[tab.id]}</span>
               <small>{publishedPrivateCounts[tab.id]}</small>
+              <small className="public-count">{publishedPublicCounts[tab.id]}</small>
             </strong>
           </button>
         ))}
@@ -1103,7 +843,9 @@ export function ReviewTabbedList({
             <h3 className="profile-panel-kicker">{activeLabel}</h3>
             <p>Generated items need review. Private items are active internally. Public items are managed in the preview.</p>
           </div>
-          <span>{generatedCounts[activeTab]} Generated / {publishedPrivateCounts[activeTab]} Private</span>
+          <span className="profile-review-panel-counts">
+            {generatedCounts[activeTab]} Generated / {publishedPrivateCounts[activeTab]} Private / {publishedPublicCounts[activeTab]} Public
+          </span>
         </div>
         <div className="profile-lifecycle-tabs" role="tablist" aria-label={`${activeLabel} lifecycle`}>
           <button
@@ -1149,12 +891,7 @@ export function ReviewTabbedList({
             <ProfileReviewTabContent
               activeTab={activeTab}
               draft={draft}
-              editedFields={editedFields}
-              intent={intent}
               onDraftItemUpdate={onDraftItemUpdate}
-              onIntentChange={onIntentChange}
-              onProfileSave={onProfileSave}
-              profile={profile ?? null}
             />
           ) : effectiveLifecycle === "private" ? (
             <PublishedProfileTabContent
@@ -1176,32 +913,18 @@ export function ReviewTabbedList({
 function ProfileReviewTabContent({
   activeTab,
   draft,
-  editedFields,
-  intent,
-  onProfileSave,
-  onIntentChange,
-  onDraftItemUpdate,
-  profile
+  onDraftItemUpdate
 }: {
   activeTab: ReviewTabId;
   draft: MockProfileDraft | null;
-  editedFields: Set<IntentField>;
-  intent: TargetRoleIntent;
-  onProfileSave?: (patch: { displayName?: string; headline?: string; summary?: string }) => Promise<boolean> | boolean | void;
-  onIntentChange?: (field: IntentField, value: string) => void;
   onDraftItemUpdate?: DraftItemUpdateHandler;
-  profile: ProfileSummary | null;
 }) {
   if (activeTab === "basics") {
-    return onProfileSave ? <ProfileBasicsPanel onSave={onProfileSave} profile={profile} /> : <EmptyMessage>No profile basics loaded yet.</EmptyMessage>;
+    return <EmptyMessage>Profile basics use field-level review rows.</EmptyMessage>;
   }
 
   if (activeTab === "targets") {
-    return onIntentChange ? (
-      <TargetsCard editedFields={editedFields} intent={intent} onChange={onIntentChange} onDraftItemUpdate={onDraftItemUpdate} />
-    ) : (
-      <EmptyMessage>No generated target loaded yet.</EmptyMessage>
-    );
+    return <EmptyMessage>Targets use field-level review rows.</EmptyMessage>;
   }
 
   if (!draft) {
@@ -1463,14 +1186,6 @@ function PublishedProfileTabContent({
     return <EmptyMessage>No published profile loaded yet.</EmptyMessage>;
   }
 
-  if (activeTab === "basics") {
-    return <PublishedBasics publishedProfile={profile} />;
-  }
-
-  if (activeTab === "targets") {
-    return <PublishedTargets onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} publishedProfile={profile} />;
-  }
-
   if (activeTab === "skills") {
     const skills = (profile.skillClaims ?? []).filter((skill) => skill.visibility === "private");
     return skills.length ? (
@@ -1590,77 +1305,16 @@ function PublishedProfileTabContent({
   );
 }
 
-function PublishedBasics({ publishedProfile }: { publishedProfile: PublishedProfileSnapshot }) {
-  return (
-    <div className="profile-summary-grid">
-      <SummaryText label="Display name" value={publishedProfile.displayName ?? "Not set"} />
-      <SummaryText label="Headline" value={publishedProfile.headline ?? "Not set"} />
-      <SummaryText label="Summary" value={publishedProfile.summary ?? "Not set"} />
-      <p className="profile-lifecycle-note">
-        Contact fields are intentionally private by default. Public exposure needs explicit published public support before
-        those details appear on the portfolio.
-      </p>
-    </div>
-  );
-}
-
-function SummaryText({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="profile-summary-text">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function PublishedTargets({
-  onEdit,
-  onPublishedItemUpdate,
-  publishedProfile
-}: {
-  onEdit?: () => void;
-  onPublishedItemUpdate?: PublishedItemUpdateHandler;
-  publishedProfile: PublishedProfileSnapshot;
-}) {
-  const target = publishedProfile.targetRoleIntent;
-  if (!target || !hasTargetRoleIntent(target) || target.visibility !== "private") {
-    return <EmptyMessage>No private targets yet.</EmptyMessage>;
-  }
-
-  return (
-    <div className="published-target-card editable-review-card">
-      <VisibilityTextBadge visibility={target.visibility ?? "private"} />
-      {target.id ? (
-        <div className="editable-card-grid">
-          <EditableField label="Target titles" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { targetTitles: value })} value={(target.targetTitles ?? []).join(", ")} />
-          <EditableField label="Role families" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { roleFamilies: value })} value={(target.roleFamilies ?? []).join(", ")} />
-          <EditableField label="Preferred work mode" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { preferredWorkMode: value })} value={(target.workModes ?? []).join(", ")} />
-          <EditableField label="Locations" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { preferredLocations: value })} value={(target.preferredLocations ?? []).join(", ")} />
-          <EditableField label="Domains" onSave={(value) => onPublishedItemUpdate?.("target-role", target.id!, { domainsOrIndustries: value })} value={target.domainsOrIndustries ?? ""} />
-        </div>
-      ) : null}
-      {target.id ? (
-        <PublishedActions
-          itemId={target.id}
-          itemType="target-role"
-          onEdit={onEdit}
-          onPublishedItemUpdate={onPublishedItemUpdate}
-          showArchive={false}
-          visibility={target.visibility ?? "private"}
-        />
-      ) : null}
-    </div>
-  );
-}
-
 export function PublicPortfolioPreview({
   onEdit,
+  onProfileFieldUpdate,
   onPublishedItemUpdate,
   publicPortfolioPath,
   publicProfile,
   publishedPublicItemCount
 }: {
   onEdit?: () => void;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
   onPublishedItemUpdate?: PublishedItemUpdateHandler;
   publicPortfolioPath: string | null;
   publicProfile: PublicProfileSnapshot | null;
@@ -1675,12 +1329,21 @@ export function PublicPortfolioPreview({
     (item) => item.visibility === "public" && item.publicationStatus === "published"
   );
   const links = (publicProfile?.evidenceLinks ?? []).filter((link) => link.visibility === "public" && link.publicationStatus === "published");
-  const target = publicProfile?.targetRoleIntent;
   const selectedWork = experience.filter((item) => item.itemType === "experience" || item.itemType === "project");
   const education = experience.filter((item) => item.itemType === "education");
   const certifications = experience.filter((item) => item.itemType === "certification");
   const achievements = facts.filter((fact) => looksLikeAchievement(fact.claim, fact.category));
-  const hasPublicContent = Boolean(facts.length || skills.length || experience.length || links.length || hasTargetRoleIntent(target));
+  const publicBasics = publicFieldEntries(publicProfile?.profileFields?.profileBasics, publicProfileBasicPreviewLabels);
+  const publicTargets = publicFieldEntries(publicProfile?.profileFields?.targets, publicTargetPreviewLabels);
+  const publicContactFields = publicBasics.filter((field) => !["displayName", "headline", "summary"].includes(field.name));
+  const displayNameField = publicFieldEntry(publicProfile?.profileFields?.profileBasics, "displayName", "Name");
+  const headlineField = publicFieldEntry(publicProfile?.profileFields?.profileBasics, "headline", "Headline");
+  const summaryField = publicFieldEntry(publicProfile?.profileFields?.profileBasics, "summary", "Summary");
+  const hasProfileDetails = Boolean(education.length || certifications.length || links.length || publicContactFields.length);
+  const hasProofRail = Boolean(skills.length || achievements.length);
+  const hasPublicContent = Boolean(
+    facts.length || skills.length || experience.length || links.length || publicBasics.length || publicTargets.length
+  );
 
   return (
     <section className="profile-side-card public-preview-card">
@@ -1692,32 +1355,88 @@ export function PublicPortfolioPreview({
         <a href={previewPath}>Open</a>
       </div>
       {hasPublicContent ? (
-        <div className="admin-portfolio-preview">
-          <section className="admin-portfolio-hero">
-            <p className="section-kicker">Public profile</p>
-            <h2>{publicProfile?.displayName || "Published portfolio"}</h2>
-            {publicProfile?.headline ? <p>{publicProfile.headline}</p> : null}
-            {publicProfile?.summary ? <p>{publicProfile.summary}</p> : null}
-          </section>
-          {hasTargetRoleIntent(target) && target?.id ? (
-            <AdminPreviewBlock title="Target direction">
-              <article className="admin-preview-item">
-                <ChipList items={target.targetTitles ?? []} />
-                <AdminPreviewControls
-                  itemId={target.id}
-                  itemType="target-role"
+        <div className="admin-portfolio-preview portfolio-page">
+          <section className={`portfolio-hero admin-portfolio-hero${hasProfileDetails ? "" : " solo"}`}>
+            <div className="portfolio-hero-copy">
+              <p className="eyebrow">JobOps candidate-agent portfolio</p>
+              <AdminPreviewHeroField
+                field={displayNameField}
+                fallback={publicProfile?.displayName || "Published portfolio"}
+                fieldName="displayName"
+                onEdit={onEdit}
+                onProfileFieldUpdate={onProfileFieldUpdate}
+                variant="title"
+              />
+              {publicProfile?.headline ? (
+                <AdminPreviewHeroField
+                  field={headlineField}
+                  fallback={publicProfile.headline}
+                  fieldName="headline"
                   onEdit={onEdit}
-                  onPublishedItemUpdate={onPublishedItemUpdate}
-                  showArchive={false}
-                  visibility={target.visibility ?? "public"}
+                  onProfileFieldUpdate={onProfileFieldUpdate}
+                  variant="lede"
                 />
-              </article>
-            </AdminPreviewBlock>
+              ) : null}
+              {publicProfile?.summary ? (
+                <AdminPreviewHeroField
+                  field={summaryField}
+                  fallback={publicProfile.summary}
+                  fieldName="summary"
+                  onEdit={onEdit}
+                  onProfileFieldUpdate={onProfileFieldUpdate}
+                  variant="summary"
+                />
+              ) : null}
+            </div>
+            {hasProfileDetails ? (
+              <aside className="portfolio-verification-panel" aria-label="Public profile details">
+                <div className="portfolio-panel-header">
+                  <h2>Education, credentials, and contact.</h2>
+                </div>
+                {education.length ? <AdminPreviewDetailList items={education} onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} title="Education" /> : null}
+                {certifications.length ? (
+                  <AdminPreviewDetailList items={certifications} onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} scroll title="Certifications" />
+                ) : null}
+                {publicContactFields.length ? (
+                  <AdminPreviewContactFieldList fields={publicContactFields} onEdit={onEdit} onProfileFieldUpdate={onProfileFieldUpdate} title="Contact details" />
+                ) : null}
+                {links.length ? <AdminPreviewLinkList links={links} onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} title="Contact & URLs" /> : null}
+              </aside>
+            ) : null}
+          </section>
+          {publicTargets.length ? (
+            <section className="content-band portfolio-section">
+              <p className="section-kicker">Role intent</p>
+              <h2>Target direction</h2>
+              <div className="portfolio-role-intent-grid">
+              {publicTargets.map((field) => (
+                <article className="portfolio-role-intent-group admin-preview-item" key={`targets-${field.name}`}>
+                  <h3>{field.label}</h3>
+                  {field.name === "targetTitles" || field.name === "roleFamilies" || field.name === "preferredLocations" || field.name === "preferredWorkMode" ? (
+                    <ChipList items={splitPreviewList(field.value)} />
+                  ) : (
+                    <p>{field.value}</p>
+                  )}
+                  <AdminPreviewFieldControls
+                    fieldGroup="targets"
+                    fieldName={field.name}
+                    onEdit={onEdit}
+                    onProfileFieldUpdate={onProfileFieldUpdate}
+                  />
+                </article>
+              ))}
+              </div>
+            </section>
           ) : null}
           {facts.length ? (
-            <AdminPreviewBlock title="Approved facts">
-              {facts.slice(0, 8).map((fact) => (
-                <article className="admin-preview-item fact-callout" key={fact.id}>
+            <section className="portfolio-facts-band" id="profile-facts">
+              <div>
+                <p className="section-kicker">Approved facts</p>
+                <h2>Public, published information only</h2>
+              </div>
+              <div className="portfolio-fact-callouts">
+              {facts.slice(0, 6).map((fact) => (
+                <article className="portfolio-fact-callout admin-preview-item" key={fact.id}>
                   <p>{fact.claim}</p>
                   <span>{fact.category}</span>
                   <AdminPreviewControls
@@ -1729,87 +1448,74 @@ export function PublicPortfolioPreview({
                   />
                 </article>
               ))}
-            </AdminPreviewBlock>
+              </div>
+            </section>
           ) : null}
-          {selectedWork.length ? (
-            <AdminPreviewBlock title="Featured work">
-              {selectedWork.slice(0, 6).map((item) => (
-                <article className="admin-preview-item" key={item.id}>
-                  <h4>{item.title}</h4>
-                  {item.organization ? <span>{item.organization}</span> : null}
-                  <p>{item.summary}</p>
-                  <AdminPreviewControls
-                    itemId={item.id}
-                    itemType="experience"
-                    onEdit={onEdit}
-                    onPublishedItemUpdate={onPublishedItemUpdate}
-                    visibility={item.visibility}
-                  />
-                </article>
-              ))}
-            </AdminPreviewBlock>
-          ) : null}
-          {skills.length ? (
-            <AdminPreviewBlock title="Skills">
-              {skills.slice(0, 10).map((skill) => (
-                <article className="admin-preview-item compact" key={skill.id}>
-                  <h4>{skill.skill}</h4>
-                  <p>{skill.evidence || skill.category}</p>
-                  <AdminPreviewControls
-                    itemId={skill.id}
-                    itemType="skill"
-                    onEdit={onEdit}
-                    onPublishedItemUpdate={onPublishedItemUpdate}
-                    visibility={skill.visibility}
-                  />
-                </article>
-              ))}
-            </AdminPreviewBlock>
-          ) : null}
-          {achievements.length ? (
-            <AdminPreviewBlock title="Achievements">
-              {achievements.slice(0, 6).map((fact) => (
-                <article className="admin-preview-item compact" key={fact.id}>
-                  <p>{fact.claim}</p>
-                  <AdminPreviewControls
-                    itemId={fact.id}
-                    itemType="fact"
-                    onEdit={onEdit}
-                    onPublishedItemUpdate={onPublishedItemUpdate}
-                    visibility={fact.visibility}
-                  />
-                </article>
-              ))}
-            </AdminPreviewBlock>
-          ) : null}
-          {education.length || certifications.length || links.length ? (
-            <AdminPreviewBlock title="Education, certifications, links">
-              {[...education, ...certifications].map((item) => (
-                <article className="admin-preview-item compact" key={item.id}>
-                  <h4>{item.title}</h4>
-                  {item.organization ? <p>{item.organization}</p> : null}
-                  <AdminPreviewControls
-                    itemId={item.id}
-                    itemType="experience"
-                    onEdit={onEdit}
-                    onPublishedItemUpdate={onPublishedItemUpdate}
-                    visibility={item.visibility}
-                  />
-                </article>
-              ))}
-              {links.map((link) => (
-                <article className="admin-preview-item compact" key={link.id}>
-                  <a href={link.url} rel="noreferrer" target="_blank">{link.label || link.url}</a>
-                  <AdminPreviewControls
-                    itemId={link.id}
-                    itemType="evidence"
-                    onEdit={onEdit}
-                    onPublishedItemUpdate={onPublishedItemUpdate}
-                    visibility={link.visibility}
-                  />
-                </article>
-              ))}
-            </AdminPreviewBlock>
+          {selectedWork.length || hasProofRail ? (
+            <section className="portfolio-evidence-layout">
+              {selectedWork.length ? (
+                <div className="portfolio-work-column">
+                  <p className="section-kicker">Selected work</p>
+                  <h2>Featured projects and experience</h2>
+                  <div className="portfolio-timeline">
+                    {selectedWork.slice(0, 8).map((item) => (
+                      <article className="portfolio-card admin-preview-item" key={item.id}>
+                        <p className="section-kicker">{item.itemType}</p>
+                        <h3>{item.title}</h3>
+                        {item.organization ? <p>{item.organization}</p> : null}
+                        {item.startDate || item.endDate || item.location ? (
+                          <p className="portfolio-meta">{[joinDates(item.startDate, item.endDate), item.location].filter(Boolean).join(" - ")}</p>
+                        ) : null}
+                        <p>{item.summary}</p>
+                        {item.bullets?.length ? (
+                          <ul>
+                            {item.bullets.slice(0, 3).map((bullet) => (
+                              <li key={bullet}>{bullet}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        <AdminPreviewControls itemId={item.id} itemType="experience" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={item.visibility} />
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {hasProofRail ? (
+                <aside className="portfolio-proof-rail" aria-label="Skills and achievements">
+                  {skills.length ? (
+                    <section className="portfolio-rail-section">
+                      <p className="section-kicker">Skills</p>
+                      <h2>Skills with approved evidence</h2>
+                      <div className="portfolio-skill-stack">
+                        {skills.slice(0, 12).map((skill) => (
+                          <article className="portfolio-card admin-preview-item" key={skill.id}>
+                            <h3>{skill.skill}</h3>
+                            <p>{skill.evidence || skill.category}</p>
+                            <AdminPreviewControls itemId={skill.id} itemType="skill" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={skill.visibility} />
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {achievements.length ? (
+                    <section className="portfolio-rail-section">
+                      <p className="section-kicker">Achievements</p>
+                      <h2>Selected proof points</h2>
+                      <ul className="portfolio-achievement-list">
+                        {achievements.slice(0, 8).map((fact) => (
+                          <li className="admin-preview-item" key={fact.id}>
+                            {fact.claim}
+                            <AdminPreviewControls itemId={fact.id} itemType="fact" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={fact.visibility} />
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+                </aside>
+              ) : null}
+            </section>
           ) : null}
         </div>
       ) : (
@@ -1823,12 +1529,140 @@ export function PublicPortfolioPreview({
   );
 }
 
-function AdminPreviewBlock({ children, title }: { children: React.ReactNode; title: string }) {
+function AdminPreviewHeroField({
+  fallback,
+  field,
+  fieldName,
+  onEdit,
+  onProfileFieldUpdate,
+  variant
+}: {
+  fallback: string;
+  field: { label: string; name: string; value: string } | null;
+  fieldName: string;
+  onEdit?: () => void;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+  variant: "title" | "lede" | "summary";
+}) {
+  const content = field?.value || fallback;
+  const controls = field ? (
+    <AdminPreviewFieldControls
+      fieldGroup="profile_basics"
+      fieldName={fieldName}
+      onEdit={onEdit}
+      onProfileFieldUpdate={onProfileFieldUpdate}
+    />
+  ) : null;
+
+  if (variant === "title") {
+    return (
+      <div className="admin-preview-hero-field">
+        {field ? <span className="visually-hidden">{field.label}</span> : null}
+        <h2>{content}</h2>
+        {controls}
+      </div>
+    );
+  }
+
+  if (variant === "summary") {
+    return (
+      <div className="admin-preview-hero-field">
+        {field ? <span className="visually-hidden">{field.label}</span> : null}
+        <p className="portfolio-summary">{content}</p>
+        {controls}
+      </div>
+    );
+  }
+
   return (
-    <section className="admin-preview-block">
-      <h3>{title}</h3>
-      <div className="admin-preview-stack">{children}</div>
-    </section>
+    <div className="admin-preview-hero-field">
+      {field ? <span className="visually-hidden">{field.label}</span> : null}
+      <p className="lede">{content}</p>
+      {controls}
+    </div>
+  );
+}
+
+function AdminPreviewDetailList({
+  items,
+  onEdit,
+  onPublishedItemUpdate,
+  scroll = false,
+  title
+}: {
+  items: NonNullable<PublicProfileSnapshot["experienceAndProjects"]>;
+  onEdit?: () => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
+  scroll?: boolean;
+  title: string;
+}) {
+  return (
+    <div className={`portfolio-panel-block${scroll ? " scrollable" : ""}`}>
+      <p className="section-kicker">{title}</p>
+      <ul className="portfolio-detail-list">
+        {items.map((item) => (
+          <li className="admin-preview-item compact" key={item.id}>
+            <strong>{item.title}</strong>
+            {item.organization ? <span>{item.organization}</span> : null}
+            {item.endDate || item.location ? <small>{[item.endDate, item.location].filter(Boolean).join(" - ")}</small> : null}
+            <AdminPreviewControls itemId={item.id} itemType="experience" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={item.visibility} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function AdminPreviewContactFieldList({
+  fields,
+  onEdit,
+  onProfileFieldUpdate,
+  title
+}: {
+  fields: Array<{ label: string; name: string; value: string }>;
+  onEdit?: () => void;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
+  title: string;
+}) {
+  return (
+    <div className="portfolio-panel-block">
+      <p className="section-kicker">{title}</p>
+      <ul className="portfolio-detail-list">
+        {fields.map((field) => (
+          <li className="admin-preview-item compact" key={`profile_basics-${field.name}`}>
+            <strong>{field.label}</strong>
+            <span>{field.value}</span>
+            <AdminPreviewFieldControls fieldGroup="profile_basics" fieldName={field.name} onEdit={onEdit} onProfileFieldUpdate={onProfileFieldUpdate} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function AdminPreviewLinkList({
+  links,
+  onEdit,
+  onPublishedItemUpdate,
+  title
+}: {
+  links: NonNullable<PublicProfileSnapshot["evidenceLinks"]>;
+  onEdit?: () => void;
+  onPublishedItemUpdate?: PublishedItemUpdateHandler;
+  title: string;
+}) {
+  return (
+    <div className="portfolio-panel-block">
+      <p className="section-kicker">{title}</p>
+      <ul className="portfolio-mini-link-list">
+        {links.map((link) => (
+          <li className="admin-preview-item compact" key={link.id}>
+            <a href={link.url} rel="noreferrer" target="_blank">{link.label || link.url}</a>
+            <AdminPreviewControls itemId={link.id} itemType="evidence" onEdit={onEdit} onPublishedItemUpdate={onPublishedItemUpdate} visibility={link.visibility} />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -1843,6 +1677,31 @@ function ChipList({ items }: { items: string[] }) {
       ))}
     </div>
   );
+}
+
+function publicFieldEntries(values: Record<string, string> | undefined, labels: Record<string, string>) {
+  if (!values) {
+    return [];
+  }
+  return Object.entries(labels)
+    .map(([name, label]) => ({ label, name, value: values[name] ?? "" }))
+    .filter((field) => field.value.trim().length > 0);
+}
+
+function publicFieldEntry(values: Record<string, string> | undefined, name: string, label: string) {
+  const value = values?.[name] ?? "";
+  return value.trim().length ? { label, name, value } : null;
+}
+
+function splitPreviewList(value: string) {
+  return value.split(/[;\n,]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function joinDates(start?: string | null, end?: string | null) {
+  if (start && end) {
+    return `${start} - ${end}`;
+  }
+  return start || end || "";
 }
 
 function AdminPreviewControls({
@@ -1860,7 +1719,7 @@ function AdminPreviewControls({
   showArchive?: boolean;
   visibility: "private" | "public";
 }) {
-  const canArchive = showArchive && itemType !== "target-role";
+  const canArchive = showArchive;
   return (
     <div className="admin-preview-controls" aria-label="Public preview admin controls">
       <button
@@ -1888,30 +1747,39 @@ function AdminPreviewControls({
   );
 }
 
-function InternalContextSummary({
-  publishedItemCount,
-  publishedProfile,
-  publishedPublicItemCount
+function AdminPreviewFieldControls({
+  fieldGroup,
+  fieldName,
+  onEdit,
+  onProfileFieldUpdate
 }: {
-  publishedItemCount: number;
-  publishedProfile: PublishedProfileSnapshot | null;
-  publishedPublicItemCount: number;
+  fieldGroup: ProfileFieldState["group"];
+  fieldName: string;
+  onEdit?: () => void;
+  onProfileFieldUpdate?: ProfileFieldUpdateHandler;
 }) {
-  const internalOnlyCount = Math.max(0, publishedItemCount - publishedPublicItemCount);
   return (
-    <section className="profile-side-card">
-      <p className="eyebrow">Internal JobOps context</p>
-      <h3>Published knowledge active internally</h3>
-      <div className="profile-summary-grid compact">
-        <SummaryMetric label="Published" value={publishedItemCount} />
-        <SummaryMetric label="Private" value={internalOnlyCount || countVisibility(publishedProfile, "private")} />
-        <SummaryMetric label="Public" value={publishedPublicItemCount} />
-      </div>
-      <p className="profile-lifecycle-note">
-        Internal JobOps context includes published Private and published Public items. Generated items are reserved for
-        profile editing and review flows unless clearly labeled as pending review.
-      </p>
-    </section>
+    <div className="admin-preview-controls" aria-label="Public field preview admin controls">
+      <button
+        className="button-action"
+        disabled={!onProfileFieldUpdate}
+        onClick={() => onProfileFieldUpdate?.(fieldGroup, fieldName, { visibility: "private" })}
+        type="button"
+      >
+        Make private
+      </button>
+      <button className="button-action" disabled={!onEdit} onClick={onEdit} type="button">
+        Edit
+      </button>
+      <button
+        className="button-action subtle-danger"
+        disabled={!onProfileFieldUpdate}
+        onClick={() => onProfileFieldUpdate?.(fieldGroup, fieldName, { archive: true, lifecycleStatus: "published" })}
+        type="button"
+      >
+        Archive
+      </button>
+    </div>
   );
 }
 
@@ -2011,6 +1879,86 @@ function EditableField({
   );
 }
 
+function CompactEditableField({
+  label,
+  multiline = false,
+  onSave,
+  value
+}: {
+  label: string;
+  multiline?: boolean;
+  onSave?: (value: string) => Promise<boolean> | boolean | void;
+  value: string;
+}) {
+  const inputId = useId();
+  const [draftValue, setDraftValue] = useState(value);
+  const [status, setStatus] = useState<AutosaveStatus>("idle");
+  const baseline = useRef(value);
+  const inFlightValue = useRef<string | null>(null);
+
+  useEffect(() => {
+    baseline.current = value;
+    setDraftValue(value);
+    setStatus("idle");
+  }, [value]);
+
+  async function saveIfChanged() {
+    if (!onSave || draftValue === baseline.current || inFlightValue.current === draftValue) {
+      return;
+    }
+    const valueToSave = draftValue;
+    inFlightValue.current = valueToSave;
+    setStatus("saving");
+    try {
+      const result = await onSave(valueToSave);
+      if (result === false) {
+        setStatus("error");
+        return;
+      }
+      baseline.current = valueToSave;
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    } finally {
+      if (inFlightValue.current === valueToSave) {
+        inFlightValue.current = null;
+      }
+    }
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    if (!multiline && event.key === "Enter") {
+      event.preventDefault();
+      void saveIfChanged();
+      return;
+    }
+    if (multiline && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void saveIfChanged();
+    }
+  }
+
+  const fieldProps = {
+    "aria-label": label,
+    id: inputId,
+    onBlur: () => void saveIfChanged(),
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setDraftValue(event.target.value);
+      setStatus("idle");
+    },
+    onKeyDown: handleKeyDown,
+    value: draftValue
+  };
+
+  return (
+    <div className="compact-field-editor">
+      <label className="visually-hidden" htmlFor={inputId}>{label}</label>
+      {multiline ? <textarea className="small-textarea" {...fieldProps} /> : <input {...fieldProps} />}
+      <SaveStatus status={status} />
+    </div>
+  );
+}
+
 function SaveStatus({ status }: { status: AutosaveStatus }) {
   if (status === "idle") {
     return null;
@@ -2058,7 +2006,7 @@ function ReviewActions({
   onDraftItemUpdate?: DraftItemUpdateHandler;
   showArchive?: boolean;
 }) {
-  const canArchive = showArchive && itemType !== "target-role";
+  const canArchive = showArchive;
   return (
     <div className="review-action-row">
       <button
@@ -2106,25 +2054,29 @@ function PublishedActions({
   showArchive?: boolean;
   visibility: "private" | "public";
 }) {
-  const canArchive = showArchive && itemType !== "target-role";
+  const canArchive = showArchive;
   return (
     <div className="review-action-row published-action-row">
-      <button
-        className="secondary-action button-action"
-        disabled={!onPublishedItemUpdate || visibility === "private"}
-        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "private" })}
-        type="button"
-      >
-        Make private
-      </button>
-      <button
-        className="secondary-action button-action"
-        disabled={!onPublishedItemUpdate || visibility === "public"}
-        onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "public" })}
-        type="button"
-      >
-        Make public
-      </button>
+      {visibility === "public" ? (
+        <button
+          className="secondary-action button-action"
+          disabled={!onPublishedItemUpdate}
+          onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "private" })}
+          type="button"
+        >
+          Make private
+        </button>
+      ) : null}
+      {visibility === "private" ? (
+        <button
+          className="secondary-action button-action"
+          disabled={!onPublishedItemUpdate}
+          onClick={() => onPublishedItemUpdate?.(itemType, itemId, { visibility: "public" })}
+          type="button"
+        >
+          Make public
+        </button>
+      ) : null}
       <button
         className="secondary-action button-action"
         disabled={!onEdit}
@@ -2253,6 +2205,7 @@ function buildArchivedReviewCounts(draft: MockProfileDraft | null): Record<Revie
 function buildFieldReviewCounts(profileFields?: ProfileFieldGroups | null): {
   generated: Partial<Record<ReviewTabId, number>>;
   published: Partial<Record<ReviewTabId, number>>;
+  public: Partial<Record<ReviewTabId, number>>;
   archived: Partial<Record<ReviewTabId, number>>;
 } {
   const basics = profileFields?.profileBasics ?? [];
@@ -2263,12 +2216,16 @@ function buildFieldReviewCounts(profileFields?: ProfileFieldGroups | null): {
       targets: targets.filter((field) => field.generated).length
     },
     published: {
-      basics: basics.filter((field) => field.published).length,
-      targets: targets.filter((field) => field.published).length
+      basics: basics.filter((field) => !field.generated && field.published?.visibility === "private").length,
+      targets: targets.filter((field) => !field.generated && field.published?.visibility === "private").length
+    },
+    public: {
+      basics: basics.filter((field) => field.published?.visibility === "public").length,
+      targets: targets.filter((field) => field.published?.visibility === "public").length
     },
     archived: {
-      basics: basics.reduce((count, field) => count + field.archived.length, 0),
-      targets: targets.reduce((count, field) => count + field.archived.length, 0)
+      basics: basics.reduce((count, field) => count + field.archived.filter(isDisplayableArchivedFieldValue).length, 0),
+      targets: targets.reduce((count, field) => count + field.archived.filter(isDisplayableArchivedFieldValue).length, 0)
     }
   };
 }
@@ -2325,17 +2282,6 @@ function buildProfileFieldActionMessage(patch: ProfileFieldPatch) {
     return "Profile field made private.";
   }
   return "Profile field saved.";
-}
-
-function targetFieldPatch(field: IntentField, value: string): DraftItemPatch {
-  if (field === "domainsOfInterest") {
-    return { domainsOrIndustries: value };
-  }
-  return { [field]: value } as DraftItemPatch;
-}
-
-function targetFieldDefaultVisibility(field: IntentField): BadgeableDraftItem["visibility"] {
-  return field === "constraints" ? "private" : "public";
 }
 
 function splitLines(value: string) {
@@ -2596,19 +2542,6 @@ function hasTargetRoleIntent(target?: PublicProfileSnapshot["targetRoleIntent"])
         target.domainsOrIndustries ?? ""
       ].some((value) => value.trim().length > 0)
   );
-}
-
-function countVisibility(profile: PublishedProfileSnapshot | null | undefined, visibility: "private" | "public") {
-  if (!profile) {
-    return 0;
-  }
-  return [
-    ...(profile.facts ?? []),
-    ...(profile.skillClaims ?? []),
-    ...(profile.experienceAndProjects ?? []),
-    ...(profile.evidenceLinks ?? []),
-    ...(profile.targetRoleIntent?.visibility ? [profile.targetRoleIntent] : [])
-  ].filter((item) => item.visibility === visibility).length;
 }
 
 function looksLikeAchievement(claim: string, category: string) {

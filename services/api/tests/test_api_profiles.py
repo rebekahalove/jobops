@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -849,6 +849,15 @@ def test_profile_contact_fields_accept_blank_values(monkeypatch) -> None:
             field = next(item for item in payload["profileFields"]["profileBasics"] if item["name"] == field_name)
             assert field["generated"]["value"] == ""
 
+    with Session(engine) as session:
+        rows = list(session.scalars(select(ProfileFieldValue).where(ProfileFieldValue.field_group == "profile_basics")))
+        assert {row.field_name: row.value_text for row in rows} == {
+            "emailAddress": "",
+            "telephoneNumber": "",
+            "calendlyLink": "",
+            "currentLocation": "",
+        }
+
 
 def test_target_field_publish_and_visibility_are_field_level(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
@@ -918,6 +927,67 @@ def test_target_field_publish_and_visibility_are_field_level(monkeypatch) -> Non
     assert private_payload["publicProfile"]["targetRoleIntent"] == {}
     target_title_field = next(field for field in private_payload["profileFields"]["targets"] if field["name"] == "targetTitles")
     assert target_title_field["published"]["visibility"] == "private"
+
+
+def test_archived_field_state_is_not_serialized_as_active_profile_content(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.profile_fields import field_rows_snapshot
+    from jobops_api.profiles import candidate_profile_to_public_dict, candidate_profile_to_published_dict
+
+    with Session(engine) as session:
+        profile = seed_public_profile(
+            session,
+            {
+                "slug": "chance-alpha",
+                "displayName": "Chance Alpha",
+                "headline": "Legacy headline",
+                "summary": "Legacy summary",
+                "profileStatus": "published",
+            },
+        )
+        archived_headline = ProfileFieldValue(
+            candidate_profile_id=profile.id,
+            field_group="profile_basics",
+            field_name="headline",
+            value_text="Archived headline",
+            source="user",
+            lifecycle_status="archived",
+            archive_reason="dismissed",
+        )
+        archived_target = ProfileFieldValue(
+            candidate_profile_id=profile.id,
+            field_group="targets",
+            field_name="targetTitles",
+            value_text="Archived target",
+            source="user",
+            lifecycle_status="archived",
+            archive_reason="dismissed",
+        )
+        session.add_all([archived_headline, archived_target])
+        session.commit()
+
+        snapshot = field_rows_snapshot(session, profile)
+        headline = next(field for field in snapshot["profileBasics"] if field["name"] == "headline")
+        target_titles = next(field for field in snapshot["targets"] if field["name"] == "targetTitles")
+        public_payload = candidate_profile_to_public_dict(profile)
+        published_payload = candidate_profile_to_published_dict(profile)
+
+    assert headline["published"] is None
+    assert headline["archived"][0]["value"] == "Archived headline"
+    assert target_titles["published"] is None
+    assert target_titles["archived"][0]["value"] == "Archived target"
+    assert public_payload["headline"] == ""
+    assert public_payload["targetRoleIntent"] == {}
+    assert published_payload["headline"] == ""
+    assert published_payload["targetRoleIntent"] == {}
 
 
 class app_with_session:
