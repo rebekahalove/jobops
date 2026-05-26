@@ -45,6 +45,24 @@ describe("dashboard auth gate", () => {
     });
   });
 
+  it("returns JSON 401 for mounted command-center stream requests without a valid session", async () => {
+    const response = await gateDashboardRequest(new NextRequest("http://next.test/jobops/api/command-center/stream"), {
+      dashboardBasePath: "/jobops",
+      env: configuredEnv,
+      loginPath: "/jobops/login"
+    });
+
+    if (!response) {
+      throw new Error("Expected dashboard gate response.");
+    }
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "JobOps authentication is required."
+    });
+  });
+
   it("returns JSON 401 for protected API proxy paths with a stale session instead of redirecting to login HTML", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";

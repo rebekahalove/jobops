@@ -236,6 +236,24 @@ describe("AI command center", () => {
     expect(source).not.toContain("generateContent");
   });
 
+  it("mounts the portfolio-hosted command-center stream wrapper on the standalone JobOps route", async () => {
+    const wrapperSource = await readFile(
+      new URL("../../portfolio/app/jobops/api/command-center/stream/route.ts", import.meta.url),
+      "utf-8"
+    );
+    const standaloneSource = await readFile(new URL("../app/api/command-center/stream/route.ts", import.meta.url), "utf-8");
+
+    expect(wrapperSource).toContain(
+      'export { POST } from "../../../../../../jobops/app/api/command-center/stream/route"'
+    );
+    expect(wrapperSource).toContain('export const runtime = "nodejs"');
+    expect(standaloneSource).toContain("/v1/command-center/commands/stream");
+    expect(standaloneSource).toContain("Command-center stream proxy request.");
+    expect(standaloneSource).toContain("commandLength");
+    expect(standaloneSource).not.toContain("latestUserMessage");
+    expect(standaloneSource).not.toContain("userMessage");
+  });
+
   it("keeps model calls out of Next.js command-center code", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
     const routeSource = await readFile(new URL("../app/api/command-center/route.ts", import.meta.url), "utf-8");

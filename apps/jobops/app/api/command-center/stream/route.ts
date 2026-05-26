@@ -5,6 +5,7 @@ import { getJobOpsApiServerConfig } from "../../../../lib/server-env";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
   let body: unknown;
 
   try {
@@ -45,7 +46,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/commands/stream`, {
+    const apiUrl = `${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/commands/stream`;
+    console.info("Command-center stream proxy request.", {
+      activeWorkspace: validation.value.activeWorkspace ?? null,
+      commandLength: validation.value.command.length,
+      requestId,
+      requestPath: new URL(request.url).pathname,
+      upstreamPath: "/v1/command-center/commands/stream"
+    });
+    const apiResponse = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -58,8 +67,20 @@ export async function POST(request: Request) {
         client_context: validation.value.clientContext ?? {}
       })
     });
+    console.info("Command-center stream proxy response.", {
+      contentType: apiResponse.headers.get("content-type") || null,
+      ok: apiResponse.ok,
+      requestId,
+      status: apiResponse.status,
+      upstreamPath: "/v1/command-center/commands/stream"
+    });
 
     if (!apiResponse.body) {
+      console.error("Command-center stream API returned no response body.", {
+        contentType: apiResponse.headers.get("content-type") || null,
+        requestId,
+        status: apiResponse.status
+      });
       return NextResponse.json(
         {
           ok: false,
@@ -76,7 +97,13 @@ export async function POST(request: Request) {
       },
       status: apiResponse.status
     });
-  } catch {
+  } catch (error) {
+    console.error("Command-center stream API proxy request failed.", {
+      error: error instanceof Error ? error.message : String(error),
+      requestId,
+      requestPath: new URL(request.url).pathname,
+      upstreamPath: "/v1/command-center/commands/stream"
+    });
     return NextResponse.json(
       {
         ok: false,

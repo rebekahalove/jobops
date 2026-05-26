@@ -5,6 +5,7 @@ import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
   let body: unknown;
 
   try {
@@ -39,7 +40,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/commands`, {
+    const apiUrl = `${config.apiBaseUrl.replace(/\/$/, "")}/v1/command-center/commands`;
+    console.info("Command-center proxy request.", {
+      activeWorkspace: validation.value.activeWorkspace ?? null,
+      commandLength: validation.value.command.length,
+      requestId,
+      requestPath: new URL(request.url).pathname,
+      upstreamPath: "/v1/command-center/commands"
+    });
+    const apiResponse = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -53,9 +62,18 @@ export async function POST(request: Request) {
       })
     });
     const payload = await readJsonPayload(apiResponse);
+    const responseContentType = apiResponse.headers.get("content-type");
+    console.info("Command-center proxy response.", {
+      contentType: responseContentType || null,
+      ok: apiResponse.ok,
+      requestId,
+      status: apiResponse.status,
+      upstreamPath: "/v1/command-center/commands"
+    });
     if (!payload.ok) {
       console.error("Command-center API returned a non-JSON response.", {
         contentType: payload.contentType || "unknown",
+        requestId,
         status: apiResponse.status
       });
       return NextResponse.json(
@@ -81,7 +99,13 @@ export async function POST(request: Request) {
       },
       { status: apiResponse.status }
     );
-  } catch {
+  } catch (error) {
+    console.error("Command-center API proxy request failed.", {
+      error: error instanceof Error ? error.message : String(error),
+      requestId,
+      requestPath: new URL(request.url).pathname,
+      upstreamPath: "/v1/command-center/commands"
+    });
     return NextResponse.json(
       {
         ok: false,
