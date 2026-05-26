@@ -7,7 +7,18 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFact, ProfileFactDraft, ProfileFieldValue, ProfileIntakeSession, RoleTarget, SkillClaim
+from jobops_api.db.models import (
+    Base,
+    EvidenceArtifact,
+    ExperienceProjectDraft,
+    ProfileFact,
+    ProfileFactDraft,
+    ProfileFieldValue,
+    ProfileIntakeEvent,
+    ProfileIntakeSession,
+    RoleTarget,
+    SkillClaim,
+)
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -304,6 +315,231 @@ def test_profile_item_lifecycle_publishes_and_archives_individual_drafts(monkeyp
         "Public item-by-item fact.",
     ]
     assert final_payload["archivedItemCount"] == 1
+
+
+def test_dev_profile_item_clear_deletes_only_current_users_profile_items(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        alpha = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        other = seed_initial_user(
+            session,
+            email="other@example.com",
+            username="other-alpha",
+            display_name="Other Alpha",
+            password="other alpha password",
+            password_reset_required=False,
+        )
+        alpha.candidate_profile.profile_status = "published"
+        intake_session = ProfileIntakeSession(
+            candidate_profile_id=alpha.candidate_profile.id,
+            status="active",
+            redacted_state={"latestDraftSnapshot": {"draftFacts": [{"id": "stale", "claim": "Stale snapshot"}]}},
+        )
+        session.add(intake_session)
+        session.flush()
+        session.add_all(
+            [
+                ProfileFieldValue(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    field_group="profile_basics",
+                    field_name="headline",
+                    value_text="Generated headline",
+                    source="model",
+                    lifecycle_status="generated",
+                ),
+                ProfileFact(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    fact_type="impact",
+                    claim="Published fact.",
+                    structured_value={},
+                    source="resume",
+                    visibility="public",
+                    verification_status="published",
+                ),
+                ProfileFactDraft(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    profile_intake_session_id=intake_session.id,
+                    claim="Generated fact.",
+                    fact_type="impact",
+                    structured_value={"published": False},
+                    source="model",
+                    confidence="unknown",
+                    suggested_visibility="private",
+                    review_status="needs_review",
+                ),
+                SkillClaim(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    profile_intake_session_id=intake_session.id,
+                    skill_name="Archived skill",
+                    skill_category="ai_systems",
+                    source="model",
+                    visibility="private",
+                    verification_status="rejected",
+                    publication_status="archived",
+                ),
+                ExperienceProjectDraft(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    profile_intake_session_id=intake_session.id,
+                    title="Published project",
+                    summary="Published summary.",
+                    source="model",
+                    visibility="private",
+                    review_status="reviewed",
+                    publication_status="published",
+                    structured_value={"itemType": "project"},
+                ),
+                EvidenceArtifact(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    profile_intake_session_id=intake_session.id,
+                    artifact_type="link",
+                    label="Generated link",
+                    uri="https://example.com",
+                    source="model",
+                    visibility="private",
+                    review_status="needs_review",
+                    publication_status="not_published",
+                ),
+                RoleTarget(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    profile_intake_session_id=intake_session.id,
+                    target_titles=["AI Engineer"],
+                    source="model",
+                    review_status="needs_review",
+                    visibility="private",
+                    publication_status="not_published",
+                    is_active=True,
+                ),
+                ProfileIntakeEvent(
+                    candidate_profile_id=alpha.candidate_profile.id,
+                    session_id=intake_session.id,
+                    role="assistant",
+                    event_type="message",
+                    redacted_text="Generated item event.",
+                ),
+                ProfileFieldValue(
+                    candidate_profile_id=other.candidate_profile.id,
+                    field_group="profile_basics",
+                    field_name="headline",
+                    value_text="Other headline",
+                    source="model",
+                    lifecycle_status="generated",
+                ),
+                ProfileFactDraft(
+                    candidate_profile_id=other.candidate_profile.id,
+                    claim="Other generated fact.",
+                    fact_type="impact",
+                    structured_value={"published": False},
+                    source="model",
+                    confidence="unknown",
+                    suggested_visibility="private",
+                    review_status="needs_review",
+                ),
+            ]
+        )
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        alpha_profile_id = alpha.candidate_profile.id
+        other_profile_id = other.candidate_profile.id
+        session.commit()
+
+    with app_with_session(engine):
+        response = TestClient(app).delete(
+            "/v1/profile/items",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["result"]
+    assert payload["profile"]["profileStatus"] == "draft"
+    assert payload["publishedItemCount"] == 0
+    assert payload["publishedPublicItemCount"] == 0
+    assert payload["archivedItemCount"] == 0
+    assert payload["draft"]["draftFacts"] == []
+    assert payload["draft"]["statusSummary"] == "No profile intake draft has been saved yet."
+    assert payload["devTools"]["profileItemClearEnabled"] is True
+
+    with Session(engine) as session:
+        for model in (
+            ProfileFieldValue,
+            ProfileFact,
+            ProfileFactDraft,
+            SkillClaim,
+            ExperienceProjectDraft,
+            EvidenceArtifact,
+            RoleTarget,
+            ProfileIntakeEvent,
+            ProfileIntakeSession,
+        ):
+            assert session.scalar(select(model.id).where(model.candidate_profile_id == alpha_profile_id).limit(1)) is None
+        assert session.scalar(select(ProfileFieldValue.id).where(ProfileFieldValue.candidate_profile_id == other_profile_id).limit(1))
+        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == other_profile_id).limit(1))
+
+
+def test_profile_item_clear_is_blocked_outside_dev(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=auth.candidate_profile.id,
+                claim="Keep this fact.",
+                fact_type="impact",
+                structured_value={"published": False},
+                source="model",
+                confidence="unknown",
+                suggested_visibility="private",
+                review_status="needs_review",
+            )
+        )
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        profile_id = auth.candidate_profile.id
+        session.commit()
+
+    with app_with_session(engine):
+        response = TestClient(app).delete(
+            "/v1/profile/items",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Profile item clearing is only available in dev."
+    with Session(engine) as session:
+        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == profile_id).limit(1))
 
 
 def test_profile_item_autosave_values_flow_into_publish_and_archive(monkeypatch) -> None:
