@@ -1,11 +1,19 @@
-export function InviteAcceptForm({ basePath = "", token }: { basePath?: "" | "/jobops"; token: string }) {
+export function InviteAcceptForm({
+  actionPath = "/api/invites/accept",
+  basePath = "",
+  token
+}: {
+  actionPath?: string;
+  basePath?: "" | "/jobops";
+  token: string;
+}) {
   return (
     <main className="login-shell">
       <section className="login-panel" aria-labelledby="jobops-invite-title">
         <p className="eyebrow">JobOps alpha invite</p>
         <h1 id="jobops-invite-title">Accept your workspace invite</h1>
         <p>Create your private JobOps alpha account.</p>
-        <form action={`${basePath}/api/invites/accept`} className="login-form" method="post">
+        <form action={`${basePath}${actionPath}`} className="login-form" method="post">
           <input name="token" type="hidden" value={token} />
           <label>
             <span>Display name</span>

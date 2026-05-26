@@ -39,6 +39,8 @@ def test_seed_initial_user_cli_passes_password_and_reset_flag(monkeypatch):
             "password": "example initial password",
             "require_reset": False,
             "workspace_slug": "rebekah-love",
+            "user_type": "user",
+            "update_existing": False,
         }
     ]
 
@@ -69,3 +71,34 @@ def test_seed_initial_user_cli_can_prompt_for_password(monkeypatch):
 
     assert calls[0]["password"] == "example prompted password"
     assert calls[0]["require_reset"] is True
+    assert calls[0]["user_type"] == "user"
+    assert calls[0]["update_existing"] is False
+
+
+def test_seed_initial_user_cli_requires_explicit_admin_flag(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "seed-initial-user",
+            "--email",
+            "admin@example.com",
+            "--username",
+            "admin-user",
+            "--name",
+            "Admin User",
+            "--password",
+            "example initial password",
+            "--admin",
+            "--update-existing",
+        ],
+    )
+    monkeypatch.setattr(cli, "seed_initial_user_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls[0]["user_type"] == "admin"
+    assert calls[0]["update_existing"] is True

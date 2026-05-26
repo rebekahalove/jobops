@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .applications import router as applications_router
+from .admin_routes import admin_router, invitation_router
 from .auth_routes import router as auth_router
 from .auth import AuthContext, require_auth_context
 from .company_discovery import router as companies_router
@@ -39,7 +40,7 @@ def configure_cors(api_app: FastAPI, *, allowed_origins: tuple[str, ...]) -> Non
     api_app.add_middleware(
         CORSMiddleware,
         allow_origins=list(allowed_origins),
-        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", INTERNAL_API_KEY_HEADER],
     )
 
@@ -55,12 +56,14 @@ app = FastAPI(
 
 configure_cors(app, allowed_origins=settings.cors_origins)
 app.include_router(applications_router)
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
 app.include_router(profile_review_router)
 app.include_router(public_candidate_agent_router)
 app.include_router(public_jobops_router)
+app.include_router(invitation_router)
 
 
 class CandidateQuestionRequest(BaseModel):

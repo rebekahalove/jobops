@@ -17,13 +17,13 @@ def send_invite_email(settings: Settings, *, to_email: str, invite_url: str) -> 
     message = EmailMessage()
     message["From"] = settings.smtp_from_email
     message["To"] = to_email
-    message["Subject"] = "Create your JobOps alpha account"
+    message["Subject"] = "You're invited to JobOps Alpha"
     message.set_content(
         "\n".join(
             [
-                "You have been invited to create a JobOps alpha account.",
+                "You've been invited to try JobOps Alpha.",
                 "",
-                f"Create your account here: {invite_url}",
+                f"Use this secure link to create your account: {invite_url}",
                 "",
                 "This link expires and can only be used once.",
             ]

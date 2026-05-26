@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AiCommandCenter } from "./ai-command-center";
 import { dashboardWorkflows } from "../lib/workflows";
 import { getWorkspaceRoute } from "../lib/command-center-actions";
@@ -19,16 +19,23 @@ export function DashboardShell({
   apiBasePath = "/api",
   appMetadata = FALLBACK_JOBOPS_APP_METADATA,
   basePath = "",
+  enableAdminNav,
+  isAdmin = false,
   children
 }: Readonly<{
   apiBasePath?: string;
   appMetadata?: JobOpsAppMetadata;
   basePath?: string;
+  enableAdminNav?: boolean;
+  isAdmin?: boolean;
   children: React.ReactNode;
 }>) {
   const pathname = usePathname();
   const isPublicPath = isPublicDashboardPath(pathname, basePath);
   const isAccountPath = isAccountDashboardPath(pathname, basePath);
+  const isAdminPath = isAdminDashboardPath(pathname, basePath);
+  const allowAdminNav = enableAdminNav ?? basePath === "";
+  const showAdminNav = useAdminNavigation({ apiBasePath, enabled: allowAdminNav && !isPublicPath, initialIsAdmin: allowAdminNav && isAdmin });
 
   useSessionValidityRedirect({ apiBasePath, basePath, enabled: !isPublicPath, pathname });
 
@@ -41,10 +48,10 @@ export function DashboardShell({
     );
   }
 
-  if (isAccountPath) {
+  if (isAccountPath || isAdminPath) {
     return (
       <div className="dashboard-shell account-shell">
-        <TopBar basePath={basePath} />
+        <TopBar basePath={basePath} isAdmin={showAdminNav} />
         {children}
         <DashboardFooter appMetadata={appMetadata} basePath={basePath} />
       </div>
@@ -53,7 +60,7 @@ export function DashboardShell({
 
   return (
     <div className="dashboard-shell">
-      <TopBar basePath={basePath} />
+      <TopBar basePath={basePath} isAdmin={showAdminNav} />
       <div className="command-shell">
         <AiCommandCenter
           activeWorkspace={activeWorkspaceFromPathname(pathname, basePath)}
@@ -85,7 +92,7 @@ export function DashboardShell({
   );
 }
 
-function TopBar({ basePath }: { basePath: string }) {
+function TopBar({ basePath, isAdmin }: { basePath: string; isAdmin: boolean }) {
   return (
     <header className="top-bar">
       <Link className="brand" href={basePath || "/"}>
@@ -102,6 +109,11 @@ function TopBar({ basePath }: { basePath: string }) {
         <Link className="top-bar-link" href={`${basePath}/account`}>
           Account
         </Link>
+        {isAdmin ? (
+          <Link className="top-bar-link" href={`${basePath}/admin/users`}>
+            Admin
+          </Link>
+        ) : null}
         <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
           <button className="logout-button" type="submit">
             Log out
@@ -189,6 +201,58 @@ function useSessionValidityRedirect({
   }, [apiBasePath, basePath, enabled, pathname]);
 }
 
+function useAdminNavigation({
+  apiBasePath,
+  enabled,
+  initialIsAdmin
+}: {
+  apiBasePath: string;
+  enabled: boolean;
+  initialIsAdmin: boolean;
+}) {
+  const [isAdmin, setIsAdmin] = useState(initialIsAdmin);
+
+  useEffect(() => {
+    setIsAdmin(initialIsAdmin);
+  }, [initialIsAdmin]);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function checkAdminStatus() {
+      try {
+        const response = await fetch(`${apiBasePath}/me`, {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+        if (!response.ok || isCancelled) {
+          return;
+        }
+        const payload = await response.json();
+        if (!isCancelled) {
+          setIsAdmin(payload?.result?.user?.userType === "admin");
+        }
+      } catch {
+        if (!isCancelled) {
+          setIsAdmin(initialIsAdmin);
+        }
+      }
+    }
+
+    checkAdminStatus();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [apiBasePath, enabled, initialIsAdmin]);
+
+  return isAdmin;
+}
+
 function redirectToLogin(basePath: string, pathname: string | null) {
   const loginUrl = new URL(`${basePath}/login`, window.location.origin);
   loginUrl.searchParams.set("returnTo", pathname || basePath || "/");
@@ -215,6 +279,7 @@ function isPublicDashboardPath(pathname: string | null, basePath: string) {
     localPath === "/login" ||
     localPath === "/reset-password" ||
     localPath === "/forgot-password" ||
+    localPath === "/accept-invite" ||
     localPath === "/privacy" ||
     localPath.startsWith("/invite/") ||
     localPath === "/portfolio" ||
@@ -229,6 +294,15 @@ function isAccountDashboardPath(pathname: string | null, basePath: string) {
 
   const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
   return localPath === "/account" || localPath.startsWith("/account/");
+}
+
+function isAdminDashboardPath(pathname: string | null, basePath: string) {
+  if (!pathname) {
+    return false;
+  }
+
+  const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
+  return localPath === "/admin" || localPath.startsWith("/admin/");
 }
 
 export function isActiveWorkspace(pathname: string | null, href: string) {

@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,6 +36,7 @@ class User(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_users_email", "email", unique=True),
         Index("ix_users_username", "username", unique=True),
+        CheckConstraint("user_type IN ('user', 'admin')", name="ck_users_user_type"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -46,10 +47,15 @@ class User(Base, TimestampMixin):
     password_reset_required: Mapped[bool] = mapped_column(Boolean, default=False)
     password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="active")
+    user_type: Mapped[str] = mapped_column(String(40), default="user")
 
     memberships: Mapped[list[WorkspaceMembership]] = relationship(back_populates="user", cascade="all, delete-orphan")
     sessions: Mapped[list[UserSession]] = relationship(back_populates="user", cascade="all, delete-orphan")
     password_reset_tokens: Mapped[list[PasswordResetToken]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    alpha_invitations_sent: Mapped[list[AlphaInvitation]] = relationship(
+        foreign_keys="AlphaInvitation.invited_by_user_id",
+        back_populates="invited_by",
+    )
 
 
 class WorkspaceMembership(Base, TimestampMixin):
@@ -93,13 +99,44 @@ class AlphaAccessRequest(Base):
     __tablename__ = "alpha_access_requests"
     __table_args__ = (
         Index("ix_alpha_access_requests_email_created", "email", "created_at"),
+        Index("ix_alpha_access_requests_status_created", "status", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200))
     email: Mapped[str] = mapped_column(String(320))
     note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    invitation_id: Mapped[str | None] = mapped_column(ForeignKey("alpha_invitations.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    invitation: Mapped[AlphaInvitation | None] = relationship(back_populates="access_requests")
+
+
+class AlphaInvitation(Base, TimestampMixin):
+    __tablename__ = "alpha_invitations"
+    __table_args__ = (
+        Index("ix_alpha_invitations_token_hash", "token_hash", unique=True),
+        Index("ix_alpha_invitations_email_status", "email", "status"),
+        CheckConstraint("status IN ('pending', 'accepted', 'expired', 'revoked')", name="ck_alpha_invitations_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(320))
+    token_hash: Mapped[str] = mapped_column(String(64))
+    invited_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    invited_by: Mapped[User | None] = relationship(
+        foreign_keys=[invited_by_user_id],
+        back_populates="alpha_invitations_sent",
+    )
+    created_user: Mapped[User | None] = relationship(foreign_keys=[created_user_id])
+    access_requests: Mapped[list[AlphaAccessRequest]] = relationship(back_populates="invitation")
 
 
 class UserSession(Base):

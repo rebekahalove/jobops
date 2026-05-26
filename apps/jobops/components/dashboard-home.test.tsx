@@ -58,6 +58,23 @@ describe("JobOps dashboard shell", () => {
     expect(html).toContain('href="/applications"');
   });
 
+  it("shows the Admin navigation link only for admin users", () => {
+    const normalHtml = renderToStaticMarkup(
+      <DashboardShell>
+        <DashboardHome />
+      </DashboardShell>
+    );
+    const adminHtml = renderToStaticMarkup(
+      <DashboardShell isAdmin>
+        <DashboardHome />
+      </DashboardShell>
+    );
+
+    expect(normalHtml).not.toContain('href="/admin/users"');
+    expect(adminHtml).toContain('href="/admin/users"');
+    expect(adminHtml).toContain("Admin");
+  });
+
   it("marks the current workspace tab as active", () => {
     const html = renderToStaticMarkup(
       <DashboardShell>
@@ -82,6 +99,23 @@ describe("JobOps dashboard shell", () => {
 
     expect(html).toContain("Manage your JobOps alpha account.");
     expect(html).toContain('href="/account"');
+    expect(html).toContain("Log out");
+    expect(html).not.toContain("Workspace tabs");
+    expect(html).not.toContain("Active workspace content");
+  });
+
+  it("renders admin pages outside the command center workspace chrome", () => {
+    mockPathname = "/admin/users";
+    const html = renderToStaticMarkup(
+      <DashboardShell isAdmin>
+        <main className="admin-users-page">
+          <h1>Manage Users</h1>
+        </main>
+      </DashboardShell>
+    );
+
+    expect(html).toContain("Manage Users");
+    expect(html).toContain('href="/admin/users"');
     expect(html).toContain("Log out");
     expect(html).not.toContain("Workspace tabs");
     expect(html).not.toContain("Active workspace content");

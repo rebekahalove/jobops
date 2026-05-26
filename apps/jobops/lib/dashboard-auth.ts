@@ -54,6 +54,8 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
     isDashboardPublicPortfolioPath(pathname, dashboardBasePath) ||
     isDashboardPublicApiPath(pathname, dashboardBasePath) ||
     isDashboardInvitePath(pathname, dashboardBasePath) ||
+    isDashboardAcceptInvitePath(pathname, dashboardBasePath) ||
+    isDashboardInvitationAcceptRoute(pathname, dashboardBasePath) ||
     isDashboardPrivacyPath(pathname, dashboardBasePath) ||
     isDashboardPasswordResetPath(pathname, dashboardBasePath) ||
     isDashboardForgotPasswordPath(pathname, dashboardBasePath) ||
@@ -178,6 +180,14 @@ function isDashboardPublicApiPath(pathname: string, dashboardBasePath: "" | "/jo
 function isDashboardInvitePath(pathname: string, dashboardBasePath: "" | "/jobops") {
   const localPath = stripDashboardBasePath(pathname, dashboardBasePath);
   return localPath === "/invite" || localPath.startsWith("/invite/");
+}
+
+function isDashboardAcceptInvitePath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath) === "/accept-invite";
+}
+
+function isDashboardInvitationAcceptRoute(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath) === "/api/invitations/accept";
 }
 
 function isDashboardPrivacyPath(pathname: string, dashboardBasePath: "" | "/jobops") {
