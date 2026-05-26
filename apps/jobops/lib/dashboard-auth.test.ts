@@ -107,6 +107,22 @@ describe("dashboard auth gate", () => {
     expect(apiResponse).toBeUndefined();
   });
 
+  it("lets the standalone accept-invite flow through without a session", async () => {
+    const pageResponse = await gateDashboardRequest(new NextRequest("http://next.test/accept-invite?token=test"), {
+      dashboardBasePath: "",
+      env: configuredEnv,
+      loginPath: "/login"
+    });
+    const apiResponse = await gateDashboardRequest(new NextRequest("http://next.test/api/invitations/accept"), {
+      dashboardBasePath: "",
+      env: configuredEnv,
+      loginPath: "/login"
+    });
+
+    expect(pageResponse).toBeUndefined();
+    expect(apiResponse).toBeUndefined();
+  });
+
   it("lets requests with a backend session reach protected dashboard paths", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";

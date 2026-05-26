@@ -52,12 +52,32 @@ The Profile workspace at `/profile` includes command-center intake for resume te
 
 ## Alpha Operations
 
-Create a local alpha invite from the API service:
+Create the first admin user from the API service:
+
+```powershell
+cd services/api
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m jobops_api.cli seed-initial-user --email admin@example.com --username admin-user --name "Admin User" --prompt-password --require-reset --admin
+```
+
+Admin creation is explicit. Existing users are not silently promoted by the seed command; pass `--update-existing` only when intentionally repairing a seed user.
+
+To promote an existing active account directly in the database, edit and run:
+
+```text
+scripts/promote-jobops-admin.sql
+```
+
+After signing in as an admin in the standalone JobOps dashboard, use `Admin` in the main navigation to open `/admin/users`. The page lists pending alpha requests oldest first, sends manual invites, manages admin status, expires passwords with the reset email flow, and confirmation-gates user deletion.
+
+Legacy local alpha invite creation from the API service remains available for development:
 
 ```powershell
 cd services/api
 .\.venv\Scripts\python.exe -m jobops_api.cli create-alpha-invite --email user@example.com --base-url http://localhost:3002
 ```
+
+The admin invite flow sends one-time, expiring invitation links at `/accept-invite?token=...` and stores only token hashes in the database.
 
 To test session-aware alpha landing locally:
 

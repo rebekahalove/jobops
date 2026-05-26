@@ -6,7 +6,7 @@ import getpass
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from jobops_api.auth import create_alpha_invite, seed_initial_user
+from jobops_api.auth import USER_TYPE_ADMIN, USER_TYPE_USER, create_alpha_invite, normalize_email, normalize_user_type, seed_initial_user
 from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, CommandInteractionLog, JobRole, TargetCompany, Tenant, User, UserSession, WorkspaceMembership
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
@@ -41,6 +41,8 @@ def main() -> None:
     bootstrap_parser.add_argument("--prompt-password", action="store_true")
     bootstrap_parser.add_argument("--require-reset", action=argparse.BooleanOptionalAction, default=True)
     bootstrap_parser.add_argument("--workspace-slug", default=None)
+    bootstrap_parser.add_argument("--admin", action="store_true", help="Create or repair the user as an admin. Must be explicit.")
+    bootstrap_parser.add_argument("--user-type", choices=[USER_TYPE_USER, USER_TYPE_ADMIN], default=USER_TYPE_USER, help="User type to assign. Defaults to user.")
 
     seed_user_parser = subparsers.add_parser("seed-initial-user", help="Seed the initial persisted alpha user/workspace/profile.")
     seed_user_parser.add_argument("--email", required=True)
@@ -50,6 +52,9 @@ def main() -> None:
     seed_user_parser.add_argument("--prompt-password", action="store_true")
     seed_user_parser.add_argument("--require-reset", action=argparse.BooleanOptionalAction, default=True)
     seed_user_parser.add_argument("--workspace-slug", default=None)
+    seed_user_parser.add_argument("--admin", action="store_true", help="Create the user as an admin. Must be explicit; never defaults on.")
+    seed_user_parser.add_argument("--user-type", choices=[USER_TYPE_USER, USER_TYPE_ADMIN], default=USER_TYPE_USER, help="User type to assign. Defaults to user.")
+    seed_user_parser.add_argument("--update-existing", action="store_true", help="Allow updating an existing matching seed user instead of failing.")
 
     inspect_parser = subparsers.add_parser("inspect-alpha-workspaces", help="Print users, workspaces, and profile ids.")
     inspect_parser.add_argument("--workspace-slug", default=None)
@@ -77,6 +82,8 @@ def main() -> None:
             password=resolve_password_arg(args.password, args.prompt_password),
             require_reset=args.require_reset,
             workspace_slug=args.workspace_slug,
+            user_type=resolve_user_type_args(args.admin, args.user_type),
+            update_existing=True,
         )
     elif args.command == "seed-initial-user":
         seed_initial_user_command(
@@ -86,6 +93,8 @@ def main() -> None:
             password=resolve_password_arg(args.password, args.prompt_password),
             require_reset=args.require_reset,
             workspace_slug=args.workspace_slug,
+            user_type=resolve_user_type_args(args.admin, args.user_type),
+            update_existing=args.update_existing,
         )
     elif args.command == "inspect-alpha-workspaces":
         inspect_alpha_workspaces_command(workspace_slug=args.workspace_slug)
@@ -115,26 +124,40 @@ def create_alpha_invite_command(*, email: str, name: str | None, workspace_slug:
             created_by=created_by,
         )
         session.commit()
-        invite_url = f"{base_url.rstrip('/')}/invite/{created.raw_token}"
         print(f"Invite created for {created.invite.email}")
         print(f"Expires at: {created.invite.expires_at.isoformat() if created.invite.expires_at else 'never'}")
-        print(f"Invite URL: {invite_url}")
+        print("Invite token was generated and stored hashed; it is not printed by the CLI.")
 
 
-def seed_initial_user_command(*, email: str, username: str, name: str, password: str, require_reset: bool, workspace_slug: str | None) -> None:
+def seed_initial_user_command(
+    *,
+    email: str,
+    username: str,
+    name: str,
+    password: str,
+    require_reset: bool,
+    workspace_slug: str | None,
+    user_type: str = USER_TYPE_USER,
+    update_existing: bool = False,
+) -> None:
     engine = create_db_engine()
     with Session(engine) as session:
+        normalized_email = normalize_email(email)
+        existing = session.scalar(select(User).where((User.email == normalized_email) | (User.username == username.strip().casefold())))
+        if existing is not None and not update_existing:
+            raise SystemExit("User already exists. Re-run with --update-existing if you intend to repair this seed user.")
         auth = seed_initial_user(
             session,
-            email=email,
+            email=normalized_email,
             username=username,
             display_name=name,
             password=password,
             password_reset_required=require_reset,
             workspace_slug=workspace_slug,
+            user_type=normalize_user_type(user_type),
         )
         session.commit()
-        print(f"User: {auth.user.username} <{auth.user.email}> ({auth.user.id})")
+        print(f"User: {auth.user.username} <{auth.user.email}> ({auth.user.id}) type={auth.user.user_type}")
         print(f"Workspace: {auth.tenant.slug} ({auth.tenant.id})")
         print(f"Candidate profile: {auth.candidate_profile.slug} ({auth.candidate_profile.id})")
 
@@ -149,6 +172,14 @@ def resolve_password_arg(password: str | None, prompt_password: bool) -> str:
             raise SystemExit("Passwords did not match.")
         return first
     raise SystemExit("Password is required. Pass --password or use --prompt-password.")
+
+
+def resolve_user_type_args(admin: bool, user_type: str) -> str:
+    if admin and user_type != USER_TYPE_USER:
+        raise SystemExit("Use either --admin or --user-type admin, not both.")
+    if admin:
+        return USER_TYPE_ADMIN
+    return normalize_user_type(user_type)
 
 
 def inspect_alpha_workspaces_command(*, workspace_slug: str | None = None) -> None:

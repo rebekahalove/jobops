@@ -13,6 +13,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from jobops_api.db.models import (
+    AlphaAccessRequest,
+    AlphaInvitation,
     Application,
     ApplicationEvent,
     CandidateProfile,
@@ -45,10 +47,14 @@ SESSION_COOKIE_NAME = "jobops_session"
 SESSION_TTL = timedelta(hours=12)
 INVITE_TTL = timedelta(days=14)
 PASSWORD_RESET_TTL = timedelta(hours=1)
+ALPHA_INVITE_TTL = timedelta(days=14)
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,39}$")
 PASSWORD_HASH_VERSION = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 260_000
 MIN_PASSWORD_LENGTH = 12
+USER_TYPE_USER = "user"
+USER_TYPE_ADMIN = "admin"
+VALID_USER_TYPES = {USER_TYPE_USER, USER_TYPE_ADMIN}
 
 
 @dataclass(frozen=True)
@@ -83,6 +89,13 @@ class CreatedPasswordReset:
     raw_token: str
 
 
+@dataclass(frozen=True)
+class CreatedAlphaInvitation:
+    invitation: AlphaInvitation
+    raw_token: str
+    rotated_existing: bool
+
+
 def create_alpha_invite(
     session: Session,
     *,
@@ -105,6 +118,126 @@ def create_alpha_invite(
     session.add(invite)
     session.flush()
     return CreatedInvite(invite=invite, raw_token=raw_token)
+
+
+def create_or_rotate_alpha_invitation(
+    session: Session,
+    *,
+    email: str,
+    invited_by_user_id: str | None,
+    expires_at: datetime | None = None,
+) -> CreatedAlphaInvitation:
+    normalized_email = normalize_email(email)
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hash_token(raw_token)
+    expiration = expires_at or now_utc() + ALPHA_INVITE_TTL
+    existing = session.scalar(
+        select(AlphaInvitation)
+        .where(
+            AlphaInvitation.email == normalized_email,
+            AlphaInvitation.status == "pending",
+            AlphaInvitation.expires_at > now_utc(),
+        )
+        .order_by(AlphaInvitation.created_at.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        existing.token_hash = token_hash
+        existing.expires_at = expiration
+        existing.invited_by_user_id = invited_by_user_id
+        session.flush()
+        return CreatedAlphaInvitation(invitation=existing, raw_token=raw_token, rotated_existing=True)
+
+    invitation = AlphaInvitation(
+        email=normalized_email,
+        token_hash=token_hash,
+        invited_by_user_id=invited_by_user_id,
+        status="pending",
+        expires_at=expiration,
+    )
+    session.add(invitation)
+    session.flush()
+    return CreatedAlphaInvitation(invitation=invitation, raw_token=raw_token, rotated_existing=False)
+
+
+def mark_matching_alpha_request_invited(
+    session: Session,
+    *,
+    email: str,
+    invitation_id: str,
+) -> AlphaAccessRequest | None:
+    access_request = session.scalar(
+        select(AlphaAccessRequest)
+        .where(
+            AlphaAccessRequest.email == normalize_email(email),
+            AlphaAccessRequest.status == "pending",
+        )
+        .order_by(AlphaAccessRequest.created_at.asc())
+        .limit(1)
+    )
+    if access_request is None:
+        return None
+    access_request.status = "invited"
+    access_request.invited_at = now_utc()
+    access_request.invitation_id = invitation_id
+    session.flush()
+    return access_request
+
+
+def accept_alpha_invitation(
+    session: Session,
+    raw_token: str,
+    *,
+    username: str,
+    password: str,
+    display_name: str,
+) -> tuple[AuthContext, str]:
+    invitation = session.scalar(select(AlphaInvitation).where(AlphaInvitation.token_hash == hash_token(raw_token)))
+    if invitation is None or invitation.status != "pending" or invitation.accepted_at is not None:
+        raise HTTPException(status_code=404, detail="Invitation token was not found or is no longer valid.")
+    if aware_utc(invitation.expires_at) <= now_utc():
+        invitation.status = "expired"
+        session.flush()
+        raise HTTPException(status_code=410, detail="Invitation token has expired.")
+
+    normalized_username = normalize_username(username)
+    validate_password(password)
+    resolved_display_name = display_name.strip() or normalized_username
+
+    existing_user = session.scalar(select(User).where(User.email == invitation.email))
+    user = get_or_create_user(session, email=invitation.email, username=normalized_username, display_name=resolved_display_name)
+    user.password_hash = hash_password(password)
+    user.password_reset_required = False
+    user.password_expires_at = None
+    if existing_user is None:
+        user.user_type = USER_TYPE_USER
+    user.status = "active"
+    tenant = get_or_create_workspace(session, slug=normalized_username, display_name=resolved_display_name)
+    get_or_create_membership(session, user_id=user.id, tenant_id=tenant.id)
+    candidate_profile = get_or_create_workspace_profile(session, tenant=tenant, username=normalized_username, display_name=resolved_display_name)
+
+    invitation.status = "accepted"
+    invitation.accepted_at = now_utc()
+    invitation.created_user_id = user.id
+    for access_request in session.scalars(
+        select(AlphaAccessRequest).where(
+            (AlphaAccessRequest.invitation_id == invitation.id) | (AlphaAccessRequest.email == invitation.email),
+            AlphaAccessRequest.status.in_(["pending", "invited"]),
+        )
+    ):
+        access_request.status = "accepted"
+        access_request.invitation_id = invitation.id
+        if access_request.invited_at is None:
+            access_request.invited_at = invitation.created_at
+
+    auth_context, raw_session_token = create_session_for_user(
+        session,
+        user=user,
+        tenant=tenant,
+        candidate_profile=candidate_profile,
+    )
+    session.flush()
+    return auth_context, raw_session_token
 
 
 def accept_alpha_invite(
@@ -212,6 +345,12 @@ def require_auth_context(
     return auth_context
 
 
+def require_admin_context(auth_context: AuthContext = Depends(require_auth_context)) -> AuthContext:
+    if auth_context.user.user_type != USER_TYPE_ADMIN:
+        raise HTTPException(status_code=403, detail="JobOps admin access is required.")
+    return auth_context
+
+
 def revoke_session(session: Session, raw_session_token: str | None) -> None:
     if not raw_session_token:
         return
@@ -284,7 +423,7 @@ def get_or_create_user(session: Session, *, email: str, username: str, display_n
         user.display_name = display_name.strip() or user.display_name
         user.status = "active"
         return user
-    user = User(email=normalized_email, username=normalized_username, display_name=display_name.strip() or normalized_email)
+    user = User(email=normalized_email, username=normalized_username, display_name=display_name.strip() or normalized_email, user_type=USER_TYPE_USER)
     session.add(user)
     session.flush()
     return user
@@ -351,10 +490,13 @@ def seed_initial_user(
     password: str,
     password_reset_required: bool = True,
     workspace_slug: str | None = None,
+    user_type: str = USER_TYPE_USER,
 ) -> AuthContext:
     normalized_username = normalize_username(username)
+    normalized_user_type = normalize_user_type(user_type)
     validate_password(password)
     user = get_or_create_user(session, email=email, username=normalized_username, display_name=display_name)
+    user.user_type = normalized_user_type
     user.password_hash = hash_password(password)
     user.password_reset_required = password_reset_required
     user.password_expires_at = now_utc() if password_reset_required else None
@@ -377,6 +519,7 @@ def auth_context_to_dict(auth_context: AuthContext) -> dict[str, object]:
             "email": auth_context.user.email,
             "username": auth_context.user.username,
             "displayName": auth_context.user.display_name,
+            "userType": auth_context.user.user_type,
             "passwordResetRequired": auth_context.user.password_reset_required,
         },
         "workspace": {
@@ -400,6 +543,13 @@ def normalize_email(email: str) -> str:
     normalized = email.strip().casefold()
     if "@" not in normalized or len(normalized) > 320:
         raise HTTPException(status_code=400, detail="A valid email address is required.")
+    return normalized
+
+
+def normalize_user_type(user_type: str) -> str:
+    normalized = user_type.strip().casefold()
+    if normalized not in VALID_USER_TYPES:
+        raise HTTPException(status_code=400, detail="User type must be either 'user' or 'admin'.")
     return normalized
 
 
@@ -487,6 +637,18 @@ def create_password_reset_token(session: Session, *, identifier: str) -> Created
     if user is None:
         return None
 
+    raw_token = secrets.token_urlsafe(48)
+    token = PasswordResetToken(
+        token_hash=hash_token(raw_token),
+        user_id=user.id,
+        expires_at=now_utc() + PASSWORD_RESET_TTL,
+    )
+    session.add(token)
+    session.flush()
+    return CreatedPasswordReset(token=token, raw_token=raw_token)
+
+
+def create_password_reset_token_for_user(session: Session, *, user: User) -> CreatedPasswordReset:
     raw_token = secrets.token_urlsafe(48)
     token = PasswordResetToken(
         token_hash=hash_token(raw_token),
