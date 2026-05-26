@@ -43,6 +43,8 @@ export function getWorkspaceRoute(workspace: WorkspaceTab, basePath = "") {
   return `${basePath}${workspaceRoutes[workspace]}`;
 }
 
+const COMMAND_PREVIEW_MAX_CHARS = 180;
+
 export type ClassifiedCommand = {
   type: CommandCenterActionType;
   targetWorkspace?: WorkspaceTab;
@@ -134,7 +136,8 @@ export function classifyCommand(command: string): ClassifiedCommand {
     normalized.includes("with this project") ||
     normalized.includes("my experience") ||
     normalized.includes("my skills") ||
-    normalized.includes("resume")
+    normalized.includes("resume") ||
+    looksLikeResumeText(command)
   ) {
     return actionDetails.profile_intake;
   }
@@ -175,6 +178,7 @@ export function classifyCommand(command: string): ClassifiedCommand {
 export function createPlannedAction(command: string, id: string): PlannedCommandAction {
   const classified = classifyCommand(command);
   const workspace = classified.targetWorkspace ? formatWorkspaceLabel(classified.targetWorkspace) : "the command center";
+  const commandPreview = summarizeCommandForDisplay(command);
 
   return {
     id,
@@ -182,12 +186,44 @@ export function createPlannedAction(command: string, id: string): PlannedCommand
     title: classified.title,
     summary:
       classified.type === "unknown"
-        ? `JobOps captured "${command}" and needs a clearer workspace or action before it can route this.`
-        : `JobOps understood "${command}" as a planned ${classified.title.toLowerCase()} action for ${workspace}.`,
+        ? `JobOps captured ${commandPreview} and needs a clearer workspace or action before it can route this.`
+        : `JobOps understood ${commandPreview} as a planned ${classified.title.toLowerCase()} action for ${workspace}.`,
     status: "planned",
     targetWorkspace: classified.targetWorkspace,
     ctaLabel: classified.ctaLabel
   };
+}
+
+export function summarizeCommandForDisplay(command: string, maxLength = COMMAND_PREVIEW_MAX_CHARS): string {
+  const compact = command.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "this command";
+  }
+  if (compact.length <= maxLength) {
+    return `"${compact}"`;
+  }
+
+  const preview = compact.slice(0, Math.max(0, maxLength - 3)).trimEnd();
+  return `"${preview}..." (${compact.length.toLocaleString()} chars)`;
+}
+
+function looksLikeResumeText(command: string) {
+  const normalized = command.toLowerCase();
+  const signals = [
+    "professional summary",
+    "core skills",
+    "technical skills",
+    "professional experience",
+    "work experience",
+    "selected technical strengths",
+    "selected platform highlights",
+    "education",
+    "certification",
+    "linkedin.com/in/"
+  ];
+  const signalCount = signals.filter((signal) => normalized.includes(signal)).length;
+
+  return signalCount >= 2 || (command.length >= 1500 && signalCount >= 1);
 }
 
 export function formatWorkspaceLabel(workspace: WorkspaceTab): string {

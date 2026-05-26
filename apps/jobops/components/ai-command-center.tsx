@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   createPlannedAction,
   formatWorkspaceLabel,
   getWorkspaceRoute,
+  summarizeCommandForDisplay,
   type PlannedCommandAction,
   type WorkspaceTab
 } from "../lib/command-center-actions";
@@ -26,6 +27,10 @@ const starterPrompts = [
   "Which jobs should I apply to today?",
   "Generate materials for this application."
 ];
+
+const TRANSCRIPT_PREVIEW_MAX_CHARS = 520;
+const ACTION_SUMMARY_MAX_CHARS = 360;
+const SCROLL_BOTTOM_THRESHOLD_PX = 48;
 
 const initialMessages: CommandMessage[] = [
   {
@@ -51,7 +56,10 @@ export function AiCommandCenter({
   const [actions, setActions] = useState<PlannedCommandAction[]>(initialActions);
   const [attachmentStatus, setAttachmentStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const conversationRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickToBottomRef = useRef(true);
 
   const latestAction = actions[0];
   const transcriptLabel = useMemo(
@@ -59,8 +67,60 @@ export function AiCommandCenter({
     [latestAction]
   );
 
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    if (!conversation) {
+      return;
+    }
+
+    if (!shouldStickToBottomRef.current) {
+      setHasNewMessagesBelow(true);
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      scrollConversationToBottom();
+    });
+  }, [messages]);
+
+  function handleConversationScroll() {
+    const conversation = conversationRef.current;
+    if (!conversation) {
+      return;
+    }
+
+    const isAtBottom = isScrolledNearBottom(conversation);
+    shouldStickToBottomRef.current = isAtBottom;
+    if (isAtBottom) {
+      setHasNewMessagesBelow(false);
+    }
+  }
+
+  function scrollConversationToBottom() {
+    const conversation = conversationRef.current;
+    if (!conversation) {
+      return;
+    }
+
+    conversation.scrollTop = conversation.scrollHeight;
+    shouldStickToBottomRef.current = true;
+    setHasNewMessagesBelow(false);
+  }
+
+  function handleCommandKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmitting) {
+      return;
+    }
 
     const submittedCommand = command.trim();
     if (!submittedCommand) {
@@ -73,7 +133,7 @@ export function AiCommandCenter({
       {
         id: `user-${submissionId}`,
         role: "user",
-        text: submittedCommand
+        text: formatTranscriptMessage(submittedCommand)
       },
       {
         id: `agent-status-submitted-${submissionId}`,
@@ -211,13 +271,21 @@ export function AiCommandCenter({
       </div>
 
       <div className="command-center-grid">
-        <div className="command-conversation" aria-label={transcriptLabel}>
-          {messages.slice(-4).map((message) => (
-            <article className={`command-message ${message.role}`} key={message.id}>
-              <strong>{message.role === "agent" ? "JobOps agent" : "You"}</strong>
-              <p>{message.text}</p>
-            </article>
-          ))}
+        <div className="command-conversation-frame">
+          <div className="command-conversation" aria-label={transcriptLabel} onScroll={handleConversationScroll} ref={conversationRef}>
+            {messages.map((message) => (
+              <article className={`command-message ${message.role}`} key={message.id}>
+                {message.role === "user" ? <strong>You</strong> : null}
+                <p>{message.text}</p>
+              </article>
+            ))}
+          </div>
+          {hasNewMessagesBelow ? (
+            <button className="command-scroll-latest" onClick={scrollConversationToBottom} type="button">
+              &#8595;
+              <span className="visually-hidden">Scroll to latest message</span>
+            </button>
+          ) : null}
         </div>
 
         <aside className="agent-action-rail" aria-label="Agent action cards">
@@ -247,6 +315,7 @@ export function AiCommandCenter({
         <textarea
           id="jobops-command"
           onChange={(event) => setCommand(event.target.value)}
+          onKeyDown={handleCommandKeyDown}
           placeholder="Tell JobOps what changed, paste resume text, or ask what to prioritize."
           suppressHydrationWarning
           value={command}
@@ -272,6 +341,27 @@ export function AiCommandCenter({
   );
 }
 
+function isScrolledNearBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
+}
+
+function formatTranscriptMessage(message: string) {
+  const compact = message.replace(/\s+/g, " ").trim();
+  if (compact.length <= TRANSCRIPT_PREVIEW_MAX_CHARS) {
+    return message;
+  }
+
+  return `Pasted message: ${summarizeCommandForDisplay(message, TRANSCRIPT_PREVIEW_MAX_CHARS)}`;
+}
+
+function truncateText(value: string, maxLength: number) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return value;
+  }
+
+  return `${compact.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
 function isTextUpload(file: File, extension: string) {
   return file.type.startsWith("text/") || ["txt", "md", "markdown", "rtf", "csv", "json"].includes(extension);
 }
@@ -392,7 +482,7 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
         <p className="eyebrow">{action.status.replace("_", " ")}</p>
         <h2>{action.title}</h2>
       </div>
-      <p>{action.summary}</p>
+      <p>{truncateText(action.summary, ACTION_SUMMARY_MAX_CHARS)}</p>
       <div className="agent-action-meta">
         <span>{action.type}</span>
         {action.targetWorkspace ? <span>{formatWorkspaceLabel(action.targetWorkspace)}</span> : null}

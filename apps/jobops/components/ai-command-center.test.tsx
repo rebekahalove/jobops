@@ -6,6 +6,7 @@ import { AiCommandCenter, starterPrompts } from "./ai-command-center";
 import {
   classifyCommand,
   createPlannedAction,
+  summarizeCommandForDisplay,
   workspaceRoutes,
   type PlannedCommandAction,
   type WorkspaceTab
@@ -17,6 +18,7 @@ describe("AI command center", () => {
 
     expect(html).toContain("AI command center");
     expect(html).toContain("Ask JobOps to work across your search.");
+    expect(html).not.toContain("JobOps agent");
     expect(html).toContain("I want to be an Applied AI Engineer.");
     for (const prompt of starterPrompts.slice(1)) {
       expect(html).toContain(prompt.replace("'", "&#x27;"));
@@ -35,6 +37,47 @@ describe("AI command center", () => {
     expect(html).toContain("Add job from URL");
     expect(html).toContain("add_job_from_url");
     expect(html).toContain("Jobs");
+  });
+
+  it("truncates long fallback action summaries and classifies resume-shaped text as profile intake", () => {
+    const longResume = [
+      "PROFESSIONAL SUMMARY",
+      "Applied AI Systems Engineer building production RAG systems.",
+      "CORE SKILLS",
+      "Python, FastAPI, PostgreSQL, LLM evaluation.",
+      "PROFESSIONAL EXPERIENCE",
+      "Shadow Network Intelligence - Founder - 2024-Present",
+      "Built AI reporting workflows."
+    ].join("\n").repeat(30);
+    const plannedAction = createPlannedAction(longResume, "action-long-resume");
+
+    expect(classifyCommand(longResume).type).toBe("profile_intake");
+    expect(plannedAction.type).toBe("profile_intake");
+    expect(plannedAction.summary).toContain("...");
+    expect(plannedAction.summary).toContain("chars");
+    expect(plannedAction.summary.length).toBeLessThan(320);
+    expect(plannedAction.summary).not.toContain("Built AI reporting workflows.PROFESSIONAL SUMMARY");
+    expect(summarizeCommandForDisplay(longResume).length).toBeLessThan(220);
+  });
+
+  it("truncates action-card summaries defensively at render time", () => {
+    const noisyTail = "DO_NOT_RENDER_FULL_RESUME_TAIL";
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-long-summary",
+            type: "unknown",
+            title: "Review command",
+            summary: `${"Long pasted resume text ".repeat(40)}${noisyTail}`,
+            status: "planned"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Long pasted resume text");
+    expect(html).not.toContain(noisyTail);
   });
 
   it("renders a completed profile-intake action card", () => {
@@ -109,6 +152,22 @@ describe("AI command center", () => {
     expect(source).toContain('fetch(`${apiBasePath}/command-center/stream`');
     expect(source).toContain("onStatus(event.statusUpdate.message)");
     expect(source).toContain("no router decision was received");
+    expect(source).toContain("formatTranscriptMessage(submittedCommand)");
+    expect(source).toContain("messages.map((message)");
+    expect(source).toContain('message.role === "user" ? <strong>You</strong> : null');
+    expect(source).not.toContain("JobOps agent");
+    expect(source).not.toContain("messages.slice(-4)");
+  });
+
+  it("submits textarea messages on Enter while preserving Shift+Enter for multiline input", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("handleCommandKeyDown");
+    expect(source).toContain('event.key !== "Enter"');
+    expect(source).toContain("event.shiftKey");
+    expect(source).toContain("event.nativeEvent.isComposing");
+    expect(source).toContain("event.currentTarget.form?.requestSubmit()");
+    expect(source).toContain("onKeyDown={handleCommandKeyDown}");
   });
 
   it("links planned action CTAs to the expected workspace routes", () => {
@@ -194,5 +253,17 @@ describe("AI command center", () => {
     expect(css).toContain("max-height: calc(100svh - 112px)");
     expect(css).toContain("grid-template-rows: auto minmax(0, 1fr) auto auto");
     expect(css).toContain("overflow-y: auto");
+    expect(css).toContain("overflow-wrap: anywhere");
+    expect(css).toContain(".command-message.user");
+    expect(css).toContain("border: 1px solid rgba(15, 118, 110, 0.28)");
+    expect(css).toContain("color: var(--ink)");
+    expect(css).toContain("command-scroll-latest");
+    expect(css).toContain("position: absolute");
+
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+    expect(source).toContain("conversation.scrollTop = conversation.scrollHeight");
+    expect(source).toContain("shouldStickToBottomRef.current");
+    expect(source).toContain("setHasNewMessagesBelow(true)");
+    expect(source).toContain("onScroll={handleConversationScroll}");
   });
 });
