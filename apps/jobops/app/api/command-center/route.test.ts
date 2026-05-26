@@ -196,4 +196,46 @@ describe("command-center API proxy", () => {
       })
     );
   });
+
+  it("proxies command-center stream responses from FastAPI", async () => {
+    const { POST } = await import("./stream/route");
+    const stream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode('{"type":"status","statusUpdate":{"stage":"router","message":"Routed."}}\n'));
+        controller.enqueue(encoder.encode('{"type":"result","result":{"assistant_message":"Done.","actions":[]}}\n'));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(stream, { headers: { "Content-Type": "application/x-ndjson" }, status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://next.test/api/command-center/stream", {
+        body: JSON.stringify({
+          command: "I pasted my resume.",
+          activeWorkspace: "profile"
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          cookie: "jobops_session=test"
+        },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/command-center/commands/stream");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        Cookie: "jobops_session=test",
+        "X-JobOps-Internal-Key": "test-secret"
+      })
+    );
+    expect(await response.text()).toContain('"type":"status"');
+  });
 });

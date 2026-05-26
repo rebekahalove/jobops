@@ -9,7 +9,7 @@ import {
   type PlannedCommandAction,
   type WorkspaceTab
 } from "../lib/command-center-actions";
-import type { CommandCenterProxyResponse } from "../lib/command-center-contract";
+import type { CommandCenterApiResponse, CommandCenterProxyResponse, CommandCenterStreamEvent } from "../lib/command-center-contract";
 
 type CommandMessage = {
   id: string;
@@ -67,71 +67,101 @@ export function AiCommandCenter({
       return;
     }
 
+    const submissionId = Date.now();
     setMessages((current) => [
       ...current,
       {
-        id: `user-${current.length + 1}`,
+        id: `user-${submissionId}`,
         role: "user",
         text: submittedCommand
+      },
+      {
+        id: `agent-status-submitted-${submissionId}`,
+        role: "agent",
+        text: "Status update: sending this command to the JobOps router."
       }
     ]);
     setCommand("");
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(`${apiBasePath}/command-center`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          command: submittedCommand,
-          activeWorkspace
-        })
+      const result = await runCommandCenterStream({
+        activeWorkspace,
+        apiBasePath,
+        command: submittedCommand,
+        onStatus: (message) => {
+          setMessages((current) => [
+            ...current,
+            {
+              id: `agent-status-${Date.now()}-${current.length}`,
+              role: "agent",
+              text: message
+            }
+          ]);
+        }
       });
-      const payload = await readCommandCenterProxyResponse(response);
 
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.ok ? "Command-center request failed." : payload.error);
-      }
-
-      const nextActions = payload.result.actions.map((action, index) => ({
-        ...action,
-        id: action.id ?? `action-${Date.now()}-${index}`,
-        ctaLabel:
-          action.ctaLabel ??
-          (action.targetWorkspace ? `Open ${formatWorkspaceLabel(action.targetWorkspace)}` : undefined)
-      }));
-
-      setActions((current) => [...nextActions, ...current]);
-      setMessages((current) => [
-        ...current,
-        {
-          id: `agent-${current.length + 1}`,
-          role: "agent",
-          text: payload.result.assistant_message
-        }
-      ]);
-
-      if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
-        window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
-      }
+      applyCommandCenterResult(result);
     } catch (error) {
-      const fallbackAction = createPlannedAction(submittedCommand, `action-${Date.now()}`);
-      const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
-      const message = error instanceof Error ? error.message : "Command-center API is unavailable.";
+      try {
+        const response = await fetch(`${apiBasePath}/command-center`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            command: submittedCommand,
+            activeWorkspace
+          })
+        });
+        const payload = await readCommandCenterProxyResponse(response);
 
-      setActions((current) => [fallbackAction, ...current]);
-      setMessages((current) => [
-        ...current,
-        {
-          id: `agent-${current.length + 1}`,
-          role: "agent",
-          text: `${message} I kept a local fallback action for ${workspace}.`
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.ok ? "Command-center request failed." : payload.error);
         }
-      ]);
+
+        applyCommandCenterResult(payload.result);
+      } catch (fallbackError) {
+        const fallbackAction = createPlannedAction(submittedCommand, `action-${Date.now()}`);
+        const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
+        const message = fallbackError instanceof Error ? fallbackError.message : "Command-center API is unavailable.";
+
+        setActions((current) => [fallbackAction, ...current]);
+        setMessages((current) => [
+          ...current,
+          {
+            id: `agent-${current.length + 1}`,
+            role: "agent",
+            text: `${message} Status update: no router decision was received, so this card is only a local fallback for ${workspace}.`
+          }
+        ]);
+      }
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  function applyCommandCenterResult(result: CommandCenterApiResponse) {
+    const nextActions = result.actions.map((action, index) => ({
+      ...action,
+      id: action.id ?? `action-${Date.now()}-${index}`,
+      ctaLabel:
+        action.ctaLabel ??
+        (action.targetWorkspace ? `Open ${formatWorkspaceLabel(action.targetWorkspace)}` : undefined)
+    }));
+
+    setActions((current) => [...nextActions, ...current]);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `agent-${current.length + 1}`,
+        role: "agent",
+        text: result.assistant_message
+      }
+    ]);
+
+    if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
     }
   }
 
@@ -244,6 +274,103 @@ export function AiCommandCenter({
 
 function isTextUpload(file: File, extension: string) {
   return file.type.startsWith("text/") || ["txt", "md", "markdown", "rtf", "csv", "json"].includes(extension);
+}
+
+async function runCommandCenterStream({
+  activeWorkspace,
+  apiBasePath,
+  command,
+  onStatus
+}: {
+  activeWorkspace?: WorkspaceTab;
+  apiBasePath: string;
+  command: string;
+  onStatus: (message: string) => void;
+}): Promise<CommandCenterApiResponse> {
+  const response = await fetch(`${apiBasePath}/command-center/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      command,
+      activeWorkspace
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(await readCommandCenterStreamError(response));
+  }
+  if (!response.body) {
+    throw new Error("Command-center stream did not return a response body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: CommandCenterApiResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const event = parseCommandCenterStreamEvent(line);
+      if (!event) {
+        continue;
+      }
+      if (event.type === "status") {
+        onStatus(event.statusUpdate.message);
+      } else {
+        result = event.result;
+      }
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  const finalEvent = parseCommandCenterStreamEvent(buffer);
+  if (finalEvent?.type === "status") {
+    onStatus(finalEvent.statusUpdate.message);
+  } else if (finalEvent?.type === "result") {
+    result = finalEvent.result;
+  }
+
+  if (!result) {
+    throw new Error("Command-center stream ended before returning a result.");
+  }
+
+  return result;
+}
+
+function parseCommandCenterStreamEvent(line: string): CommandCenterStreamEvent | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = JSON.parse(trimmed) as CommandCenterStreamEvent;
+  if (parsed.type === "status" || parsed.type === "result") {
+    return parsed;
+  }
+  return null;
+}
+
+async function readCommandCenterStreamError(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.toLowerCase().includes("application/json")) {
+    try {
+      const payload = (await response.json()) as CommandCenterProxyResponse;
+      return payload.ok ? "Command-center stream request failed." : payload.error;
+    } catch {
+      return "Command-center stream returned an invalid error response.";
+    }
+  }
+  return "Command-center stream returned a sign-in or error page instead of updates.";
 }
 
 async function readCommandCenterProxyResponse(response: Response): Promise<CommandCenterProxyResponse> {

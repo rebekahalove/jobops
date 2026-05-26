@@ -157,6 +157,8 @@ B.A., Fine Arts - Indiana University
     assert "pasted resume/CV" in system_prompt
     assert "route to profile_intake with high confidence" in system_prompt
     assert "does not need a workspace clarification" in system_prompt
+    assert "set extracted.rawText to null" in system_prompt
+    assert "Never copy a pasted resume/CV" in system_prompt
     assert "pasted resumes/CVs" in profile_intake_action["description"]
 
 
