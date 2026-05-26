@@ -8,7 +8,7 @@ from .intake_mode import CHAT_UPDATE_CAPACITY, COMPACT_RESUME_RETRY_CAPACITY, Pr
 from .models import ProfileIntakeExtractRequest
 
 
-PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v6-profile-fields"
+PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v7-resume-metadata-contract"
 PROFILE_INTAKE_SCHEMA_NAME = "jobops_profile_intake"
 PROFILE_INTAKE_SCHEMA_VERSION = "profile-intake-output-v1"
 
@@ -30,6 +30,10 @@ Safety and trust rules:
 - Do not mark anything public or published.
 - Every generated item must have visibility "private" and published false.
 - Every generated item must have status "draft" or "needs_review".
+- Do not copy lifecycle/review metadata from authoritative_current_draft into targetRoleIntent. targetRoleIntent must contain only targetTitles, targetRoleFamilies, preferredWorkMode, preferredLocations, domainsOrIndustries, and constraints.
+- Do not return id, source, status, visibility, or published inside targetRoleIntent.
+- For draftFacts, skillClaims, experienceAndProjects, and evidenceLinks, only preserve existing item ids. Do not preserve or copy existing status, visibility, published, reviewStatus, verificationStatus, publicationStatus, or lifecycleStatus values from authoritative_current_draft.
+- Even for existing item ids, set status to "draft" or "needs_review", visibility to "private", and published to false in this extraction output.
 - Use source "resume" when the user appears to paste resume/work-history text, source "chat" for conversational claims, and source "model" only for cautious model-suggested structuring.
 - Target role intent text such as "I want to be..." should update targetRoleIntent only. It should not create experience/project items unless the user describes actual past work, projects, education, certifications, publications, open-source work, or similar evidence.
 
@@ -42,10 +46,11 @@ Full-draft update rules:
 - Preserve the id of every existing draft item that remains in the draft. Omit id only for newly added items. Do not invent ids.
 - Preserve existing draft facts, skills, experiences/projects, and evidence links unless the user explicitly modifies or removes them.
 - Preserve existing profileBasics values unless the latest user message explicitly changes or clears them.
-- If latest_user_message is ambiguous, return updatedDraftProfile unchanged, include a clarifying question, and set noChangeReason.
+- A pasted resume/CV is not ambiguous. Use it to fill gaps in the profile draft, merge it with authoritative_current_draft, and ask whether to start from a clean profile only as a follow-up question when that choice matters.
+- If latest_user_message is ambiguous and is not resume/CV-shaped, return updatedDraftProfile unchanged, include a clarifying question, and set noChangeReason.
 - If the user explicitly asks to remove an existing draft item, omit it from updatedDraftProfile, include its id in removedItems, and note the removal in changeSummary.
 - If an existing draft item is accidentally omitted without a matching removedItems id, the backend may preserve it for safety.
-- Do not mark anything verified, approved, public, or published. Existing status, visibility, and publication metadata will be preserved by the backend for existing ids.
+- Do not mark anything verified, approved, public, or published. The backend handles stored lifecycle metadata for existing ids; your JSON output must still use only draft/needs_review, private, and published false.
 - For targetRoleIntent, return the full post-update targetRoleIntent, not only the changed field.
 - For profileBasics, return the full post-update profileBasics object, not only the changed field.
 - When updating targetRoleIntent list-like strings, copy the existing values from authoritative_current_draft and include the new values in the same output field.
@@ -280,7 +285,13 @@ def build_profile_intake_user_prompt(
             "target_role_intent_update_contract": (
                 "Return full targetRoleIntent after the latest message, not only the changed field. "
                 "If the latest message broadens a list-like preference, include both existing and new values. "
-                "Prefer semicolon separators for locations that contain commas."
+                "Prefer semicolon separators for locations that contain commas. "
+                "Never include id, source, status, visibility, or published in targetRoleIntent."
+            ),
+            "generated_item_metadata_contract": (
+                "For every draftFacts, skillClaims, experienceAndProjects, and evidenceLinks item, preserve id only "
+                "when it already exists. Always output source as chat/resume/model, status as draft or needs_review, "
+                "visibility as private, and published as false."
             ),
             "examples": [
                 {

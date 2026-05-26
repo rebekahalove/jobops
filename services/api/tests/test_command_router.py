@@ -116,6 +116,50 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
     assert router_context["context_caps"]["current_companies"] == 50
 
 
+def test_command_router_prompt_routes_pasted_resume_to_profile_intake(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    resume_text = """Rebekah Love
+Applied AI Systems Engineer
+
+PROFESSIONAL SUMMARY
+Built production RAG and LLM evaluation systems.
+
+CORE SKILLS
+Python, FastAPI, PostgreSQL, LLM orchestration
+
+PROFESSIONAL EXPERIENCE
+Shadow Network Intelligence - Founder - 2024-Present
+Built an AI reporting platform.
+
+EDUCATION
+B.A., Fine Arts - Indiana University
+"""
+
+    with Session(engine) as session:
+        profile = get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        context = build_command_router_context(
+            CommandRouterRequest(
+                latest_user_message=resume_text,
+                active_workspace=None,
+                candidate_profile=profile,
+            ),
+            db_session=session,
+        )
+        request = build_command_router_model_request(context)
+
+    system_prompt = request.messages[0].content
+    payload = json.loads(request.messages[1].content)
+    profile_intake_action = next(
+        action for action in payload["router_context"]["available_actions"] if action["actionType"] == "profile_intake"
+    )
+
+    assert "pasted resume/CV" in system_prompt
+    assert "route to profile_intake with high confidence" in system_prompt
+    assert "does not need a workspace clarification" in system_prompt
+    assert "pasted resumes/CVs" in profile_intake_action["description"]
+
+
 def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
