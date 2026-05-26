@@ -17,6 +17,12 @@ from jobops_api.db.models import (
     RoleTarget,
     SkillClaim,
 )
+from jobops_api.profile_fields import (
+    PROFILE_FIELD_DEFINITIONS,
+    ProfileFieldDefinition,
+    ensure_generated_field,
+    field_value_rows,
+)
 
 from .artifacts import ProfileIntakeInputMetrics
 from .models import ProfileIntakeOutput
@@ -193,7 +199,9 @@ def persist_profile_intake_output(
     artifact_path: str | None,
     model_run_id: str | None,
 ) -> dict[str, Any]:
+    sync_profile_basics_fields(session, candidate_profile, output)
     saved_role_target = sync_role_target(session, candidate_profile, intake_session, output)
+    sync_target_role_fields(session, candidate_profile, output)
     saved_facts = sync_draft_facts(session, candidate_profile, intake_session, output)
     saved_skills = sync_skill_claims(session, candidate_profile, intake_session, output)
     saved_experiences = sync_experience_projects(session, candidate_profile, intake_session, output)
@@ -251,6 +259,7 @@ def get_profile_draft_snapshot_for_session(session: Session, intake_session: Pro
         return {
             **empty_profile_draft_snapshot(),
             **latest_snapshot,
+            **build_profile_field_draft_snapshot(session, intake_session),
             "statusSummary": build_intake_status_summary(intake_session, redacted_state),
         }
 
@@ -267,9 +276,14 @@ def build_profile_draft_snapshot_from_rows(session: Session, intake_session: Pro
     experiences = get_session_experiences(session, intake_session.id)
     evidence = get_session_evidence(session, intake_session.id)
 
+    field_snapshot = build_profile_field_draft_snapshot(session, intake_session)
     return {
         "assistantMessage": "",
-        "targetRoleIntent": serialize_role_target_from_row(role_target),
+        "profileBasics": field_snapshot["profileBasics"],
+        "targetRoleIntent": {
+            **serialize_role_target_from_row(role_target),
+            **field_snapshot["targetRoleIntent"],
+        },
         "draftFacts": [serialize_fact_draft(fact) for fact in facts],
         "skillClaims": [serialize_skill_claim(skill) for skill in skills],
         "experienceAndProjects": [serialize_experience_project(item) for item in experiences],
@@ -282,6 +296,7 @@ def build_profile_draft_snapshot_from_rows(session: Session, intake_session: Pro
 def empty_profile_draft_snapshot() -> dict[str, Any]:
     return {
         "assistantMessage": "",
+        "profileBasics": {},
         "targetRoleIntent": {},
         "draftFacts": [],
         "skillClaims": [],
@@ -327,6 +342,66 @@ def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, 
     return {key: value for key, value in payload.items() if value}
 
 
+def build_profile_field_draft_snapshot(session: Session, intake_session: ProfileIntakeSession) -> dict[str, dict[str, Any]]:
+    profile = session.get(CandidateProfile, intake_session.candidate_profile_id)
+    if profile is None:
+        return {"profileBasics": {}, "targetRoleIntent": {}}
+
+    basics = intake_field_values(session, profile, "profile_basics")
+    targets = intake_field_values(session, profile, "targets")
+    basics_with_shell_fallback = {
+        **({"displayName": profile.display_name} if profile.display_name and "displayName" not in basics else {}),
+        **({"headline": profile.headline} if profile.headline and "headline" not in basics else {}),
+        **({"summary": profile.summary} if profile.summary and "summary" not in basics else {}),
+        **basics,
+    }
+    return {
+        "profileBasics": basics_with_shell_fallback,
+        "targetRoleIntent": {
+            **({"targetTitles": targets["targetTitles"]} if targets.get("targetTitles") else {}),
+            **({"targetRoleFamilies": targets["roleFamilies"]} if targets.get("roleFamilies") else {}),
+            **({"preferredWorkMode": targets["preferredWorkMode"]} if targets.get("preferredWorkMode") else {}),
+            **({"preferredLocations": targets["preferredLocations"]} if targets.get("preferredLocations") else {}),
+            **({"domainsOrIndustries": targets["domainsOrIndustries"]} if targets.get("domainsOrIndustries") else {}),
+            **({"constraints": targets["constraints"]} if targets.get("constraints") else {}),
+        },
+    }
+
+
+def intake_field_values(session: Session, profile: CandidateProfile, group: str) -> dict[str, str]:
+    latest: dict[tuple[str, str], Any] = {}
+    for row in field_value_rows(session, profile.id):
+        if row.field_group != group or row.lifecycle_status not in {"generated", "published"}:
+            continue
+        key = (row.field_group, row.field_name)
+        previous = latest.get(key)
+        if previous is None or field_row_priority(row.lifecycle_status) >= field_row_priority(previous.lifecycle_status):
+            latest[key] = row
+    return {field_name: row.value_text for (_, field_name), row in latest.items() if meaningful_text(row.value_text) is not None}
+
+
+def field_row_priority(lifecycle_status: str) -> int:
+    return 2 if lifecycle_status == "generated" else 1
+
+
+def intake_field_definition(group: str, field_name: str) -> ProfileFieldDefinition:
+    for definition in PROFILE_FIELD_DEFINITIONS:
+        if definition.group == group and definition.name == field_name:
+            return definition
+    raise ValueError(f"Unsupported profile intake field: {group}.{field_name}")
+
+
+def target_role_field_name(path: str) -> str:
+    return {
+        "targetRoleIntent.targetTitles": "targetTitles",
+        "targetRoleIntent.targetRoleFamilies": "roleFamilies",
+        "targetRoleIntent.preferredWorkMode": "preferredWorkMode",
+        "targetRoleIntent.preferredLocations": "preferredLocations",
+        "targetRoleIntent.domainsOrIndustries": "domainsOrIndustries",
+        "targetRoleIntent.constraints": "constraints",
+    }.get(path, path)
+
+
 def has_profile_intake_draft_rows(session: Session, intake_session_id: str) -> bool:
     return any(
         session.scalar(select(model.id).where(model.profile_intake_session_id == intake_session_id).limit(1))
@@ -341,7 +416,10 @@ def has_saved_draft_snapshot(intake_session: ProfileIntakeSession) -> bool:
     if not isinstance(snapshot, dict):
         return False
     target_role_intent = snapshot.get("targetRoleIntent")
+    profile_basics = snapshot.get("profileBasics")
     return bool(
+        (isinstance(profile_basics, dict) and any(profile_basics.values()))
+        or
         (isinstance(target_role_intent, dict) and any(target_role_intent.values()))
         or snapshot.get("draftFacts")
         or snapshot.get("skillClaims")
@@ -417,7 +495,7 @@ def sync_role_target(
             },
             source="model",
             review_status="needs_review",
-            visibility="public",
+            visibility="private",
             publication_status="not_published",
             is_active=True,
         )
@@ -440,6 +518,44 @@ def sync_role_target(
         constraints = {**constraints, "constraints": constraints_text}
     existing.constraints = {key: value for key, value in constraints.items() if value}
     return existing
+
+
+def sync_profile_basics_fields(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    output: ProfileIntakeOutput,
+) -> None:
+    basics = output.updated_draft_profile.profile_basics.model_dump(by_alias=True, exclude_none=True)
+    for field_name, value in basics.items():
+        text = meaningful_text(value)
+        if text is None:
+            continue
+        definition = intake_field_definition("profile_basics", field_name)
+        ensure_generated_field(session, candidate_profile, definition, text, source="model")
+
+
+def sync_target_role_fields(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    output: ProfileIntakeOutput,
+) -> None:
+    intent = output.updated_draft_profile.target_role_intent
+    values = {
+        "targetTitles": intent.target_titles,
+        "roleFamilies": intent.target_role_families,
+        "preferredWorkMode": intent.preferred_work_mode,
+        "preferredLocations": intent.preferred_locations,
+        "domainsOrIndustries": intent.domains_or_industries,
+        "constraints": intent.constraints,
+    }
+    removed_fields = set(output.removed_items.target_role_intent_fields)
+    removed_names = {target_role_field_name(field) for field in removed_fields}
+    for field_name, value in values.items():
+        text = meaningful_text(value)
+        if text is None and field_name not in removed_names:
+            continue
+        definition = intake_field_definition("targets", field_name)
+        ensure_generated_field(session, candidate_profile, definition, text or "", source="model")
 
 
 def sync_draft_facts(
@@ -940,6 +1056,7 @@ def build_saved_profile_draft_snapshot(
 ) -> dict[str, Any]:
     return {
         "assistantMessage": output.assistant_message,
+        "profileBasics": output.updated_draft_profile.profile_basics.model_dump(by_alias=True, exclude_none=True),
         "targetRoleIntent": serialize_role_target(role_target, output),
         "draftFacts": [serialize_fact_draft(fact) for fact in facts],
         "skillClaims": [serialize_skill_claim(skill) for skill in skills],
@@ -1030,6 +1147,9 @@ def normalize_source(value: str | None) -> str:
 def draft_count_metadata(output: ProfileIntakeOutput) -> dict[str, int]:
     draft = output.updated_draft_profile
     return {
+        "profileBasicFieldCount": len(
+            [value for value in draft.profile_basics.model_dump(by_alias=True, exclude_none=True).values() if meaningful_text(value)]
+        ),
         "draftFactCount": len(draft.draft_facts),
         "skillClaimCount": len(draft.skill_claims),
         "experienceAndProjectCount": len(draft.experience_and_projects),

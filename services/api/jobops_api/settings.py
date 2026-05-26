@@ -28,7 +28,7 @@ class Settings:
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
-    smtp_password: str | None = None
+    resend_api_key: str | None = None
     smtp_from_email: str | None = None
 
 
@@ -68,7 +68,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         smtp_host=merged.get("JOBOPS_SMTP_HOST"),
         smtp_port=parse_int(merged.get("JOBOPS_SMTP_PORT"), default=587),
         smtp_username=merged.get("JOBOPS_SMTP_USERNAME"),
-        smtp_password=merged.get("JOBOPS_SMTP_PASSWORD"),
+        resend_api_key=merged.get("RESEND_API_KEY"),
         smtp_from_email=merged.get("JOBOPS_SMTP_FROM_EMAIL"),
     )
 

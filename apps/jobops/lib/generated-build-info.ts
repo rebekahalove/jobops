@@ -6,7 +6,7 @@ export const GENERATED_JOBOPS_BUILD_INFO: JobOpsAppMetadata = {
   "appName": "JobOps",
   "releaseChannel": "alpha",
   "environment": "dev",
-  "commit": "3669878",
-  "fullCommit": "36698780b4c104a6fdb2f9f5f12fa2142344973f",
-  "buildTime": "2026-05-24T02:45:29.387Z"
+  "commit": "97fb4cd",
+  "fullCommit": "97fb4cd7280b0074c5802a6c9423d9a5a19a7167",
+  "buildTime": "2026-05-25T23:32:07.294Z"
 };

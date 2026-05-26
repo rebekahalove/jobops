@@ -52,6 +52,17 @@ class GeneratedItem(ApiModel):
     published: Literal[False]
 
 
+class ProfileBasics(ApiModel):
+    display_name: str | None = Field(default=None, alias="displayName", max_length=200)
+    headline: str | None = Field(default=None, max_length=300)
+    summary: str | None = Field(default=None, max_length=4000)
+    email_address: str | None = Field(default=None, alias="emailAddress", max_length=320)
+    telephone_number: str | None = Field(default=None, alias="telephoneNumber", max_length=80)
+    calendly_link: str | None = Field(default=None, alias="calendlyLink", max_length=500)
+    current_location: str | None = Field(default=None, alias="currentLocation", max_length=200)
+    mailing_address: str | None = Field(default=None, alias="mailingAddress", max_length=1000)
+
+
 class DraftFact(GeneratedItem):
     id: str | None = Field(default=None, max_length=120)
     claim: str = Field(max_length=240)
@@ -86,6 +97,7 @@ class EvidenceLink(GeneratedItem):
 
 
 class UpdatedDraftProfile(ApiModel):
+    profile_basics: ProfileBasics = Field(default_factory=ProfileBasics, alias="profileBasics")
     target_role_intent: TargetRoleIntent = Field(alias="targetRoleIntent")
     draft_facts: list[DraftFact] = Field(alias="draftFacts", max_length=RESUME_INTAKE_CAPACITY.draft_facts)
     skill_claims: list[SkillClaim] = Field(alias="skillClaims", max_length=RESUME_INTAKE_CAPACITY.skill_claims)

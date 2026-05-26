@@ -11,9 +11,13 @@ from jobops_api.auth import (
     SESSION_COOKIE_NAME,
     accept_alpha_invite,
     auth_context_to_dict,
+    change_user_password_with_current_password,
     clear_session_cookie,
     create_alpha_invite,
+    create_password_reset_token,
     create_session_for_username,
+    complete_password_reset_with_token,
+    delete_authenticated_account,
     require_auth_context,
     reset_user_password,
     revoke_session,
@@ -21,7 +25,7 @@ from jobops_api.auth import (
 )
 from jobops_api.db.models import CandidateProfile, Tenant, User, WorkspaceMembership
 from jobops_api.db.session import get_db_session
-from jobops_api.email import send_invite_email
+from jobops_api.email import send_invite_email, send_password_reset_email
 from jobops_api.security import require_internal_api_key
 from jobops_api.settings import load_settings
 
@@ -53,6 +57,27 @@ class PasswordResetRequest(BaseModel):
     username: str = Field(min_length=3, max_length=40)
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class PasswordResetStartRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+    reset_base_url: str | None = Field(default=None, max_length=500)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=512)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class AccountDeleteRequest(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=20)
+    current_password: str = Field(min_length=1, max_length=256)
+    candidate_profile_id: str | None = Field(default=None, max_length=36)
 
 
 @router.get("/me")
@@ -121,6 +146,71 @@ def reset_password(request: PasswordResetRequest, response: Response, session: S
     set_session_cookie(response, raw_session_token, secure=load_settings().app_env.lower() == "prod")
     session.commit()
     return {"ok": True, "result": auth_context_to_dict(auth_context)}
+
+
+@router.post("/password/change")
+def change_password(
+    request: PasswordChangeRequest,
+    session: Session = Depends(get_db_session),
+    auth=Depends(require_auth_context),
+) -> dict[str, Any]:
+    change_user_password_with_current_password(
+        session,
+        user=auth.user,
+        current_password=request.current_password,
+        new_password=request.new_password,
+        revoke_existing_sessions=False,
+    )
+    session.commit()
+    return {"ok": True, "result": auth_context_to_dict(auth)}
+
+
+@router.post("/password/reset/request")
+def request_password_reset(request: PasswordResetStartRequest, session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    settings = load_settings()
+    created = create_password_reset_token(session, identifier=request.identifier)
+    email_sent = False
+    reset_url = None
+    if created is not None:
+        base_url = (request.reset_base_url or settings.app_base_url or "http://localhost:3002").rstrip("/")
+        reset_url = f"{base_url}/reset-password?token={created.raw_token}"
+        email_sent = send_password_reset_email(settings, to_email=created.token.user.email, reset_url=reset_url)
+    session.commit()
+
+    result: dict[str, Any] = {
+        "message": "If a matching JobOps alpha account exists, password reset instructions will be sent.",
+        "emailSent": email_sent,
+    }
+    if created is not None and settings.app_env.lower() != "prod":
+        result["devResetToken"] = created.raw_token
+        result["devResetUrl"] = reset_url
+    return {"ok": True, "result": result}
+
+
+@router.post("/password/reset/confirm")
+def confirm_password_reset(request: PasswordResetConfirmRequest, session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    complete_password_reset_with_token(session, raw_token=request.token, new_password=request.new_password)
+    session.commit()
+    return {"ok": True, "result": {"message": "Password has been reset. You can now sign in."}}
+
+
+@router.delete("/account")
+def delete_account(
+    request: AccountDeleteRequest,
+    response: Response,
+    session: Session = Depends(get_db_session),
+    auth=Depends(require_auth_context),
+) -> dict[str, Any]:
+    delete_authenticated_account(
+        session,
+        auth_context=auth,
+        confirmation=request.confirmation,
+        current_password=request.current_password,
+        candidate_profile_id=request.candidate_profile_id,
+    )
+    clear_session_cookie(response, secure=load_settings().app_env.lower() == "prod")
+    session.commit()
+    return {"ok": True, "result": {"deleted": True}}
 
 
 @router.post("/logout")

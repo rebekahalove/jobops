@@ -16,7 +16,8 @@ const STANDALONE_DASHBOARD_PATHS = [
   "/applications",
   "/materials",
   "/follow-ups",
-  "/fit-scoring"
+  "/fit-scoring",
+  "/account"
 ] as const;
 
 export type DashboardAuthEnvironment = {
@@ -55,6 +56,7 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
     isDashboardInvitePath(pathname, dashboardBasePath) ||
     isDashboardPrivacyPath(pathname, dashboardBasePath) ||
     isDashboardPasswordResetPath(pathname, dashboardBasePath) ||
+    isDashboardForgotPasswordPath(pathname, dashboardBasePath) ||
     isDashboardAuthRoute(pathname, dashboardBasePath) ||
     (!isProtectedApiPath && !isProtectedUiPath)
   ) {
@@ -184,6 +186,10 @@ function isDashboardPrivacyPath(pathname: string, dashboardBasePath: "" | "/jobo
 
 function isDashboardPasswordResetPath(pathname: string, dashboardBasePath: "" | "/jobops") {
   return stripDashboardBasePath(pathname, dashboardBasePath) === "/reset-password";
+}
+
+function isDashboardForgotPasswordPath(pathname: string, dashboardBasePath: "" | "/jobops") {
+  return stripDashboardBasePath(pathname, dashboardBasePath) === "/forgot-password";
 }
 
 function isDashboardAuthRoute(pathname: string, dashboardBasePath: "" | "/jobops") {
