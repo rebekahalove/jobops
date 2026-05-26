@@ -12,10 +12,12 @@ import jobops_api.main as main_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.db.models import (
     Base,
+    CandidateProfile,
     EvidenceArtifact,
     ExperienceProjectDraft,
     ProfileFact,
     ProfileFactDraft,
+    ProfileFieldValue,
     ProfileIntakeEvent,
     ProfileIntakeSession,
     RoleTarget,
@@ -27,6 +29,8 @@ from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, Mod
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
 from jobops_api.profile_intake.service import run_profile_intake_extraction
+from jobops_api.profile_fields import get_field_definition, publish_generated_field
+from jobops_api.profiles import candidate_profile_to_public_dict
 from jobops_api.security import INTERNAL_API_KEY_HEADER
 from jobops_api.settings import Settings
 
@@ -648,6 +652,100 @@ def test_profile_intake_merge_adds_new_facts_and_dedupes_without_clearing_fields
         intake_session = session.scalars(select(ProfileIntakeSession)).one()
         assert intake_session.redacted_state["latestDraftSnapshot"]["draftFacts"] == snapshot["draftFacts"]
         assert intake_session.redacted_state["draftCounts"]["draftFactCount"] == 2
+
+
+def test_profile_intake_can_create_generated_profile_basics_fields(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Use Rebekah Love, Applied AI builder, and a short summary."),
+            connector=make_connector(StaticProvider(json.dumps(profile_basics_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["profileBasics"]["displayName"] == "Rebekah Love"
+    with session_factory() as session:
+        rows = list(session.scalars(select(ProfileFieldValue).where(ProfileFieldValue.field_group == "profile_basics")))
+        values = {row.field_name: row for row in rows}
+        assert values["displayName"].value_text == "Rebekah Love"
+        assert values["displayName"].lifecycle_status == "generated"
+        assert values["displayName"].visibility is None
+        assert values["headline"].value_text == "Applied AI builder"
+        profile = session.scalars(select(CandidateProfile)).one()
+        public_snapshot = candidate_profile_to_public_dict(profile)
+        assert public_snapshot["displayName"] == ""
+        publish_generated_field(session, profile, values["displayName"], get_field_definition("profile_basics", "displayName"), "public")
+        session.flush()
+        public_snapshot = candidate_profile_to_public_dict(profile)
+        assert public_snapshot["displayName"] == "Rebekah Love"
+
+
+def test_profile_intake_can_update_existing_generated_profile_basics_fields(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Draft my basics."),
+            connector=make_connector(StaticProvider(json.dumps(profile_basics_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    provider = RecordingProvider(json.dumps(profile_basics_update_output()))
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Change my headline to AI systems engineer."),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    prompt_payload = json.loads(provider.requests[0].messages[1].content)
+    assert prompt_payload["authoritative_current_draft"]["profileBasics"]["headline"] == "Applied AI builder"
+    with session_factory() as session:
+        headline_rows = list(
+            session.scalars(
+                select(ProfileFieldValue).where(
+                    ProfileFieldValue.field_group == "profile_basics",
+                    ProfileFieldValue.field_name == "headline",
+                )
+            )
+        )
+        assert len(headline_rows) == 1
+        assert headline_rows[0].value_text == "AI systems engineer"
+
+
+def test_profile_intake_can_create_and_update_target_profile_fields(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I want applied AI roles in Louisville."),
+            connector=make_connector(StaticProvider(json.dumps(louisville_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Add London too."),
+            connector=make_connector(StaticProvider(json.dumps(london_additive_target_role_output()))),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    with session_factory() as session:
+        rows = list(session.scalars(select(ProfileFieldValue).where(ProfileFieldValue.field_group == "targets")))
+        values = {row.field_name: row.value_text for row in rows}
+        assert values["targetTitles"] == "Applied AI Engineer"
+        assert values["roleFamilies"] == "Applied AI"
+        assert values["preferredLocations"] == "Louisville, KY; London, UK"
+        role_target = session.scalars(select(RoleTarget)).one()
+        assert role_target.preferred_locations == ["Louisville, KY", "London, UK"]
 
 
 def test_profile_intake_model_receives_authoritative_saved_draft_for_additive_turn(tmp_path: Path) -> None:
@@ -1358,6 +1456,34 @@ def valid_output_with_evidence() -> dict[str, object]:
     return output
 
 
+def profile_basics_output() -> dict[str, object]:
+    return profile_update_output(
+        assistant_message="I drafted profile basics.",
+        draft={
+            "profileBasics": {
+                "displayName": "Rebekah Love",
+                "headline": "Applied AI builder",
+                "summary": "Builds pragmatic AI systems for job search workflows.",
+                "currentLocation": "Louisville, KY",
+            },
+            "targetRoleIntent": {},
+            "draftFacts": [],
+            "skillClaims": [],
+            "experienceAndProjects": [],
+            "evidenceLinks": [],
+        },
+        clarifying_questions=[],
+        change_summary=["Drafted profile basics."],
+    )
+
+
+def profile_basics_update_output() -> dict[str, object]:
+    output = profile_basics_output()
+    output["updatedDraftProfile"]["profileBasics"]["headline"] = "AI systems engineer"
+    output["changeSummary"] = ["Updated headline."]
+    return output
+
+
 def full_profile_intake_output() -> dict[str, object]:
     return profile_update_output(
         assistant_message="I saved a merged draft.",
@@ -1638,6 +1764,7 @@ def profile_update_output(
     return {
         "assistantMessage": assistant_message,
         "updatedDraftProfile": {
+            "profileBasics": draft.get("profileBasics", {}),
             "targetRoleIntent": draft.get("targetRoleIntent", {}),
             "draftFacts": draft.get("draftFacts", []),
             "skillClaims": draft.get("skillClaims", []),

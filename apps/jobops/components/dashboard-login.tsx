@@ -31,6 +31,9 @@ export function DashboardLogin({
           <button className="primary-action button-action" suppressHydrationWarning type="submit">
             Continue
           </button>
+          <a className="login-secondary-link" href={`${basePath}/forgot-password`}>
+            Forgot your password?
+          </a>
         </form>
       </section>
     </main>

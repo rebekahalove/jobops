@@ -105,6 +105,7 @@ export function PublicAlphaLanding({
         </Link>
         <nav>
           <a href="https://github.com/rebekahalove/jobops">View the public repo</a>
+          <Link href={`${basePath}/privacy`}>Privacy</Link>
           <Link href={isAuthenticated ? dashboardHref : loginHref}>
             {isAuthenticated ? "Open command center" : "Log in"}
           </Link>

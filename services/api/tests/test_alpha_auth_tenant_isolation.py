@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -9,9 +10,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
-from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, hash_token, now_utc, seed_initial_user
 from jobops_api.command_router import CommandRouterServiceResult
-from jobops_api.db.models import Application, Base, CandidateProfile, InviteToken, ProfileFact, ProfileFactDraft, TargetCompany, User
+from jobops_api.db.models import (
+    Application,
+    Base,
+    CandidateProfile,
+    InviteToken,
+    PasswordResetToken,
+    ProfileFact,
+    ProfileFactDraft,
+    TargetCompany,
+    User,
+    UserSession,
+)
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -214,6 +226,206 @@ def test_seed_initial_user_and_login_by_username(monkeypatch) -> None:
         assert unknown_response.status_code == 404
         with Session(engine) as session:
             assert session.scalar(select(User).where(User.username == "unknown-user")) is None
+
+
+def test_password_reset_request_is_generic_and_confirm_resets_password(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        seed_initial_user(
+            session,
+            email="alpha@example.com",
+            username="alpha-user",
+            display_name="Alpha User",
+            password="old secure alpha password",
+            password_reset_required=False,
+        )
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        unknown_response = client.post(
+            "/v1/auth/password/reset/request",
+            headers=INTERNAL_HEADERS,
+            json={"identifier": "missing@example.com"},
+        )
+        known_response = client.post(
+            "/v1/auth/password/reset/request",
+            headers=INTERNAL_HEADERS,
+            json={"identifier": "alpha@example.com", "reset_base_url": "http://localhost:3002"},
+        )
+        assert unknown_response.status_code == 200
+        assert known_response.status_code == 200
+        assert unknown_response.json()["result"]["message"] == known_response.json()["result"]["message"]
+        raw_token = known_response.json()["result"]["devResetToken"]
+
+        invalid_response = client.post(
+            "/v1/auth/password/reset/confirm",
+            headers=INTERNAL_HEADERS,
+            json={"token": "not-a-real-token-with-enough-length-123456", "new_password": "new secure alpha password"},
+        )
+        assert invalid_response.status_code == 400
+
+        reset_response = client.post(
+            "/v1/auth/password/reset/confirm",
+            headers=INTERNAL_HEADERS,
+            json={"token": raw_token, "new_password": "new secure alpha password"},
+        )
+        assert reset_response.status_code == 200
+
+        used_response = client.post(
+            "/v1/auth/password/reset/confirm",
+            headers=INTERNAL_HEADERS,
+            json={"token": raw_token, "new_password": "another secure alpha password"},
+        )
+        assert used_response.status_code == 400
+
+        login_response = client.post(
+            "/v1/auth/session",
+            headers=INTERNAL_HEADERS,
+            json={"username": "alpha-user", "password": "new secure alpha password"},
+        )
+        assert login_response.status_code == 200
+
+
+def test_expired_password_reset_token_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    raw_token = "expired-token-with-enough-random-looking-length"
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="expired@example.com",
+            username="expired-user",
+            display_name="Expired User",
+            password="old secure alpha password",
+            password_reset_required=False,
+        )
+        session.add(
+            PasswordResetToken(
+                token_hash=hash_token(raw_token),
+                user_id=auth.user.id,
+                expires_at=now_utc() - timedelta(minutes=1),
+            )
+        )
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        response = client.post(
+            "/v1/auth/password/reset/confirm",
+            headers=INTERNAL_HEADERS,
+            json={"token": raw_token, "new_password": "new secure alpha password"},
+        )
+        assert response.status_code == 400
+
+
+def test_authenticated_change_password(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        seed_initial_user(
+            session,
+            email="change@example.com",
+            username="change-user",
+            display_name="Change User",
+            password="old secure alpha password",
+            password_reset_required=False,
+        )
+        session.commit()
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        login_response = client.post(
+            "/v1/auth/session",
+            headers=INTERNAL_HEADERS,
+            json={"username": "change-user", "password": "old secure alpha password"},
+        )
+        cookie = login_response.cookies.get(SESSION_COOKIE_NAME)
+        response = client.post(
+            "/v1/auth/password/change",
+            cookies={SESSION_COOKIE_NAME: cookie},
+            headers=INTERNAL_HEADERS,
+            json={"current_password": "old secure alpha password", "new_password": "new secure alpha password"},
+        )
+        assert response.status_code == 200
+        assert client.post(
+            "/v1/auth/session",
+            headers=INTERNAL_HEADERS,
+            json={"username": "change-user", "password": "new secure alpha password"},
+        ).status_code == 200
+
+
+def test_account_deletion_removes_own_workspace_and_rejects_other_profile(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        first = seed_initial_user(
+            session,
+            email="first@example.com",
+            username="first-user",
+            display_name="First User",
+            password="first secure alpha password",
+            password_reset_required=False,
+        )
+        second = seed_initial_user(
+            session,
+            email="second@example.com",
+            username="second-user",
+            display_name="Second User",
+            password="second secure alpha password",
+            password_reset_required=False,
+        )
+        session.add(ProfileFactDraft(candidate_profile_id=first.candidate_profile.id, claim="Private draft", fact_type="general", source="chat"))
+        session.commit()
+        other_profile_id = second.candidate_profile.id
+        first_profile_id = first.candidate_profile.id
+
+    with app_with_session(engine):
+        client = TestClient(app)
+        login_response = client.post(
+            "/v1/auth/session",
+            headers=INTERNAL_HEADERS,
+            json={"username": "first-user", "password": "first secure alpha password"},
+        )
+        cookie = login_response.cookies.get(SESSION_COOKIE_NAME)
+        forbidden = client.request(
+            "DELETE",
+            "/v1/auth/account",
+            cookies={SESSION_COOKIE_NAME: cookie},
+            headers=INTERNAL_HEADERS,
+            json={"confirmation": "DELETE", "current_password": "first secure alpha password", "candidate_profile_id": other_profile_id},
+        )
+        assert forbidden.status_code == 403
+
+        deleted = client.request(
+            "DELETE",
+            "/v1/auth/account",
+            cookies={SESSION_COOKIE_NAME: cookie},
+            headers=INTERNAL_HEADERS,
+            json={"confirmation": "DELETE", "current_password": "first secure alpha password", "candidate_profile_id": first_profile_id},
+        )
+        assert deleted.status_code == 200
+        assert SESSION_COOKIE_NAME in deleted.headers["set-cookie"]
+        assert client.get("/v1/auth/me", cookies={SESSION_COOKIE_NAME: cookie}, headers=INTERNAL_HEADERS).status_code == 401
+
+    with Session(engine) as session:
+        assert session.get(CandidateProfile, first_profile_id) is None
+        assert session.get(CandidateProfile, other_profile_id) is not None
+        assert session.scalar(select(ProfileFactDraft).where(ProfileFactDraft.candidate_profile_id == first_profile_id)) is None
+        assert session.scalar(select(UserSession).where(UserSession.user_id == session.scalar(select(User.id).where(User.status == "deleted")))) is None
 
 
 def test_command_center_rejects_unauthenticated_user(monkeypatch, tmp_path: Path) -> None:

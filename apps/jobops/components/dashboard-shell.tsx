@@ -28,6 +28,7 @@ export function DashboardShell({
 }>) {
   const pathname = usePathname();
   const isPublicPath = isPublicDashboardPath(pathname, basePath);
+  const isAccountPath = isAccountDashboardPath(pathname, basePath);
 
   useSessionValidityRedirect({ apiBasePath, basePath, enabled: !isPublicPath, pathname });
 
@@ -35,29 +36,24 @@ export function DashboardShell({
     return (
       <div className="jobops-page-frame">
         {children}
-        <JobOpsFooter appMetadata={appMetadata} />
+        <JobOpsFooter appMetadata={appMetadata} basePath={basePath} />
+      </div>
+    );
+  }
+
+  if (isAccountPath) {
+    return (
+      <div className="dashboard-shell account-shell">
+        <TopBar basePath={basePath} />
+        {children}
+        <DashboardFooter appMetadata={appMetadata} basePath={basePath} />
       </div>
     );
   }
 
   return (
     <div className="dashboard-shell">
-      <header className="top-bar">
-        <Link className="brand" href={basePath || "/"}>
-          <span>JobOps</span>
-          <small>AI command center</small>
-        </Link>
-        <div className="top-bar-actions">
-          <Link className="top-bar-link" href={`${basePath}/about`}>
-            About JobOps
-          </Link>
-          <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
-            <button className="logout-button" type="submit">
-              Log out
-            </button>
-          </form>
-        </div>
-      </header>
+      <TopBar basePath={basePath} />
       <div className="command-shell">
         <AiCommandCenter
           activeWorkspace={activeWorkspaceFromPathname(pathname, basePath)}
@@ -84,17 +80,52 @@ export function DashboardShell({
       <div className="workspace-content" aria-label="Active workspace content">
         {children}
       </div>
-      <footer className="dashboard-footer">
-        <Link href={`${basePath}/about`}>Public Alpha Page</Link>
-        <JobOpsMetadataLine appMetadata={appMetadata} />
-      </footer>
+      <DashboardFooter appMetadata={appMetadata} basePath={basePath} />
     </div>
   );
 }
 
-function JobOpsFooter({ appMetadata }: { appMetadata: JobOpsAppMetadata }) {
+function TopBar({ basePath }: { basePath: string }) {
+  return (
+    <header className="top-bar">
+      <Link className="brand" href={basePath || "/"}>
+        <span>JobOps</span>
+        <small>AI command center</small>
+      </Link>
+      <div className="top-bar-actions">
+        <Link className="top-bar-link" href={basePath || "/"}>
+          Command Center
+        </Link>
+        <Link className="top-bar-link" href={`${basePath}/about`}>
+          About JobOps
+        </Link>
+        <Link className="top-bar-link" href={`${basePath}/account`}>
+          Account
+        </Link>
+        <form action={`${basePath}/api/dashboard-auth/logout`} method="post">
+          <button className="logout-button" type="submit">
+            Log out
+          </button>
+        </form>
+      </div>
+    </header>
+  );
+}
+
+function DashboardFooter({ appMetadata, basePath }: { appMetadata: JobOpsAppMetadata; basePath: string }) {
+  return (
+    <footer className="dashboard-footer">
+      <Link href={`${basePath}/about`}>Public Alpha Page</Link>
+      <Link href={`${basePath}/privacy`}>Privacy</Link>
+      <JobOpsMetadataLine appMetadata={appMetadata} />
+    </footer>
+  );
+}
+
+function JobOpsFooter({ appMetadata, basePath }: { appMetadata: JobOpsAppMetadata; basePath: string }) {
   return (
     <footer className="dashboard-footer public-page-footer">
+      <Link href={`${basePath}/privacy`}>Privacy</Link>
       <JobOpsMetadataLine appMetadata={appMetadata} />
     </footer>
   );
@@ -183,11 +214,21 @@ function isPublicDashboardPath(pathname: string | null, basePath: string) {
     localPath === "/about" ||
     localPath === "/login" ||
     localPath === "/reset-password" ||
+    localPath === "/forgot-password" ||
     localPath === "/privacy" ||
     localPath.startsWith("/invite/") ||
     localPath === "/portfolio" ||
     localPath.startsWith("/portfolio/")
   );
+}
+
+function isAccountDashboardPath(pathname: string | null, basePath: string) {
+  if (!pathname) {
+    return false;
+  }
+
+  const localPath = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) || "/" : pathname;
+  return localPath === "/account" || localPath.startsWith("/account/");
 }
 
 export function isActiveWorkspace(pathname: string | null, href: string) {

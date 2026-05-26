@@ -1,14 +1,20 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardHome } from "./dashboard-home";
 import { DashboardShell } from "./dashboard-shell";
 
+let mockPathname = "/applications";
+
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/applications"
+  usePathname: () => mockPathname
 }));
 
 describe("JobOps dashboard shell", () => {
+  beforeEach(() => {
+    mockPathname = "/applications";
+  });
+
   it("renders the dashboard app shell", () => {
     const html = renderToStaticMarkup(
       <DashboardShell>
@@ -62,6 +68,23 @@ describe("JobOps dashboard shell", () => {
     expect(html).toContain('href="/applications"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('class="workspace-tab active"');
+  });
+
+  it("renders account settings outside the command center workspace chrome", () => {
+    mockPathname = "/account";
+    const html = renderToStaticMarkup(
+      <DashboardShell>
+        <main className="dashboard-main account-settings-page">
+          <h2>Manage your JobOps alpha account.</h2>
+        </main>
+      </DashboardShell>
+    );
+
+    expect(html).toContain("Manage your JobOps alpha account.");
+    expect(html).toContain('href="/account"');
+    expect(html).toContain("Log out");
+    expect(html).not.toContain("Workspace tabs");
+    expect(html).not.toContain("Active workspace content");
   });
 
   it("presents the command-center plus workspace model", () => {

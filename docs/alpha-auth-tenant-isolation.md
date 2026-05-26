@@ -18,7 +18,7 @@ Existing `tenants` are treated as workspaces. Auth tables:
 
 ## Seed The Initial User
 
-Fresh databases no longer use `JOBOPS_DEFAULT_CANDIDATE_PROFILE_SLUG`, `JOBOPS_DEFAULT_USER_EMAIL`, or `JOBOPS_DEFAULT_USER_NAME`. After migrations, seed the initial persisted user/workspace/profile:
+After migrations, seed the initial persisted user/workspace/profile:
 
 ```powershell
 cd services/api
@@ -64,10 +64,6 @@ The UI middleware only gates protected dashboard pages on the presence of the `j
 
 Dashboard logout calls `POST /v1/auth/logout` with the current session cookie and internal API key, revoking the backend `UserSession`. The Next.js route clears the browser cookie regardless of backend success so the user is never stuck with a stale local cookie.
 
-## Existing Rebekah Flow
-
-Rebekah is now a persisted user. Log in with username `rebekah-love` and the temporary password used in the local seed command, then reset the password when prompted. No default user/profile identity, raw password, or preview-password gate belongs in `.env`.
-
 ## Invite Email Configuration
 
 Optional SMTP settings:
@@ -77,7 +73,7 @@ JOBOPS_APP_BASE_URL=https://<jobops-host>
 JOBOPS_SMTP_HOST=smtp.example.com
 JOBOPS_SMTP_PORT=587
 JOBOPS_SMTP_USERNAME=...
-JOBOPS_SMTP_PASSWORD=...
+RESEND_API_KEY=...
 JOBOPS_SMTP_FROM_EMAIL=JobOps <no-reply@example.com>
 ```
 

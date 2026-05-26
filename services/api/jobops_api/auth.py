@@ -9,16 +9,42 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from jobops_api.db.models import CandidateProfile, InviteToken, Tenant, User, UserSession, WorkspaceMembership
+from jobops_api.db.models import (
+    Application,
+    ApplicationEvent,
+    CandidateProfile,
+    CommandInteractionLog,
+    Domain,
+    EvidenceArtifact,
+    ExperienceProjectDraft,
+    InviteToken,
+    JobRole,
+    PasswordResetToken,
+    ProfileFact,
+    ProfileFactDraft,
+    ProfileFieldValue,
+    ProfileIntakeEvent,
+    ProfileIntakeSession,
+    ResumeArtifact,
+    RoleTarget,
+    SkillClaim,
+    TargetCompany,
+    Tenant,
+    UsageEvent,
+    User,
+    UserSession,
+    WorkspaceMembership,
+)
 from jobops_api.db.session import get_db_session
 
 
 SESSION_COOKIE_NAME = "jobops_session"
 SESSION_TTL = timedelta(hours=12)
 INVITE_TTL = timedelta(days=14)
+PASSWORD_RESET_TTL = timedelta(hours=1)
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,39}$")
 PASSWORD_HASH_VERSION = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 260_000
@@ -48,6 +74,12 @@ class AuthContext:
 @dataclass(frozen=True)
 class CreatedInvite:
     invite: InviteToken
+    raw_token: str
+
+
+@dataclass(frozen=True)
+class CreatedPasswordReset:
+    token: PasswordResetToken
     raw_token: str
 
 
@@ -187,6 +219,13 @@ def revoke_session(session: Session, raw_session_token: str | None) -> None:
     if session_row is not None:
         session_row.revoked_at = now_utc()
         session.flush()
+
+
+def revoke_user_sessions(session: Session, user_id: str) -> None:
+    session.query(UserSession).filter(UserSession.user_id == user_id, UserSession.revoked_at.is_(None)).update(
+        {"revoked_at": now_utc()},
+        synchronize_session=False,
+    )
 
 
 def set_session_cookie(response: Response, raw_session_token: str, *, secure: bool) -> None:
@@ -404,18 +443,137 @@ def verify_user_password_or_raise(user: User, password: str) -> None:
         raise HTTPException(status_code=401, detail="Username or password is incorrect.")
 
 
-def reset_user_password(session: Session, *, username: str, current_password: str, new_password: str) -> tuple[AuthContext, str]:
-    normalized_username = normalize_username(username)
-    user = session.scalar(select(User).where(User.username == normalized_username))
-    if user is None or user.status != "active":
-        raise HTTPException(status_code=404, detail="No active JobOps user exists for that username.")
+def change_user_password_with_current_password(
+    session: Session,
+    *,
+    user: User,
+    current_password: str,
+    new_password: str,
+    revoke_existing_sessions: bool = True,
+) -> None:
     verify_user_password_or_raise(user, current_password)
     validate_password(new_password)
     user.password_hash = hash_password(new_password)
     user.password_reset_required = False
     user.password_expires_at = None
+    if revoke_existing_sessions:
+        revoke_user_sessions(session, user.id)
     session.flush()
+
+
+def reset_user_password(session: Session, *, username: str, current_password: str, new_password: str) -> tuple[AuthContext, str]:
+    normalized_username = normalize_username(username)
+    user = session.scalar(select(User).where(User.username == normalized_username))
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=404, detail="No active JobOps user exists for that username.")
+    change_user_password_with_current_password(
+        session,
+        user=user,
+        current_password=current_password,
+        new_password=new_password,
+        revoke_existing_sessions=True,
+    )
     return create_session_for_username(session, username=normalized_username, password=new_password)
+
+
+def create_password_reset_token(session: Session, *, identifier: str) -> CreatedPasswordReset | None:
+    normalized = identifier.strip().casefold()
+    user = session.scalar(
+        select(User).where(
+            User.status == "active",
+            (User.email == normalized) | (User.username == normalized),
+        )
+    )
+    if user is None:
+        return None
+
+    raw_token = secrets.token_urlsafe(48)
+    token = PasswordResetToken(
+        token_hash=hash_token(raw_token),
+        user_id=user.id,
+        expires_at=now_utc() + PASSWORD_RESET_TTL,
+    )
+    session.add(token)
+    session.flush()
+    return CreatedPasswordReset(token=token, raw_token=raw_token)
+
+
+def complete_password_reset_with_token(session: Session, *, raw_token: str, new_password: str) -> User:
+    token = session.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_token(raw_token)))
+    if token is None or token.used_at is not None:
+        raise HTTPException(status_code=400, detail="Password reset token is invalid or has already been used.")
+    if aware_utc(token.expires_at) <= now_utc():
+        raise HTTPException(status_code=400, detail="Password reset token has expired.")
+    user = session.get(User, token.user_id)
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=400, detail="Password reset token is invalid or has already been used.")
+
+    validate_password(new_password)
+    user.password_hash = hash_password(new_password)
+    user.password_reset_required = False
+    user.password_expires_at = None
+    token.used_at = now_utc()
+    revoke_user_sessions(session, user.id)
+    session.flush()
+    return user
+
+
+def delete_authenticated_account(
+    session: Session,
+    *,
+    auth_context: AuthContext,
+    confirmation: str,
+    current_password: str,
+    candidate_profile_id: str | None = None,
+) -> None:
+    if confirmation != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to confirm account deletion.")
+    verify_user_password_or_raise(auth_context.user, current_password)
+    if candidate_profile_id is not None and candidate_profile_id != auth_context.candidate_profile.id:
+        raise HTTPException(status_code=403, detail="Cannot delete another user's profile.")
+
+    profile_ids = list(
+        session.scalars(select(CandidateProfile.id).where(CandidateProfile.tenant_id == auth_context.tenant.id))
+    )
+    for profile_id in profile_ids:
+        application_ids = list(session.scalars(select(Application.id).where(Application.candidate_profile_id == profile_id)))
+        if application_ids:
+            session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id.in_(application_ids)))
+        for model in (
+            Application,
+            Domain,
+            EvidenceArtifact,
+            ExperienceProjectDraft,
+            JobRole,
+            ProfileFact,
+            ProfileFactDraft,
+            ProfileFieldValue,
+            ProfileIntakeEvent,
+            ResumeArtifact,
+            RoleTarget,
+            SkillClaim,
+            TargetCompany,
+        ):
+            session.execute(delete(model).where(model.candidate_profile_id == profile_id))
+        session.execute(delete(ProfileIntakeSession).where(ProfileIntakeSession.candidate_profile_id == profile_id))
+        session.execute(delete(CommandInteractionLog).where(CommandInteractionLog.candidate_profile_id == profile_id))
+        session.execute(delete(UsageEvent).where(UsageEvent.candidate_profile_id == profile_id))
+        session.execute(delete(CandidateProfile).where(CandidateProfile.id == profile_id))
+
+    revoke_user_sessions(session, auth_context.user.id)
+    session.execute(delete(WorkspaceMembership).where(WorkspaceMembership.tenant_id == auth_context.tenant.id))
+    session.execute(delete(UserSession).where(UserSession.tenant_id == auth_context.tenant.id))
+    session.execute(delete(UsageEvent).where(UsageEvent.tenant_id == auth_context.tenant.id))
+    session.execute(delete(CommandInteractionLog).where(CommandInteractionLog.tenant_id == auth_context.tenant.id))
+    session.delete(auth_context.tenant)
+    auth_context.user.email = f"deleted-{auth_context.user.id}@deleted.jobops.local"
+    auth_context.user.username = f"deleted-{auth_context.user.id[:28]}"
+    auth_context.user.display_name = "Deleted JobOps alpha user"
+    auth_context.user.password_hash = None
+    auth_context.user.status = "deleted"
+    auth_context.user.password_reset_required = False
+    auth_context.user.password_expires_at = None
+    session.flush()
 
 
 def ensure_username_available(session: Session, username: str) -> None:
