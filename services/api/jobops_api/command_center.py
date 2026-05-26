@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -79,11 +81,20 @@ class CommandCenterActionResult(ApiModel):
     result_payload: dict[str, Any] | None = Field(default=None, alias="resultPayload")
 
 
+class CommandCenterStatusUpdate(ApiModel):
+    stage: str
+    message: str
+    action_type: CommandActionType | None = Field(default=None, alias="actionType")
+    confidence: str | None = None
+    target_workspace: str | None = Field(default=None, alias="targetWorkspace")
+
+
 class CommandCenterCommandResponse(ApiModel):
     assistant_message: str
     actions: list[CommandCenterActionResult]
     target_workspace: str | None = None
     result_payload: dict[str, Any] | None = None
+    status_updates: list[CommandCenterStatusUpdate] = Field(default_factory=list, alias="statusUpdates")
 
 
 @router.post("/commands", response_model=CommandCenterCommandResponse)
@@ -183,6 +194,7 @@ def execute_command_center_command(
                     session=session,
                     settings=settings,
                 )
+        response.status_updates = [build_routing_status_update(router_result, response), *response.status_updates]
         save_command_interaction_log(
             session,
             auth=auth if has_auth_context else None,
@@ -209,6 +221,163 @@ def execute_command_center_command(
         )
         session.commit()
         raise
+
+
+@router.post("/commands/stream")
+def stream_command_center_command(
+    request: CommandCenterCommandRequest,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> StreamingResponse:
+    def stream_events():
+        started_at = time.perf_counter()
+        settings = load_settings()
+        has_auth_context = isinstance(auth, AuthContext)
+        candidate_slug = auth.candidate_profile.slug if has_auth_context else meaningful_text(request.candidate_profile_slug)
+        candidate_profile = auth.candidate_profile if has_auth_context else resolve_direct_candidate_profile(session, candidate_slug)
+        candidate_slug = candidate_slug or (candidate_profile.slug if candidate_profile is not None else None)
+        safety_response = preflight_safety_response(request.command)
+        if safety_response is not None:
+            save_command_interaction_log(
+                session,
+                auth=auth if has_auth_context else None,
+                request=request,
+                response=safety_response,
+                router_payload=None,
+                router_decision=None,
+                latency_ms=round((time.perf_counter() - started_at) * 1000),
+                model_provider=settings.model_provider,
+            )
+            session.commit()
+            yield command_stream_event("result", {"result": safety_response.model_dump(by_alias=True)})
+            return
+
+        router_result = run_command_router(
+            CommandRouterRequest(
+                latest_user_message=request.command,
+                active_workspace=request.active_workspace,
+                candidate_profile=candidate_profile,
+            ),
+            db_session=session,
+            settings=settings,
+        )
+        status_update: CommandCenterStatusUpdate | None = None
+        try:
+            if router_result.decision is not None:
+                status_update = build_router_decision_status_update(router_result.decision)
+                yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                if router_result.decision.confidence == "high" and router_result.decision.action_type != "unknown":
+                    response = dispatch_command_center_action(
+                        request,
+                        action_type=router_result.decision.action_type,
+                        router_decision=router_result.decision,
+                        router_payload=router_result.body,
+                        candidate_slug=candidate_slug,
+                        candidate_profile=candidate_profile,
+                        session=session,
+                        settings=settings,
+                    )
+                else:
+                    response = clarifying_router_response(router_result.decision, router_result.body)
+            else:
+                interpreted_action = interpret_command(request.command, request.active_workspace)
+                if not router_result.unavailable:
+                    response = CommandCenterCommandResponse(
+                        assistant_message="I could not safely route that command. Please clarify which workspace or action you want.",
+                        actions=[
+                            CommandCenterActionResult(
+                                type="unknown",
+                                status="needs_confirmation",
+                                targetWorkspace=None,
+                                title="Review command",
+                                summary="The router response could not be validated, so no tool was executed.",
+                                resultPayload=router_result.body,
+                            )
+                        ],
+                        result_payload=router_result.body,
+                    )
+                    status_update = build_routing_status_update(router_result, response)
+                    yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                elif interpreted_action == "company_update":
+                    response = router_unavailable_company_update_response(router_result.body)
+                    status_update = build_routing_status_update(router_result, response)
+                    yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                elif interpreted_action == "unknown" and command_contains_url(request.command):
+                    response = ambiguous_url_fallback_response(router_result.body)
+                    status_update = build_routing_status_update(router_result, response)
+                    yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                elif not should_use_deterministic_fallback(settings, interpreted_action):
+                    response = CommandCenterCommandResponse(
+                        assistant_message="Command routing is temporarily unavailable, so I did not execute a tool. Please try again after the router is available.",
+                        actions=[
+                            CommandCenterActionResult(
+                                type=interpreted_action,
+                                status="failed",
+                                targetWorkspace=target_workspace_for_action(interpreted_action),
+                                title=title_for_action(interpreted_action),
+                                summary="The model-assisted router was unavailable and this action can change saved data.",
+                                resultPayload=router_result.body,
+                            )
+                        ],
+                        target_workspace=target_workspace_for_action(interpreted_action),
+                        result_payload=router_result.body,
+                    )
+                    status_update = build_routing_status_update(router_result, response)
+                    yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                else:
+                    status_update = CommandCenterStatusUpdate(
+                        stage="router",
+                        message=(
+                            "Status update: the model router was unavailable, so JobOps used the conservative "
+                            f"{title_for_action(interpreted_action)} fallback path."
+                        ),
+                        actionType=interpreted_action,
+                        confidence=None,
+                        targetWorkspace=target_workspace_for_action(interpreted_action),
+                    )
+                    yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
+                    response = dispatch_command_center_action(
+                        request,
+                        action_type=interpreted_action,
+                        router_decision=None,
+                        router_payload=router_result.body,
+                        candidate_slug=candidate_slug,
+                        candidate_profile=candidate_profile,
+                        session=session,
+                        settings=settings,
+                    )
+
+            if status_update is None:
+                status_update = build_routing_status_update(router_result, response)
+            response.status_updates = [status_update, *response.status_updates]
+            save_command_interaction_log(
+                session,
+                auth=auth if has_auth_context else None,
+                request=request,
+                response=response,
+                router_payload=router_result.body,
+                router_decision=router_result.decision,
+                latency_ms=round((time.perf_counter() - started_at) * 1000),
+                model_provider=settings.model_provider,
+            )
+            session.commit()
+            yield command_stream_event("result", {"result": response.model_dump(by_alias=True)})
+        except Exception as error:
+            save_command_interaction_log(
+                session,
+                auth=auth if has_auth_context else None,
+                request=request,
+                response=None,
+                router_payload=router_result.body,
+                router_decision=router_result.decision,
+                latency_ms=round((time.perf_counter() - started_at) * 1000),
+                model_provider=settings.model_provider,
+                error=error,
+            )
+            session.commit()
+            raise
+
+    return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
 
 def dispatch_command_center_action(
@@ -731,6 +900,64 @@ def build_company_discovery_action_summary(added_count: int) -> str:
     if added_count == 1:
         return "Saved 1 model-derived company with new review status and verification links."
     return f"Saved {added_count} model-derived companies with new review status and verification links."
+
+
+def build_routing_status_update(
+    router_result,
+    response: CommandCenterCommandResponse,
+) -> CommandCenterStatusUpdate:
+    if router_result.decision is not None:
+        return build_router_decision_status_update(router_result.decision)
+
+    if router_result.unavailable:
+        fallback_action = response.actions[0].type if response.actions else "unknown"
+        return CommandCenterStatusUpdate(
+            stage="router",
+            message=(
+                "Status update: the model router was unavailable, so JobOps used the conservative "
+                f"{title_for_action(fallback_action)} fallback path."
+            ),
+            actionType=fallback_action,
+            confidence=None,
+            targetWorkspace=response.target_workspace,
+        )
+
+    fallback_action = response.actions[0].type if response.actions else "unknown"
+    return CommandCenterStatusUpdate(
+        stage="router",
+        message="Status update: the router response was invalid, so no unsafe tool execution was performed.",
+        actionType=fallback_action,
+        confidence=None,
+        targetWorkspace=response.target_workspace,
+    )
+
+
+def build_router_decision_status_update(router_decision: CommandRouterOutput) -> CommandCenterStatusUpdate:
+    action_type = normalize_dispatch_action(router_decision.action_type)
+    workspace = router_decision.target_workspace or target_workspace_for_action(action_type)
+    if router_decision.confidence == "high" and action_type != "unknown":
+        message = (
+            f"Status update: routed this command to {title_for_action(action_type)}"
+            f" ({action_type}) with high confidence."
+        )
+    elif action_type == "unknown":
+        message = "Status update: the router could not identify a safe workspace for this command yet."
+    else:
+        message = (
+            f"Status update: the router considered {title_for_action(action_type)}"
+            f" ({action_type}) but needs confirmation before running it."
+        )
+    return CommandCenterStatusUpdate(
+        stage="router",
+        message=message,
+        actionType=action_type,
+        confidence=router_decision.confidence,
+        targetWorkspace=workspace,
+    )
+
+
+def command_stream_event(event_type: str, payload: dict[str, Any]) -> str:
+    return json.dumps({"type": event_type, **payload}) + "\n"
 
 
 def company_update_summary(update_result) -> str:

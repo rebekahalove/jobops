@@ -12,10 +12,19 @@ export type CommandCenterApiResponse = {
   assistant_message: string;
   actions: Array<Omit<PlannedCommandAction, "id"> & { id?: string }>;
   target_workspace?: WorkspaceTab;
+  statusUpdates?: CommandCenterStatusUpdate[];
   result_payload?: {
     profileDraft?: ProfileIntakeOutput;
     [key: string]: unknown;
   };
+};
+
+export type CommandCenterStatusUpdate = {
+  stage: string;
+  message: string;
+  actionType?: PlannedCommandAction["type"];
+  confidence?: "high" | "medium" | "low" | string | null;
+  targetWorkspace?: WorkspaceTab | null;
 };
 
 export type CommandCenterProxyResponse =
@@ -26,6 +35,16 @@ export type CommandCenterProxyResponse =
   | {
       ok: false;
       error: string;
+    };
+
+export type CommandCenterStreamEvent =
+  | {
+      type: "status";
+      statusUpdate: CommandCenterStatusUpdate;
+    }
+  | {
+      type: "result";
+      result: CommandCenterApiResponse;
     };
 
 export function validateCommandCenterApiRequest(value: unknown):

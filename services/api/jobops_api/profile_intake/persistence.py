@@ -330,7 +330,7 @@ def serialize_role_target_from_row(role_target: RoleTarget | None) -> dict[str, 
         "id": role_target.id,
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
-        "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
+        "preferredWorkMode": normalize_preferred_work_mode(role_target.work_modes[0] if role_target.work_modes else None),
         "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
@@ -360,7 +360,11 @@ def build_profile_field_draft_snapshot(session: Session, intake_session: Profile
         "targetRoleIntent": {
             **({"targetTitles": targets["targetTitles"]} if targets.get("targetTitles") else {}),
             **({"targetRoleFamilies": targets["roleFamilies"]} if targets.get("roleFamilies") else {}),
-            **({"preferredWorkMode": targets["preferredWorkMode"]} if targets.get("preferredWorkMode") else {}),
+            **(
+                {"preferredWorkMode": normalize_preferred_work_mode(targets["preferredWorkMode"])}
+                if targets.get("preferredWorkMode")
+                else {}
+            ),
             **({"preferredLocations": targets["preferredLocations"]} if targets.get("preferredLocations") else {}),
             **({"domainsOrIndustries": targets["domainsOrIndustries"]} if targets.get("domainsOrIndustries") else {}),
             **({"constraints": targets["constraints"]} if targets.get("constraints") else {}),
@@ -1076,7 +1080,7 @@ def serialize_role_target(role_target: RoleTarget | None, output: ProfileIntakeO
     payload = {
         "targetTitles": join_text_list(role_target.target_titles),
         "targetRoleFamilies": join_text_list(role_target.role_families),
-        "preferredWorkMode": role_target.work_modes[0] if role_target.work_modes else None,
+        "preferredWorkMode": normalize_preferred_work_mode(role_target.work_modes[0] if role_target.work_modes else None),
         "preferredLocations": join_location_list(role_target.preferred_locations),
         "domainsOrIndustries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
@@ -1111,6 +1115,23 @@ def role_target_summary_from_row(role_target: RoleTarget | None) -> str:
         constraints.get("constraints"),
     ]
     return " | ".join(value for value in values if value)
+
+
+def normalize_preferred_work_mode(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.casefold().replace("-", " ").replace("_", " ").split())
+    if not normalized:
+        return None
+    if "remote" in normalized:
+        return "remote"
+    if "hybrid" in normalized:
+        return "hybrid"
+    if "onsite" in normalized or "on site" in normalized:
+        return "onsite"
+    if "flexible" in normalized or "open" in normalized:
+        return "flexible"
+    return value.strip()
 
 
 def split_text_list(value: str | None) -> list[str]:

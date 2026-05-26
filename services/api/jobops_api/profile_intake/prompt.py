@@ -60,6 +60,7 @@ Full-draft update rules:
 - Replacement examples include "instead", "not X anymore", "change X to Y", "remove X", "clear X", and similar explicit wording.
 - Do not drop existing list-like values just because the latest message only mentions new values.
 - For scalar-ish fields such as preferredWorkMode, update only if the user expresses a new preference. If wording expands options, preserve flexibility where appropriate.
+- preferredWorkMode must be exactly one of "remote", "hybrid", "onsite", or "flexible". Convert phrases such as "prefer remote" or "remote preferred" to "remote"; do not return prose in this field.
 - Empty output fields mean the updated full draft intentionally has no value for that field only when the latest user message explicitly asked to clear/remove it and removedItems.targetRoleIntentFields includes that field.
 - When updating targetRoleIntent, return the merged desired value for changed fields. For example, current preferredLocations "Louisville, KY" plus latest "or maybe on location in London, UK as well" should return preferredLocations "Louisville, KY; London, UK".
 - Another example: current preferredLocations "London, UK" plus latest "or NYC or San Francisco Bay" should return preferredLocations "London, UK; NYC; San Francisco Bay".

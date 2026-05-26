@@ -26,7 +26,7 @@ from jobops_api.db.models import (
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, ModelRequest, ModelResponse, ModelRoutingConfig
-from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
+from jobops_api.profile_intake.models import ProfileIntakeExtractRequest, ProfileIntakeOutput
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
 from jobops_api.profile_intake.prompt import PROFILE_INTAKE_SYSTEM_PROMPT, build_profile_intake_user_prompt
 from jobops_api.profile_intake.service import run_profile_intake_extraction
@@ -114,6 +114,37 @@ def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecyc
     assert "Never include id, source, status, visibility, or published in targetRoleIntent." in target_contract
     assert "preserve id only" in metadata_contract
     assert "published as false" in metadata_contract
+
+
+def test_profile_intake_normalizes_preferred_work_mode_phrase() -> None:
+    output = ProfileIntakeOutput.model_validate(
+        {
+            "assistantMessage": "Updated the profile draft.",
+            "updatedDraftProfile": {
+                "profileBasics": {},
+                "targetRoleIntent": {
+                    "targetTitles": "Applied AI Engineer",
+                    "preferredWorkMode": "prefer remote",
+                },
+                "draftFacts": [],
+                "skillClaims": [],
+                "experienceAndProjects": [],
+                "evidenceLinks": [],
+            },
+            "clarifyingQuestions": [],
+            "changeSummary": [],
+            "noChangeReason": None,
+            "removedItems": {
+                "draftFactIds": [],
+                "skillClaimIds": [],
+                "experienceAndProjectIds": [],
+                "evidenceLinkIds": [],
+                "targetRoleIntentFields": [],
+            },
+        }
+    )
+
+    assert output.updated_draft_profile.target_role_intent.preferred_work_mode == "remote"
 
 
 def test_fastapi_profile_intake_mock_success(tmp_path: Path) -> None:

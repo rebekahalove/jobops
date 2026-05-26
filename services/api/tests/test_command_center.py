@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,12 +64,98 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
     assert payload["actions"][0]["type"] == "profile_intake"
     assert payload["actions"][0]["status"] == "completed"
     assert payload["actions"][0]["targetWorkspace"] == "profile"
+    assert payload["statusUpdates"][0]["stage"] == "router"
+    assert payload["statusUpdates"][0]["actionType"] == "profile_intake"
+    assert "routed this command to Update profile" in payload["statusUpdates"][0]["message"]
     assert payload["result_payload"]["profileDraft"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
     assert payload["result_payload"]["modelRequest"]["task"] == "profile_draft_update"
     assert payload["result_payload"]["modelRequest"]["messages"][1]["role"] == "user"
     assert "I want to be an Applied AI Engineer." in payload["result_payload"]["modelRequest"]["messages"][1]["content"]
     assert payload["result_payload"]["modelResponse"]["provider"] == "mock"
     assert "assistantMessage" in payload["result_payload"]["modelResponse"]["text"]
+
+
+def test_command_endpoint_routes_pasted_resume_to_profile_intake(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        response = client.post(
+            "/v1/command-center/commands",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={
+                "command": (
+                    "PROFESSIONAL SUMMARY\n"
+                    "Applied AI Systems Engineer building production RAG systems.\n\n"
+                    "CORE SKILLS\n"
+                    "Python, FastAPI, PostgreSQL, LLM evaluation\n\n"
+                    "PROFESSIONAL EXPERIENCE\n"
+                    "Shadow Network Intelligence - Founder - 2024-Present\n"
+                    "Built AI reporting workflows.\n\n"
+                    "EDUCATION\n"
+                    "B.A., Fine Arts - Indiana University"
+                ),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["actions"][0]["type"] == "profile_intake"
+    assert payload["actions"][0]["status"] == "completed"
+    assert payload["statusUpdates"][0]["actionType"] == "profile_intake"
+    assert "routed this command to Update profile" in payload["statusUpdates"][0]["message"]
+
+
+def test_command_stream_emits_router_status_before_result(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        with client.stream(
+            "POST",
+            "/v1/command-center/commands/stream",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={
+                "command": (
+                    "PROFESSIONAL SUMMARY\nApplied AI Systems Engineer\n\n"
+                    "CORE SKILLS\nPython, FastAPI, LLM evaluation\n\n"
+                    "PROFESSIONAL EXPERIENCE\nBuilt RAG workflows.\n\n"
+                    "EDUCATION\nB.A., Fine Arts - Indiana University"
+                ),
+            },
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert events[0]["type"] == "status"
+    assert events[0]["statusUpdate"]["actionType"] == "profile_intake"
+    assert "routed this command to Update profile" in events[0]["statusUpdate"]["message"]
+    assert events[1]["type"] == "result"
+    assert events[1]["result"]["actions"][0]["type"] == "profile_intake"
 
 
 def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp_path: Path, monkeypatch) -> None:
@@ -143,6 +230,9 @@ def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp
 
     request = captured["request"]
     assert response.actions[0].status == "completed"
+    assert response.status_updates[0].action_type == "profile_intake"
+    assert response.status_updates[0].confidence == "high"
+    assert "Update profile" in response.status_updates[0].message
     assert request.latest_user_message == "or maybe on location in London, UK as well"
     assert request.candidate_profile_slug == "rebekah-love"
     assert request.existing_draft["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from .intake_mode import RESUME_INTAKE_CAPACITY
 
@@ -43,6 +43,24 @@ class TargetRoleIntent(ApiModel):
     preferred_locations: str | None = Field(default=None, alias="preferredLocations", max_length=200)
     domains_or_industries: str | None = Field(default=None, alias="domainsOrIndustries", max_length=200)
     constraints: str | None = Field(default=None, max_length=200)
+
+    @field_validator("preferred_work_mode", mode="before")
+    @classmethod
+    def normalize_preferred_work_mode(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = " ".join(value.casefold().replace("-", " ").replace("_", " ").split())
+        if not normalized:
+            return None
+        if "remote" in normalized:
+            return "remote"
+        if "hybrid" in normalized:
+            return "hybrid"
+        if "onsite" in normalized or "on site" in normalized:
+            return "onsite"
+        if "flexible" in normalized or "open" in normalized:
+            return "flexible"
+        return value
 
 
 class GeneratedItem(ApiModel):

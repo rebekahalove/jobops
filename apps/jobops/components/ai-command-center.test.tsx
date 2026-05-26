@@ -102,6 +102,15 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"');
   });
 
+  it("adds router status updates to the transcript", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("Status update: sending this command to the JobOps router.");
+    expect(source).toContain('fetch(`${apiBasePath}/command-center/stream`');
+    expect(source).toContain("onStatus(event.statusUpdate.message)");
+    expect(source).toContain("no router decision was received");
+  });
+
   it("links planned action CTAs to the expected workspace routes", () => {
     const workspaces = Object.keys(workspaceRoutes) as WorkspaceTab[];
 
@@ -161,7 +170,7 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain('apiBasePath = "/api"');
-    expect(source).toContain('fetch(`${apiBasePath}/command-center`');
+    expect(source).toContain('fetch(`${apiBasePath}/command-center/stream`');
     expect(source).not.toContain("/v1/command");
     expect(source).not.toContain("GEMINI_API_KEY");
     expect(source).not.toContain("@jobops/model-connector");
