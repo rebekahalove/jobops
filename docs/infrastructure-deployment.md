@@ -104,7 +104,7 @@ Changing domains later should be DNS, redirects, config, and database domain map
 Use lightweight configuration first:
 
 - `netlify.toml` for frontend build, redirects, and deploy-context settings.
-- `render.yaml` for API service infrastructure-as-code when useful.
+- `render.yaml` for API service infrastructure-as-code. The API service uses Render's pre-deploy command to run `python -m alembic upgrade head` before each deploy so schema changes are applied before the new app version starts serving traffic.
 - `.env.example`, `.env.dev.example`, and `.env.prod.example` for documented environment variables.
 - GitHub Actions workflow files for CI/CD.
 - Alembic migrations for database schema.
