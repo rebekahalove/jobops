@@ -77,6 +77,7 @@ Server-side values:
 JOBOPS_LLM_PROVIDER=gemini
 JOBOPS_DEFAULT_MODEL=gemini-2.5-flash
 JOBOPS_CHEAP_MODEL=gemini-2.5-flash-lite
+JOBOPS_LLM_TIMEOUT_SECONDS=60
 GEMINI_API_KEY=...
 ```
 
@@ -86,6 +87,8 @@ Rules:
 - Do not prefix model secrets with `NEXT_PUBLIC_`.
 - Browser/client bundles must not import model provider code.
 - Tests should use the mock provider and should not require live API keys.
+
+Provider socket calls default to a 60 second timeout. Increase `JOBOPS_LLM_TIMEOUT_SECONDS` server-side if a production workflow needs more time, but provider timeouts are still normalized to safe model-call failures so API endpoints return JSON instead of framework error pages.
 
 ## Profile Intake Usage
 

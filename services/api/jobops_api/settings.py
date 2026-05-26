@@ -21,6 +21,7 @@ class Settings:
     company_discovery_search_grounding_enabled: bool
     database_url: str | None
     repo_root: Path
+    llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
     enable_api_docs: bool = True
@@ -61,6 +62,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         ),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root,
+        llm_request_timeout_seconds=parse_float(merged.get("JOBOPS_LLM_TIMEOUT_SECONDS"), default=60),
         internal_api_key=merged.get("JOBOPS_INTERNAL_API_KEY"),
         cors_origins=parse_csv_list(merged.get("JOBOPS_CORS_ORIGINS")),
         enable_api_docs=parse_bool(merged.get("JOBOPS_ENABLE_API_DOCS"), default=app_env.lower() != "prod"),
@@ -89,6 +91,12 @@ def parse_int(value: str | None, *, default: int) -> int:
     if value is None or not value.strip():
         return default
     return int(value)
+
+
+def parse_float(value: str | None, *, default: float) -> float:
+    if value is None or not value.strip():
+        return default
+    return float(value)
 
 
 def find_repo_root() -> Path:

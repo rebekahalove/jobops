@@ -118,6 +118,67 @@ def test_command_endpoint_routes_pasted_resume_to_profile_intake(tmp_path: Path,
     assert "routed this command to Update profile" in payload["statusUpdates"][0]["message"]
 
 
+def test_command_endpoint_returns_json_profile_intake_failure_when_gemini_times_out(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        command_center_module,
+        "load_settings",
+        lambda: Settings(
+            app_env="test",
+            cheap_model="mock-cheap",
+            company_discovery_search_grounding_enabled=True,
+            database_url=None,
+            default_model="mock-default",
+            gemini_api_key="test-key",
+            model_provider="gemini",
+            profile_intake_save_artifacts=False,
+            profile_intake_save_raw_text=False,
+            repo_root=tmp_path,
+            llm_request_timeout_seconds=2,
+        ),
+    )
+
+    def raise_timeout(request, timeout):
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_timeout)
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        response = client.post(
+            "/v1/command-center/commands",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={
+                "command": (
+                    "PROFESSIONAL SUMMARY\nApplied AI Systems Engineer\n\n"
+                    "CORE SKILLS\nPython, FastAPI, LLM evaluation\n\n"
+                    "PROFESSIONAL EXPERIENCE\nBuilt RAG workflows.\n\n"
+                    "EDUCATION\nB.A., Fine Arts - Indiana University"
+                ),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["actions"][0]["type"] == "profile_intake"
+    assert payload["actions"][0]["status"] == "failed"
+    assert payload["actions"][0]["targetWorkspace"] == "profile"
+    assert payload["actions"][0]["resultPayload"]["code"] == "MODEL_PROVIDER_ERROR"
+    assert payload["assistant_message"] == "Profile intake model call failed. No draft data was applied."
+    assert payload["statusUpdates"][0]["actionType"] == "profile_intake"
+
+
 def test_command_stream_emits_router_status_before_result(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")

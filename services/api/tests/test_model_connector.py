@@ -104,6 +104,7 @@ def test_read_model_connector_config_from_settings() -> None:
             profile_intake_save_artifacts=False,
             profile_intake_save_raw_text=False,
             repo_root=Path("."),
+            llm_request_timeout_seconds=90,
         )
     )
 
@@ -111,6 +112,33 @@ def test_read_model_connector_config_from_settings() -> None:
     assert config.gemini_api_key == "key"
     assert config.routing.default_model == "default"
     assert config.routing.cheap_model == "cheap"
+    assert config.request_timeout_seconds == 90
+
+
+def test_gemini_provider_uses_configured_timeout(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return FakeHttpResponse(json.dumps({"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    GeminiModelProvider("test-key", timeout_seconds=120).generate(
+        make_request(task="profile_extract", model="gemini-test")
+    )
+
+    assert captured["timeout"] == 120
+
+
+def test_gemini_read_timeout_is_wrapped_safely(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(ModelProviderError, match="timed out"):
+        GeminiModelProvider("test-key").generate(make_request(task="profile_extract", model="gemini-test"))
 
 
 def test_gemini_invalid_json_response_is_wrapped_safely(monkeypatch) -> None:

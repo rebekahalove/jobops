@@ -57,10 +57,13 @@ class MockModelProvider:
 class GeminiModelProvider:
     endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str | None) -> None:
+    def __init__(self, api_key: str | None, *, timeout_seconds: float = 60) -> None:
         if not api_key:
             raise ModelConfigurationError("GEMINI_API_KEY is required when JOBOPS_LLM_PROVIDER=gemini.")
+        if timeout_seconds <= 0:
+            raise ModelConfigurationError("JOBOPS_LLM_TIMEOUT_SECONDS must be greater than 0.")
         self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         if not request.model:
@@ -81,13 +84,15 @@ class GeminiModelProvider:
         )
 
         try:
-            with urllib.request.urlopen(http_request, timeout=60) as response:
+            with urllib.request.urlopen(http_request, timeout=self._timeout_seconds) as response:
                 response_body = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:500]
             raise ModelProviderError(f"Gemini request failed with HTTP {error.code}: {detail}") from error
         except urllib.error.URLError as error:
             raise ModelProviderError(f"Gemini request failed: {error.reason}") from error
+        except TimeoutError as error:
+            raise ModelProviderError("Gemini request timed out.") from error
 
         data = parse_gemini_response_json(response_body)
         candidate = first_gemini_candidate(data)
@@ -117,7 +122,10 @@ def create_model_connector(
             config,
         )
     if provider_name == "gemini":
-        return ModelConnector(GeminiModelProvider(config.gemini_api_key), config)
+        return ModelConnector(
+            GeminiModelProvider(config.gemini_api_key, timeout_seconds=config.request_timeout_seconds),
+            config,
+        )
     raise ModelConfigurationError(f"Unsupported JOBOPS_LLM_PROVIDER: {config.provider}")
 
 

@@ -11,6 +11,7 @@ class ModelConnectorConfig:
     provider: str
     routing: ModelRoutingConfig
     gemini_api_key: str | None = None
+    request_timeout_seconds: float = 60
 
 
 def read_model_connector_config_from_settings(settings: Settings) -> ModelConnectorConfig:
@@ -21,4 +22,5 @@ def read_model_connector_config_from_settings(settings: Settings) -> ModelConnec
             cheap_model=settings.cheap_model,
             default_model=settings.default_model,
         ),
+        request_timeout_seconds=settings.llm_request_timeout_seconds,
     )
