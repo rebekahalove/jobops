@@ -57,6 +57,9 @@ type ProfileWorkspacePayload = {
   publishedItemCount?: number;
   publishedPublicItemCount?: number;
   archivedItemCount?: number;
+  devTools?: {
+    profileItemClearEnabled?: boolean;
+  };
 };
 
 type ProfileFieldGroups = {
@@ -235,6 +238,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [workspaceMessage, setWorkspaceMessage] = useState<WorkspaceMessage | null>(null);
   const [activeSection, setActiveSection] = useState<ReviewTabId>("basics");
   const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
+  const [profileItemClearEnabled, setProfileItemClearEnabled] = useState(false);
+  const [clearingProfileItems, setClearingProfileItems] = useState(false);
 
   async function loadProfileState(options: { cancelled?: () => boolean } = {}) {
     try {
@@ -267,6 +272,7 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     setPublicPortfolioPath(result.publicPortfolioPath ?? null);
     setPublishedItemCount(result.publishedItemCount ?? 0);
     setPublishedPublicItemCount(result.publishedPublicItemCount ?? 0);
+    setProfileItemClearEnabled(result.devTools?.profileItemClearEnabled === true);
   }
 
   useEffect(() => {
@@ -353,6 +359,38 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     return true;
   }
 
+  async function clearProfileItems() {
+    if (clearingProfileItems) {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Clear all generated, published, and archived profile items for your current profile? This cannot be undone."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setClearingProfileItems(true);
+    try {
+      const response = await fetch(`${apiBasePath}/profile/clear-items`, {
+        method: "DELETE"
+      });
+      const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error?: string; detail?: string };
+      if (!response.ok || !payload.ok) {
+        const error = payload.ok === false ? (payload.error || payload.detail || "Profile clear failed.") : "Profile clear failed.";
+        showWorkspaceMessage(error, "error");
+        return;
+      }
+      applyProfilePayload(payload.result);
+      setActiveLifecycle("generated");
+      showWorkspaceMessage("Profile workspace items cleared for this user.", "success");
+    } catch {
+      showWorkspaceMessage("Profile clear failed. Try again after the API is available.", "error");
+    } finally {
+      setClearingProfileItems(false);
+    }
+  }
+
   function startPublishedEdit() {
     showWorkspaceMessage("Editing published items will create a generated replacement item in a follow-up slice.", "info");
   }
@@ -371,10 +409,22 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
             power the portfolio and public portfolio agent.
           </p>
         </div>
-        <div className="profile-status-metrics" aria-label="Profile lifecycle status">
-          <SummaryMetric label="Published public" value={publishedPublicItemCount} />
-          <SummaryMetric label="Published private" value={internalPublishedCount} />
-          <SummaryMetric label="Generated needs review" value={draftItemCount} />
+        <div className="profile-header-actions">
+          <div className="profile-status-metrics" aria-label="Profile lifecycle status">
+            <SummaryMetric label="Generated needs review" value={draftItemCount} />
+            <SummaryMetric label="Published private" value={internalPublishedCount} />
+            <SummaryMetric label="Published public" value={publishedPublicItemCount} />
+          </div>
+          {profileItemClearEnabled ? (
+            <button
+              className="button-action subtle-danger profile-clear-button"
+              disabled={clearingProfileItems}
+              onClick={clearProfileItems}
+              type="button"
+            >
+              {clearingProfileItems ? "Clearing..." : "Clear"}
+            </button>
+          ) : null}
         </div>
         <section className="profile-header-recent" aria-label="Recent profile changes">
           <p className="eyebrow">Recent changes</p>

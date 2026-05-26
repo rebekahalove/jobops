@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .auth import AuthContext, require_auth_context
@@ -16,6 +16,9 @@ from .db.models import (
     ProfileFactDraft,
     RoleTarget,
     SkillClaim,
+    ProfileFieldValue,
+    ProfileIntakeEvent,
+    ProfileIntakeSession,
 )
 from .db.session import get_db_session
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
@@ -33,6 +36,7 @@ from .profile_fields import (
 )
 from .profiles import candidate_profile_to_public_dict, candidate_profile_to_published_dict
 from .security import require_internal_api_key
+from .settings import load_settings
 
 
 router = APIRouter(prefix="/v1/profile", tags=["profile"], dependencies=[Depends(require_internal_api_key)])
@@ -265,6 +269,24 @@ def publish_current_profile(
     }
 
 
+@router.delete("/items")
+def clear_current_profile_items(
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    if not dev_profile_clear_enabled():
+        raise HTTPException(status_code=404, detail="Profile item clearing is only available in dev.")
+
+    profile = auth.candidate_profile
+    deleted_counts = delete_profile_items_for_profile(session, profile.id)
+    profile.profile_status = "draft"
+    session.commit()
+    return {
+        **current_profile_payload(session, profile, auth.tenant.slug),
+        "deletedCounts": deleted_counts,
+    }
+
+
 def current_profile_payload(session: Session, profile: CandidateProfile, tenant_slug: str) -> dict[str, Any]:
     return {
         "ok": True,
@@ -286,8 +308,33 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
             "publishedItemCount": published_content_count(session, profile.id),
             "publishedPublicItemCount": public_content_count(session, profile.id),
             "archivedItemCount": archived_content_count(session, profile.id),
+            "devTools": {
+                "profileItemClearEnabled": dev_profile_clear_enabled(),
+            },
         },
     }
+
+
+def dev_profile_clear_enabled() -> bool:
+    return load_settings().app_env.lower() == "dev"
+
+
+def delete_profile_items_for_profile(session: Session, candidate_profile_id: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for model, label in (
+        (ProfileFieldValue, "profileFieldValues"),
+        (ProfileFact, "profileFacts"),
+        (ProfileFactDraft, "profileFactDrafts"),
+        (SkillClaim, "skillClaims"),
+        (ExperienceProjectDraft, "experienceAndProjects"),
+        (EvidenceArtifact, "evidenceLinks"),
+        (RoleTarget, "roleTargets"),
+        (ProfileIntakeEvent, "profileIntakeEvents"),
+        (ProfileIntakeSession, "profileIntakeSessions"),
+    ):
+        result = session.execute(delete(model).where(model.candidate_profile_id == candidate_profile_id))
+        counts[label] = int(result.rowcount or 0)
+    return counts
 
 
 def generated_profile_review_snapshot(session: Session, profile: CandidateProfile) -> dict[str, Any]:
