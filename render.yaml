@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: jobops-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./services/api/Dockerfile
+    dockerContext: ./services/api
+    healthCheckPath: /health
+    preDeployCommand: python -m alembic upgrade head
+    envVars:
+      - key: APP_ENV
+        value: prod
+      - key: DATABASE_URL
+        sync: false
+      - key: JOBOPS_INTERNAL_API_KEY
+        sync: false
+      - key: JOBOPS_CORS_ORIGINS
+        sync: false
+      - key: JOBOPS_APP_BASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: JOBOPS_LLM_PROVIDER
+        value: gemini
+      - key: JOBOPS_DEFAULT_MODEL
+        value: gemini-2.5-flash
+      - key: JOBOPS_CHEAP_MODEL
+        value: gemini-2.5-flash-lite
+      - key: JOBOPS_PROFILE_INTAKE_SAVE_ARTIFACTS
+        value: "false"
+      - key: JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT
+        value: "false"

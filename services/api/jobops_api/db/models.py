@@ -57,6 +57,7 @@ class WorkspaceMembership(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("user_id", "tenant_id", name="uq_workspace_memberships_user_tenant"),
         Index("ix_workspace_memberships_tenant", "tenant_id"),
+        Index("ix_workspace_memberships_user_created", "user_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -73,6 +74,7 @@ class InviteToken(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_invite_tokens_token_hash", "token_hash", unique=True),
         Index("ix_invite_tokens_email", "email"),
+        Index("ix_invite_tokens_username_active", "username", "used_at", "revoked_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -105,6 +107,8 @@ class UserSession(Base):
     __table_args__ = (
         Index("ix_user_sessions_token_hash", "token_hash", unique=True),
         Index("ix_user_sessions_user_tenant", "user_id", "tenant_id"),
+        Index("ix_user_sessions_user_revoked", "user_id", "revoked_at"),
+        Index("ix_user_sessions_tenant", "tenant_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -142,6 +146,7 @@ class CandidateProfile(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("tenant_id", "slug", name="uq_candidate_profiles_tenant_slug"),
         Index("ix_candidate_profiles_slug", "slug"),
+        Index("ix_candidate_profiles_tenant_created", "tenant_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -160,6 +165,9 @@ class CandidateProfile(Base, TimestampMixin):
 
 class Domain(Base):
     __tablename__ = "domains"
+    __table_args__ = (
+        Index("ix_domains_candidate_profile", "candidate_profile_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -173,6 +181,11 @@ class Domain(Base):
 
 class RoleTarget(Base, TimestampMixin):
     __tablename__ = "role_targets"
+    __table_args__ = (
+        Index("ix_role_targets_session_active_updated", "profile_intake_session_id", "is_active", "updated_at"),
+        Index("ix_role_targets_profile_publication_active", "candidate_profile_id", "publication_status", "visibility", "is_active"),
+        Index("ix_role_targets_profile_review", "candidate_profile_id", "review_status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -194,6 +207,15 @@ class ProfileFieldValue(Base, TimestampMixin):
     __tablename__ = "profile_field_values"
     __table_args__ = (
         Index("ix_profile_field_values_profile_field", "candidate_profile_id", "field_group", "field_name", "lifecycle_status"),
+        Index(
+            "ix_profile_field_values_latest",
+            "candidate_profile_id",
+            "field_group",
+            "field_name",
+            "lifecycle_status",
+            "visibility",
+            "updated_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -217,6 +239,8 @@ class TargetCompany(Base, TimestampMixin):
         UniqueConstraint("candidate_profile_id", "name", name="uq_target_companies_profile_name"),
         Index("ix_target_companies_profile_name", "candidate_profile_id", "name"),
         Index("ix_target_companies_profile_normalized_name", "candidate_profile_id", "normalized_name"),
+        Index("ix_target_companies_profile_created", "candidate_profile_id", "created_at"),
+        Index("ix_target_companies_profile_review_created", "candidate_profile_id", "review_status", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -277,6 +301,7 @@ class Application(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_applications_profile_status", "candidate_profile_id", "status"),
         Index("ix_applications_next_follow_up", "candidate_profile_id", "next_follow_up_date"),
+        Index("ix_applications_profile_created", "candidate_profile_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -336,6 +361,10 @@ class ProfileFact(Base, TimestampMixin):
 
 class ProfileFactDraft(Base, TimestampMixin):
     __tablename__ = "profile_fact_drafts"
+    __table_args__ = (
+        Index("ix_profile_fact_drafts_session_created", "profile_intake_session_id", "created_at"),
+        Index("ix_profile_fact_drafts_profile_review", "candidate_profile_id", "review_status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -353,6 +382,16 @@ class SkillClaim(Base, TimestampMixin):
     __tablename__ = "skill_claims"
     __table_args__ = (
         Index("ix_skill_claims_profile_skill", "candidate_profile_id", "skill_name"),
+        Index("ix_skill_claims_session_created", "profile_intake_session_id", "created_at"),
+        Index(
+            "ix_skill_claims_profile_publication",
+            "candidate_profile_id",
+            "publication_status",
+            "verification_status",
+            "visibility",
+            "skill_category",
+            "skill_name",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -374,6 +413,9 @@ class SkillClaim(Base, TimestampMixin):
 
 class ResumeArtifact(Base):
     __tablename__ = "resume_artifacts"
+    __table_args__ = (
+        Index("ix_resume_artifacts_profile_created", "candidate_profile_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -386,6 +428,10 @@ class ResumeArtifact(Base):
 
 class ProfileIntakeSession(Base, TimestampMixin):
     __tablename__ = "profile_intake_sessions"
+    __table_args__ = (
+        Index("ix_profile_intake_sessions_profile_status_created", "candidate_profile_id", "status", "created_at"),
+        Index("ix_profile_intake_sessions_profile_turn_created", "candidate_profile_id", "last_turn_at", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -399,6 +445,7 @@ class ProfileIntakeEvent(Base):
     __tablename__ = "profile_intake_events"
     __table_args__ = (
         Index("ix_profile_intake_events_session_created", "session_id", "created_at"),
+        Index("ix_profile_intake_events_profile_created", "candidate_profile_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -417,6 +464,9 @@ class ExperienceProjectDraft(Base, TimestampMixin):
     __tablename__ = "experience_project_drafts"
     __table_args__ = (
         Index("ix_experience_project_drafts_session", "profile_intake_session_id"),
+        Index("ix_exp_project_drafts_session_created", "profile_intake_session_id", "created_at"),
+        Index("ix_exp_project_drafts_profile_publication", "candidate_profile_id", "publication_status", "visibility", "created_at"),
+        Index("ix_exp_project_drafts_profile_review", "candidate_profile_id", "review_status", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -437,6 +487,11 @@ class ExperienceProjectDraft(Base, TimestampMixin):
 
 class EvidenceArtifact(Base):
     __tablename__ = "evidence_artifacts"
+    __table_args__ = (
+        Index("ix_evidence_artifacts_session_created", "profile_intake_session_id", "created_at"),
+        Index("ix_evidence_artifacts_profile_publication", "candidate_profile_id", "publication_status", "visibility", "created_at"),
+        Index("ix_evidence_artifacts_profile_review", "candidate_profile_id", "review_status", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
@@ -456,6 +511,7 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
     __table_args__ = (
         Index("ix_usage_events_tenant_event", "tenant_id", "event_name"),
+        Index("ix_usage_events_profile_created", "candidate_profile_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -470,6 +526,7 @@ class CommandInteractionLog(Base):
     __tablename__ = "command_interaction_logs"
     __table_args__ = (
         Index("ix_command_interaction_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_command_interaction_logs_profile_created", "candidate_profile_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
