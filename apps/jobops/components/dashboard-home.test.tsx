@@ -75,6 +75,22 @@ describe("JobOps dashboard shell", () => {
     expect(adminHtml).toContain("Admin");
   });
 
+  it("can enable the Admin navigation link for the mounted JobOps dashboard", () => {
+    const mountedHtml = renderToStaticMarkup(
+      <DashboardShell apiBasePath="/jobops/api" basePath="/jobops" enableAdminNav isAdmin>
+        <DashboardHome />
+      </DashboardShell>
+    );
+    const defaultMountedHtml = renderToStaticMarkup(
+      <DashboardShell apiBasePath="/jobops/api" basePath="/jobops" isAdmin>
+        <DashboardHome />
+      </DashboardShell>
+    );
+
+    expect(mountedHtml).toContain('href="/jobops/admin/users"');
+    expect(defaultMountedHtml).not.toContain('href="/jobops/admin/users"');
+  });
+
   it("marks the current workspace tab as active", () => {
     const html = renderToStaticMarkup(
       <DashboardShell>
