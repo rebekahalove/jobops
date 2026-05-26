@@ -219,6 +219,62 @@ def test_command_stream_emits_router_status_before_result(tmp_path: Path, monkey
     assert events[1]["result"]["actions"][0]["type"] == "profile_intake"
 
 
+def test_command_stream_emits_result_for_profile_intake_validation_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+
+    def fake_run_profile_intake_extraction(request, *, db_session, settings, candidate_profile=None):
+        return SimpleNamespace(
+            status_code=502,
+            body={
+                "ok": False,
+                "error": "Profile intake model response was truncated before valid JSON completed. No draft data was applied.",
+                "code": "model_response_truncated",
+                "issues": ["Output is not valid JSON.", "Model response appears to have been truncated before valid JSON completed."],
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fake_run_profile_intake_extraction)
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        with client.stream(
+            "POST",
+            "/v1/command-center/commands/stream",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={
+                "command": (
+                    "PROFESSIONAL SUMMARY\nApplied AI Systems Engineer\n\n"
+                    "CORE SKILLS\nPython, FastAPI, LLM evaluation\n\n"
+                    "PROFESSIONAL EXPERIENCE\nBuilt RAG workflows.\n\n"
+                    "EDUCATION\nB.A., Fine Arts - Indiana University"
+                ),
+            },
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert events[-1]["type"] == "result"
+    result = events[-1]["result"]
+    assert result["actions"][0]["type"] == "profile_intake"
+    assert result["actions"][0]["status"] == "failed"
+    assert result["actions"][0]["resultPayload"]["code"] == "model_response_truncated"
+    assert result["assistant_message"] == (
+        "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
+    )
+
+
 def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()

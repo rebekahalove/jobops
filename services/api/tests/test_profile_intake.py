@@ -409,19 +409,19 @@ def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: 
     assert result.body["ok"] is True
     assert len(provider.requests) == 2
     assert provider.requests[0].max_output_tokens == 16000
-    assert provider.requests[1].max_output_tokens == 12000
+    assert provider.requests[1].max_output_tokens == 8000
     assert provider.requests[1].metadata["compact_resume_retry"] is True
     retry_prompt = json.loads(provider.requests[1].messages[1].content)
     assert retry_prompt["compact_resume_retry"] is True
     assert retry_prompt["capacity_guidance"]["active"] == {
-        "draftFacts": 12,
-        "skillClaims": 20,
-        "experienceAndProjects": 8,
-        "evidenceLinks": 8,
+        "draftFacts": 6,
+        "skillClaims": 10,
+        "experienceAndProjects": 5,
+        "evidenceLinks": 4,
         "clarifyingQuestions": 3,
-        "changeSummary": 6,
+        "changeSummary": 4,
     }
-    assert result.body["modelRequest"]["maxOutputTokens"] == 12000
+    assert result.body["modelRequest"]["maxOutputTokens"] == 8000
     assert result.body["modelResponse"]["finishReason"] == "stop"
     run_dir = only_run_dir(tmp_path)
     assert (run_dir / "raw-response-truncated-before-retry.txt").exists()
@@ -445,7 +445,7 @@ def test_truncated_resume_retry_failure_returns_specific_actionable_error(tmp_pa
         "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
     )
     assert "Model response appears to have been truncated before valid JSON completed." in result.body["issues"]
-    assert result.body["modelRequest"]["maxOutputTokens"] == 12000
+    assert result.body["modelRequest"]["maxOutputTokens"] == 8000
     assert result.body["modelResponse"]["finishReason"] == "MAX_TOKENS"
     run_dir = only_run_dir(tmp_path)
     validation_error = json.loads((run_dir / "validation-error.json").read_text(encoding="utf-8"))

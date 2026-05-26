@@ -363,19 +363,27 @@ def stream_command_center_command(
             session.commit()
             yield command_stream_event("result", {"result": response.model_dump(by_alias=True)})
         except Exception as error:
-            save_command_interaction_log(
-                session,
-                auth=auth if has_auth_context else None,
-                request=request,
-                response=None,
-                router_payload=router_result.body,
-                router_decision=router_result.decision,
-                latency_ms=round((time.perf_counter() - started_at) * 1000),
-                model_provider=settings.model_provider,
-                error=error,
+            error_response = command_stream_failure_response(
+                request,
+                router_result=router_result,
             )
-            session.commit()
-            raise
+            try:
+                save_command_interaction_log(
+                    session,
+                    auth=auth if has_auth_context else None,
+                    request=request,
+                    response=error_response,
+                    router_payload=router_result.body,
+                    router_decision=router_result.decision,
+                    latency_ms=round((time.perf_counter() - started_at) * 1000),
+                    model_provider=settings.model_provider,
+                    error=error,
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+            yield command_stream_event("result", {"result": error_response.model_dump(by_alias=True)})
+            return
 
     return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
@@ -958,6 +966,40 @@ def build_router_decision_status_update(router_decision: CommandRouterOutput) ->
 
 def command_stream_event(event_type: str, payload: dict[str, Any]) -> str:
     return json.dumps({"type": event_type, **payload}) + "\n"
+
+
+def command_stream_failure_response(
+    request: CommandCenterCommandRequest,
+    *,
+    router_result,
+) -> CommandCenterCommandResponse:
+    action_type = (
+        normalize_dispatch_action(router_result.decision.action_type)
+        if router_result.decision is not None
+        else interpret_command(request.command, request.active_workspace)
+    )
+    target_workspace = target_workspace_for_action(action_type)
+    message = "Command-center failed before completing the routed action. Please try again."
+    error_payload = {
+        "ok": False,
+        "error": message,
+        "code": "command_center_stream_failed",
+    }
+    return CommandCenterCommandResponse(
+        assistant_message=message,
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="failed",
+                targetWorkspace=target_workspace,
+                title=title_for_action(action_type),
+                summary=message,
+                resultPayload={**error_payload, **router_debug_payload(router_result.body)},
+            )
+        ],
+        target_workspace=target_workspace,
+        result_payload={**error_payload, **router_debug_payload(router_result.body)},
+    )
 
 
 def company_update_summary(update_result) -> str:

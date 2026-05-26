@@ -507,10 +507,17 @@ def validation_failure_result(
     )
 
     logger.warning(
-        "[profile_intake] structured output validation failed run_id=%s provider=%s model=%s issues=%s artifact_path=%s",
+        (
+            "[profile_intake] structured output validation failed run_id=%s provider=%s model=%s "
+            "intake_mode=%s compact_retry=%s max_output_tokens=%s finish_reason=%s issues=%s artifact_path=%s"
+        ),
         artifact_run.run_id,
         response.provider,
         response.model,
+        model_request.metadata.get("intake_mode") if isinstance(model_request.metadata, dict) else None,
+        model_request.metadata.get("compact_resume_retry") if isinstance(model_request.metadata, dict) else None,
+        getattr(model_request, "max_output_tokens", None),
+        response.finish_reason,
         issues,
         artifact_run.artifact_path,
     )

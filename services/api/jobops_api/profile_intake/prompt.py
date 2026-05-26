@@ -245,7 +245,8 @@ def build_profile_intake_user_prompt(
                     "Use fuller extraction for normal 2-3 page resumes while deduplicating and staying within caps."
                 ),
                 "compact_resume_retry": (
-                    "Use a smaller representative first pass when the full resume extraction would exceed model output limits."
+                    "Use a small representative first pass when the full resume extraction would exceed model output limits. "
+                    "Prefer complete JSON over coverage."
                 ),
             },
         },
@@ -322,6 +323,7 @@ def build_profile_intake_user_prompt(
             "Use bounded arrays and concise strings. Start with { and end with }. "
             + (
                 "For this compact retry, fewer complete, high-signal items are better than a truncated exhaustive draft."
+                " Hard limit: do not fill every allowed array if that risks verbose output."
                 if compact_resume_retry
                 else ""
             )
