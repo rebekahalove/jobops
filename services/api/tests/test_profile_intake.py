@@ -28,6 +28,7 @@ from jobops_api.db.session import get_db_session
 from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, ModelRequest, ModelResponse, ModelRoutingConfig
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
+from jobops_api.profile_intake.prompt import PROFILE_INTAKE_SYSTEM_PROMPT, build_profile_intake_user_prompt
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.profile_fields import get_field_definition, publish_generated_field
 from jobops_api.profiles import candidate_profile_to_public_dict
@@ -76,6 +77,43 @@ class RecordingSequenceProvider:
             provider="test",
             text=self.texts[text_index],
         )
+
+
+def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecycle_echo() -> None:
+    user_prompt = build_profile_intake_user_prompt(
+        ProfileIntakeExtractRequest(
+            latest_user_message="PROFESSIONAL SUMMARY\nBuilt production RAG systems.\nPROFESSIONAL EXPERIENCE\nFounder, 2024-Present"
+        ),
+        authoritative_current_draft={
+            "targetRoleIntent": {
+                "targetTitles": "Applied AI Engineer",
+                "id": "role-target-1",
+                "source": "model",
+                "status": "approved",
+                "visibility": "public",
+                "published": True,
+            },
+            "draftFacts": [
+                {
+                    "id": "fact-1",
+                    "claim": "Built production RAG systems.",
+                    "status": "approved",
+                    "visibility": "public",
+                    "published": True,
+                }
+            ],
+        },
+        detected_intake_mode="resume_intake",
+    )
+    payload = json.loads(user_prompt)
+    metadata_contract = payload["update_rules"]["generated_item_metadata_contract"]
+    target_contract = payload["update_rules"]["target_role_intent_update_contract"]
+
+    assert "A pasted resume/CV is not ambiguous" in PROFILE_INTAKE_SYSTEM_PROMPT
+    assert "Do not copy lifecycle/review metadata" in PROFILE_INTAKE_SYSTEM_PROMPT
+    assert "Never include id, source, status, visibility, or published in targetRoleIntent." in target_contract
+    assert "preserve id only" in metadata_contract
+    assert "published as false" in metadata_contract
 
 
 def test_fastapi_profile_intake_mock_success(tmp_path: Path) -> None:
