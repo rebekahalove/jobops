@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -409,6 +410,73 @@ def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: 
     run_dir = only_run_dir(tmp_path)
     assert not (run_dir / "raw-response-basics_and_targets.txt").exists()
     assert (run_dir / "raw-response-skills.txt").exists()
+
+
+def test_truncated_section_failure_logs_response_head_and_tail(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    truncated_response = "\n".join(f'{{"row": {index}, "value": "line-{index}"}}' for index in range(30))
+    provider = RecordingSequenceProvider(
+        [truncated_response, json.dumps(valid_output())],
+        finish_reasons=["MAX_TOKENS", "stop"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="jobops_api.profile_intake.orchestrator"):
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+            connector=make_connector(provider),
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert "[profile_intake] section extractor failed section=basics_and_targets" in caplog.text
+    assert "responseTextHeadLines" in caplog.text
+    assert "line-0" in caplog.text
+    assert "line-11" in caplog.text
+    assert "responseTextTailLines" in caplog.text
+    assert "line-18" in caplog.text
+    assert "line-29" in caplog.text
+    assert "'finishReason': 'MAX_TOKENS'" in caplog.text
+    assert "'maxOutputTokens': 2200" in caplog.text
+    assert "'responseTextLength':" in caplog.text
+
+
+def test_profile_intake_combined_response_keeps_full_valuable_update(tmp_path: Path) -> None:
+    basics = section_output(
+        "basics_and_targets",
+        "targetRoleIntent",
+        {"targetTitles": "Applied AI Systems Engineer"},
+    )
+    basics["userUpdate"] = "Basics and targets were reviewed with no changes needed because the existing draft already matches the resume direction"
+    basics["candidateFollowUpQuestions"] = []
+    skills = section_output("skills", "skillClaims", skill_change("LLM evaluation"))
+    skills["userUpdate"] = (
+        "I added skill evidence for RAG systems, LLM evaluation, workflow orchestration, production AI platforms, "
+        "PostgreSQL-backed analysis, and reliability-focused model operations"
+    )
+    skills["candidateFollowUpQuestions"] = []
+    experience = section_output("experience_projects", "experienceAndProjects", experience_change("Shadow Network Intelligence"))
+    experience["userUpdate"] = (
+        "I added six experience entries from the resume, including Shadow Network Intelligence, Sentry Data Systems, "
+        "NetLaw, Kentucky Department of Education, Ceridian, and Magpie3x3"
+    )
+    expected_question = (
+        "Could you provide the start and end dates for the NetLaw, Kentucky Department of Education, Ceridian, and Magpie3x3 roles?"
+    )
+    experience["candidateFollowUpQuestions"] = [
+        {"question": expected_question, "reason": "Dates make the experience timeline reviewable.", "priority": 30}
+    ]
+    provider = RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    message = result.body["result"]["assistantMessage"]
+    assert len(message) > 400
+    assert message.endswith(expected_question)
+    assert "Kentucky Department of Education, Ceridian, and Magpie3x3" in message
 
 
 def test_truncated_resume_retry_failure_returns_specific_actionable_error(tmp_path: Path) -> None:

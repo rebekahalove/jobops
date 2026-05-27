@@ -195,7 +195,7 @@ class ProfileIntakeSectionOutput(ApiModel):
 
 
 class ProfileIntakeOutput(ApiModel):
-    assistant_message: str = Field(alias="assistantMessage", max_length=400)
+    assistant_message: str = Field(alias="assistantMessage", max_length=4000)
     updated_draft_profile: UpdatedDraftProfile = Field(alias="updatedDraftProfile")
     clarifying_questions: list[str] = Field(
         alias="clarifyingQuestions",

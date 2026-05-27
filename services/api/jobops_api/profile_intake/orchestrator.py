@@ -37,6 +37,7 @@ from .section_extractors import (
 
 
 logger = logging.getLogger(__name__)
+FAILED_RESPONSE_LOG_LINE_COUNT = 12
 
 
 @dataclass(frozen=True)
@@ -64,10 +65,11 @@ def run_profile_intake_orchestrator(
         except SectionExtractorRuntimeError as error:
             failures.append(error.failure)
             logger.warning(
-                "[profile_intake] section extractor failed section=%s code=%s issues=%s",
+                "[profile_intake] section extractor failed section=%s code=%s issues=%s diagnostics=%s",
                 error.failure.section,
                 error.failure.code,
                 error.failure.issues,
+                section_failure_diagnostics(error.failure, context),
             )
 
     output = build_profile_intake_output(context, [success.output for success in successes]) if successes else None
@@ -257,7 +259,7 @@ def combined_assistant_message(user_updates: list[str], question: dict[str, Any]
         message = "I reviewed your profile draft and did not find reliable new changes."
     if question:
         message = f"{message} Next: {question['question']}"
-    return message[:400]
+    return message
 
 
 def combined_no_change_reason(section_outputs: list[ProfileIntakeSectionOutput]) -> str | None:
@@ -291,6 +293,47 @@ def section_label(section: ProfileIntakeSection) -> str:
         "skills": "Skills",
         "experience_projects": "Experience and projects",
     }[section]
+
+
+def section_failure_diagnostics(
+    failure: SectionExtractorFailure,
+    context: ProfileIntakeContextBundle,
+) -> dict[str, Any]:
+    request = failure.request
+    response = failure.response
+    response_text = response.text if response is not None else ""
+    request_messages = request.messages if request is not None else []
+    return {
+        "section": failure.section,
+        "code": failure.code,
+        "sourceTextLength": len(context.latest_user_message) + len(context.resume_document_text or ""),
+        "promptLength": sum(len(message.content) for message in request_messages),
+        "provider": response.provider if response is not None else None,
+        "model": (response.model if response is not None else None) or (request.model if request is not None else None),
+        "maxOutputTokens": request.max_output_tokens if request is not None else None,
+        "temperature": request.temperature if request is not None else None,
+        "responseMimeType": request.response_mime_type if request is not None else None,
+        "responseTextLength": len(response_text),
+        "finishReason": response.finish_reason if response is not None else None,
+        "parseStatus": "failed",
+        **response_text_log_excerpt(response_text),
+    }
+
+
+def response_text_log_excerpt(text: str) -> dict[str, Any]:
+    lines = text.splitlines() if text else []
+    if not lines and text:
+        lines = [text]
+    if len(lines) <= FAILED_RESPONSE_LOG_LINE_COUNT * 2:
+        return {
+            "responseTextLineCount": len(lines),
+            "responseTextLines": lines,
+        }
+    return {
+        "responseTextLineCount": len(lines),
+        "responseTextHeadLines": lines[:FAILED_RESPONSE_LOG_LINE_COUNT],
+        "responseTextTailLines": lines[-FAILED_RESPONSE_LOG_LINE_COUNT:],
+    }
 
 
 def draft_signature(draft: dict[str, Any]) -> str:
