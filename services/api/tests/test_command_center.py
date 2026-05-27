@@ -31,6 +31,38 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
 
 
+def test_profile_action_summary_counts_only_active_saved_draft_items() -> None:
+    summary = command_center_module.build_profile_action_summary(
+        {
+            "draftFacts": [
+                {"claim": "Active", "status": "needs_review", "published": False},
+                {"claim": "Archived", "status": "rejected", "published": False},
+            ],
+            "skillClaims": [
+                {"skill": "Python", "status": "draft", "published": False},
+                {"skill": "Archived", "status": "rejected", "published": False},
+            ],
+            "experienceAndProjects": [
+                {"title": "Active", "status": "needs_review", "published": False},
+                {"title": "Published", "status": "approved", "published": True},
+                {"title": "Archived", "status": "rejected", "published": False},
+            ],
+        }
+    )
+
+    assert summary == "Updated the saved profile draft with 1 fact(s), 1 skill claim(s), and 1 experience/project item(s)."
+
+
+def test_profile_section_failure_status_update_is_truthful() -> None:
+    updates = command_center_module.build_profile_section_failure_status_updates(
+        [{"section": "skills", "code": "model_output_invalid", "issues": ["Output is not valid JSON."]}]
+    )
+
+    assert len(updates) == 1
+    assert "skipped skills" in updates[0].message
+    assert "continued with the remaining sections" in updates[0].message
+
+
 def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")

@@ -529,8 +529,17 @@ def model_responses_debug_fields(settings: Settings, result: ProfileIntakeOrches
 
 
 def section_failure_debug_fields(settings: Settings, result: ProfileIntakeOrchestratorResult) -> dict[str, Any]:
-    if settings.app_env.lower() in {"prod", "production"} or not result.failures:
+    if not result.failures:
         return {}
+    if settings.app_env.lower() in {"prod", "production"}:
+        return {
+            "sectionFailures": [
+                {
+                    "section": failure.section,
+                }
+                for failure in result.failures
+            ]
+        }
     return {
         "sectionFailures": [
             {

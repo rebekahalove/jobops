@@ -503,9 +503,11 @@ def dispatch_command_center_action(
         "profileDraft": profile_draft,
         **({"modelRequest": intake_result.body["modelRequest"]} if intake_result.body.get("modelRequest") else {}),
         **({"modelResponse": intake_result.body["modelResponse"]} if intake_result.body.get("modelResponse") else {}),
+        **({"sectionFailures": intake_result.body["sectionFailures"]} if intake_result.body.get("sectionFailures") else {}),
         **router_debug_payload(router_payload),
     }
     assistant_message = profile_draft.get("assistantMessage") or "I updated your profile draft and kept it private for review."
+    section_failure_updates = build_profile_section_failure_status_updates(intake_result.body.get("sectionFailures"))
 
     return CommandCenterCommandResponse(
         assistant_message=assistant_message,
@@ -521,6 +523,7 @@ def dispatch_command_center_action(
         ],
         target_workspace="profile",
         result_payload=result_payload,
+        statusUpdates=section_failure_updates,
     )
 
 
@@ -895,13 +898,43 @@ def looks_like_future_tool_command(normalized_command: str) -> bool:
 
 
 def build_profile_action_summary(profile_draft: dict[str, Any]) -> str:
-    fact_count = len(profile_draft.get("draftFacts") or [])
-    skill_count = len(profile_draft.get("skillClaims") or [])
-    experience_count = len(profile_draft.get("experienceAndProjects") or [])
+    fact_count = len([item for item in profile_draft.get("draftFacts") or [] if active_profile_draft_item(item)])
+    skill_count = len([item for item in profile_draft.get("skillClaims") or [] if active_profile_draft_item(item)])
+    experience_count = len(
+        [item for item in profile_draft.get("experienceAndProjects") or [] if active_profile_draft_item(item)]
+    )
     return (
         f"Updated the saved profile draft with {fact_count} fact(s), {skill_count} skill claim(s), "
         f"and {experience_count} experience/project item(s)."
     )
+
+
+def active_profile_draft_item(item: object) -> bool:
+    return isinstance(item, dict) and item.get("published") is not True and item.get("status") != "rejected"
+
+
+def build_profile_section_failure_status_updates(section_failures: object) -> list[CommandCenterStatusUpdate]:
+    if not isinstance(section_failures, list) or not section_failures:
+        return []
+    sections = [
+        str(failure.get("section")).replace("_", " ")
+        for failure in section_failures
+        if isinstance(failure, dict) and failure.get("section")
+    ]
+    if not sections:
+        return []
+    return [
+        CommandCenterStatusUpdate(
+            stage="profile_intake",
+            message=(
+                "Status update: profile intake skipped "
+                f"{', '.join(sections)} after a section extraction error and continued with the remaining sections."
+            ),
+            actionType="profile_intake",
+            confidence=None,
+            targetWorkspace="profile",
+        )
+    ]
 
 
 def build_company_discovery_action_summary(added_count: int) -> str:

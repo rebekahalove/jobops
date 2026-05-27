@@ -745,6 +745,66 @@ def test_profile_intake_second_empty_turn_preserves_merged_saved_draft(tmp_path:
         assert len(session.scalars(select(EvidenceArtifact)).all()) == 1
 
 
+def test_profile_intake_reactivates_matching_archived_draft_items(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    basics = no_change_section_output("basics_and_targets")
+    skills = section_output("skills", "skillClaims", skill_change("Python"))
+    experience = {
+        **section_output("experience_projects", "draftFacts", {}),
+        "changes": [
+            {
+                "target": "draftFacts",
+                "value": {
+                    "claim": "Built production AI workflows.",
+                    "category": "resume_evidence",
+                    "source": "resume",
+                    "status": "needs_review",
+                    "visibility": "private",
+                    "published": False,
+                },
+            },
+            {"target": "experienceAndProjects", "value": experience_change("Shadow Network Intelligence")},
+        ],
+    }
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+            connector=make_connector(RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        fact = session.scalars(select(ProfileFactDraft)).one()
+        skill = session.scalars(select(SkillClaim)).one()
+        saved_experience = session.scalars(select(ExperienceProjectDraft)).one()
+        fact.review_status = "rejected"
+        skill.verification_status = "rejected"
+        skill.publication_status = "archived"
+        saved_experience.review_status = "rejected"
+        saved_experience.publication_status = "archived"
+        session.commit()
+
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+            connector=make_connector(RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+        fact = session.scalars(select(ProfileFactDraft)).one()
+        skill = session.scalars(select(SkillClaim)).one()
+        saved_experience = session.scalars(select(ExperienceProjectDraft)).one()
+
+    assert result.status_code == 200
+    assert fact.review_status == "needs_review"
+    assert skill.verification_status == "needs_review"
+    assert skill.publication_status == "not_published"
+    assert saved_experience.review_status == "needs_review"
+    assert saved_experience.publication_status == "not_published"
+    assert len([item for item in result.body["result"]["skillClaims"] if item["status"] != "rejected"]) == 1
+    assert len([item for item in result.body["result"]["experienceAndProjects"] if item["status"] != "rejected"]) == 1
+
+
 def test_profile_intake_merge_adds_new_facts_and_dedupes_without_clearing_fields(tmp_path: Path) -> None:
     session_factory = make_seeded_session_factory()
 

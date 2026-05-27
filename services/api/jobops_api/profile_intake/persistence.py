@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,9 @@ from jobops_api.profile_fields import (
 
 from .artifacts import ProfileIntakeInputMetrics
 from .models import ProfileIntakeOutput
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_active_intake_session(session: Session, candidate_profile_id: str) -> ProfileIntakeSession:
@@ -222,12 +226,31 @@ def persist_profile_intake_output(
         experiences=saved_experiences,
         evidence=saved_evidence,
     )
+    active_counts = active_draft_count_metadata_from_saved(
+        facts=saved_facts,
+        skills=saved_skills,
+        experiences=saved_experiences,
+        evidence=saved_evidence,
+    )
+    proposed_counts = {
+        "draftFacts": len(output.updated_draft_profile.draft_facts),
+        "skillClaims": len(output.updated_draft_profile.skill_claims),
+        "experienceAndProjects": len(output.updated_draft_profile.experience_and_projects),
+        "evidenceLinks": len(output.updated_draft_profile.evidence_links),
+    }
+    logger.info(
+        "[profile_intake] persisted profile draft counts proposed=%s saved=%s active=%s",
+        proposed_counts,
+        draft_counts,
+        active_counts,
+    )
 
     intake_session.last_turn_at = datetime.now(timezone.utc)
     intake_session.target_role_summary = role_target_summary_from_row(saved_role_target) or intake_session.target_role_summary
     intake_session.redacted_state = {
         "artifactPath": artifact_path,
         "draftCounts": draft_counts,
+        "activeDraftCounts": active_counts,
         "input": input_metrics.to_json(),
         "lastChangeSummaryCount": len(output.change_summary),
         "lastClarifyingQuestionCount": len(output.clarifying_questions),
@@ -585,11 +608,18 @@ def sync_draft_facts(
                 existing.claim = claim
                 existing.fact_type = category
                 existing.source = fact.source
+                if draft_fact_should_reactivate(existing):
+                    reactivate_draft_fact(existing, fact.status)
             continue
 
         key = fact_key(claim, category)
         if key in existing_by_key:
-            returned_ids.add(existing_by_key[key].id)
+            existing = existing_by_key[key]
+            returned_ids.add(existing.id)
+            if not draft_fact_is_published(existing):
+                existing.source = fact.source
+                if draft_fact_should_reactivate(existing):
+                    reactivate_draft_fact(existing, fact.status)
             continue
         row = ProfileFactDraft(
             candidate_profile_id=candidate_profile.id,
@@ -648,11 +678,23 @@ def sync_skill_claims(
                 existing.years_min = skill.years_min
                 existing.years_max = skill.years_max
                 existing.source = skill.source
+                if skill_claim_should_reactivate(existing):
+                    reactivate_skill_claim(existing, skill.status)
             continue
 
         key = skill_key(skill_name, category)
         if key in existing_by_key:
-            returned_ids.add(existing_by_key[key].id)
+            existing = existing_by_key[key]
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.skill_name = skill_name
+                existing.skill_category = category
+                existing.evidence_summary = evidence
+                existing.years_min = skill.years_min
+                existing.years_max = skill.years_max
+                existing.source = skill.source
+                if skill_claim_should_reactivate(existing):
+                    reactivate_skill_claim(existing, skill.status)
             continue
         row = SkillClaim(
             candidate_profile_id=candidate_profile.id,
@@ -711,6 +753,8 @@ def sync_experience_projects(
                 apply_experience_fields(existing, item)
                 existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
+                if experience_project_should_reactivate(existing):
+                    reactivate_experience_project(existing, item.status)
             continue
 
         existing = exact_by_key.get(experience_key(title, organization)) or title_by_key.get(normalize_key(title))
@@ -725,6 +769,8 @@ def sync_experience_projects(
                 apply_experience_fields(existing, item)
                 existing.structured_value = experience_structured_value(item)
                 existing.source = item.source
+                if experience_project_should_reactivate(existing):
+                    reactivate_experience_project(existing, item.status)
             continue
         row = ExperienceProjectDraft(
             candidate_profile_id=candidate_profile.id,
@@ -784,11 +830,20 @@ def sync_evidence_links(
                 existing.uri = url
                 existing.label = label or url or "Evidence link"
                 existing.source = link.source
+                if evidence_link_should_reactivate(existing):
+                    reactivate_evidence_link(existing, link.status)
             continue
 
         key = evidence_key(url, label)
         if key in existing_by_key:
-            returned_ids.add(existing_by_key[key].id)
+            existing = existing_by_key[key]
+            returned_ids.add(existing.id)
+            if existing.publication_status != "published":
+                existing.uri = url
+                existing.label = label or url or "Evidence link"
+                existing.source = link.source
+                if evidence_link_should_reactivate(existing):
+                    reactivate_evidence_link(existing, link.status)
             continue
         row = EvidenceArtifact(
             candidate_profile_id=candidate_profile.id,
@@ -819,6 +874,57 @@ def sync_evidence_links(
 
     session.flush()
     return get_session_evidence(session, intake_session.id)
+
+
+def reactivate_draft_fact(row: ProfileFactDraft, status: str) -> None:
+    row.suggested_visibility = "private"
+    row.review_status = "draft" if status == "draft" else "needs_review"
+    structured_value = row.structured_value if isinstance(row.structured_value, dict) else {}
+    row.structured_value = {
+        **structured_value,
+        "published": False,
+        "sourceStatus": status,
+    }
+
+
+def draft_fact_should_reactivate(row: ProfileFactDraft) -> bool:
+    return row.review_status == "rejected"
+
+
+def reactivate_skill_claim(row: SkillClaim, status: str) -> None:
+    row.visibility = "private"
+    row.verification_status = "draft" if status == "draft" else "needs_review"
+    row.publication_status = "not_published"
+
+
+def skill_claim_should_reactivate(row: SkillClaim) -> bool:
+    return row.verification_status == "rejected" or row.publication_status == "archived"
+
+
+def reactivate_experience_project(row: ExperienceProjectDraft, status: str) -> None:
+    row.visibility = "private"
+    row.review_status = "draft" if status == "draft" else "needs_review"
+    row.publication_status = "not_published"
+
+
+def experience_project_should_reactivate(row: ExperienceProjectDraft) -> bool:
+    return row.review_status == "rejected" or row.publication_status == "archived"
+
+
+def reactivate_evidence_link(row: EvidenceArtifact, status: str) -> None:
+    row.visibility = "private"
+    row.review_status = "draft" if status == "draft" else "needs_review"
+    row.publication_status = "not_published"
+    artifact_metadata = row.artifact_metadata if isinstance(row.artifact_metadata, dict) else {}
+    row.artifact_metadata = {
+        **artifact_metadata,
+        "published": False,
+        "sourceStatus": status,
+    }
+
+
+def evidence_link_should_reactivate(row: EvidenceArtifact) -> bool:
+    return row.review_status == "rejected" or row.publication_status == "archived"
 
 
 def draft_fact_is_published(row: ProfileFactDraft) -> bool:
@@ -1190,6 +1296,21 @@ def draft_count_metadata_from_saved(
         "skillClaimCount": len(skills),
         "experienceAndProjectCount": len(experiences),
         "evidenceLinkCount": len(evidence),
+    }
+
+
+def active_draft_count_metadata_from_saved(
+    *,
+    facts: list[ProfileFactDraft],
+    skills: list[SkillClaim],
+    experiences: list[ExperienceProjectDraft],
+    evidence: list[EvidenceArtifact],
+) -> dict[str, int]:
+    return {
+        "draftFactCount": len([item for item in facts if item.review_status != "rejected"]),
+        "skillClaimCount": len([item for item in skills if item.verification_status != "rejected"]),
+        "experienceAndProjectCount": len([item for item in experiences if item.review_status != "rejected"]),
+        "evidenceLinkCount": len([item for item in evidence if item.review_status != "rejected"]),
     }
 
 
