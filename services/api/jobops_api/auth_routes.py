@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Cookie, Depends, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,8 +26,9 @@ from jobops_api.auth import (
 from jobops_api.db.models import CandidateProfile, Tenant, User, WorkspaceMembership
 from jobops_api.db.session import get_db_session
 from jobops_api.email import send_invite_email, send_password_reset_email
+from jobops_api.public_urls import PublicBaseUrlError, resolve_public_app_base_url
 from jobops_api.security import require_internal_api_key
-from jobops_api.settings import load_settings
+from jobops_api.settings import Settings, load_settings
 
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"], dependencies=[Depends(require_internal_api_key)])
@@ -88,6 +89,7 @@ def get_current_user(auth=Depends(require_auth_context)) -> dict[str, Any]:
 @router.post("/invites", status_code=201)
 def create_invite(request: InviteCreateRequest, session: Session = Depends(get_db_session)) -> dict[str, Any]:
     settings = load_settings()
+    base_url = resolve_route_public_base_url(settings, request.invite_base_url)
     created = create_alpha_invite(
         session,
         email=request.email,
@@ -95,7 +97,6 @@ def create_invite(request: InviteCreateRequest, session: Session = Depends(get_d
         workspace_slug=request.workspace_slug,
         created_by=request.created_by,
     )
-    base_url = (request.invite_base_url or settings.app_base_url or "http://localhost:3002").rstrip("/")
     invite_url = f"{base_url}/invite/{created.raw_token}"
     email_sent = send_invite_email(settings, to_email=created.invite.email, invite_url=invite_url)
     session.commit()
@@ -168,11 +169,16 @@ def change_password(
 @router.post("/password/reset/request")
 def request_password_reset(request: PasswordResetStartRequest, session: Session = Depends(get_db_session)) -> dict[str, Any]:
     settings = load_settings()
+    base_url = (
+        resolve_route_public_base_url(settings, request.reset_base_url)
+        if settings.app_env.lower() in {"prod", "production"} or request.reset_base_url or settings.app_base_url
+        else None
+    )
     created = create_password_reset_token(session, identifier=request.identifier)
     email_sent = False
     reset_url = None
     if created is not None:
-        base_url = (request.reset_base_url or settings.app_base_url or "http://localhost:3002").rstrip("/")
+        base_url = base_url or resolve_route_public_base_url(settings, request.reset_base_url)
         reset_url = f"{base_url}/reset-password?token={created.raw_token}"
         email_sent = send_password_reset_email(settings, to_email=created.token.user.email, reset_url=reset_url)
     session.commit()
@@ -185,6 +191,13 @@ def request_password_reset(request: PasswordResetStartRequest, session: Session 
         result["devResetToken"] = created.raw_token
         result["devResetUrl"] = reset_url
     return {"ok": True, "result": result}
+
+
+def resolve_route_public_base_url(settings: Settings, explicit_base_url: str | None = None) -> str:
+    try:
+        return resolve_public_app_base_url(settings, explicit_base_url)
+    except PublicBaseUrlError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.post("/password/reset/confirm")

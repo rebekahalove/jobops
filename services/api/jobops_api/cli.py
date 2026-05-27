@@ -31,7 +31,6 @@ def main() -> None:
     invite_parser.add_argument("--name", default=None)
     invite_parser.add_argument("--workspace-slug", default=None)
     invite_parser.add_argument("--created-by", default="cli")
-    invite_parser.add_argument("--base-url", default="http://localhost:3002")
 
     bootstrap_parser = subparsers.add_parser("bootstrap-alpha-user", help="Create or repair a user/workspace/profile without issuing an invite.")
     bootstrap_parser.add_argument("--email", required=True)
@@ -72,7 +71,6 @@ def main() -> None:
             name=args.name,
             workspace_slug=args.workspace_slug,
             created_by=args.created_by,
-            base_url=args.base_url,
         )
     elif args.command == "bootstrap-alpha-user":
         seed_initial_user_command(
@@ -113,7 +111,7 @@ def seed_public_profile_command(hostname: str | None = None) -> None:
     print(f"Seeded candidate profile: {candidate_slug}")
 
 
-def create_alpha_invite_command(*, email: str, name: str | None, workspace_slug: str | None, created_by: str | None, base_url: str) -> None:
+def create_alpha_invite_command(*, email: str, name: str | None, workspace_slug: str | None, created_by: str | None) -> None:
     engine = create_db_engine()
     with Session(engine) as session:
         created = create_alpha_invite(
