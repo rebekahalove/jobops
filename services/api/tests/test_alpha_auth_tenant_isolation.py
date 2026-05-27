@@ -37,6 +37,7 @@ INTERNAL_HEADERS = {INTERNAL_API_KEY_HEADER: "test-secret"}
 def test_invite_acceptance_creates_session_and_current_user(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "https://jobops.example.com")
     engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
 
@@ -49,6 +50,8 @@ def test_invite_acceptance_creates_session_and_current_user(monkeypatch) -> None
         )
         assert invite_response.status_code == 201
         token = invite_response.json()["result"]["token"]
+        assert invite_response.json()["result"]["inviteUrl"].startswith("https://jobops.example.com/invite/")
+        assert "localhost" not in invite_response.json()["result"]["inviteUrl"]
 
         with Session(engine) as session:
             stored = session.scalar(select(InviteToken))
@@ -91,6 +94,7 @@ def test_invite_acceptance_creates_session_and_current_user(monkeypatch) -> None
 def test_username_validation_and_uniqueness(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "https://jobops.example.com")
     engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
 

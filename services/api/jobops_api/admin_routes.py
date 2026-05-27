@@ -26,8 +26,9 @@ from jobops_api.auth import (
 from jobops_api.db.models import AlphaAccessRequest, AlphaInvitation, User
 from jobops_api.db.session import get_db_session
 from jobops_api.email import send_invite_email, send_password_reset_email
+from jobops_api.public_urls import PublicBaseUrlError, resolve_public_app_base_url
 from jobops_api.security import require_internal_api_key
-from jobops_api.settings import load_settings
+from jobops_api.settings import Settings, load_settings
 
 
 admin_router = APIRouter(
@@ -127,12 +128,13 @@ def expire_user_password(
     target = get_user_or_404(session, user_id)
     if target.status != "active":
         raise HTTPException(status_code=400, detail="Only active users can receive password reset links.")
+    settings = load_settings()
+    base_url = resolve_route_public_base_url(settings)
     target.password_reset_required = True
     target.password_expires_at = now_utc()
     revoke_user_sessions(session, target.id)
     created = create_password_reset_token_for_user(session, user=target)
-    settings = load_settings()
-    reset_url = f"{(settings.app_base_url or 'http://localhost:3002').rstrip('/')}/reset-password?token={created.raw_token}"
+    reset_url = f"{base_url}/reset-password?token={created.raw_token}"
     email_sent = send_password_reset_email(settings, to_email=target.email, reset_url=reset_url)
     session.commit()
     return {"ok": True, "result": {"user": user_to_admin_dict(target), "emailSent": email_sent}}
@@ -238,12 +240,19 @@ def create_and_send_invitation(
     invited_by_user_id: str,
     invite_base_url: str | None,
 ) -> dict[str, Any]:
-    created = create_or_rotate_alpha_invitation(session, email=email, invited_by_user_id=invited_by_user_id)
     settings = load_settings()
-    base_url = (invite_base_url or settings.app_base_url or "http://localhost:3002").rstrip("/")
+    base_url = resolve_route_public_base_url(settings, invite_base_url)
+    created = create_or_rotate_alpha_invitation(session, email=email, invited_by_user_id=invited_by_user_id)
     invite_url = f"{base_url}/accept-invite?token={created.raw_token}"
     email_sent = send_invite_email(settings, to_email=created.invitation.email, invite_url=invite_url)
     return {"invitation": created.invitation, "email_sent": email_sent, "rotated_existing": created.rotated_existing}
+
+
+def resolve_route_public_base_url(settings: Settings, explicit_base_url: str | None = None) -> str:
+    try:
+        return resolve_public_app_base_url(settings, explicit_base_url)
+    except PublicBaseUrlError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 def get_user_or_404(session: Session, user_id: str) -> User:

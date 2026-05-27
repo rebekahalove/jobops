@@ -38,10 +38,10 @@ Unknown usernames or invalid passwords return a clear error and do not create us
 
 ```powershell
 cd services/api
-.\.venv\Scripts\python.exe -m jobops_api.cli create-alpha-invite --email chance@example.com --base-url http://localhost:3002
+.\.venv\Scripts\python.exe -m jobops_api.cli create-alpha-invite --email chance@example.com
 ```
 
-The command creates an email invite. If SMTP settings are configured, the backend sends the invite email. The command also prints the invite URL for local/manual testing. Do not commit the token.
+The command creates a hashed invite token record for local/admin repair workflows. Use the admin dashboard or admin API for email invites.
 
 ```text
 https://<jobops-host>/jobops/invite/<token>
@@ -66,10 +66,15 @@ Dashboard logout calls `POST /v1/auth/logout` with the current session cookie an
 
 ## Invite Email Configuration
 
-Optional SMTP settings:
+Required public app URL for account email links:
 
 ```text
 JOBOPS_APP_BASE_URL=https://<jobops-host>
+```
+
+Optional SMTP settings:
+
+```text
 JOBOPS_SMTP_HOST=smtp.example.com
 JOBOPS_SMTP_PORT=587
 JOBOPS_SMTP_USERNAME=...
@@ -77,7 +82,7 @@ RESEND_API_KEY=...
 JOBOPS_SMTP_FROM_EMAIL=JobOps <no-reply@example.com>
 ```
 
-If SMTP is not configured, invite creation still returns `inviteUrl` and `emailSent=false` for local/manual testing.
+If SMTP is not configured, invite creation still builds the configured public URL and returns `emailSent=false` for local/manual testing.
 
 ## Reset A Test Workspace
 

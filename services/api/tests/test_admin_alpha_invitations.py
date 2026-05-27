@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import create_engine
 
+import jobops_api.admin_routes as admin_routes
 from jobops_api.auth import (
     SESSION_COOKIE_NAME,
     create_or_rotate_alpha_invitation,
@@ -44,6 +45,7 @@ def test_admin_routes_require_admin_user(monkeypatch) -> None:
 def test_pending_alpha_requests_are_oldest_first_and_invitable(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "https://jobops.example.com")
     engine = make_engine()
     admin_cookie, _ = seed_admin_and_user(engine)
     older_at = now_utc() - timedelta(days=2)
@@ -82,6 +84,13 @@ def test_pending_alpha_requests_are_oldest_first_and_invitable(monkeypatch) -> N
 def test_manual_invite_updates_matching_request_and_deduplicates_pending_invites(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "https://jobops.example.com")
+    sent_urls: list[str] = []
+    monkeypatch.setattr(
+        admin_routes,
+        "send_invite_email",
+        lambda settings, *, to_email, invite_url: sent_urls.append(invite_url) is None or True,
+    )
     engine = make_engine()
     admin_cookie, _ = seed_admin_and_user(engine)
 
@@ -108,6 +117,9 @@ def test_manual_invite_updates_matching_request_and_deduplicates_pending_invites
         assert first.status_code == 201
         assert second.status_code == 201
         assert second.json()["result"]["rotatedExisting"] is True
+        assert sent_urls
+        assert sent_urls[0].startswith("https://jobops.example.com/accept-invite?token=")
+        assert "localhost" not in sent_urls[0]
 
     with Session(engine) as session:
         assert session.scalar(select(AlphaInvitation).where(AlphaInvitation.email == "casey@example.com")).email == "casey@example.com"
@@ -117,6 +129,27 @@ def test_manual_invite_updates_matching_request_and_deduplicates_pending_invites
         assert stored_request.status == "invited"
         assert stored_request.invited_at is not None
         assert stored_request.invitation_id is not None
+
+
+def test_manual_invite_requires_public_app_base_url_before_creating_invitation(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "")
+    engine = make_engine()
+    admin_cookie, _ = seed_admin_and_user(engine)
+
+    with app_with_session(engine):
+        response = TestClient(app).post(
+            "/v1/admin/invitations",
+            headers=INTERNAL_HEADERS,
+            cookies={SESSION_COOKIE_NAME: admin_cookie},
+            json={"email": "casey@example.com"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "JOBOPS_APP_BASE_URL is required to generate account email links."
+    with Session(engine) as session:
+        assert session.scalar(select(AlphaInvitation)) is None
 
 
 def test_invitation_token_is_hashed_and_cannot_be_reused(monkeypatch) -> None:
@@ -268,6 +301,7 @@ def test_admin_cannot_demote_or_delete_self_or_last_admin(monkeypatch) -> None:
 def test_admin_delete_blocks_last_admin_and_password_expire_creates_reset(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_APP_BASE_URL", "https://jobops.example.com")
     engine = make_engine()
     admin_cookie, _ = seed_admin_and_user(engine)
 

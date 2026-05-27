@@ -1,4 +1,5 @@
 import { parseJsonBody, proxyJobOpsApi } from "../../../../../../lib/jobops-api-proxy";
+import { withInviteBaseUrl } from "../../../../../../lib/admin-invite-base-url";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,6 @@ export async function POST(request: Request, context: RouteContext) {
   const body = await parseJsonBody(request);
   return proxyJobOpsApi(request, `/v1/admin/alpha-requests/${encodeURIComponent(requestId)}/invite`, {
     method: "POST",
-    body: JSON.stringify(body ?? {})
+    body: JSON.stringify(withInviteBaseUrl(request, body))
   });
 }
