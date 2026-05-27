@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -13,7 +14,6 @@ from ..model_connector.routing import route_model_request
 from .context import ProfileIntakeContextBundle
 from .intake_mode import detect_profile_intake_mode
 from .models import ProfileIntakeOutput, ProfileIntakeSection, ProfileIntakeSectionOutput
-from .providers import build_mock_profile_intake_output, extract_latest_user_message_from_payload, extract_user_prompt_payload
 
 
 SECTION_EXTRACTOR_PROMPT_VERSION = "profile-intake-section-extractors-v1"
@@ -278,27 +278,7 @@ def build_mock_profile_intake_section_response(request: ModelRequest) -> str:
     prompt_payload = extract_user_prompt_payload(request)
     section = prompt_payload.get("section")
     latest_user_message = extract_latest_user_message_from_payload(prompt_payload)
-    context = prompt_payload.get("profile_intake_context") if isinstance(prompt_payload, dict) else {}
-    current_draft = context.get("currentGeneratedDraftProfile") if isinstance(context, dict) else None
-    full_output = build_mock_profile_intake_output(latest_user_message, current_draft)
-    draft = full_output.get("updatedDraftProfile") if isinstance(full_output, dict) else {}
-    changes = []
-    if section == "basics_and_targets":
-        basics = draft.get("profileBasics") if isinstance(draft, dict) else None
-        target = draft.get("targetRoleIntent") if isinstance(draft, dict) else None
-        if isinstance(basics, dict) and basics:
-            changes.append({"target": "profileBasics", "value": basics})
-        if isinstance(target, dict) and target:
-            changes.append({"target": "targetRoleIntent", "value": target})
-    elif section == "skills":
-        for item in draft.get("skillClaims") or []:
-            if isinstance(item, dict):
-                changes.append({"target": "skillClaims", "value": item})
-    elif section == "experience_projects":
-        for target_name in ("draftFacts", "experienceAndProjects", "evidenceLinks"):
-            for item in draft.get(target_name) or []:
-                if isinstance(item, dict):
-                    changes.append({"target": target_name, "value": item})
+    changes = build_mock_section_changes(section, latest_user_message)
 
     status = "changes_proposed" if changes else "no_changes"
     return json.dumps(
@@ -319,6 +299,186 @@ def build_mock_profile_intake_section_response(request: ModelRequest) -> str:
             ],
         }
     )
+
+
+def extract_user_prompt_payload(request: ModelRequest) -> dict[str, Any]:
+    for message in reversed(request.messages):
+        if message.role != "user":
+            continue
+        try:
+            parsed = json.loads(message.content)
+        except json.JSONDecodeError:
+            return {"latest_user_message": message.content}
+        return parsed if isinstance(parsed, dict) else {"latest_user_message": message.content}
+    return {}
+
+
+def extract_latest_user_message_from_payload(payload: dict[str, Any]) -> str:
+    latest_user_message = payload.get("latest_user_message") or payload.get("latestUserMessage")
+    return latest_user_message if isinstance(latest_user_message, str) else ""
+
+
+def build_mock_section_changes(section: object, message: str) -> list[dict[str, Any]]:
+    if section == "basics_and_targets":
+        return build_mock_basics_and_targets_changes(message)
+    if section == "skills":
+        return build_mock_skill_changes(message)
+    if section == "experience_projects":
+        return build_mock_experience_project_changes(message)
+    return []
+
+
+def build_mock_basics_and_targets_changes(message: str) -> list[dict[str, Any]]:
+    lower = message.lower()
+    target: dict[str, Any] = {}
+    title = extract_target_title(message)
+    if title:
+        target["targetTitles"] = title
+    if "remote" in lower:
+        target["preferredWorkMode"] = "remote"
+    elif "hybrid" in lower:
+        target["preferredWorkMode"] = "hybrid"
+    elif "onsite" in lower or "on-site" in lower:
+        target["preferredWorkMode"] = "onsite"
+    return [{"target": "targetRoleIntent", "value": target}] if target else []
+
+
+def build_mock_skill_changes(message: str) -> list[dict[str, Any]]:
+    lower = message.lower()
+    skill_specs = [
+        ("Python", "programming", ["python"]),
+        ("TypeScript", "programming", ["typescript"]),
+        ("React", "frontend", ["react"]),
+        ("FastAPI", "backend", ["fastapi"]),
+        ("Postgres", "data", ["postgres", "postgresql"]),
+        ("LLM systems", "ai_systems", ["llm", "agent", "rag", "prompt"]),
+        ("Evals and reliability", "quality", ["eval", "observability", "monitor", "test"]),
+    ]
+    changes = []
+    for skill, category, keywords in skill_specs:
+        if any(keyword in lower for keyword in keywords):
+            changes.append(
+                {
+                    "target": "skillClaims",
+                    "value": generated_mock_item(
+                        {
+                            "skill": skill,
+                            "category": category,
+                            "evidence": "Keyword evidence found in deterministic local mock mode.",
+                            "source": mock_source_for_message(message),
+                        }
+                    ),
+                }
+            )
+    return changes
+
+
+def build_mock_experience_project_changes(message: str) -> list[dict[str, Any]]:
+    if not looks_like_experience_or_resume(message):
+        return []
+    source = mock_source_for_message(message)
+    title = first_interesting_line(message) or "Experience or project draft"
+    changes = [
+        {
+            "target": "draftFacts",
+            "value": generated_mock_item(
+                {
+                    "claim": extract_mock_fact_claim(message),
+                    "category": "resume_evidence" if source == "resume" else "work_evidence",
+                    "source": source,
+                }
+            ),
+        },
+        {
+            "target": "experienceAndProjects",
+            "value": generated_mock_item(
+                {
+                    "itemType": "project" if "project" in message.lower() else "experience",
+                    "title": title[:180],
+                    "organization": "Needs review",
+                    "summary": "Potential work, project, education, or artifact evidence detected from intake text.",
+                    "bullets": [],
+                    "source": source,
+                }
+            ),
+        }
+    ]
+    for url in sorted(set(re.findall(r"https?://[^\s)]+", message)))[:6]:
+        changes.append(
+            {"target": "evidenceLinks", "value": generated_mock_item({"url": url, "label": url, "source": source})}
+        )
+    return changes
+
+
+def extract_mock_fact_claim(message: str) -> str:
+    for line in (line.strip(" -\t*") for line in message.splitlines()):
+        clean_line = re.sub(r"\s+", " ", line).strip()
+        if len(clean_line) >= 12 and re.search(r"built|shipped|led|created|developed|implemented", clean_line, re.I):
+            return clean_line[:220]
+    return "Potential work evidence detected from intake text."
+
+
+def generated_mock_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **item,
+        "status": "needs_review",
+        "visibility": "private",
+        "published": False,
+    }
+
+
+def extract_target_title(message: str) -> str | None:
+    match = re.search(r"i want to be an?\s+([^.\n]+)", message, flags=re.IGNORECASE)
+    if not match:
+        return None
+    title = match.group(1).strip().rstrip(".!?").strip()
+    return title or None
+
+
+def looks_like_experience_or_resume(message: str) -> bool:
+    lower = message.lower()
+    lines = [line for line in message.splitlines() if line.strip()]
+    return len(lines) >= 3 or any(
+        keyword in lower
+        for keyword in (
+            "experience",
+            "education",
+            "skills",
+            "projects",
+            "certification",
+            "i built",
+            "i shipped",
+            "i led",
+            "i created",
+            "i developed",
+            "i implemented",
+            "built a",
+            "built an",
+            "shipped a",
+            "project:",
+            "open source",
+            "publication",
+        )
+    )
+
+
+def mock_source_for_message(message: str) -> str:
+    lower = message.lower()
+    lines = [line for line in message.splitlines() if line.strip()]
+    if len(lines) >= 3 or any(keyword in lower for keyword in ("experience", "education", "skills", "projects")):
+        return "resume"
+    return "chat"
+
+
+def first_interesting_line(message: str) -> str | None:
+    for line in (line.strip(" -\t*") for line in message.splitlines()):
+        if re.search(r"engineer|developer|consultant|architect|lead|project|education|certification", line, re.I):
+            return re.sub(r"\s+", " ", line).strip()[:90]
+    return None
+
+
+def build_prompt_artifact(request: ModelRequest) -> str:
+    return "\n\n".join(f"{message.role.upper()}:\n{message.content}" for message in request.messages)
 
 
 def parse_section_output(parsed: Any, section: ProfileIntakeSection) -> ProfileIntakeSectionOutput:
@@ -358,7 +518,7 @@ def adapt_full_profile_output_to_section(parsed: dict[str, Any], section: Profil
             "confidence": "medium",
             "userUpdate": full_output.assistant_message,
             "candidateFollowUpQuestions": [
-                {"question": question, "reason": "Legacy full-profile output clarifying question.", "priority": 10}
+                {"question": question, "reason": "Provider output clarifying question.", "priority": 10}
                 for question in full_output.clarifying_questions[:3]
             ],
         }

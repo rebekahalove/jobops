@@ -30,7 +30,8 @@ from jobops_api.db.session import get_db_session
 from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, ModelRequest, ModelResponse, ModelRoutingConfig
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest, ProfileIntakeOutput
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
-from jobops_api.profile_intake.prompt import PROFILE_INTAKE_SYSTEM_PROMPT, build_profile_intake_user_prompt
+from jobops_api.profile_intake.context import build_profile_intake_context_bundle
+from jobops_api.profile_intake.section_extractors import build_section_model_request
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.profile_fields import get_field_definition, publish_generated_field
 from jobops_api.profiles import candidate_profile_to_public_dict
@@ -81,11 +82,14 @@ class RecordingSequenceProvider:
         )
 
 
-def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecycle_echo() -> None:
-    user_prompt = build_profile_intake_user_prompt(
+def test_profile_intake_section_prompt_uses_metadata_contract_and_section_scope() -> None:
+    context = build_profile_intake_context_bundle(
         ProfileIntakeExtractRequest(
             latest_user_message="PROFESSIONAL SUMMARY\nBuilt production RAG systems.\nPROFESSIONAL EXPERIENCE\nFounder, 2024-Present"
         ),
+        db_session=None,
+        candidate_profile=None,
+        intake_session=None,
         authoritative_current_draft={
             "targetRoleIntent": {
                 "targetTitles": "Applied AI Engineer",
@@ -105,17 +109,18 @@ def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecyc
                 }
             ],
         },
-        detected_intake_mode="resume_intake",
+        authoritative_current_draft_source="test",
     )
-    payload = json.loads(user_prompt)
-    metadata_contract = payload["update_rules"]["generated_item_metadata_contract"]
-    target_contract = payload["update_rules"]["target_role_intent_update_contract"]
+    request = build_section_model_request("experience_projects", context)
+    payload = json.loads(request.messages[1].content)
 
-    assert "A pasted resume/CV is not ambiguous" in PROFILE_INTAKE_SYSTEM_PROMPT
-    assert "Do not copy lifecycle/review metadata" in PROFILE_INTAKE_SYSTEM_PROMPT
-    assert "Never include id, source, status, visibility, or published in targetRoleIntent." in target_contract
-    assert "preserve id only" in metadata_contract
-    assert "published as false" in metadata_contract
+    assert request.metadata["profile_intake_contract"] == "section_extractor"
+    assert payload["section"] == "experience_projects"
+    assert payload["change_contract"]["allowed_targets"] == ["draftFacts", "experienceAndProjects", "evidenceLinks"]
+    assert "conversationTranscriptMetadata" in payload["profile_intake_context"]
+    assert "conversationTranscript" not in payload["profile_intake_context"]
+    assert "Do not include profile fields outside this section" in request.messages[0].content
+    assert "published as false" in request.messages[0].content
 
 
 def test_profile_intake_normalizes_preferred_work_mode_phrase() -> None:

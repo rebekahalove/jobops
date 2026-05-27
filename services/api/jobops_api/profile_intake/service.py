@@ -34,8 +34,7 @@ from .persistence import (
     save_intake_user_event,
     save_intake_validation_error_event,
 )
-from .prompt import build_prompt_artifact
-from .section_extractors import build_mock_profile_intake_section_response
+from .section_extractors import build_mock_profile_intake_section_response, build_prompt_artifact
 
 
 logger = logging.getLogger(__name__)
