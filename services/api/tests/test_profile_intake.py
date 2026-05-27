@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -1303,7 +1305,9 @@ def test_profile_intake_context_bundle_includes_current_draft_and_recent_events(
     assert bundle.latest_user_message == "Add Python and evals."
     assert bundle.current_generated_draft_profile["targetRoleIntent"] == {}
     assert bundle.published_public_profile["slug"] == "rebekah-love"
-    assert bundle.conversation_transcript[0]["metadata"]["latestUserMessageLength"] == len("I built an eval harness.")
+    assert bundle.conversation_transcript_metadata[0]["metadata"]["latestUserMessageLength"] == len("I built an eval harness.")
+    assert "conversationTranscriptMetadata" in bundle.model_dump(by_alias=True)
+    assert "conversationTranscript" not in bundle.model_dump(by_alias=True)
 
 
 def test_profile_intake_section_schema_accepts_phase_one_statuses() -> None:
@@ -1357,6 +1361,57 @@ def test_profile_intake_section_schema_accepts_phase_one_statuses() -> None:
             "candidateFollowUpQuestions": [{"question": "How recently?", "reason": "Adds recency.", "priority": 10}],
         }
     )
+
+
+def test_profile_intake_section_schema_rejects_changes_for_non_change_statuses() -> None:
+    from jobops_api.profile_intake.models import ProfileIntakeSectionOutput
+
+    with pytest.raises(ValidationError, match="no_changes output cannot include changes"):
+        ProfileIntakeSectionOutput.model_validate(
+            {
+                "section": "skills",
+                "status": "no_changes",
+                "changes": [{"target": "skillClaims", "value": skill_change("Python")}],
+                "noChangeReason": "No skill changes.",
+                "sectionComplete": False,
+                "confidence": "high",
+                "userUpdate": "No skill changes.",
+                "candidateFollowUpQuestions": [],
+            }
+        )
+
+    with pytest.raises(ValidationError, match="changes_proposed output must include at least one change"):
+        ProfileIntakeSectionOutput.model_validate(
+            {
+                "section": "skills",
+                "status": "changes_proposed",
+                "changes": [],
+                "noChangeReason": None,
+                "sectionComplete": False,
+                "confidence": "high",
+                "userUpdate": "Added skills.",
+                "candidateFollowUpQuestions": [],
+            }
+        )
+
+
+def test_profile_intake_draft_signature_detects_replacements() -> None:
+    from jobops_api.profile_intake.orchestrator import draft_signature
+
+    before = {
+        "profileBasics": {},
+        "targetRoleIntent": {},
+        "draftFacts": [],
+        "skillClaims": [{"id": "skill-1", "skill": "Python", "evidence": "Built APIs."}],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+    }
+    after = {
+        **before,
+        "skillClaims": [{"id": "skill-1", "skill": "Python", "evidence": "Built APIs and evals."}],
+    }
+
+    assert draft_signature(before) != draft_signature(after)
 
 
 def test_profile_intake_orchestrator_runs_all_phase_one_extractors(tmp_path: Path) -> None:

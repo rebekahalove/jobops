@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -292,15 +293,8 @@ def section_label(section: ProfileIntakeSection) -> str:
     }[section]
 
 
-def draft_signature(draft: dict[str, Any]) -> tuple[str, str, int, int, int, int]:
-    return (
-        repr(draft.get("profileBasics")),
-        repr(draft.get("targetRoleIntent")),
-        len(draft.get("draftFacts") or []),
-        len(draft.get("skillClaims") or []),
-        len(draft.get("experienceAndProjects") or []),
-        len(draft.get("evidenceLinks") or []),
-    )
+def draft_signature(draft: dict[str, Any]) -> str:
+    return json.dumps(draft, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def fact_key(item: dict[str, Any]) -> str:

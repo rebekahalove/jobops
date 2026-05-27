@@ -8,6 +8,8 @@ from ..model_connector import ModelRequest
 from .intake_mode import CHAT_UPDATE_CAPACITY, RESUME_INTAKE_CAPACITY
 
 
+# Legacy full-draft mock response retained for prompt compatibility tests.
+# The active orchestrator mock response lives in section_extractors.py.
 def build_mock_profile_intake_response(request: ModelRequest) -> str:
     prompt_payload = extract_user_prompt_payload(request)
     latest_user_message = extract_latest_user_message_from_payload(prompt_payload)

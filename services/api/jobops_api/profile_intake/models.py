@@ -177,7 +177,12 @@ class ProfileIntakeSectionOutput(ApiModel):
     )
 
     @model_validator(mode="after")
-    def validate_section_change_targets(self) -> ProfileIntakeSectionOutput:
+    def validate_section_change_contract(self) -> ProfileIntakeSectionOutput:
+        if self.status != "changes_proposed" and self.changes:
+            raise ValueError(f"{self.status} output cannot include changes.")
+        if self.status == "changes_proposed" and not self.changes:
+            raise ValueError("changes_proposed output must include at least one change.")
+
         allowed_targets = {
             "basics_and_targets": {"profileBasics", "targetRoleIntent"},
             "skills": {"skillClaims"},

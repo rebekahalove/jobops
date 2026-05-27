@@ -8,6 +8,8 @@ from .intake_mode import CHAT_UPDATE_CAPACITY, COMPACT_RESUME_RETRY_CAPACITY, Pr
 from .models import ProfileIntakeExtractRequest
 
 
+# Legacy full-draft prompt helpers. The active Phase 1 intake path uses
+# section_extractors.py and keeps these helpers only for compatibility coverage.
 PROFILE_INTAKE_PROMPT_VERSION = "profile-intake-prompt-v7-resume-metadata-contract"
 PROFILE_INTAKE_SCHEMA_NAME = "jobops_profile_intake"
 PROFILE_INTAKE_SCHEMA_VERSION = "profile-intake-output-v1"

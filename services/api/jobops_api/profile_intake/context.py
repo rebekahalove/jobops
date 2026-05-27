@@ -19,7 +19,10 @@ class ProfileIntakeContextBundle(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     latest_user_message: str = Field(alias="latestUserMessage")
-    conversation_transcript: list[dict[str, Any]] = Field(default_factory=list, alias="conversationTranscript")
+    conversation_transcript_metadata: list[dict[str, Any]] = Field(
+        default_factory=list,
+        alias="conversationTranscriptMetadata",
+    )
     current_generated_draft_profile: dict[str, Any] = Field(default_factory=dict, alias="currentGeneratedDraftProfile")
     published_private_profile: dict[str, Any] = Field(default_factory=dict, alias="publishedPrivateProfile")
     published_public_profile: dict[str, Any] = Field(default_factory=dict, alias="publishedPublicProfile")
@@ -46,7 +49,7 @@ def build_profile_intake_context_bundle(
 
     return ProfileIntakeContextBundle(
         latestUserMessage=request.latest_user_message,
-        conversationTranscript=recent_transcript_events(db_session, intake_session),
+        conversationTranscriptMetadata=recent_transcript_metadata(db_session, intake_session),
         currentGeneratedDraftProfile=current_draft,
         publishedPrivateProfile=published_profile,
         publishedPublicProfile=public_profile,
@@ -66,7 +69,7 @@ def build_profile_intake_context_bundle(
     )
 
 
-def recent_transcript_events(
+def recent_transcript_metadata(
     db_session: Session | None,
     intake_session: ProfileIntakeSession | None,
     *,
@@ -83,10 +86,10 @@ def recent_transcript_events(
             .limit(limit)
         )
     )
-    return [serialize_transcript_event(event) for event in reversed(events)]
+    return [serialize_transcript_metadata(event) for event in reversed(events)]
 
 
-def serialize_transcript_event(event: ProfileIntakeEvent) -> dict[str, Any]:
+def serialize_transcript_metadata(event: ProfileIntakeEvent) -> dict[str, Any]:
     metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
     return {
         "role": event.role,
