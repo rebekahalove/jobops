@@ -112,6 +112,13 @@ class SkillClaim(GeneratedItem):
     years_min: int | None = Field(default=None, alias="yearsMin", ge=0, le=80)
     years_max: int | None = Field(default=None, alias="yearsMax", ge=0, le=80)
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_skill_name_alias(cls, value: object) -> object:
+        if not isinstance(value, dict) or "skill" in value or "skillName" not in value:
+            return value
+        return {key: item for key, item in {**value, "skill": value["skillName"]}.items() if key != "skillName"}
+
 
 class ExperienceAndProject(GeneratedItem):
     id: str | None = Field(default=None, max_length=120)

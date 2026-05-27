@@ -32,7 +32,7 @@ from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, Mod
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest, ProfileIntakeOutput
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
 from jobops_api.profile_intake.context import build_profile_intake_context_bundle
-from jobops_api.profile_intake.section_extractors import build_section_model_request
+from jobops_api.profile_intake.section_extractors import build_section_model_request, parse_section_output
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.profile_fields import get_field_definition, publish_generated_field
 from jobops_api.profiles import candidate_profile_to_public_dict
@@ -118,10 +118,18 @@ def test_profile_intake_section_prompt_uses_metadata_contract_and_section_scope(
     assert request.metadata["profile_intake_contract"] == "section_extractor"
     assert payload["section"] == "experience_projects"
     assert payload["change_contract"]["allowed_targets"] == ["draftFacts", "experienceAndProjects", "evidenceLinks"]
+    assert payload["change_contract"]["max_changes"] == 12
+    assert payload["change_contract"]["value_must_be_object"] is True
     assert "conversationTranscriptMetadata" in payload["profile_intake_context"]
     assert "conversationTranscript" not in payload["profile_intake_context"]
     assert "Do not include profile fields outside this section" in request.messages[0].content
     assert "published as false" in request.messages[0].content
+    assert "value as one object, not an array" in request.messages[0].content
+
+    skills_request = build_section_model_request("skills", context)
+    skills_prompt = skills_request.messages[0].content
+    assert "Return at most 12 changes" in skills_prompt
+    assert "Do not enumerate every resume keyword" in skills_prompt
 
 
 def test_profile_intake_normalizes_preferred_work_mode_phrase() -> None:
@@ -1466,6 +1474,74 @@ def test_profile_intake_section_schema_rejects_changes_for_non_change_statuses()
                 "candidateFollowUpQuestions": [],
             }
         )
+
+
+def test_section_output_normalizes_provider_array_values_and_skill_name_alias() -> None:
+    output = parse_section_output(
+        {
+            "section": "skills",
+            "status": "changes_proposed",
+            "changes": [
+                {
+                    "target": "skillClaims",
+                    "value": [
+                        {
+                            "skillName": "RAG systems",
+                            "category": "ai_systems",
+                            "source": "resume",
+                            "status": "draft",
+                            "visibility": "private",
+                            "published": False,
+                        },
+                        {
+                            "skillName": "LLM evaluation",
+                            "category": "quality",
+                            "source": "resume",
+                            "status": "draft",
+                            "visibility": "private",
+                            "published": False,
+                        },
+                    ],
+                }
+            ],
+            "noChangeReason": None,
+            "sectionComplete": False,
+            "confidence": "medium",
+            "userUpdate": "Added high-signal skills.",
+            "candidateFollowUpQuestions": [],
+        },
+        "skills",
+    )
+
+    assert [change.value["skill"] for change in output.changes] == ["RAG systems", "LLM evaluation"]
+
+
+def test_experience_section_array_value_is_split_into_individual_changes(tmp_path: Path) -> None:
+    basics = no_change_section_output("basics_and_targets")
+    skills = no_change_section_output("skills")
+    experience = section_output("experience_projects", "experienceAndProjects", {})
+    experience["changes"] = [
+        {
+            "target": "experienceAndProjects",
+            "value": [
+                experience_change("Shadow Network Intelligence"),
+                experience_change("Sentry Data Systems"),
+            ],
+        }
+    ]
+    provider = RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    assert [item["title"] for item in result.body["result"]["experienceAndProjects"]] == [
+        "Shadow Network Intelligence",
+        "Sentry Data Systems",
+    ]
 
 
 def test_profile_intake_draft_signature_detects_replacements() -> None:

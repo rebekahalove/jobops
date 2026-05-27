@@ -24,6 +24,11 @@ SECTION_EXTRACTOR_MAX_OUTPUT_TOKENS = {
     "skills": 2600,
     "experience_projects": 3600,
 }
+SECTION_EXTRACTOR_MAX_CHANGES = {
+    "basics_and_targets": 6,
+    "skills": 12,
+    "experience_projects": 12,
+}
 SECTION_ORDER: tuple[ProfileIntakeSection, ...] = ("basics_and_targets", "skills", "experience_projects")
 
 
@@ -195,6 +200,9 @@ Rules:
 - Do not invent missing facts.
 - Do not mark anything verified, public, approved, or published.
 - For generated items, include source as chat, resume, or model; status as draft or needs_review; visibility as private; and published as false.
+- Return at most {SECTION_EXTRACTOR_MAX_CHANGES[section]} changes for this section. Prefer the strongest, least duplicative evidence.
+- Each changes item must have value as one object, not an array. If you have multiple items, create multiple changes with the same target.
+{section_specific_output_rule(section)}
 
 Return exactly this JSON shape:
 {{
@@ -214,6 +222,20 @@ Return exactly this JSON shape:
     {{"question": "A concise follow-up question?", "reason": "Why it helps.", "priority": 10}}
   ]
 }}"""
+
+
+def section_specific_output_rule(section: ProfileIntakeSection) -> str:
+    if section == "skills":
+        return (
+            "- For skills, group related technologies into high-signal claims. Do not enumerate every resume keyword "
+            "as a separate skill claim."
+        )
+    if section == "experience_projects":
+        return (
+            "- For experience/projects, each role, project, education item, certification, fact, or link must be its "
+            "own change object."
+        )
+    return "- For basics and targets, include only direct profile basics or target-role preference changes."
 
 
 def build_section_user_prompt(section: ProfileIntakeSection, context: ProfileIntakeContextBundle) -> str:
@@ -239,6 +261,9 @@ def build_section_user_prompt(section: ProfileIntakeSection, context: ProfileInt
             "change_contract": {
                 "changes_are_incremental": True,
                 "do_not_return_full_profile": True,
+                "max_changes": SECTION_EXTRACTOR_MAX_CHANGES[section],
+                "value_must_be_object": True,
+                "arrays_must_be_split_into_individual_changes": True,
                 "allowed_targets": {
                     "basics_and_targets": ["profileBasics", "targetRoleIntent"],
                     "skills": ["skillClaims"],
@@ -484,7 +509,39 @@ def build_prompt_artifact(request: ModelRequest) -> str:
 def parse_section_output(parsed: Any, section: ProfileIntakeSection) -> ProfileIntakeSectionOutput:
     if isinstance(parsed, dict) and isinstance(parsed.get("updatedDraftProfile"), dict):
         return adapt_full_profile_output_to_section(parsed, section)
-    return ProfileIntakeSectionOutput.model_validate(parsed)
+    return ProfileIntakeSectionOutput.model_validate(normalize_section_change_values(parsed))
+
+
+def normalize_section_change_values(parsed: Any) -> Any:
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("changes"), list):
+        return parsed
+
+    normalized_changes: list[Any] = []
+    changed = False
+    for change in parsed["changes"]:
+        if not isinstance(change, dict):
+            normalized_changes.append(change)
+            continue
+        if not isinstance(change.get("value"), list):
+            normalized_change = normalize_section_change_value(change)
+            normalized_changes.append(normalized_change)
+            changed = changed or normalized_change is not change
+            continue
+        target = change.get("target")
+        for item in change["value"]:
+            normalized_changes.append(normalize_section_change_value({"target": target, "value": item}))
+        changed = True
+
+    if not changed:
+        return parsed
+    return {**parsed, "changes": normalized_changes}
+
+
+def normalize_section_change_value(change: dict[str, Any]) -> dict[str, Any]:
+    value = change.get("value")
+    if change.get("target") == "skillClaims" and isinstance(value, dict) and "skill" not in value and "skillName" in value:
+        return {**change, "value": {key: item for key, item in {**value, "skill": value["skillName"]}.items() if key != "skillName"}}
+    return change
 
 
 def adapt_full_profile_output_to_section(parsed: dict[str, Any], section: ProfileIntakeSection) -> ProfileIntakeSectionOutput:
