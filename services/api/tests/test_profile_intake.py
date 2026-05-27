@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.main as main_module
+import jobops_api.profile_intake.orchestrator as orchestrator_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.db.models import (
     Base,
@@ -424,32 +424,41 @@ def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: 
     assert (run_dir / "raw-response-skills.txt").exists()
 
 
-def test_truncated_section_failure_logs_response_head_and_tail(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_truncated_section_failure_logs_response_head_and_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     truncated_response = "\n".join(f'{{"row": {index}, "value": "line-{index}"}}' for index in range(30))
     provider = RecordingSequenceProvider(
         [truncated_response, json.dumps(valid_output())],
         finish_reasons=["MAX_TOKENS", "stop"],
     )
+    warning_calls: list[tuple[object, tuple[object, ...]]] = []
 
-    with caplog.at_level(logging.WARNING, logger="jobops_api.profile_intake.orchestrator"):
-        result = run_profile_intake_extraction(
-            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
-            connector=make_connector(provider),
-            settings=make_settings(tmp_path),
-        )
+    def capture_warning(message: object, *args: object, **_: object) -> None:
+        warning_calls.append((message, args))
+
+    monkeypatch.setattr(orchestrator_module.logger, "warning", capture_warning)
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
 
     assert result.status_code == 200
-    assert "[profile_intake] section extractor failed section=basics_and_targets" in caplog.text
-    assert "responseTextHeadLines" in caplog.text
-    assert "line-0" in caplog.text
-    assert "line-11" in caplog.text
-    assert "responseTextTailLines" in caplog.text
-    assert "line-18" in caplog.text
-    assert "line-29" in caplog.text
-    assert "'finishReason': 'MAX_TOKENS'" in caplog.text
-    assert "'maxOutputTokens': 2200" in caplog.text
-    assert "'thinkingBudget': 0" in caplog.text
-    assert "'responseTextLength':" in caplog.text
+    assert warning_calls
+    message, args = warning_calls[0]
+    diagnostics = args[3]
+
+    assert message == "[profile_intake] section extractor failed section=%s code=%s issues=%s diagnostics=%s"
+    assert args[0] == "basics_and_targets"
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["responseTextHeadLines"][0] == '{"row": 0, "value": "line-0"}'
+    assert diagnostics["responseTextHeadLines"][-1] == '{"row": 11, "value": "line-11"}'
+    assert diagnostics["responseTextTailLines"][0] == '{"row": 18, "value": "line-18"}'
+    assert diagnostics["responseTextTailLines"][-1] == '{"row": 29, "value": "line-29"}'
+    assert diagnostics["finishReason"] == "MAX_TOKENS"
+    assert diagnostics["maxOutputTokens"] == 2200
+    assert diagnostics["thinkingBudget"] == 0
+    assert diagnostics["responseTextLength"] == len(truncated_response)
 
 
 def test_profile_intake_combined_response_keeps_full_valuable_update(tmp_path: Path) -> None:
