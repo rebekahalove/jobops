@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .intake_mode import RESUME_INTAKE_CAPACITY
 
@@ -11,6 +11,23 @@ Source = Literal["chat", "resume", "model"]
 GeneratedStatus = Literal["draft", "needs_review"]
 ExperienceItemType = Literal["experience", "project", "education", "certification"]
 WorkMode = Literal["remote", "hybrid", "onsite", "flexible"]
+ProfileIntakeSection = Literal["basics_and_targets", "skills", "experience_projects"]
+ProfileIntakeSectionStatus = Literal[
+    "changes_proposed",
+    "no_changes",
+    "section_complete",
+    "needs_more_information",
+    "failed",
+]
+ProfileIntakeConfidence = Literal["low", "medium", "high"]
+ProfileIntakeSectionChangeTarget = Literal[
+    "profileBasics",
+    "targetRoleIntent",
+    "draftFacts",
+    "skillClaims",
+    "experienceAndProjects",
+    "evidenceLinks",
+]
 
 
 class ApiModel(BaseModel):
@@ -132,6 +149,49 @@ class RemovedDraftItems(ApiModel):
     experience_and_project_ids: list[str] = Field(default_factory=list, alias="experienceAndProjectIds", max_length=80)
     evidence_link_ids: list[str] = Field(default_factory=list, alias="evidenceLinkIds", max_length=80)
     target_role_intent_fields: list[str] = Field(default_factory=list, alias="targetRoleIntentFields", max_length=20)
+
+
+class ProfileIntakeSectionChange(ApiModel):
+    target: ProfileIntakeSectionChangeTarget
+    value: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProfileIntakeFollowUpQuestion(ApiModel):
+    question: str = Field(max_length=240)
+    reason: str = Field(max_length=240)
+    priority: int = Field(default=0, ge=0, le=100)
+
+
+class ProfileIntakeSectionOutput(ApiModel):
+    section: ProfileIntakeSection
+    status: ProfileIntakeSectionStatus
+    changes: list[ProfileIntakeSectionChange] = Field(default_factory=list, max_length=80)
+    no_change_reason: str | None = Field(default=None, alias="noChangeReason", max_length=300)
+    section_complete: bool = Field(default=False, alias="sectionComplete")
+    confidence: ProfileIntakeConfidence
+    user_update: str = Field(alias="userUpdate", max_length=300)
+    candidate_follow_up_questions: list[ProfileIntakeFollowUpQuestion] = Field(
+        default_factory=list,
+        alias="candidateFollowUpQuestions",
+        max_length=6,
+    )
+
+    @model_validator(mode="after")
+    def validate_section_change_contract(self) -> ProfileIntakeSectionOutput:
+        if self.status != "changes_proposed" and self.changes:
+            raise ValueError(f"{self.status} output cannot include changes.")
+        if self.status == "changes_proposed" and not self.changes:
+            raise ValueError("changes_proposed output must include at least one change.")
+
+        allowed_targets = {
+            "basics_and_targets": {"profileBasics", "targetRoleIntent"},
+            "skills": {"skillClaims"},
+            "experience_projects": {"draftFacts", "experienceAndProjects", "evidenceLinks"},
+        }[self.section]
+        disallowed = [change.target for change in self.changes if change.target not in allowed_targets]
+        if disallowed:
+            raise ValueError(f"{self.section} output cannot update targets: {', '.join(disallowed)}")
+        return self
 
 
 class ProfileIntakeOutput(ApiModel):

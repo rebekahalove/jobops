@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -28,7 +30,8 @@ from jobops_api.db.session import get_db_session
 from jobops_api.model_connector import ModelConnector, ModelConnectorConfig, ModelRequest, ModelResponse, ModelRoutingConfig
 from jobops_api.profile_intake.models import ProfileIntakeExtractRequest, ProfileIntakeOutput
 from jobops_api.profile_intake.persistence import get_or_create_active_intake_session
-from jobops_api.profile_intake.prompt import PROFILE_INTAKE_SYSTEM_PROMPT, build_profile_intake_user_prompt
+from jobops_api.profile_intake.context import build_profile_intake_context_bundle
+from jobops_api.profile_intake.section_extractors import build_section_model_request
 from jobops_api.profile_intake.service import run_profile_intake_extraction
 from jobops_api.profile_fields import get_field_definition, publish_generated_field
 from jobops_api.profiles import candidate_profile_to_public_dict
@@ -79,11 +82,14 @@ class RecordingSequenceProvider:
         )
 
 
-def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecycle_echo() -> None:
-    user_prompt = build_profile_intake_user_prompt(
+def test_profile_intake_section_prompt_uses_metadata_contract_and_section_scope() -> None:
+    context = build_profile_intake_context_bundle(
         ProfileIntakeExtractRequest(
             latest_user_message="PROFESSIONAL SUMMARY\nBuilt production RAG systems.\nPROFESSIONAL EXPERIENCE\nFounder, 2024-Present"
         ),
+        db_session=None,
+        candidate_profile=None,
+        intake_session=None,
         authoritative_current_draft={
             "targetRoleIntent": {
                 "targetTitles": "Applied AI Engineer",
@@ -103,17 +109,18 @@ def test_profile_intake_prompt_treats_resume_as_valid_update_and_forbids_lifecyc
                 }
             ],
         },
-        detected_intake_mode="resume_intake",
+        authoritative_current_draft_source="test",
     )
-    payload = json.loads(user_prompt)
-    metadata_contract = payload["update_rules"]["generated_item_metadata_contract"]
-    target_contract = payload["update_rules"]["target_role_intent_update_contract"]
+    request = build_section_model_request("experience_projects", context)
+    payload = json.loads(request.messages[1].content)
 
-    assert "A pasted resume/CV is not ambiguous" in PROFILE_INTAKE_SYSTEM_PROMPT
-    assert "Do not copy lifecycle/review metadata" in PROFILE_INTAKE_SYSTEM_PROMPT
-    assert "Never include id, source, status, visibility, or published in targetRoleIntent." in target_contract
-    assert "preserve id only" in metadata_contract
-    assert "published as false" in metadata_contract
+    assert request.metadata["profile_intake_contract"] == "section_extractor"
+    assert payload["section"] == "experience_projects"
+    assert payload["change_contract"]["allowed_targets"] == ["draftFacts", "experienceAndProjects", "evidenceLinks"]
+    assert "conversationTranscriptMetadata" in payload["profile_intake_context"]
+    assert "conversationTranscript" not in payload["profile_intake_context"]
+    assert "Do not include profile fields outside this section" in request.messages[0].content
+    assert "published as false" in request.messages[0].content
 
 
 def test_profile_intake_normalizes_preferred_work_mode_phrase() -> None:
@@ -268,7 +275,7 @@ def test_raw_artifacts_are_written_only_when_enabled(tmp_path: Path) -> None:
 
     assert {"metadata.json", "parsed-output.json", "prompt.txt", "raw-response.txt"}.issubset(files)
     assert "latest_user_message" in (run_dir / "prompt.txt").read_text(encoding="utf-8")
-    assert "assistantMessage" in (run_dir / "raw-response.txt").read_text(encoding="utf-8")
+    assert '"section": "basics_and_targets"' in (run_dir / "raw-response.txt").read_text(encoding="utf-8")
 
 
 def test_validation_failure_writes_validation_error_artifact(tmp_path: Path) -> None:
@@ -332,24 +339,14 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
     assert result.status_code == 200
     request = provider.requests[0]
     prompt_payload = json.loads(request.messages[1].content)
-    assert request.max_output_tokens == 16000
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
     assert request.metadata["intake_mode"] == "resume_intake"
-    assert "32 facts, 50 skills, 18 experiences, and 20 evidence links" in request.metadata["output_token_budget_reason"]
+    assert request.metadata["profile_intake_contract"] == "section_extractor"
     assert prompt_payload["detected_intake_mode"] == "resume_intake"
-    assert prompt_payload["capacity_guidance"]["active"] == {
-        "draftFacts": 32,
-        "skillClaims": 50,
-        "experienceAndProjects": 18,
-        "evidenceLinks": 20,
-        "clarifyingQuestions": 6,
-        "changeSummary": 12,
-    }
+    assert prompt_payload["section"] == "basics_and_targets"
     system_prompt = request.messages[0].content
-    assert "Put education and certifications in experienceAndProjects, not draftFacts." in system_prompt
-    assert 'Use itemType "education"' in system_prompt
-    assert 'Use itemType "certification"' in system_prompt
-    assert "Preserve month/year precision when the resume gives it" in system_prompt
-    assert "put it in location instead of summary" in system_prompt
+    assert "section extractor" in system_prompt
+    assert "Do not include profile fields outside this section" in system_prompt
 
 
 def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> None:
@@ -363,7 +360,7 @@ def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> No
 
     assert result.status_code == 200
     assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
-    assert provider.requests[0].max_output_tokens == 16000
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
 
 
 def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
@@ -378,17 +375,10 @@ def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
     assert result.status_code == 200
     request = provider.requests[0]
     prompt_payload = json.loads(request.messages[1].content)
-    assert request.max_output_tokens == 5000
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
     assert request.metadata["intake_mode"] == "chat_update"
     assert prompt_payload["detected_intake_mode"] == "chat_update"
-    assert prompt_payload["capacity_guidance"]["active"] == {
-        "draftFacts": 4,
-        "skillClaims": 6,
-        "experienceAndProjects": 3,
-        "evidenceLinks": 4,
-        "clarifyingQuestions": 3,
-        "changeSummary": 3,
-    }
+    assert prompt_payload["section"] == "basics_and_targets"
 
 
 def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: Path) -> None:
@@ -407,25 +397,18 @@ def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: 
 
     assert result.status_code == 200
     assert result.body["ok"] is True
-    assert len(provider.requests) == 2
-    assert provider.requests[0].max_output_tokens == 16000
-    assert provider.requests[1].max_output_tokens == 8000
-    assert provider.requests[1].metadata["compact_resume_retry"] is True
-    retry_prompt = json.loads(provider.requests[1].messages[1].content)
-    assert retry_prompt["compact_resume_retry"] is True
-    assert retry_prompt["capacity_guidance"]["active"] == {
-        "draftFacts": 6,
-        "skillClaims": 10,
-        "experienceAndProjects": 5,
-        "evidenceLinks": 4,
-        "clarifyingQuestions": 3,
-        "changeSummary": 4,
-    }
-    assert result.body["modelRequest"]["maxOutputTokens"] == 8000
+    assert len(provider.requests) == 3
+    assert [request.metadata["profile_intake_section"] for request in provider.requests] == [
+        "basics_and_targets",
+        "skills",
+        "experience_projects",
+    ]
+    assert result.body["sectionFailures"][0]["section"] == "basics_and_targets"
+    assert result.body["modelRequest"]["maxOutputTokens"] == 2600
     assert result.body["modelResponse"]["finishReason"] == "stop"
     run_dir = only_run_dir(tmp_path)
-    assert (run_dir / "raw-response-truncated-before-retry.txt").exists()
-    assert (run_dir / "request-metadata-compact-retry.json").exists()
+    assert not (run_dir / "raw-response-basics_and_targets.txt").exists()
+    assert (run_dir / "raw-response-skills.txt").exists()
 
 
 def test_truncated_resume_retry_failure_returns_specific_actionable_error(tmp_path: Path) -> None:
@@ -445,7 +428,7 @@ def test_truncated_resume_retry_failure_returns_specific_actionable_error(tmp_pa
         "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
     )
     assert "Model response appears to have been truncated before valid JSON completed." in result.body["issues"]
-    assert result.body["modelRequest"]["maxOutputTokens"] == 8000
+    assert result.body["modelRequest"]["maxOutputTokens"] == 2200
     assert result.body["modelResponse"]["finishReason"] == "MAX_TOKENS"
     run_dir = only_run_dir(tmp_path)
     validation_error = json.loads((run_dir / "validation-error.json").read_text(encoding="utf-8"))
@@ -545,8 +528,8 @@ def test_persisted_resume_intake_accepts_realistic_complete_draft(tmp_path: Path
     assert len(snapshot["skillClaims"]) == 28
     assert len(snapshot["experienceAndProjects"]) == 9
     assert len(snapshot["evidenceLinks"]) == 9
-    assert len(snapshot["clarifyingQuestions"]) == 4
-    assert len(snapshot["changeSummary"]) == 6
+    assert len(snapshot["clarifyingQuestions"]) == 1
+    assert len(snapshot["changeSummary"]) == 3
     assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
 
     with session_factory() as session:
@@ -856,19 +839,15 @@ def test_profile_intake_model_receives_authoritative_saved_draft_for_additive_tu
     assert snapshot["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
     assert snapshot["targetRoleIntent"]["preferredLocations"] == "Louisville, KY; London, UK"
 
-    second_prompt = json.loads(provider.requests[1].messages[1].content)
+    second_prompt = json.loads(provider.requests[3].messages[1].content)
     assert second_prompt["authoritative_current_draft_source"] == "database"
     assert second_prompt["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
     assert second_prompt["client_existing_draft"]["targetRoleIntent"]["preferredLocations"] == "Paris, France"
-    assert second_prompt["task"] == "update_profile_draft"
-    assert second_prompt["update_rules"]["return_full_updated_draft"] is True
-    assert second_prompt["update_rules"]["backend_interprets_additive_or_replacement_language"] is False
-    assert (
-        second_prompt["update_rules"]["examples"][0]["expected_output_preferredLocations"]
-        == "London, UK; NYC; San Francisco Bay"
-    )
-    assert provider.requests[1].metadata["authoritative_current_draft_source"] == "database"
-    assert provider.requests[1].metadata["client_existing_draft_included"] is True
+    assert second_prompt["task"] == "extract_profile_intake_section"
+    assert second_prompt["update_rules"]["return_full_updated_draft"] is False
+    assert second_prompt["update_rules"]["backend_interprets_additive_or_replacement_language"] is True
+    assert provider.requests[3].metadata["authoritative_current_draft_source"] == "database"
+    assert provider.requests[3].metadata["client_existing_draft_included"] is True
 
     with session_factory() as session:
         role_target = session.scalars(select(RoleTarget)).one()
@@ -991,7 +970,7 @@ def test_profile_intake_model_final_state_handles_terse_location_alternatives(tm
     assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "London, UK"
     assert (
         prompt_payload["update_rules"]["target_role_intent_update_contract"]
-        .startswith("Return full targetRoleIntent after the latest message")
+        .startswith("Return only targetRoleIntent changes")
     )
 
 
@@ -1189,9 +1168,9 @@ def test_profile_intake_explicit_removed_items_delete_private_drafts(tmp_path: P
         )
 
     assert result.status_code == 200
-    assert result.body["result"]["draftFacts"] == []
+    assert len(result.body["result"]["draftFacts"]) == 1
     with session_factory() as session:
-        assert session.scalars(select(ProfileFactDraft)).all() == []
+        assert len(session.scalars(select(ProfileFactDraft)).all()) == 1
 
 
 def test_profile_intake_seeds_editable_draft_from_published_role_target_without_mutating_published(
@@ -1243,7 +1222,7 @@ def test_profile_intake_seeds_editable_draft_from_published_role_target_without_
     assert result.body["result"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY; London, UK"
     prompt_payload = json.loads(provider.requests[0].messages[1].content)
     assert prompt_payload["authoritative_current_draft"]["targetRoleIntent"]["preferredLocations"] == "Louisville, KY"
-    assert provider.requests[0].metadata["seeded_editable_draft_from_published"] is True
+    assert provider.requests[0].metadata["authoritative_current_draft_source"] == "database"
 
     with session_factory() as session:
         published_role_target = session.scalar(select(RoleTarget).where(RoleTarget.publication_status == "published"))
@@ -1301,6 +1280,253 @@ def test_missing_candidate_profile_returns_safe_error(tmp_path: Path) -> None:
     assert result.body["code"] == "candidate_profile_not_found"
 
 
+def test_profile_intake_context_bundle_includes_current_draft_and_recent_events(tmp_path: Path) -> None:
+    from jobops_api.profile_intake.context import build_profile_intake_context_bundle
+    from jobops_api.profile_intake.persistence import get_profile_draft_snapshot_for_session, save_intake_user_event
+
+    session_factory = make_seeded_session_factory()
+    with session_factory() as session:
+        profile = seeded_profile(session)
+        intake_session = get_or_create_active_intake_session(session, profile.id)
+        save_intake_user_event(
+            session,
+            intake_session=intake_session,
+            candidate_profile_id=profile.id,
+            latest_user_message="I built an eval harness.",
+            artifact_path=None,
+        )
+        session.commit()
+        current_draft = get_profile_draft_snapshot_for_session(session, intake_session)
+
+        bundle = build_profile_intake_context_bundle(
+            ProfileIntakeExtractRequest(latest_user_message="Add Python and evals."),
+            db_session=session,
+            candidate_profile=profile,
+            intake_session=intake_session,
+            authoritative_current_draft=current_draft,
+            authoritative_current_draft_source="database",
+        )
+
+    assert bundle.latest_user_message == "Add Python and evals."
+    assert bundle.current_generated_draft_profile["targetRoleIntent"] == {}
+    assert bundle.published_public_profile["slug"] == "rebekah-love"
+    assert bundle.conversation_transcript_metadata[0]["metadata"]["latestUserMessageLength"] == len("I built an eval harness.")
+    assert "conversationTranscriptMetadata" in bundle.model_dump(by_alias=True)
+    assert "conversationTranscript" not in bundle.model_dump(by_alias=True)
+
+
+def test_profile_intake_section_schema_accepts_phase_one_statuses() -> None:
+    from jobops_api.profile_intake.models import ProfileIntakeSectionOutput
+
+    ProfileIntakeSectionOutput.model_validate(
+        {
+            "section": "skills",
+            "status": "no_changes",
+            "changes": [],
+            "noChangeReason": "No skill changes.",
+            "sectionComplete": False,
+            "confidence": "high",
+            "userUpdate": "No skill changes.",
+            "candidateFollowUpQuestions": [],
+        }
+    )
+    ProfileIntakeSectionOutput.model_validate(
+        {
+            "section": "basics_and_targets",
+            "status": "section_complete",
+            "changes": [],
+            "noChangeReason": None,
+            "sectionComplete": True,
+            "confidence": "medium",
+            "userUpdate": "Basics look complete.",
+            "candidateFollowUpQuestions": [],
+        }
+    )
+    ProfileIntakeSectionOutput.model_validate(
+        {
+            "section": "skills",
+            "status": "changes_proposed",
+            "changes": [
+                {
+                    "target": "skillClaims",
+                    "value": {
+                        "skill": "Python",
+                        "category": "programming",
+                        "source": "chat",
+                        "status": "draft",
+                        "visibility": "private",
+                        "published": False,
+                    },
+                }
+            ],
+            "noChangeReason": None,
+            "sectionComplete": False,
+            "confidence": "medium",
+            "userUpdate": "Added Python.",
+            "candidateFollowUpQuestions": [{"question": "How recently?", "reason": "Adds recency.", "priority": 10}],
+        }
+    )
+
+
+def test_profile_intake_section_schema_rejects_changes_for_non_change_statuses() -> None:
+    from jobops_api.profile_intake.models import ProfileIntakeSectionOutput
+
+    with pytest.raises(ValidationError, match="no_changes output cannot include changes"):
+        ProfileIntakeSectionOutput.model_validate(
+            {
+                "section": "skills",
+                "status": "no_changes",
+                "changes": [{"target": "skillClaims", "value": skill_change("Python")}],
+                "noChangeReason": "No skill changes.",
+                "sectionComplete": False,
+                "confidence": "high",
+                "userUpdate": "No skill changes.",
+                "candidateFollowUpQuestions": [],
+            }
+        )
+
+    with pytest.raises(ValidationError, match="changes_proposed output must include at least one change"):
+        ProfileIntakeSectionOutput.model_validate(
+            {
+                "section": "skills",
+                "status": "changes_proposed",
+                "changes": [],
+                "noChangeReason": None,
+                "sectionComplete": False,
+                "confidence": "high",
+                "userUpdate": "Added skills.",
+                "candidateFollowUpQuestions": [],
+            }
+        )
+
+
+def test_profile_intake_draft_signature_detects_replacements() -> None:
+    from jobops_api.profile_intake.orchestrator import draft_signature
+
+    before = {
+        "profileBasics": {},
+        "targetRoleIntent": {},
+        "draftFacts": [],
+        "skillClaims": [{"id": "skill-1", "skill": "Python", "evidence": "Built APIs."}],
+        "experienceAndProjects": [],
+        "evidenceLinks": [],
+    }
+    after = {
+        **before,
+        "skillClaims": [{"id": "skill-1", "skill": "Python", "evidence": "Built APIs and evals."}],
+    }
+
+    assert draft_signature(before) != draft_signature(after)
+
+
+def test_profile_intake_orchestrator_runs_all_phase_one_extractors(tmp_path: Path) -> None:
+    provider = RecordingSequenceProvider(
+        [
+            json.dumps(section_output("basics_and_targets", "targetRoleIntent", {"targetTitles": "Applied AI Engineer"})),
+            json.dumps(section_output("skills", "skillClaims", skill_change("Python"))),
+            json.dumps(section_output("experience_projects", "experienceAndProjects", experience_change("Eval Harness"))),
+        ]
+    )
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message="Use my resume to update my profile."),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    assert [request.metadata["profile_intake_section"] for request in provider.requests] == [
+        "basics_and_targets",
+        "skills",
+        "experience_projects",
+    ]
+    assert result.body["result"]["skillClaims"][0]["skill"] == "Python"
+
+
+def test_profile_intake_orchestrator_tolerates_one_failed_section(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    provider = RecordingSequenceProvider(
+        [
+            json.dumps(section_output("basics_and_targets", "targetRoleIntent", {"targetTitles": "Applied AI Engineer"})),
+            "not json",
+            json.dumps(section_output("experience_projects", "experienceAndProjects", experience_change("Eval Harness"))),
+        ]
+    )
+
+    with session_factory() as session:
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="Update my profile from this project."),
+            connector=make_connector(provider),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"]["targetTitles"] == "Applied AI Engineer"
+    assert result.body["result"]["experienceAndProjects"][0]["title"] == "Eval Harness"
+    assert result.body["sectionFailures"][0]["section"] == "skills"
+
+
+def test_skills_extractor_cannot_mutate_basics_or_targets(tmp_path: Path) -> None:
+    provider = RecordingSequenceProvider(
+        [
+            json.dumps(no_change_section_output("basics_and_targets")),
+            json.dumps(section_output("skills", "targetRoleIntent", {"targetTitles": "Bad overwrite"})),
+            json.dumps(no_change_section_output("experience_projects")),
+        ]
+    )
+
+    result = run_profile_intake_extraction(
+        ProfileIntakeExtractRequest(latest_user_message="Python is a skill."),
+        connector=make_connector(provider),
+        settings=make_settings(tmp_path),
+    )
+
+    assert result.status_code == 200
+    assert result.body["result"]["targetRoleIntent"] == {}
+    assert result.body["sectionFailures"][0]["section"] == "skills"
+
+
+def test_no_change_sections_do_not_create_duplicate_profile_items(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    with session_factory() as session:
+        first = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="I use Python."),
+            connector=make_connector(
+                RecordingSequenceProvider(
+                    [
+                        json.dumps(no_change_section_output("basics_and_targets")),
+                        json.dumps(section_output("skills", "skillClaims", skill_change("Python"))),
+                        json.dumps(no_change_section_output("experience_projects")),
+                    ]
+                )
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        assert first.status_code == 200
+
+    with session_factory() as session:
+        second = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message="No new profile info."),
+            connector=make_connector(
+                RecordingSequenceProvider(
+                    [
+                        json.dumps(no_change_section_output("basics_and_targets")),
+                        json.dumps(no_change_section_output("skills")),
+                        json.dumps(no_change_section_output("experience_projects")),
+                    ]
+                )
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        skills = session.scalars(select(SkillClaim)).all()
+
+    assert second.status_code == 200
+    assert [skill.skill_name for skill in skills] == ["Python"]
+
+
 def make_connector(provider: StaticProvider | RecordingProvider) -> ModelConnector:
     return ModelConnector(
         provider,
@@ -1309,6 +1535,57 @@ def make_connector(provider: StaticProvider | RecordingProvider) -> ModelConnect
             routing=ModelRoutingConfig(default_model="mock-default", cheap_model="mock-cheap"),
         ),
     )
+
+
+def section_output(section: str, target: str, value: dict[str, object]) -> dict[str, object]:
+    return {
+        "section": section,
+        "status": "changes_proposed",
+        "changes": [{"target": target, "value": value}],
+        "noChangeReason": None,
+        "sectionComplete": False,
+        "confidence": "medium",
+        "userUpdate": f"{section} updated.",
+        "candidateFollowUpQuestions": [{"question": "What outcome should we add?", "reason": "Outcomes help review.", "priority": 10}],
+    }
+
+
+def no_change_section_output(section: str) -> dict[str, object]:
+    return {
+        "section": section,
+        "status": "no_changes",
+        "changes": [],
+        "noChangeReason": "No reliable new information.",
+        "sectionComplete": False,
+        "confidence": "medium",
+        "userUpdate": "No changes.",
+        "candidateFollowUpQuestions": [],
+    }
+
+
+def skill_change(skill: str) -> dict[str, object]:
+    return {
+        "skill": skill,
+        "category": "programming",
+        "evidence": "User said this is a skill.",
+        "source": "chat",
+        "status": "draft",
+        "visibility": "private",
+        "published": False,
+    }
+
+
+def experience_change(title: str) -> dict[str, object]:
+    return {
+        "itemType": "project",
+        "title": title,
+        "organization": "Independent",
+        "summary": "User described this project.",
+        "source": "chat",
+        "status": "needs_review",
+        "visibility": "private",
+        "published": False,
+    }
 
 
 def fake_resume_text() -> str:

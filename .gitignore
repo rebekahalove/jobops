@@ -45,6 +45,7 @@ jspm_packages/
 __pycache__/
 .pytest_cache/
 .pytest-tmp/
+.pytest-orchestrator-temp/
 .pytest-system-temp/
 .ruff_cache/
 .mypy_cache/

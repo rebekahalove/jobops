@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from ..model_connector import ModelRequest, ModelResponse
 from ..model_artifacts import ArtifactRun, create_artifact_run
 from ..settings import Settings
-from .prompt import PROFILE_INTAKE_PROMPT_VERSION, PROFILE_INTAKE_SCHEMA_NAME, PROFILE_INTAKE_SCHEMA_VERSION
+from .section_extractors import (
+    SECTION_EXTRACTOR_PROMPT_VERSION,
+    SECTION_EXTRACTOR_SCHEMA_NAME,
+    SECTION_EXTRACTOR_SCHEMA_VERSION,
+)
 
 
 @dataclass(frozen=True)
@@ -79,12 +83,12 @@ def build_run_metadata(
         "input": input_metrics.to_json(),
         "latencyMs": latency_ms,
         "model": response.model if response else request.model,
-        "promptVersion": PROFILE_INTAKE_PROMPT_VERSION,
+        "promptVersion": SECTION_EXTRACTOR_PROMPT_VERSION,
         "provider": response.provider if response else None,
         "responseFinishReason": response.finish_reason if response else None,
         "runId": run_id,
-        "schemaName": PROFILE_INTAKE_SCHEMA_NAME,
-        "schemaVersion": PROFILE_INTAKE_SCHEMA_VERSION,
+        "schemaName": SECTION_EXTRACTOR_SCHEMA_NAME,
+        "schemaVersion": SECTION_EXTRACTOR_SCHEMA_VERSION,
         "status": status,
         "task": request.task,
         "validationIssueCount": validation_issue_count,
