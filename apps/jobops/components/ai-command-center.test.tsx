@@ -149,7 +149,12 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("Status update: sending this command to the JobOps router.");
-    expect(source).toContain('fetch(`${apiBasePath}/command-center/stream`');
+    expect(source).toContain('const requestUrl = `${apiBasePath}/command-center/stream`;');
+    expect(source).toContain("fetch(requestUrl");
+    expect(source).toContain("Command-center stream returned a non-NDJSON response.");
+    expect(source).toContain("Command-center fallback returned a non-JSON response.");
+    expect(source).toContain("bodyPreview: previewDiagnosticBody(body)");
+    expect(source).toContain("responseUrl: response.url || null");
     expect(source).toContain("onStatus(event.statusUpdate.message)");
     expect(source).toContain("no router decision was received");
     expect(source).toContain("formatTranscriptMessage(submittedCommand)");
@@ -229,7 +234,8 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain('apiBasePath = "/api"');
-    expect(source).toContain('fetch(`${apiBasePath}/command-center/stream`');
+    expect(source).toContain('const requestUrl = `${apiBasePath}/command-center/stream`;');
+    expect(source).toContain("fetch(requestUrl");
     expect(source).not.toContain("/v1/command");
     expect(source).not.toContain("GEMINI_API_KEY");
     expect(source).not.toContain("@jobops/model-connector");

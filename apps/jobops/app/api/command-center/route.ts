@@ -4,6 +4,8 @@ import { getJobOpsApiServerConfig } from "../../../lib/server-env";
 
 export const runtime = "nodejs";
 
+const NON_JSON_BODY_PREVIEW_CHARS = 200;
+
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
   let body: unknown;
@@ -72,8 +74,12 @@ export async function POST(request: Request) {
     });
     if (!payload.ok) {
       console.error("Command-center API returned a non-JSON response.", {
+        bodyPreview: payload.bodyPreview,
         contentType: payload.contentType || "unknown",
         requestId,
+        requestPath: new URL(request.url).pathname,
+        requestUrl: apiUrl,
+        responseUrl: payload.responseUrl,
         status: apiResponse.status
       });
       return NextResponse.json(
@@ -129,21 +135,37 @@ async function readJsonPayload(response: Response):
       }
     | {
         ok: false;
+        bodyPreview: string;
         contentType: string | null;
+        responseUrl: string | null;
       }
   > {
   const contentType = response.headers.get("content-type");
   const text = await response.text();
   if (!contentType?.toLowerCase().includes("application/json")) {
-    return { ok: false, contentType };
+    return {
+      ok: false,
+      bodyPreview: previewBody(text),
+      contentType,
+      responseUrl: response.url || null
+    };
   }
 
   try {
     const value = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     return { ok: true, value };
   } catch {
-    return { ok: false, contentType };
+    return {
+      ok: false,
+      bodyPreview: previewBody(text),
+      contentType,
+      responseUrl: response.url || null
+    };
   }
+}
+
+function previewBody(text: string) {
+  return text.replace(/\s+/g, " ").trim().slice(0, NON_JSON_BODY_PREVIEW_CHARS);
 }
 
 function readErrorMessage(payload: Record<string, unknown>) {

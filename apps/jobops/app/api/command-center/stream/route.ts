@@ -4,6 +4,8 @@ import { getJobOpsApiServerConfig } from "../../../../lib/server-env";
 
 export const runtime = "nodejs";
 
+const UNEXPECTED_STREAM_BODY_PREVIEW_CHARS = 200;
+
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
   let body: unknown;
@@ -79,6 +81,9 @@ export async function POST(request: Request) {
       console.error("Command-center stream API returned no response body.", {
         contentType: apiResponse.headers.get("content-type") || null,
         requestId,
+        requestPath: new URL(request.url).pathname,
+        requestUrl: apiUrl,
+        responseUrl: apiResponse.url || null,
         status: apiResponse.status
       });
       return NextResponse.json(
@@ -90,10 +95,32 @@ export async function POST(request: Request) {
       );
     }
 
+    const responseContentType = apiResponse.headers.get("content-type") ?? "";
+    if (!responseContentType.toLowerCase().includes("application/x-ndjson")) {
+      const body = await apiResponse.text();
+      console.error("Command-center stream API returned an unexpected response.", {
+        bodyPreview: previewBody(body),
+        contentType: responseContentType || null,
+        requestId,
+        requestPath: new URL(request.url).pathname,
+        requestUrl: apiUrl,
+        responseUrl: apiResponse.url || null,
+        status: apiResponse.status,
+        upstreamPath: "/v1/command-center/commands/stream"
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Command-center stream returned an unexpected response. Please try again."
+        },
+        { status: 502 }
+      );
+    }
+
     return new Response(apiResponse.body, {
       headers: {
         "Cache-Control": "no-cache",
-        "Content-Type": apiResponse.headers.get("content-type") ?? "application/x-ndjson"
+        "Content-Type": responseContentType
       },
       status: apiResponse.status
     });
@@ -117,4 +144,8 @@ export async function POST(request: Request) {
 function forwardCookieHeader(request: Request): Record<string, string> {
   const cookie = request.headers.get("cookie");
   return cookie ? { Cookie: cookie } : {};
+}
+
+function previewBody(text: string) {
+  return text.replace(/\s+/g, " ").trim().slice(0, UNEXPECTED_STREAM_BODY_PREVIEW_CHARS);
 }

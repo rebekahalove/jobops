@@ -31,6 +31,7 @@ const starterPrompts = [
 const TRANSCRIPT_PREVIEW_MAX_CHARS = 520;
 const ACTION_SUMMARY_MAX_CHARS = 360;
 const SCROLL_BOTTOM_THRESHOLD_PX = 48;
+const COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS = 200;
 
 const initialMessages: CommandMessage[] = [
   {
@@ -164,7 +165,8 @@ export function AiCommandCenter({
       applyCommandCenterResult(result);
     } catch (error) {
       try {
-        const response = await fetch(`${apiBasePath}/command-center`, {
+        const fallbackRequestUrl = `${apiBasePath}/command-center`;
+        const response = await fetch(fallbackRequestUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -174,7 +176,7 @@ export function AiCommandCenter({
             activeWorkspace
           })
         });
-        const payload = await readCommandCenterProxyResponse(response);
+        const payload = await readCommandCenterProxyResponse(response, fallbackRequestUrl);
 
         if (!response.ok || !payload.ok) {
           throw new Error(payload.ok ? "Command-center request failed." : payload.error);
@@ -377,7 +379,8 @@ async function runCommandCenterStream({
   command: string;
   onStatus: (message: string) => void;
 }): Promise<CommandCenterApiResponse> {
-  const response = await fetch(`${apiBasePath}/command-center/stream`, {
+  const requestUrl = `${apiBasePath}/command-center/stream`;
+  const response = await fetch(requestUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -389,7 +392,20 @@ async function runCommandCenterStream({
   });
 
   if (!response.ok) {
-    throw new Error(await readCommandCenterStreamError(response));
+    throw new Error(await readCommandCenterStreamError(response, requestUrl));
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/x-ndjson")) {
+    const body = await response.text();
+    logUnexpectedCommandCenterResponse({
+      body,
+      contentType,
+      message: "Command-center stream returned a non-NDJSON response.",
+      requestUrl,
+      response
+    });
+    throw new Error("Command-center stream returned an unexpected response. Please refresh and sign in again.");
   }
   if (!response.body) {
     throw new Error("Command-center stream did not return a response body.");
@@ -450,7 +466,7 @@ function parseCommandCenterStreamEvent(line: string): CommandCenterStreamEvent |
   return null;
 }
 
-async function readCommandCenterStreamError(response: Response) {
+async function readCommandCenterStreamError(response: Response, requestUrl: string) {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.toLowerCase().includes("application/json")) {
     try {
@@ -460,16 +476,58 @@ async function readCommandCenterStreamError(response: Response) {
       return "Command-center stream returned an invalid error response.";
     }
   }
-  return "Command-center stream returned a sign-in or error page instead of updates.";
+  const body = await response.text();
+  logUnexpectedCommandCenterResponse({
+    body,
+    contentType,
+    message: "Command-center stream returned a non-JSON error response.",
+    requestUrl,
+    response
+  });
+  return "Command-center stream returned an unexpected response. Please refresh and sign in again.";
 }
 
-async function readCommandCenterProxyResponse(response: Response): Promise<CommandCenterProxyResponse> {
+async function readCommandCenterProxyResponse(response: Response, requestUrl: string): Promise<CommandCenterProxyResponse> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
+    const body = await response.text();
+    logUnexpectedCommandCenterResponse({
+      body,
+      contentType,
+      message: "Command-center fallback returned a non-JSON response.",
+      requestUrl,
+      response
+    });
     throw new Error("Command-center returned a sign-in or error page instead of JSON. Please refresh and sign in again.");
   }
 
   return (await response.json()) as CommandCenterProxyResponse;
+}
+
+function logUnexpectedCommandCenterResponse({
+  body,
+  contentType,
+  message,
+  requestUrl,
+  response
+}: {
+  body: string;
+  contentType: string;
+  message: string;
+  requestUrl: string;
+  response: Response;
+}) {
+  console.error(message, {
+    bodyPreview: previewDiagnosticBody(body),
+    contentType: contentType || null,
+    requestUrl,
+    responseUrl: response.url || null,
+    status: response.status
+  });
+}
+
+function previewDiagnosticBody(body: string) {
+  return body.replace(/\s+/g, " ").trim().slice(0, COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS);
 }
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {

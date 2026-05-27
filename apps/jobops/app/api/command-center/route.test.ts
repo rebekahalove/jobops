@@ -191,7 +191,11 @@ describe("command-center API proxy", () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "Command-center API returned a non-JSON response.",
       expect.objectContaining({
+        bodyPreview: "<html><head><title>Service unavailable</title></head></html>",
         contentType: "text/html; charset=utf-8",
+        requestPath: "/api/command-center",
+        requestUrl: "http://fastapi.test/v1/command-center/commands",
+        responseUrl: null,
         status: 502
       })
     );
@@ -237,5 +241,49 @@ describe("command-center API proxy", () => {
       })
     );
     expect(await response.text()).toContain('"type":"status"');
+  });
+
+  it("returns a safe JSON error when the command-center stream upstream responds with HTML", async () => {
+    const { POST } = await import("./stream/route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("<html><body>Sign in required</body></html>", {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        status: 200
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await POST(
+      new Request("http://next.test/jobops/api/command-center/stream", {
+        body: JSON.stringify({
+          command: "I pasted my resume.",
+          activeWorkspace: "profile"
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          cookie: "jobops_session=test"
+        },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Command-center stream returned an unexpected response. Please try again."
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Command-center stream API returned an unexpected response.",
+      expect.objectContaining({
+        bodyPreview: "<html><body>Sign in required</body></html>",
+        contentType: "text/html; charset=utf-8",
+        requestPath: "/jobops/api/command-center/stream",
+        requestUrl: "http://fastapi.test/v1/command-center/commands/stream",
+        responseUrl: null,
+        status: 200
+      })
+    );
   });
 });
