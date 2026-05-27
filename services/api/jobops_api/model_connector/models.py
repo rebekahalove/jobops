@@ -32,6 +32,7 @@ class ModelRequest:
     temperature: float = 0
     max_output_tokens: int = 4000
     response_mime_type: str | None = None
+    thinking_budget: int | None = None
     search_grounding: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 

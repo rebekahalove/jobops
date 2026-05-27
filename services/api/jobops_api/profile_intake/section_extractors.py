@@ -21,9 +21,10 @@ SECTION_EXTRACTOR_SCHEMA_NAME = "jobops_profile_intake_section"
 SECTION_EXTRACTOR_SCHEMA_VERSION = "profile-intake-section-output-v1"
 SECTION_EXTRACTOR_MAX_OUTPUT_TOKENS = {
     "basics_and_targets": 2200,
-    "skills": 2600,
-    "experience_projects": 3600,
+    "skills": 5000,
+    "experience_projects": 7000,
 }
+SECTION_EXTRACTOR_THINKING_BUDGET = 0
 SECTION_EXTRACTOR_MAX_CHANGES = {
     "basics_and_targets": 6,
     "skills": 12,
@@ -156,6 +157,7 @@ def build_section_model_request(section: ProfileIntakeSection, context: ProfileI
         temperature=0,
         max_output_tokens=SECTION_EXTRACTOR_MAX_OUTPUT_TOKENS[section],
         response_mime_type="application/json",
+        thinking_budget=SECTION_EXTRACTOR_THINKING_BUDGET,
         metadata={
             "feature": "profile_intake",
             "intake_mode": intake_mode,
@@ -539,8 +541,24 @@ def normalize_section_change_values(parsed: Any) -> Any:
 
 def normalize_section_change_value(change: dict[str, Any]) -> dict[str, Any]:
     value = change.get("value")
-    if change.get("target") == "skillClaims" and isinstance(value, dict) and "skill" not in value and "skillName" in value:
-        return {**change, "value": {key: item for key, item in {**value, "skill": value["skillName"]}.items() if key != "skillName"}}
+    if change.get("target") == "skillClaims" and isinstance(value, dict) and "skill" not in value:
+        alias_value = value.get("skillName") or value.get("name")
+        if isinstance(alias_value, str):
+            return {
+                **change,
+                "value": {key: item for key, item in {**value, "skill": alias_value}.items() if key not in {"skillName", "name"}},
+            }
+    if change.get("target") == "experienceAndProjects" and isinstance(value, dict):
+        normalized = dict(value)
+        changed = False
+        if "itemType" not in normalized and isinstance(normalized.get("type"), str):
+            normalized["itemType"] = normalized.pop("type")
+            changed = True
+        if "summary" not in normalized and isinstance(normalized.get("description"), str):
+            normalized["summary"] = normalized.pop("description")
+            changed = True
+        if changed:
+            return {**change, "value": normalized}
     return change
 
 

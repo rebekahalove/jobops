@@ -348,7 +348,8 @@ def test_resume_like_input_uses_resume_capacity_and_token_budget(tmp_path: Path)
     assert result.status_code == 200
     request = provider.requests[0]
     prompt_payload = json.loads(request.messages[1].content)
-    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 5000, 7000]
+    assert [item.thinking_budget for item in provider.requests] == [0, 0, 0]
     assert request.metadata["intake_mode"] == "resume_intake"
     assert request.metadata["profile_intake_contract"] == "section_extractor"
     assert prompt_payload["detected_intake_mode"] == "resume_intake"
@@ -369,7 +370,8 @@ def test_resume_headings_and_en_dash_dates_use_resume_mode(tmp_path: Path) -> No
 
     assert result.status_code == 200
     assert provider.requests[0].metadata["intake_mode"] == "resume_intake"
-    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 5000, 7000]
+    assert [item.thinking_budget for item in provider.requests] == [0, 0, 0]
 
 
 def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
@@ -384,7 +386,8 @@ def test_short_chat_input_uses_compact_capacity(tmp_path: Path) -> None:
     assert result.status_code == 200
     request = provider.requests[0]
     prompt_payload = json.loads(request.messages[1].content)
-    assert [item.max_output_tokens for item in provider.requests] == [2200, 2600, 3600]
+    assert [item.max_output_tokens for item in provider.requests] == [2200, 5000, 7000]
+    assert [item.thinking_budget for item in provider.requests] == [0, 0, 0]
     assert request.metadata["intake_mode"] == "chat_update"
     assert prompt_payload["detected_intake_mode"] == "chat_update"
     assert prompt_payload["section"] == "basics_and_targets"
@@ -413,7 +416,8 @@ def test_truncated_resume_response_retries_with_compact_resume_budget(tmp_path: 
         "experience_projects",
     ]
     assert result.body["sectionFailures"][0]["section"] == "basics_and_targets"
-    assert result.body["modelRequest"]["maxOutputTokens"] == 2600
+    assert result.body["modelRequest"]["maxOutputTokens"] == 5000
+    assert result.body["modelRequest"]["thinkingBudget"] == 0
     assert result.body["modelResponse"]["finishReason"] == "stop"
     run_dir = only_run_dir(tmp_path)
     assert not (run_dir / "raw-response-basics_and_targets.txt").exists()
@@ -444,6 +448,7 @@ def test_truncated_section_failure_logs_response_head_and_tail(tmp_path: Path, c
     assert "line-29" in caplog.text
     assert "'finishReason': 'MAX_TOKENS'" in caplog.text
     assert "'maxOutputTokens': 2200" in caplog.text
+    assert "'thinkingBudget': 0" in caplog.text
     assert "'responseTextLength':" in caplog.text
 
 
@@ -1486,7 +1491,7 @@ def test_section_output_normalizes_provider_array_values_and_skill_name_alias() 
                     "target": "skillClaims",
                     "value": [
                         {
-                            "skillName": "RAG systems",
+                            "name": "RAG systems",
                             "category": "ai_systems",
                             "source": "resume",
                             "status": "draft",
@@ -1514,6 +1519,39 @@ def test_section_output_normalizes_provider_array_values_and_skill_name_alias() 
     )
 
     assert [change.value["skill"] for change in output.changes] == ["RAG systems", "LLM evaluation"]
+
+
+def test_provider_experience_aliases_are_normalized() -> None:
+    output = parse_section_output(
+        {
+            "section": "experience_projects",
+            "status": "changes_proposed",
+            "changes": [
+                {
+                    "target": "experienceAndProjects",
+                    "value": {
+                        "type": "experience",
+                        "title": "Founder & Applied AI Systems Engineer",
+                        "organization": "Shadow Network Intelligence",
+                        "description": "Built production AI reporting workflows.",
+                        "source": "resume",
+                        "status": "draft",
+                        "visibility": "private",
+                        "published": False,
+                    },
+                }
+            ],
+            "noChangeReason": None,
+            "sectionComplete": False,
+            "confidence": "high",
+            "userUpdate": "Added experience.",
+            "candidateFollowUpQuestions": [],
+        },
+        "experience_projects",
+    )
+
+    assert output.changes[0].value["itemType"] == "experience"
+    assert output.changes[0].value["summary"] == "Built production AI reporting workflows."
 
 
 def test_experience_section_array_value_is_split_into_individual_changes(tmp_path: Path) -> None:

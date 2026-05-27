@@ -162,10 +162,19 @@ def test_gemini_unexpected_response_shape_is_wrapped_safely(monkeypatch) -> None
 
 
 def test_gemini_payload_enables_google_search_for_grounded_requests() -> None:
-    payload = build_gemini_payload(make_request(task="company_discovery", model="gemini-test", search_grounding=True))
+    payload = build_gemini_payload(
+        make_request(task="company_discovery", model="gemini-test", search_grounding=True, thinking_budget=0)
+    )
 
     assert payload["tools"] == [{"google_search": {}}]
     assert "responseMimeType" not in payload["generationConfig"]
+    assert "thinkingConfig" not in payload["generationConfig"]
+
+
+def test_gemini_payload_sets_thinking_budget_for_json_requests() -> None:
+    payload = build_gemini_payload(make_request(task="profile_draft_update", model="gemini-test", thinking_budget=0))
+
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
 
 
 def test_gemini_response_includes_grounding_metadata(monkeypatch) -> None:
@@ -208,7 +217,13 @@ class FakeHttpResponse:
         return self.body.encode("utf-8")
 
 
-def make_request(*, task, model: str | None = None, search_grounding: bool = False) -> ModelRequest:
+def make_request(
+    *,
+    task,
+    model: str | None = None,
+    search_grounding: bool = False,
+    thinking_budget: int | None = None,
+) -> ModelRequest:
     return ModelRequest(
         max_output_tokens=4000,
         messages=[
@@ -219,5 +234,6 @@ def make_request(*, task, model: str | None = None, search_grounding: bool = Fal
         response_mime_type="application/json",
         search_grounding=search_grounding,
         task=task,
+        thinking_budget=thinking_budget,
         temperature=0,
     )

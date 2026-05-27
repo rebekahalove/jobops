@@ -145,6 +145,8 @@ def build_gemini_payload(request: ModelRequest) -> dict[str, object]:
     }
     if request.response_mime_type and not request.search_grounding:
         generation_config["responseMimeType"] = request.response_mime_type
+    if request.thinking_budget is not None and not request.search_grounding:
+        generation_config["thinkingConfig"] = {"thinkingBudget": request.thinking_budget}
 
     payload: dict[str, object] = {
         "contents": contents,

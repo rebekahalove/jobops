@@ -115,9 +115,12 @@ class SkillClaim(GeneratedItem):
     @model_validator(mode="before")
     @classmethod
     def accept_skill_name_alias(cls, value: object) -> object:
-        if not isinstance(value, dict) or "skill" in value or "skillName" not in value:
+        if not isinstance(value, dict) or "skill" in value:
             return value
-        return {key: item for key, item in {**value, "skill": value["skillName"]}.items() if key != "skillName"}
+        alias_value = value.get("skillName") or value.get("name")
+        if not isinstance(alias_value, str):
+            return value
+        return {key: item for key, item in {**value, "skill": alias_value}.items() if key not in {"skillName", "name"}}
 
 
 class ExperienceAndProject(GeneratedItem):
@@ -130,6 +133,18 @@ class ExperienceAndProject(GeneratedItem):
     location: str | None = Field(default=None, max_length=160)
     summary: str = Field(max_length=320)
     bullets: list[str] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_provider_field_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "itemType" not in normalized and isinstance(normalized.get("type"), str):
+            normalized["itemType"] = normalized.pop("type")
+        if "summary" not in normalized and isinstance(normalized.get("description"), str):
+            normalized["summary"] = normalized.pop("description")
+        return normalized
 
 
 class EvidenceLink(GeneratedItem):

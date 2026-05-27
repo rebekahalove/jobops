@@ -399,6 +399,7 @@ def model_request_debug_fields(settings: Settings, request: ModelRequest) -> dic
             "temperature": request.temperature,
             "maxOutputTokens": request.max_output_tokens,
             "responseMimeType": request.response_mime_type,
+            "thinkingBudget": request.thinking_budget,
             "metadata": request.metadata,
             "messages": [
                 {
@@ -495,6 +496,7 @@ def model_requests_debug_fields(settings: Settings, result: ProfileIntakeOrchest
                 "temperature": item.temperature,
                 "maxOutputTokens": item.max_output_tokens,
                 "responseMimeType": item.response_mime_type,
+                "thinkingBudget": item.thinking_budget,
                 "metadata": item.metadata,
                 "messages": [{"role": message.role, "content": message.content} for message in item.messages],
             }

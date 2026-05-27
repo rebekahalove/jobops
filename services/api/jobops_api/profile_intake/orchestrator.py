@@ -311,6 +311,7 @@ def section_failure_diagnostics(
         "provider": response.provider if response is not None else None,
         "model": (response.model if response is not None else None) or (request.model if request is not None else None),
         "maxOutputTokens": request.max_output_tokens if request is not None else None,
+        "thinkingBudget": request.thinking_budget if request is not None else None,
         "temperature": request.temperature if request is not None else None,
         "responseMimeType": request.response_mime_type if request is not None else None,
         "responseTextLength": len(response_text),
