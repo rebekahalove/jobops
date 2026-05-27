@@ -72,7 +72,7 @@ def test_command_endpoint_executes_profile_intake_in_mock_mode(tmp_path: Path, m
     assert payload["result_payload"]["modelRequest"]["messages"][1]["role"] == "user"
     assert "I want to be an Applied AI Engineer." in payload["result_payload"]["modelRequest"]["messages"][1]["content"]
     assert payload["result_payload"]["modelResponse"]["provider"] == "mock"
-    assert "assistantMessage" in payload["result_payload"]["modelResponse"]["text"]
+    assert '"section": "basics_and_targets"' in payload["result_payload"]["modelResponse"]["text"]
 
 
 def test_command_endpoint_routes_pasted_resume_to_profile_intake(tmp_path: Path, monkeypatch) -> None:

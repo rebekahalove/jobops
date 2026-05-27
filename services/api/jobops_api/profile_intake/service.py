@@ -28,8 +28,10 @@ from .artifacts import (
     build_run_metadata,
     create_profile_intake_artifact_run,
 )
+from .context import build_profile_intake_context_bundle
 from .intake_mode import COMPACT_RESUME_RETRY_MAX_OUTPUT_TOKENS, detect_profile_intake_mode, max_output_tokens_for_mode
 from .models import ProfileIntakeExtractRequest, ProfileIntakeOutput, SAFE_VALIDATION_ERROR
+from .orchestrator import ProfileIntakeOrchestratorResult, run_profile_intake_orchestrator
 from .persistence import (
     ensure_editable_profile_intake_draft,
     get_or_create_active_intake_session,
@@ -47,6 +49,7 @@ from .prompt import (
     PROFILE_INTAKE_SYSTEM_PROMPT,
 )
 from .providers import build_mock_profile_intake_response
+from .section_extractors import build_mock_profile_intake_section_response
 
 
 logger = logging.getLogger(__name__)
@@ -137,26 +140,22 @@ def run_profile_intake_extraction(
         request.existing_draft,
         authoritative_current_draft,
     )
-    model_request = build_profile_intake_model_request(
+    context_bundle = build_profile_intake_context_bundle(
         request,
+        db_session=db_session,
+        candidate_profile=candidate_profile,
+        intake_session=intake_session,
         authoritative_current_draft=authoritative_current_draft,
         authoritative_current_draft_source=authoritative_current_draft_source,
-        seeded_editable_draft_from_published=seeded_editable_draft_from_published,
     )
-    routed_request = route_model_request(model_request, connector_config.routing)
-
-    artifact_run.write_json(
-        "request-metadata.json",
-        build_request_metadata(routed_request, input_metrics.to_json()),
-    )
-    artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(routed_request))
+    artifact_run.write_json("request-metadata.json", build_orchestrator_request_metadata(context_bundle, input_metrics.to_json()))
 
     try:
         active_connector = connector or create_model_connector(
             connector_config,
             mock_responses_by_task={
-                "profile_draft_update": build_mock_profile_intake_response,
-                "profile_extract": build_mock_profile_intake_response,
+                "profile_draft_update": build_mock_profile_intake_section_response,
+                "profile_extract": build_mock_profile_intake_section_response,
             },
         )
     except ModelConfigurationError as error:
@@ -173,7 +172,7 @@ def run_profile_intake_extraction(
             input_metrics=input_metrics,
             issues=[str(error)],
             latency_ms=0,
-            model_request=routed_request,
+            model_request=None,
             response=None,
             validation_issue_count=0,
         )
@@ -185,54 +184,49 @@ def run_profile_intake_extraction(
                     "mode, or configure JOBOPS_LLM_PROVIDER=gemini with server-side GEMINI_API_KEY."
                 ),
                 "code": error.code,
-                **model_request_debug_fields(active_settings, routed_request),
                 **debug_fields(artifact_run),
             },
             status_code=503,
         )
 
-    started_at = time.perf_counter()
-    response = None
-    try:
-        response = active_connector.generate(routed_request)
-        if response_indicates_truncation(response) and should_retry_with_compact_resume(model_request):
-            artifact_run.write_raw_text("raw-response-truncated-before-retry.txt", response.text)
-            compact_model_request = build_profile_intake_model_request(
-                request,
-                authoritative_current_draft=authoritative_current_draft,
-                authoritative_current_draft_source=authoritative_current_draft_source,
-                compact_resume_retry=True,
-                seeded_editable_draft_from_published=seeded_editable_draft_from_published,
-            )
-            routed_request = route_model_request(compact_model_request, connector_config.routing)
-            artifact_run.write_json(
-                "request-metadata-compact-retry.json",
-                build_request_metadata(routed_request, input_metrics.to_json()),
-            )
-            artifact_run.write_raw_text("prompt-compact-retry.txt", build_prompt_artifact(routed_request))
-            response = active_connector.generate(routed_request)
-        latency_ms = round((time.perf_counter() - started_at) * 1000)
-    except ModelProviderError as error:
-        latency_ms = round((time.perf_counter() - started_at) * 1000)
+    orchestration_result = run_profile_intake_orchestrator(
+        context_bundle,
+        connector=active_connector,
+        connector_config=connector_config,
+    )
+    for success in orchestration_result.successes:
+        artifact_run.write_raw_text(f"raw-response-{success.section}.txt", success.response.text)
+    first_success_request = first_request(orchestration_result)
+    first_success_response = first_response(orchestration_result)
+    if first_success_request is not None:
+        artifact_run.write_raw_text("prompt.txt", build_prompt_artifact(first_success_request))
+    if first_success_response is not None:
+        artifact_run.write_raw_text("raw-response.txt", first_success_response.text)
+
+    if orchestration_result.output is None:
+        issues = section_failure_issues(orchestration_result)
+        is_truncation = validation_issues_indicate_truncation(issues)
+        is_capacity_error = validation_issues_indicate_capacity_overflow(issues)
+        shared_failure_code = common_section_failure_code(orchestration_result)
         _persist_failure_event(
             db_session=db_session,
             candidate_profile=candidate_profile,
             intake_session=intake_session,
-            issues=[str(error)],
+            issues=issues,
             artifact_path=artifact_run.artifact_path,
             model_run_id=artifact_run.run_id,
         )
         _write_failure_metadata(
             artifact_run=artifact_run,
             input_metrics=input_metrics,
-            issues=[str(error)],
-            latency_ms=latency_ms,
-            model_request=routed_request,
-            response=None,
-            validation_issue_count=0,
+            issues=issues,
+            latency_ms=orchestration_result.latency_ms,
+            model_request=first_request(orchestration_result),
+            response=first_response(orchestration_result),
+            validation_issue_count=len(issues),
         )
         logger.warning(
-            "[profile_intake] provider call failed",
+            "[profile_intake] all section extractors failed",
             extra={
                 "artifact_path": artifact_run.artifact_path,
                 "feature": "profile_intake",
@@ -242,48 +236,33 @@ def run_profile_intake_extraction(
         return ProfileIntakeServiceResult(
             body={
                 "ok": False,
-                "error": "Profile intake model call failed. No draft data was applied.",
-                "code": error.code,
-                **model_request_debug_fields(active_settings, routed_request),
+                "error": (
+                    "Profile intake model response was truncated before valid JSON completed. No draft data was applied."
+                    if is_truncation
+                    else "Profile intake model returned more structured items than the current schema allows. No draft data was applied."
+                    if is_capacity_error
+                    else "Profile intake model call failed. No draft data was applied."
+                    if shared_failure_code is not None
+                    else SAFE_VALIDATION_ERROR
+                ),
+                "code": (
+                    "model_response_truncated"
+                    if is_truncation
+                    else "model_output_exceeded_schema_capacity"
+                    if is_capacity_error
+                    else shared_failure_code
+                    if shared_failure_code is not None
+                    else "model_output_invalid"
+                ),
+                "issues": issues,
+                **model_requests_debug_fields(active_settings, orchestration_result),
+                **model_responses_debug_fields(active_settings, orchestration_result),
                 **debug_fields(artifact_run),
             },
             status_code=502,
         )
 
-    artifact_run.write_raw_text("raw-response.txt", response.text)
-
-    try:
-        parsed = parse_profile_intake_json(response.text)
-        output = ProfileIntakeOutput.model_validate(parsed)
-    except ProfileIntakeValidationFailure as error:
-        issues = add_truncation_hint(error.issues, response.finish_reason)
-        return validation_failure_result(
-            artifact_run=artifact_run,
-            candidate_profile=candidate_profile,
-            db_session=db_session,
-            intake_session=intake_session,
-            input_metrics=input_metrics,
-            issues=issues,
-            latency_ms=latency_ms,
-            model_request=routed_request,
-            response=response,
-            settings=active_settings,
-        )
-    except ValidationError as error:
-        issues = add_truncation_hint(format_validation_issues(error), response.finish_reason)
-        return validation_failure_result(
-            artifact_run=artifact_run,
-            candidate_profile=candidate_profile,
-            db_session=db_session,
-            intake_session=intake_session,
-            input_metrics=input_metrics,
-            issues=issues,
-            latency_ms=latency_ms,
-            model_request=routed_request,
-            response=response,
-            settings=active_settings,
-        )
-
+    output = orchestration_result.output
     parsed_output_json = output.model_dump(by_alias=True, exclude_none=True)
     output_json = profile_intake_output_to_result(output)
     if artifact_run.enabled and artifact_run.run_id:
@@ -292,12 +271,12 @@ def run_profile_intake_extraction(
             "metadata.json",
             build_run_metadata(
                 input_metrics=input_metrics,
-                latency_ms=latency_ms,
-                request=routed_request,
-                response=response,
+                latency_ms=orchestration_result.latency_ms,
+                request=first_request(orchestration_result),
+                response=first_response(orchestration_result),
                 run_id=artifact_run.run_id,
-                status="success",
-                validation_issue_count=0,
+                status="partial_success" if orchestration_result.failures else "success",
+                validation_issue_count=len(section_failure_issues(orchestration_result)),
             ),
         )
 
@@ -325,8 +304,9 @@ def run_profile_intake_extraction(
         body={
             "ok": True,
             "result": output_json,
-            **model_request_debug_fields(active_settings, routed_request),
-            **model_response_debug_fields(active_settings, response),
+            **model_requests_debug_fields(active_settings, orchestration_result),
+            **model_responses_debug_fields(active_settings, orchestration_result),
+            **section_failure_debug_fields(active_settings, orchestration_result),
         },
         status_code=200,
     )
@@ -564,18 +544,31 @@ def _write_failure_metadata(
     if not artifact_run.enabled or not artifact_run.run_id:
         return
 
-    artifact_run.write_json(
-        "metadata.json",
-        build_run_metadata(
-            input_metrics=input_metrics,
-            latency_ms=latency_ms,
-            request=model_request,
-            response=response,
-            run_id=artifact_run.run_id,
-            status="failure",
-            validation_issue_count=validation_issue_count,
-        ),
-    )
+    if model_request is not None:
+        artifact_run.write_json(
+            "metadata.json",
+            build_run_metadata(
+                input_metrics=input_metrics,
+                latency_ms=latency_ms,
+                request=model_request,
+                response=response,
+                run_id=artifact_run.run_id,
+                status="failure",
+                validation_issue_count=validation_issue_count,
+            ),
+        )
+    else:
+        artifact_run.write_json(
+            "metadata.json",
+            {
+                "feature": "profile_intake",
+                "input": input_metrics.to_json(),
+                "latencyMs": latency_ms,
+                "runId": artifact_run.run_id,
+                "status": "failure",
+                "validationIssueCount": validation_issue_count,
+            },
+        )
     artifact_run.write_json(
         "validation-error.json",
         {
@@ -656,6 +649,120 @@ def model_response_debug_fields(settings: Settings, response) -> dict[str, Any]:
             "usage": response.usage.__dict__ if response.usage else None,
             "metadata": response.metadata,
         }
+    }
+
+
+def build_orchestrator_request_metadata(context_bundle, input_metrics: dict[str, int]) -> dict[str, Any]:
+    current_draft = context_bundle.current_generated_draft_profile
+    return {
+        "feature": "profile_intake",
+        "contract": "section_orchestrator",
+        "input": input_metrics,
+        "message_count": 2,
+        "latestUserMessageLength": len(context_bundle.latest_user_message),
+        "authoritativeCurrentDraftSource": context_bundle.authoritative_current_draft_source,
+        "currentDraftCounts": {
+            "draftFacts": len(current_draft.get("draftFacts") or []) if isinstance(current_draft, dict) else 0,
+            "skillClaims": len(current_draft.get("skillClaims") or []) if isinstance(current_draft, dict) else 0,
+            "experienceAndProjects": len(current_draft.get("experienceAndProjects") or []) if isinstance(current_draft, dict) else 0,
+            "evidenceLinks": len(current_draft.get("evidenceLinks") or []) if isinstance(current_draft, dict) else 0,
+        },
+        "sections": ["basics_and_targets", "skills", "experience_projects"],
+    }
+
+
+def first_request(result: ProfileIntakeOrchestratorResult) -> ModelRequest | None:
+    if result.successes:
+        return result.successes[0].request
+    for failure in result.failures:
+        if failure.request is not None:
+            return failure.request
+    return None
+
+
+def first_response(result: ProfileIntakeOrchestratorResult):
+    if result.successes:
+        return result.successes[0].response
+    for failure in result.failures:
+        if failure.response is not None:
+            return failure.response
+    return None
+
+
+def section_failure_issues(result: ProfileIntakeOrchestratorResult) -> list[str]:
+    by_section = [failure.issues for failure in result.failures if failure.issues]
+    if by_section and all(items == by_section[0] for items in by_section):
+        return by_section[0][:12]
+    issues: list[str] = []
+    for failure in result.failures:
+        issues.extend(f"{failure.section}: {issue}" for issue in failure.issues)
+    return issues[:12]
+
+
+def common_section_failure_code(result: ProfileIntakeOrchestratorResult) -> str | None:
+    codes = {failure.code for failure in result.failures if failure.code and failure.code != "model_output_invalid"}
+    return codes.pop() if len(codes) == 1 else None
+
+
+def model_requests_debug_fields(settings: Settings, result: ProfileIntakeOrchestratorResult) -> dict[str, Any]:
+    request = first_request(result)
+    if settings.app_env.lower() in {"prod", "production"} or request is None:
+        return {}
+    requests = [success.request for success in result.successes] + [
+        failure.request for failure in result.failures if failure.request is not None
+    ]
+    return {
+        **model_request_debug_fields(settings, request),
+        "modelRequests": [
+            {
+                "task": item.task,
+                "model": item.model,
+                "temperature": item.temperature,
+                "maxOutputTokens": item.max_output_tokens,
+                "responseMimeType": item.response_mime_type,
+                "metadata": item.metadata,
+                "messages": [{"role": message.role, "content": message.content} for message in item.messages],
+            }
+            for item in requests
+        ],
+    }
+
+
+def model_responses_debug_fields(settings: Settings, result: ProfileIntakeOrchestratorResult) -> dict[str, Any]:
+    response = first_response(result)
+    if settings.app_env.lower() in {"prod", "production"} or response is None:
+        return {}
+    responses = [success.response for success in result.successes] + [
+        failure.response for failure in result.failures if failure.response is not None
+    ]
+    return {
+        **model_response_debug_fields(settings, response),
+        "modelResponses": [
+            {
+                "provider": item.provider,
+                "model": item.model,
+                "finishReason": item.finish_reason,
+                "text": item.text,
+                "usage": item.usage.__dict__ if item.usage else None,
+                "metadata": item.metadata,
+            }
+            for item in responses
+        ],
+    }
+
+
+def section_failure_debug_fields(settings: Settings, result: ProfileIntakeOrchestratorResult) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"} or not result.failures:
+        return {}
+    return {
+        "sectionFailures": [
+            {
+                "section": failure.section,
+                "code": failure.code,
+                "issues": failure.issues,
+            }
+            for failure in result.failures
+        ]
     }
 
 
