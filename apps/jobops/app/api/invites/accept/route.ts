@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getDashboardBasePathFromRequestPath, redirectResponse } from "../../../../lib/dashboard-auth";
 import { getJobOpsApiServerConfig } from "../../../../lib/server-env";
 
 export const runtime = "nodejs";
@@ -41,8 +42,8 @@ export async function POST(request: Request) {
   }
 
   const requestUrl = new URL(request.url);
-  const basePath = requestUrl.pathname.startsWith("/jobops/") ? "/jobops" : "";
-  const response = NextResponse.redirect(new URL(basePath || "/", request.url), 303);
+  const basePath = getDashboardBasePathFromRequestPath(requestUrl.pathname);
+  const response = redirectResponse(basePath || "/", 303);
   const setCookie = apiResponse.headers.get("set-cookie");
   if (setCookie) {
     response.headers.set("Set-Cookie", setCookie);
