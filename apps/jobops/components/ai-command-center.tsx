@@ -23,6 +23,7 @@ const starterPrompts = [
   "I want to be an Applied AI Engineer.",
   "Update my profile with this project.",
   "Find companies in progressive politics hiring AI engineers.",
+  "Find me some jobs to apply to.",
   "Here's a job URL. Add it to my jobs list.",
   "Follow this company.",
   "Which jobs should I apply to today?",
@@ -258,6 +259,10 @@ export function AiCommandCenter({
       window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
     }
     if (nextActions.some((action) => action.type === "company_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    }
+    if (nextActions.some((action) => action.type === "job_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
   }

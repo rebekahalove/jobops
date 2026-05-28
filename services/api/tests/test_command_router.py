@@ -103,6 +103,7 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
     payload = json.loads(request.messages[1].content)
     router_context = payload["router_context"]
     assert any(action["actionType"] == "company_update" for action in router_context["available_actions"])
+    assert any(action["actionType"] == "job_discovery" for action in router_context["available_actions"])
     assert router_context["current_saved_companies"][0]["name"] == "CivicActions"
     assert router_context["current_saved_companies"][0]["id"]
     assert router_context["current_saved_companies"][0]["domains"] == ["civicactions.com"]
@@ -193,6 +194,11 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Update CivicActions job listings URL to https://civicactions.com/careers", "company_update"),
             ("Set the careers URL for Higher Ground Labs to https://highergroundlabs.com/jobs", "company_update"),
             ("Add this job: https://company.com/jobs/123", "add_job_from_url"),
+            ("Find me some jobs to apply to", "job_discovery"),
+            ("Find some jobs for me to apply to", "job_discovery"),
+            ("Find applied AI engineer jobs", "job_discovery"),
+            ("Find me applied AI jobs, but avoid defense contractors and gambling related companies.", "job_discovery"),
+            ("Show me roles I should consider", "job_discovery"),
             ("Find me a dozen progressive politics companies who hire AI engineers", "company_discovery"),
             (
                 "Are there any companies that I should be following, who hire for roles like this? I don't want to work for defense contractors.",
@@ -201,6 +207,7 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("I want to be an Applied AI Engineer", "profile_intake"),
             ("My preferred locations are remote US and DC", "profile_intake"),
             ("What should I emphasize for applied AI roles?", "profile_guidance"),
+            ("What roles should I target?", "profile_guidance"),
             ("Can you help me decide what skills I may be missing?", "profile_guidance"),
         ]
         for command, expected_action in cases:

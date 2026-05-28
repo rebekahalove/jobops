@@ -198,6 +198,7 @@ class CandidateProfile(Base, TimestampMixin):
     facts: Mapped[list[ProfileFact]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     target_companies: Mapped[list[TargetCompany]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    saved_jobs: Mapped[list[CandidateSavedJob]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -310,6 +311,59 @@ class TargetCompany(Base, TimestampMixin):
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="target_companies")
     job_roles: Mapped[list[JobRole]] = relationship(back_populates="target_company", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="target_company")
+
+
+class JobPosting(Base, TimestampMixin):
+    __tablename__ = "job_postings"
+    __table_args__ = (
+        UniqueConstraint("normalized_url", name="uq_job_postings_normalized_url"),
+        Index("ix_job_postings_company_title", "company_name", "title"),
+        Index("ix_job_postings_last_seen", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(240))
+    company_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    company_name: Mapped[str] = mapped_column(String(240))
+    job_url: Mapped[str] = mapped_column(Text)
+    canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_url: Mapped[str] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    remote_work_mode: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    employment_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    salary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovered_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    posting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    saved_links: Mapped[list[CandidateSavedJob]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+
+class CandidateSavedJob(Base, TimestampMixin):
+    __tablename__ = "candidate_saved_jobs"
+    __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "job_id", name="uq_candidate_saved_jobs_profile_job"),
+        Index("ix_candidate_saved_jobs_profile_added", "candidate_profile_id", "added_at"),
+        Index("ix_candidate_saved_jobs_profile_status_added", "candidate_profile_id", "status", "added_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(40), default="saved")
+    fit_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
+    job: Mapped[JobPosting] = relationship(back_populates="saved_links")
 
 
 class JobRole(Base, TimestampMixin):

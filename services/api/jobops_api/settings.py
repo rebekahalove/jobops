@@ -21,6 +21,7 @@ class Settings:
     company_discovery_search_grounding_enabled: bool
     database_url: str | None
     repo_root: Path
+    job_discovery_search_grounding_enabled: bool = True
     llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -58,6 +59,10 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         profile_intake_save_raw_text=parse_bool(merged.get("JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT")),
         company_discovery_search_grounding_enabled=parse_bool(
             merged.get("JOBOPS_COMPANY_DISCOVERY_SEARCH_GROUNDING"),
+            default=True,
+        ),
+        job_discovery_search_grounding_enabled=parse_bool(
+            merged.get("JOBOPS_JOB_DISCOVERY_SEARCH_GROUNDING"),
             default=True,
         ),
         database_url=merged.get("DATABASE_URL"),

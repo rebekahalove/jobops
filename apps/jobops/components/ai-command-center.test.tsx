@@ -173,6 +173,14 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"');
   });
 
+  it("notifies the jobs workspace after completed job-discovery commands", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('action.type === "job_discovery"');
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
+  });
+
   it("adds router status updates to the transcript", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
@@ -280,6 +288,10 @@ describe("AI command center", () => {
 
   it("classifies common command examples into planned action types", () => {
     expect(classifyCommand("Here's a job URL. Add it to my jobs list.").type).toBe("add_job_from_url");
+    expect(classifyCommand("Find me some jobs to apply to.").type).toBe("job_discovery");
+    expect(classifyCommand("Find some jobs for me to apply to.").type).toBe("job_discovery");
+    expect(classifyCommand("Find applied AI engineer jobs.").type).toBe("job_discovery");
+    expect(classifyCommand("Show me roles I should consider.").type).toBe("job_discovery");
     expect(classifyCommand("Follow this company.").type).toBe("company_discovery");
     expect(classifyCommand("Find civic tech companies to follow.").type).toBe("company_discovery");
     expect(classifyCommand("Are there any companies that I should be following, who hire for roles like this?").type).toBe("company_discovery");

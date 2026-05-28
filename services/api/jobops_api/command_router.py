@@ -43,6 +43,7 @@ RouterActionType = Literal[
     "suggest_profile_changes_without_applying",
     "company_discovery",
     "company_update",
+    "job_discovery",
     "add_job_from_url",
     "prioritize_jobs",
     "generate_materials",
@@ -251,6 +252,9 @@ Rules:
 - A URL does not automatically mean add_job_from_url.
 - Route company website, careers, job listings, source URL, or notes edits to company_update.
 - Route job-posting save/track/add requests to add_job_from_url.
+- Route broad requests to find, discover, show, or recommend concrete jobs/roles/postings to job_discovery.
+- Route messages like "find some jobs for me to apply to", "find me some jobs to apply to", "find applied AI jobs", "find remote AI platform roles", and "show me roles I should consider" to job_discovery.
+- Do not ask what kind of jobs the user wants when profile_context or target_summary is present; job_discovery can use saved targets, saved companies, and the latest message as search context.
 - Route company research/finding/follow-list requests to company_discovery.
 - Route requests asking whether, which, or what companies to follow, watch, track, research, or add to the watchlist to company_discovery, even when phrased as career advice.
 - Route resume/profile/target-role/preference updates to profile_intake.
@@ -379,6 +383,7 @@ def available_router_actions() -> list[dict[str, str]]:
         {"actionType": "suggest_profile_changes_without_applying", "targetWorkspace": "profile", "description": "Suggest possible profile edits without applying them."},
         {"actionType": "company_discovery", "targetWorkspace": "companies", "description": "Find or discover companies to follow based on target context."},
         {"actionType": "company_update", "targetWorkspace": "companies", "description": "Update an existing tracked company's website, careers, job listings, source URLs, or notes."},
+        {"actionType": "job_discovery", "targetWorkspace": "jobs", "description": "Find concrete job postings to save based on profile, target context, saved companies, and user constraints. Use for broad requests like find some jobs, find jobs to apply to, find remote AI roles, or show roles to consider."},
         {"actionType": "add_job_from_url", "targetWorkspace": "jobs", "description": "Save or track a specific job posting URL."},
         {"actionType": "prioritize_jobs", "targetWorkspace": "jobs", "description": "Rank or choose among saved jobs."},
         {"actionType": "generate_materials", "targetWorkspace": "materials", "description": "Generate resume variants, cover letters, or application materials."},
@@ -437,6 +442,8 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
         )
     if looks_like_company_discovery(normalized, context.get("active_workspace")):
         return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
+    if looks_like_job_discovery(normalized, context.get("active_workspace")):
+        return router_json("job_discovery", "high", "jobs", "User is asking to find concrete jobs to save.")
     if "follow-up" in normalized or "follow up" in normalized:
         return router_json("follow_up_review", "high", "follow-ups", "User is asking about follow-ups.")
     if "material" in normalized or "cover letter" in normalized or "resume variant" in normalized:
@@ -587,6 +594,37 @@ def infer_company_update_field(normalized: str) -> str | None:
 
 def looks_like_job_url_intake(normalized: str) -> bool:
     return any(signal in normalized for signal in ["add this job", "save this job", "track this role", "job posting", "job url", "add it to my jobs"])
+
+
+def looks_like_job_discovery(normalized: str, active_workspace: object) -> bool:
+    direct_signals = [
+        "find me some jobs",
+        "find me jobs",
+        "find some jobs",
+        "find jobs",
+        "discover jobs",
+        "job discovery",
+        "jobs to apply to",
+        "jobs that fit my profile",
+        "jobs that fit",
+        "roles i should consider",
+        "show me roles",
+        "show me jobs",
+        "find remote",
+        "find me applied ai",
+        "find applied ai",
+        "find ai platform",
+        "find jobs like this",
+    ]
+    if any(signal in normalized for signal in direct_signals):
+        return True
+    role_terms = ["role", "roles", "job", "jobs", "posting", "postings", "opening", "openings"]
+    find_terms = ["find", "discover", "search", "show me", "recommend"]
+    return (
+        active_workspace == "jobs"
+        and any(term in normalized for term in find_terms)
+        and any(term in normalized for term in role_terms)
+    )
 
 
 def looks_like_company_discovery(normalized: str, active_workspace: object) -> bool:
