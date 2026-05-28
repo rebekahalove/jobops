@@ -73,9 +73,19 @@ export async function POST(request: Request) {
       upstreamPath: "/v1/command-center/commands"
     });
     if (!payload.ok) {
+      const diagnostic = diagnoseUnexpectedUpstreamResponse({
+        apiUrl,
+        bodyPreview: payload.bodyPreview,
+        contentType: payload.contentType,
+        requestUrl: request.url,
+        responseUrl: payload.responseUrl,
+        status: apiResponse.status
+      });
       console.error("Command-center API returned a non-JSON response.", {
         bodyPreview: payload.bodyPreview,
         contentType: payload.contentType || "unknown",
+        diagnosticCode: diagnostic.code,
+        likelyCause: diagnostic.likelyCause,
         requestId,
         requestPath: new URL(request.url).pathname,
         requestUrl: apiUrl,
@@ -85,7 +95,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Command-center API returned an unexpected response. Please try again."
+          error: diagnostic.message,
+          diagnostic
         },
         { status: 502 }
       );
@@ -174,6 +185,71 @@ function readErrorMessage(payload: Record<string, unknown>) {
     : typeof payload.error === "string"
       ? payload.error
       : undefined;
+}
+
+function diagnoseUnexpectedUpstreamResponse({
+  apiUrl,
+  bodyPreview,
+  contentType,
+  requestUrl,
+  responseUrl,
+  status
+}: {
+  apiUrl: string;
+  bodyPreview: string;
+  contentType: string | null;
+  requestUrl: string;
+  responseUrl: string | null;
+  status: number;
+}) {
+  const lowerContentType = (contentType ?? "").toLowerCase();
+  const lowerPreview = bodyPreview.toLowerCase();
+  const apiHost = safeHost(apiUrl);
+  const requestHost = safeHost(requestUrl);
+  const responseHost = responseUrl ? safeHost(responseUrl) : null;
+
+  let code = "upstream_unexpected_content";
+  let likelyCause = "FastAPI returned a response that was not JSON.";
+  if (apiHost && requestHost && apiHost === requestHost) {
+    code = "jobops_api_base_url_points_to_next";
+    likelyCause = "JOBOPS_API_BASE_URL appears to point at the Next.js app instead of the FastAPI backend.";
+  } else if (lowerContentType.includes("text/html") && /sign in|login|log in|unauthorized/.test(lowerPreview)) {
+    code = "upstream_auth_html";
+    likelyCause = "The upstream returned an HTML sign-in or auth page, which usually means an expired session or auth middleware mismatch.";
+  } else if (status === 401 || status === 403) {
+    code = "upstream_auth_rejected";
+    likelyCause = "FastAPI rejected the forwarded session or internal API key.";
+  } else if (lowerContentType.includes("text/html")) {
+    code = "upstream_html_error";
+    likelyCause = "The upstream returned HTML, which can happen when JOBOPS_API_BASE_URL is wrong or a platform error page intercepted the request.";
+  }
+
+  return {
+    code,
+    contentType: contentType || null,
+    likelyCause,
+    message: `Command-center API returned ${contentTypeDescription(contentType)} instead of JSON. ${likelyCause}`,
+    responseHost,
+    status
+  };
+}
+
+function safeHost(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+function contentTypeDescription(contentType: string | null) {
+  if (!contentType) {
+    return "a response with no content type";
+  }
+  if (contentType.toLowerCase().includes("text/html")) {
+    return "HTML";
+  }
+  return contentType;
 }
 
 function serverConfigErrorResponse(error: unknown) {

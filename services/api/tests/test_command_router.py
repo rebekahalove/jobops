@@ -194,6 +194,10 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Set the careers URL for Higher Ground Labs to https://highergroundlabs.com/jobs", "company_update"),
             ("Add this job: https://company.com/jobs/123", "add_job_from_url"),
             ("Find me a dozen progressive politics companies who hire AI engineers", "company_discovery"),
+            (
+                "Are there any companies that I should be following, who hire for roles like this? I don't want to work for defense contractors.",
+                "company_discovery",
+            ),
             ("I want to be an Applied AI Engineer", "profile_intake"),
             ("My preferred locations are remote US and DC", "profile_intake"),
             ("What should I emphasize for applied AI roles?", "profile_guidance"),

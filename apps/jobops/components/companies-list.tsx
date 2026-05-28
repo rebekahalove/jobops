@@ -62,8 +62,10 @@ export function CompaniesList({
     }
 
     loadCompanies();
+    window.addEventListener("jobops:companies-updated", loadCompanies);
     return () => {
       active = false;
+      window.removeEventListener("jobops:companies-updated", loadCompanies);
     };
   }, [apiBasePath]);
 

@@ -33,6 +33,7 @@ const TRANSCRIPT_PREVIEW_MAX_CHARS = 520;
 const ACTION_SUMMARY_MAX_CHARS = 360;
 const SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS = 200;
+const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 const initialMessages: CommandMessage[] = [
   {
@@ -168,6 +169,20 @@ export function AiCommandCenter({
 
       applyCommandCenterResult(result);
     } catch (error) {
+      if (isStructuredCommandCenterError(error)) {
+        const message = error.message || "Command-center API returned a structured error.";
+        setMessages((current) => [
+          ...current,
+          {
+            id: `agent-error-${Date.now()}-${current.length}`,
+            role: "agent",
+            text: `Status update: ${message}`
+          }
+        ]);
+        setIsSubmitting(false);
+        return;
+      }
+
       try {
         const fallbackRequestUrl = `${apiBasePath}/command-center`;
         const response = await fetch(fallbackRequestUrl, {
@@ -189,9 +204,21 @@ export function AiCommandCenter({
 
         applyCommandCenterResult(payload.result);
       } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : "Command-center API is unavailable.";
+        if (isStructuredCommandCenterError(fallbackError)) {
+          setMessages((current) => [
+            ...current,
+            {
+              id: `agent-error-${Date.now()}-${current.length}`,
+              role: "agent",
+              text: `Status update: ${message}`
+            }
+          ]);
+          return;
+        }
+
         const fallbackAction = createPlannedAction(submittedCommand, `action-${Date.now()}`);
         const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
-        const message = fallbackError instanceof Error ? fallbackError.message : "Command-center API is unavailable.";
 
         setActions((current) => [fallbackAction, ...current]);
         setMessages((current) => [
@@ -229,6 +256,9 @@ export function AiCommandCenter({
 
     if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
       window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
+    }
+    if (nextActions.some((action) => action.type === "company_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
   }
 
@@ -280,12 +310,19 @@ export function AiCommandCenter({
       <div className="command-center-grid">
         <div className="command-conversation-frame">
           <div className="command-conversation" aria-label={transcriptLabel} onScroll={handleConversationScroll} ref={conversationRef}>
-            {messages.map((message) => (
-              <article className={`command-message ${message.role}`} key={message.id}>
-                {message.role === "user" ? <strong>You</strong> : null}
-                <p>{message.text}</p>
-              </article>
-            ))}
+            {messages.map((message) => {
+              const isStatus = isStatusMessage(message);
+              return (
+                <article className={`command-message ${message.role}${isStatus ? " status" : ""}`} key={message.id}>
+                  {message.role === "user" ? <strong>You</strong> : null}
+                  {message.role === "agent" && !isStatus ? (
+                    <MarkdownMessage text={message.text} />
+                  ) : (
+                    <p>{message.text}</p>
+                  )}
+                </article>
+              );
+            })}
           </div>
           {hasNewMessagesBelow ? (
             <button className="command-scroll-latest" onClick={scrollConversationToBottom} type="button">
@@ -478,12 +515,16 @@ export function buildCommandCenterClientContext(messages: CommandMessage[], subm
 }
 
 function commandMessageToTranscriptMessage(message: CommandMessage) {
-  const isStatus = message.role === "agent" && message.text.startsWith("Status update:");
+  const isStatus = isStatusMessage(message);
   return {
     role: message.role === "user" ? "user" : "assistant",
     type: isStatus ? "status" : "message",
     text: message.rawText ?? message.text
   };
+}
+
+function isStatusMessage(message: CommandMessage) {
+  return message.role === "agent" && message.text.startsWith("Status update:");
 }
 
 function parseCommandCenterStreamEvent(line: string): CommandCenterStreamEvent | null {
@@ -504,8 +545,14 @@ async function readCommandCenterStreamError(response: Response, requestUrl: stri
   if (contentType.toLowerCase().includes("application/json")) {
     try {
       const payload = (await response.json()) as CommandCenterProxyResponse;
-      return payload.ok ? "Command-center stream request failed." : payload.error;
-    } catch {
+      if (payload.ok) {
+        return "Command-center stream request failed.";
+      }
+      throw new CommandCenterProxyError(payload.error);
+    } catch (error) {
+      if (isStructuredCommandCenterError(error)) {
+        throw error;
+      }
       return "Command-center stream returned an invalid error response.";
     }
   }
@@ -534,7 +581,11 @@ async function readCommandCenterProxyResponse(response: Response, requestUrl: st
     throw new Error("Command-center returned a sign-in or error page instead of JSON. Please refresh and sign in again.");
   }
 
-  return (await response.json()) as CommandCenterProxyResponse;
+  const payload = (await response.json()) as CommandCenterProxyResponse;
+  if (!payload.ok) {
+    throw new CommandCenterProxyError(payload.error);
+  }
+  return payload;
 }
 
 function logUnexpectedCommandCenterResponse({
@@ -561,6 +612,200 @@ function logUnexpectedCommandCenterResponse({
 
 function previewDiagnosticBody(body: string) {
   return body.replace(/\s+/g, " ").trim().slice(0, COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS);
+}
+
+class CommandCenterProxyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CommandCenterProxyError";
+  }
+}
+
+function isStructuredCommandCenterError(error: unknown): error is CommandCenterProxyError {
+  return error instanceof CommandCenterProxyError;
+}
+
+export function MarkdownMessage({ text }: { text: string }) {
+  return <div className="command-message-markdown">{parseMarkdownBlocks(text).map(renderMarkdownBlock)}</div>;
+}
+
+type MarkdownBlock =
+  | { type: "code"; content: string; language?: string; key: string }
+  | { type: "heading"; depth: number; content: string; key: string }
+  | { type: "list"; ordered: boolean; items: string[]; key: string }
+  | { type: "paragraph"; content: string; key: string };
+
+function parseMarkdownBlocks(source: string): MarkdownBlock[] {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let paragraph: string[] = [];
+  let listItems: string[] = [];
+  let listOrdered = false;
+  let codeLines: string[] = [];
+  let codeLanguage: string | undefined;
+  let inCode = false;
+
+  function flushParagraph() {
+    if (paragraph.length > 0) {
+      blocks.push({ type: "paragraph", content: paragraph.join(" "), key: `p-${blocks.length}` });
+      paragraph = [];
+    }
+  }
+
+  function flushList() {
+    if (listItems.length > 0) {
+      blocks.push({ type: "list", ordered: listOrdered, items: listItems, key: `l-${blocks.length}` });
+      listItems = [];
+    }
+  }
+
+  for (const line of lines) {
+    const fence = line.match(/^```(\S*)\s*$/);
+    if (fence) {
+      if (inCode) {
+        blocks.push({ type: "code", content: codeLines.join("\n"), language: codeLanguage, key: `c-${blocks.length}` });
+        codeLines = [];
+        codeLanguage = undefined;
+        inCode = false;
+      } else {
+        flushParagraph();
+        flushList();
+        inCode = true;
+        codeLanguage = fence[1] || undefined;
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", depth: heading[1].length, content: heading[2].trim(), key: `h-${blocks.length}` });
+      continue;
+    }
+
+    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    const listMatch = unordered ?? ordered;
+    if (listMatch) {
+      flushParagraph();
+      const orderedLine = Boolean(ordered);
+      if (listItems.length > 0 && listOrdered !== orderedLine) {
+        flushList();
+      }
+      listOrdered = orderedLine;
+      listItems.push(listMatch[1].trim());
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  }
+
+  if (inCode) {
+    blocks.push({ type: "code", content: codeLines.join("\n"), language: codeLanguage, key: `c-${blocks.length}` });
+  }
+  flushParagraph();
+  flushList();
+
+  return blocks.length > 0 ? blocks : [{ type: "paragraph", content: "", key: "p-empty" }];
+}
+
+function renderMarkdownBlock(block: MarkdownBlock) {
+  if (block.type === "code") {
+    return (
+      <pre key={block.key}>
+        <code data-language={block.language}>{block.content}</code>
+      </pre>
+    );
+  }
+  if (block.type === "heading") {
+    const content = renderInlineMarkdown(block.content);
+    if (block.depth === 1) {
+      return <h2 key={block.key}>{content}</h2>;
+    }
+    if (block.depth === 2) {
+      return <h3 key={block.key}>{content}</h3>;
+    }
+    return <h4 key={block.key}>{content}</h4>;
+  }
+  if (block.type === "list") {
+    const Tag = block.ordered ? "ol" : "ul";
+    return (
+      <Tag key={block.key}>
+        {block.items.map((item, index) => (
+          <li key={`${block.key}-${index}`}>{renderInlineMarkdown(item)}</li>
+        ))}
+      </Tag>
+    );
+  }
+  return <p key={block.key}>{renderInlineMarkdown(block.content)}</p>;
+}
+
+function renderInlineMarkdown(source: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(source.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    const key = `inline-${match.index}-${nodes.length}`;
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2))}</strong>);
+    } else if (token.startsWith("*")) {
+      nodes.push(<em key={key}>{renderInlineMarkdown(token.slice(1, -1))}</em>);
+    } else {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = link ? safeMarkdownHref(link[2].trim()) : null;
+      nodes.push(
+        href ? (
+          <a href={href} key={key} rel="noopener noreferrer" target="_blank">
+            {renderInlineMarkdown(link?.[1] ?? "")}
+          </a>
+        ) : (
+          token
+        )
+      );
+    }
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < source.length) {
+    nodes.push(source.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function safeMarkdownHref(rawHref: string) {
+  try {
+    const parsed = new URL(rawHref, "https://jobops.local");
+    if (!SAFE_LINK_PROTOCOLS.has(parsed.protocol)) {
+      return null;
+    }
+    return rawHref;
+  } catch {
+    return null;
+  }
 }
 
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {

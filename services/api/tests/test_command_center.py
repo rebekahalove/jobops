@@ -29,8 +29,39 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("https://example.com/careers") == "unknown"
     assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
+    assert (
+        command_center_module.interpret_command(
+            "Are there any companies that I should be following, who hire for roles like this?"
+        )
+        == "company_discovery"
+    )
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
     assert command_center_module.interpret_command("What should I emphasize for AI platform roles?", active_workspace="profile") == "profile_guidance"
+
+
+def test_company_following_advice_executes_company_discovery(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command=(
+                    "Are there any companies that I should be following, who hire for roles like this? "
+                    "I don't want to work for defense contractors or gambling related companies."
+                ),
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+        saved = list(session.scalars(select(TargetCompany).order_by(TargetCompany.name.asc())))
+
+    assert response.actions[0].type == "company_discovery"
+    assert response.actions[0].status == "completed"
+    assert response.target_workspace == "companies"
+    assert response.status_updates[0].action_type == "company_discovery"
+    assert "Discover companies" in response.status_updates[0].message
+    assert len(saved) >= 1
 
 
 def test_profile_action_summary_counts_only_active_saved_draft_items() -> None:

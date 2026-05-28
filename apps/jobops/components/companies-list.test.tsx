@@ -1,4 +1,5 @@
 import React from "react";
+import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import CompaniesPage from "../app/companies/page";
@@ -58,5 +59,12 @@ describe("Companies list", () => {
     expect(html).toContain('href="https://civicactions.com/careers"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("refreshes when command-center company discovery completes", async () => {
+    const source = await readFile(new URL("./companies-list.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('window.addEventListener("jobops:companies-updated", loadCompanies)');
+    expect(source).toContain('window.removeEventListener("jobops:companies-updated", loadCompanies)');
   });
 });
