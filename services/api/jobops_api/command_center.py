@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .auth import AuthContext, require_auth_context
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
 from .company_update import CompanyUpdateRequest, run_company_update
+from .command_center_guidance import CommandCenterGuidanceRequest, run_command_center_guidance
 from .command_router import (
     CommandRouterOutput,
     CommandRouterRequest,
@@ -32,6 +33,11 @@ CommandActionType = Literal[
     "add_job_from_url",
     "company_discovery",
     "company_update",
+    "discussion_only",
+    "career_discovery",
+    "profile_guidance",
+    "clarifying_questions",
+    "suggest_profile_changes_without_applying",
     "follow_company",
     "prioritize_jobs",
     "generate_materials",
@@ -42,6 +48,13 @@ CommandActionType = Literal[
 ]
 
 ActionStatus = Literal["planned", "needs_confirmation", "completed", "failed"]
+NON_MUTATING_PROFILE_ACTIONS = {
+    "discussion_only",
+    "career_discovery",
+    "profile_guidance",
+    "clarifying_questions",
+    "suggest_profile_changes_without_applying",
+}
 
 
 router = APIRouter(prefix="/v1/command-center", tags=["command-center"], dependencies=[Depends(require_internal_api_key)])
@@ -401,6 +414,17 @@ def dispatch_command_center_action(
 ) -> CommandCenterCommandResponse:
     interpreted_action = normalize_dispatch_action(action_type)
 
+    if interpreted_action in NON_MUTATING_PROFILE_ACTIONS:
+        return execute_non_mutating_profile_guidance_command(
+            request,
+            action_type=interpreted_action,
+            router_decision=router_decision,
+            router_payload=router_payload,
+            candidate_profile=candidate_profile,
+            session=session,
+            settings=settings,
+        )
+
     if interpreted_action in {"follow_company", "company_discovery"}:
         if candidate_slug is None:
             return missing_candidate_slug_response("company_discovery", "companies", "Discover companies")
@@ -473,6 +497,7 @@ def dispatch_command_center_action(
             latest_user_message=request.command,
             existing_draft=current_draft,
             candidate_profile_slug=candidate_slug,
+            reconciliation_mode=profile_intake_reconciliation_mode(request.command),
         ),
         db_session=session,
         settings=settings,
@@ -747,7 +772,9 @@ def save_command_interaction_log(
                 "routerOk": bool(router_payload and router_payload.get("ok")),
                 "actionStatuses": [action.status for action in actions],
             },
-            action_applied=any(action.status == "completed" for action in actions),
+            action_applied=any(
+                action.status == "completed" and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
+            ),
             final_response=response.assistant_message if response is not None else "",
             error_details={"type": type(error).__name__, "message": str(error)} if error else {},
             latency_ms=latency_ms,
@@ -767,6 +794,8 @@ def get_profile_draft(slug: str, session: Session = Depends(get_db_session), aut
 def interpret_command(command: str, active_workspace: str | None = None) -> CommandActionType:
     normalized = " ".join(command.lower().split())
 
+    if is_profile_discussion_command(normalized):
+        return "profile_guidance"
     if is_profile_intake_command(normalized, active_workspace):
         return "profile_intake"
     if "follow-up" in normalized or "follow up" in normalized:
@@ -809,6 +838,41 @@ def is_profile_intake_command(normalized_command: str, active_workspace: str | N
         return True
 
     return False
+
+
+def is_profile_discussion_command(normalized_command: str) -> bool:
+    if explicit_profile_mutation_signal(normalized_command):
+        return False
+    signals = [
+        "can you help me figure out",
+        "help me figure out",
+        "what should i emphasize",
+        "how should i describe",
+        "what roles should i target",
+        "which roles should i target",
+        "what should my profile say",
+        "how should i position",
+        "can you suggest profile",
+        "suggest profile changes",
+    ]
+    return any(signal in normalized_command for signal in signals)
+
+
+def explicit_profile_mutation_signal(normalized_command: str) -> bool:
+    return any(
+        signal in normalized_command
+        for signal in [
+            "update my profile",
+            "save this",
+            "save these",
+            "apply this",
+            "apply these",
+            "add this",
+            "add these",
+            "put this in my profile",
+            "use this to update",
+        ]
+    )
 
 
 def is_company_discovery_command(normalized_command: str, active_workspace: str | None) -> bool:
@@ -909,6 +973,93 @@ def build_profile_action_summary(profile_draft: dict[str, Any]) -> str:
     )
 
 
+def execute_non_mutating_profile_guidance_command(
+    request: CommandCenterCommandRequest,
+    *,
+    action_type: CommandActionType,
+    router_decision: CommandRouterOutput | None,
+    router_payload: dict[str, Any] | None,
+    candidate_profile,
+    session: Session,
+    settings,
+) -> CommandCenterCommandResponse:
+    guidance_result = run_command_center_guidance(
+        CommandCenterGuidanceRequest(
+            latestUserMessage=request.command,
+            actionType=action_type,
+            activeWorkspace=request.active_workspace,
+            clientContext=request.client_context,
+            routerDecision=router_decision.model_dump(by_alias=True) if router_decision is not None else None,
+            routerPayload=router_payload,
+        ),
+        db_session=session,
+        settings=settings,
+        candidate_profile=candidate_profile,
+    )
+
+    if guidance_result.status_code != 200 or not guidance_result.body.get("ok"):
+        error_message = guidance_result.body.get("error", "Guidance failed. No profile data was changed.")
+        result_payload = {
+            **guidance_result.body,
+            "mutated": False,
+            **router_debug_payload(router_payload),
+        }
+        return CommandCenterCommandResponse(
+            assistant_message=error_message,
+            actions=[
+                CommandCenterActionResult(
+                    type=action_type,
+                    status="failed",
+                    targetWorkspace=target_workspace_for_action(action_type),
+                    title=title_for_action(action_type),
+                    summary="No profile data was changed.",
+                    resultPayload=result_payload,
+                )
+            ],
+            target_workspace=target_workspace_for_action(action_type),
+            result_payload=result_payload,
+        )
+
+    guidance_payload = guidance_result.body.get("result") if isinstance(guidance_result.body.get("result"), dict) else {}
+    result_payload = {
+        "ok": True,
+        "mode": action_type,
+        "mutated": False,
+        **guidance_payload,
+        **router_debug_payload(router_payload),
+    }
+    return CommandCenterCommandResponse(
+        assistant_message=str(guidance_payload.get("assistantMessage") or "I can help think this through without changing saved profile data."),
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="completed",
+                targetWorkspace=target_workspace_for_action(action_type),
+                title=title_for_action(action_type),
+                summary="Read-only guidance completed. No profile data was changed.",
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace=target_workspace_for_action(action_type),
+        result_payload=result_payload,
+    )
+
+
+def profile_intake_reconciliation_mode(command: str) -> str:
+    normalized = " ".join(command.casefold().split())
+    restore_signals = [
+        "restore archived",
+        "restore old",
+        "restore previous",
+        "rebuild from scratch",
+        "start from scratch",
+        "ignore archived history",
+        "ignore archive history",
+        "restore everything",
+    ]
+    return "restore_archived" if any(signal in normalized for signal in restore_signals) else "respect_archived"
+
+
 def active_profile_draft_item(item: object) -> bool:
     return isinstance(item, dict) and item.get("published") is not True and item.get("status") != "rejected"
 
@@ -976,7 +1127,9 @@ def build_routing_status_update(
 def build_router_decision_status_update(router_decision: CommandRouterOutput) -> CommandCenterStatusUpdate:
     action_type = normalize_dispatch_action(router_decision.action_type)
     workspace = router_decision.target_workspace or target_workspace_for_action(action_type)
-    if router_decision.confidence == "high" and action_type != "unknown":
+    if action_type in NON_MUTATING_PROFILE_ACTIONS:
+        message = "Status update: thinking through guidance without changing saved profile data."
+    elif router_decision.confidence == "high" and action_type != "unknown":
         message = (
             f"Status update: routed this command to {title_for_action(action_type)}"
             f" ({action_type}) with high confidence."
@@ -1143,6 +1296,11 @@ def target_workspace_for_action(action_type: CommandActionType) -> str | None:
         "add_job_from_url": "jobs",
         "company_discovery": "companies",
         "company_update": "companies",
+        "discussion_only": None,
+        "career_discovery": "profile",
+        "profile_guidance": "profile",
+        "clarifying_questions": "profile",
+        "suggest_profile_changes_without_applying": "profile",
         "follow_company": "companies",
         "prioritize_jobs": "jobs",
         "generate_materials": "materials",
@@ -1158,6 +1316,11 @@ def title_for_action(action_type: CommandActionType) -> str:
         "add_job_from_url": "Add job from URL",
         "company_discovery": "Discover companies",
         "company_update": "Update company",
+        "discussion_only": "Discuss",
+        "career_discovery": "Explore career direction",
+        "profile_guidance": "Profile guidance",
+        "clarifying_questions": "Clarify profile direction",
+        "suggest_profile_changes_without_applying": "Suggest profile changes",
         "follow_company": "Follow company",
         "prioritize_jobs": "Prioritize saved jobs",
         "generate_materials": "Generate application materials",

@@ -474,6 +474,11 @@ def test_dev_profile_item_clear_deletes_only_current_users_profile_items(monkeyp
     assert payload["draft"]["draftFacts"] == []
     assert payload["draft"]["statusSummary"] == "No profile intake draft has been saved yet."
     assert payload["devTools"]["profileItemClearEnabled"] is True
+    assert payload["devTools"]["profileResetActions"] == [
+        "generated_drafts",
+        "archived_generated",
+        "all_candidate_generated",
+    ]
 
     with Session(engine) as session:
         for model in (
@@ -492,7 +497,7 @@ def test_dev_profile_item_clear_deletes_only_current_users_profile_items(monkeyp
         assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == other_profile_id).limit(1))
 
 
-def test_profile_item_clear_is_blocked_outside_dev(monkeypatch) -> None:
+def test_profile_item_clear_is_available_to_current_user_in_prod(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
     engine = create_engine(
@@ -536,10 +541,145 @@ def test_profile_item_clear_is_blocked_outside_dev(monkeypatch) -> None:
             cookies={SESSION_COOKIE_NAME: token},
         )
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Profile item clearing is only available in dev."
+    assert response.status_code == 200
+    assert response.json()["clearMode"] == "all_candidate_generated"
     with Session(engine) as session:
-        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == profile_id).limit(1))
+        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == profile_id).limit(1)) is None
+
+
+def test_admin_profile_reset_in_prod_preserves_account_auth_and_domain_records(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+    from jobops_api.db.models import Domain, User, UserSession
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="admin@example.com",
+            username="admin-alpha",
+            display_name="Admin Alpha",
+            password="admin alpha password",
+            password_reset_required=False,
+            user_type="admin",
+        )
+        session.add(Domain(candidate_profile_id=auth.candidate_profile.id, hostname="admin.example.com"))
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=auth.candidate_profile.id,
+                claim="Generated fact.",
+                fact_type="impact",
+                structured_value={"published": False},
+                source="model",
+                confidence="unknown",
+                suggested_visibility="private",
+                review_status="needs_review",
+            )
+        )
+        _, token = create_session_for_username(session, username="admin-alpha", password="admin alpha password")
+        profile_id = auth.candidate_profile.id
+        user_id = auth.user.id
+        session.commit()
+
+    with app_with_session(engine):
+        response = TestClient(app).delete(
+            "/v1/profile/items?mode=all_candidate_generated",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["clearMode"] == "all_candidate_generated"
+    with Session(engine) as session:
+        assert session.get(User, user_id) is not None
+        assert session.scalar(select(UserSession.id).where(UserSession.user_id == user_id).limit(1)) is not None
+        assert session.scalar(select(Domain.id).where(Domain.candidate_profile_id == profile_id).limit(1)) is not None
+        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == profile_id).limit(1)) is None
+
+
+def test_profile_clear_modes_keep_generated_and_archived_separate(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
+
+    with Session(engine) as session:
+        auth = seed_initial_user(
+            session,
+            email="chance@example.com",
+            username="chance-alpha",
+            display_name="Chance Alpha",
+            password="chance alpha password",
+            password_reset_required=False,
+        )
+        session.add_all(
+            [
+                ProfileFactDraft(
+                    candidate_profile_id=auth.candidate_profile.id,
+                    claim="Generated fact.",
+                    fact_type="impact",
+                    structured_value={"published": False},
+                    source="model",
+                    confidence="unknown",
+                    suggested_visibility="private",
+                    review_status="needs_review",
+                ),
+                ProfileFactDraft(
+                    candidate_profile_id=auth.candidate_profile.id,
+                    claim="Archived fact.",
+                    fact_type="impact",
+                    structured_value={"published": False},
+                    source="model",
+                    confidence="unknown",
+                    suggested_visibility="private",
+                    review_status="rejected",
+                ),
+            ]
+        )
+        _, token = create_session_for_username(session, username="chance-alpha", password="chance alpha password")
+        profile_id = auth.candidate_profile.id
+        session.commit()
+
+    with app_with_session(engine):
+        generated_response = TestClient(app).delete(
+            "/v1/profile/items?mode=generated_drafts",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+        )
+
+    assert generated_response.status_code == 200
+    with Session(engine) as session:
+        remaining = list(
+            session.scalars(
+                select(ProfileFactDraft).where(ProfileFactDraft.candidate_profile_id == profile_id).order_by(ProfileFactDraft.claim)
+            )
+        )
+        assert [fact.claim for fact in remaining] == ["Archived fact."]
+
+    with app_with_session(engine):
+        archived_response = TestClient(app).delete(
+            "/v1/profile/items?mode=archived_generated",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: token},
+        )
+
+    assert archived_response.status_code == 200
+    with Session(engine) as session:
+        assert session.scalar(select(ProfileFactDraft.id).where(ProfileFactDraft.candidate_profile_id == profile_id).limit(1)) is None
 
 
 def test_profile_item_autosave_values_flow_into_publish_and_archive(monkeypatch) -> None:

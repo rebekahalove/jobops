@@ -7,12 +7,13 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
-from jobops_api.db.models import Base, ProfileIntakeSession, RoleTarget, TargetCompany
+from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -29,6 +30,7 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
+    assert command_center_module.interpret_command("What should I emphasize for AI platform roles?", active_workspace="profile") == "profile_guidance"
 
 
 def test_profile_action_summary_counts_only_active_saved_draft_items() -> None:
@@ -437,6 +439,215 @@ def test_non_profile_command_returns_planned_action_without_profile_intake(tmp_p
     assert response.actions[0].type == "prioritize_jobs"
     assert response.actions[0].status == "planned"
     assert response.target_workspace == "jobs"
+
+
+def test_profile_guidance_command_does_not_run_profile_intake(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("profile intake should not run for guidance-only profile commands")
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fail_if_called)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="What should I emphasize for applied AI roles?",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_guidance"
+    assert response.actions[0].summary == "Read-only guidance completed. No profile data was changed."
+    assert response.result_payload is not None
+    assert response.result_payload["mutated"] is False
+
+
+def test_profile_guidance_command_uses_model_backed_read_only_workflow(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def fail_if_profile_intake_called(*args, **kwargs):
+        raise AssertionError("profile intake should not run for guidance-only profile commands")
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fail_if_profile_intake_called)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="So what should I do?",
+                active_workspace="profile",
+                clientContext={
+                    "transcript": {
+                        "messages": [
+                            {"role": "user", "type": "message", "text": "Can you help me figure out what roles to target?"},
+                            {"role": "assistant", "type": "message", "text": "Which parts of your AI work do you want to do more of?"},
+                            {"role": "user", "type": "message", "text": "I like RAG systems and LLM evaluation."},
+                            {"role": "assistant", "type": "status", "text": "Status update: previous guidance completed."},
+                            {"role": "user", "type": "message", "text": "So what should I do?"},
+                        ]
+                    }
+                },
+            ),
+            session=session,
+        )
+
+        assert session.scalar(select(ProfileFactDraft.id).limit(1)) is None
+        assert session.scalar(select(SkillClaim.id).limit(1)) is None
+        assert session.scalar(select(ExperienceProjectDraft.id).limit(1)) is None
+
+    assert response.actions[0].type == "profile_guidance"
+    assert response.actions[0].status == "completed"
+    assert response.actions[0].summary == "Read-only guidance completed. No profile data was changed."
+    assert response.status_updates[0].message == "Status update: thinking through guidance without changing saved profile data."
+    assert response.result_payload is not None
+    assert response.result_payload["ok"] is True
+    assert response.result_payload["mutated"] is False
+    assert response.result_payload["guidanceContextManifest"]["transcript_text"] == "included"
+    assert response.result_payload["guidanceContextManifest"]["transcript_turn_count"] == 5
+    assert response.result_payload["modelRequest"]["task"] == "command_center_guidance"
+    assert "I like RAG systems and LLM evaluation." in response.result_payload["modelRequest"]["messages"][1]["content"]
+
+
+def test_profile_guidance_manifest_marks_missing_transcript(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="What should I put in my headline?",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_guidance"
+    assert response.result_payload is not None
+    manifest = response.result_payload["guidanceContextManifest"]
+    assert manifest["transcript_text"] == "missing"
+    assert manifest["transcript_turn_count"] == 0
+    assert "clientContext" in manifest["transcript_fallback_reason"]
+
+
+def test_profile_guidance_manifest_marks_partial_transcript_when_large(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+    huge_middle = "middle context " * 3000
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="So what should I do?",
+                active_workspace="profile",
+                clientContext={
+                    "transcript": {
+                        "messages": [
+                            {"role": "user", "type": "message", "text": "I want help choosing roles."},
+                            {"role": "assistant", "type": "message", "text": huge_middle},
+                            {"role": "user", "type": "message", "text": "So what should I do?"},
+                        ]
+                    }
+                },
+            ),
+            session=session,
+        )
+
+    assert response.result_payload is not None
+    manifest = response.result_payload["guidanceContextManifest"]
+    assert manifest["transcript_text"] == "partial"
+    assert manifest["transcript_turn_count"] == 3
+    assert "exceeded" in manifest["transcript_fallback_reason"]
+
+
+def test_profile_guidance_does_not_restore_archived_items(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add(
+            SkillClaim(
+                candidate_profile_id=profile.id,
+                skill_name="RAG Systems",
+                skill_category="AI Engineering",
+                years_min=None,
+                years_max=None,
+                recency=None,
+                proficiency=None,
+                evidence_summary=None,
+                evidence_fact_ids=[],
+                source="model",
+                visibility="private",
+                verification_status="rejected",
+                publication_status="not_published",
+            )
+        )
+        session.commit()
+
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="What should I emphasize?",
+                active_workspace="profile",
+                clientContext={"transcript": {"messages": [{"role": "user", "type": "message", "text": "What should I emphasize?"}]}},
+            ),
+            session=session,
+        )
+
+        skills = session.scalars(select(SkillClaim)).all()
+
+    assert response.actions[0].type == "profile_guidance"
+    assert len(skills) == 1
+    assert skills[0].verification_status == "rejected"
+    assert response.result_payload is not None
+    assert response.result_payload["guidanceContextManifest"]["archived_items"]["count"] == 1
+
+
+def test_explicit_profile_update_still_uses_mutating_profile_intake(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+    captured = {}
+
+    def fail_if_guidance_called(*args, **kwargs):
+        raise AssertionError("guidance should not run for explicit profile update commands")
+
+    def fake_run_profile_intake_extraction(request, *, db_session, settings, candidate_profile=None):
+        captured["request"] = request
+        return SimpleNamespace(
+            status_code=200,
+            body={
+                "ok": True,
+                "result": {
+                    "assistantMessage": "Saved suggestion to the private draft.",
+                    "targetRoleIntent": {},
+                    "draftFacts": [],
+                    "skillClaims": [],
+                    "experienceAndProjects": [],
+                    "evidenceLinks": [],
+                    "clarifyingQuestions": [],
+                    "changeSummary": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_command_center_guidance", fail_if_guidance_called)
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fake_run_profile_intake_extraction)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="Update my profile with this resume.",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_intake"
+    assert response.actions[0].status == "completed"
+    assert captured["request"].latest_user_message == "Update my profile with this resume."
 
 
 def test_command_center_routes_company_url_update_to_company_update(tmp_path: Path, monkeypatch) -> None:

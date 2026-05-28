@@ -36,6 +36,11 @@ from .settings import Settings
 
 RouterActionType = Literal[
     "profile_intake",
+    "discussion_only",
+    "career_discovery",
+    "profile_guidance",
+    "clarifying_questions",
+    "suggest_profile_changes_without_applying",
     "company_discovery",
     "company_update",
     "add_job_from_url",
@@ -248,6 +253,8 @@ Rules:
 - Route job-posting save/track/add requests to add_job_from_url.
 - Route company research/finding/follow-list requests to company_discovery.
 - Route resume/profile/target-role/preference updates to profile_intake.
+- Route profile or career advice, brainstorming, wording help, role targeting discussion, and "what should I emphasize" questions to profile_guidance, career_discovery, discussion_only, clarifying_questions, or suggest_profile_changes_without_applying unless the user explicitly asks to save, update, apply, or add the changes.
+- Route questions about missing skills, skill gaps, positioning gaps, seniority, or what to emphasize to non-mutating guidance unless the user explicitly asks to save, update, apply, or add the changes.
 - If latest_user_message looks like a pasted resume/CV, route to profile_intake with high confidence even when the user does not explicitly say "update my profile".
 - Pasted resume/CV signals include long structured career text with headings such as PROFESSIONAL SUMMARY, CORE SKILLS, TECHNICAL SKILLS, PROFESSIONAL EXPERIENCE, WORK EXPERIENCE, PROJECTS, EDUCATION, CERTIFICATIONS, SELECTED TECHNICAL STRENGTHS, or profile links such as linkedin.com/in/.
 - Resume/CV text is not an unclear command and does not need a workspace clarification. Treat it as "use this resume to fill gaps in my profile draft." The profile intake agent can merge with the saved draft and ask whether to start clean if needed.
@@ -363,7 +370,12 @@ def serialize_router_company(company: TargetCompany) -> dict[str, Any]:
 
 def available_router_actions() -> list[dict[str, str]]:
     return [
-        {"actionType": "profile_intake", "targetWorkspace": "profile", "description": "Update target role, preferences, pasted resumes/CVs, profile facts, skills, projects, or locations."},
+        {"actionType": "profile_intake", "targetWorkspace": "profile", "description": "Update target role, preferences, pasted resumes/CVs, profile facts, skills, projects, or locations when the user asks to save/apply or pastes a resume/CV."},
+        {"actionType": "discussion_only", "targetWorkspace": "", "description": "Discuss or answer without changing saved JobOps data."},
+        {"actionType": "career_discovery", "targetWorkspace": "profile", "description": "Explore role direction, career positioning, or targeting without saving profile changes."},
+        {"actionType": "profile_guidance", "targetWorkspace": "profile", "description": "Give profile wording or emphasis guidance without saving profile changes."},
+        {"actionType": "clarifying_questions", "targetWorkspace": "profile", "description": "Ask clarifying questions before any profile mutation."},
+        {"actionType": "suggest_profile_changes_without_applying", "targetWorkspace": "profile", "description": "Suggest possible profile edits without applying them."},
         {"actionType": "company_discovery", "targetWorkspace": "companies", "description": "Find or discover companies to follow based on target context."},
         {"actionType": "company_update", "targetWorkspace": "companies", "description": "Update an existing tracked company's website, careers, job listings, source URLs, or notes."},
         {"actionType": "add_job_from_url", "targetWorkspace": "jobs", "description": "Save or track a specific job posting URL."},
@@ -422,6 +434,8 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
             field=field,
             raw_text=None if field != "notes" else message,
         )
+    if looks_like_profile_discussion(normalized):
+        return router_json("profile_guidance", "high", "profile", "User is asking for profile or career guidance, not a saved profile update.")
     if looks_like_profile_intake(normalized, context.get("active_workspace")):
         return router_json("profile_intake", "high", "profile", "User is updating profile or target-role context.")
     if "follow-up" in normalized or "follow up" in normalized:
@@ -611,3 +625,53 @@ def looks_like_profile_intake(normalized: str, active_workspace: object) -> bool
     if any(signal in normalized for signal in signals):
         return True
     return active_workspace == "profile" and not looks_like_job_url_intake(normalized) and not looks_like_company_update(normalized)
+
+
+def looks_like_profile_discussion(normalized: str) -> bool:
+    if explicit_profile_mutation_signal(normalized):
+        return False
+    guidance_signals = [
+        "can you help me figure out",
+        "can you help me decide",
+        "help me figure out",
+        "help me decide",
+        "what should i emphasize",
+        "so what should i do",
+        "skills i may be missing",
+        "skills am i missing",
+        "skill gaps",
+        "how should i describe",
+        "what roles should i target",
+        "which roles should i target",
+        "does this profile sound senior enough",
+        "what am i missing",
+        "help me think through",
+        "what should i put in my headline",
+        "what should my profile say",
+        "how should i position",
+        "which of these experiences should i highlight",
+        "i'm not sure what i want to do next",
+        "im not sure what i want to do next",
+        "can we talk through my options",
+        "what should i call",
+        "can you suggest profile",
+        "suggest profile changes",
+    ]
+    return any(signal in normalized for signal in guidance_signals)
+
+
+def explicit_profile_mutation_signal(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in [
+            "update my profile",
+            "save this",
+            "save these",
+            "apply this",
+            "apply these",
+            "add this",
+            "add these",
+            "put this in my profile",
+            "use this to update",
+        ]
+    )

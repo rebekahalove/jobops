@@ -20,6 +20,7 @@ ProfileIntakeSectionStatus = Literal[
     "failed",
 ]
 ProfileIntakeConfidence = Literal["low", "medium", "high"]
+ProfileIntakeReconciliationMode = Literal["respect_archived", "restore_archived"]
 ProfileIntakeSectionChangeTarget = Literal[
     "profileBasics",
     "targetRoleIntent",
@@ -50,6 +51,11 @@ class ProfileIntakeExtractRequest(ApiModel):
         validation_alias=AliasChoices("candidate_profile_slug", "candidateProfileSlug"),
         serialization_alias="candidate_profile_slug",
         max_length=120,
+    )
+    reconciliation_mode: ProfileIntakeReconciliationMode = Field(
+        default="respect_archived",
+        validation_alias=AliasChoices("reconciliation_mode", "reconciliationMode"),
+        serialization_alias="reconciliation_mode",
     )
 
 

@@ -59,6 +59,8 @@ type ProfileWorkspacePayload = {
   archivedItemCount?: number;
   devTools?: {
     profileItemClearEnabled?: boolean;
+    profileResetEnabled?: boolean;
+    profileResetActions?: ProfileClearMode[];
   };
 };
 
@@ -174,6 +176,7 @@ type DraftItemPatch = {
 };
 
 type ProfileItemType = "fact" | "skill" | "experience" | "evidence";
+type ProfileClearMode = "generated_drafts" | "archived_generated" | "all_candidate_generated";
 
 type PublishedItemPatch = {
   claim?: string;
@@ -239,7 +242,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
   const [activeSection, setActiveSection] = useState<ReviewTabId>("basics");
   const [activeLifecycle, setActiveLifecycle] = useState<LifecycleTab>("generated");
   const [profileItemClearEnabled, setProfileItemClearEnabled] = useState(false);
-  const [clearingProfileItems, setClearingProfileItems] = useState(false);
+  const [profileResetActions, setProfileResetActions] = useState<ProfileClearMode[]>([]);
+  const [clearingProfileItems, setClearingProfileItems] = useState<ProfileClearMode | null>(null);
 
   async function loadProfileState(options: { cancelled?: () => boolean } = {}) {
     try {
@@ -272,7 +276,8 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     setPublicPortfolioPath(result.publicPortfolioPath ?? null);
     setPublishedItemCount(result.publishedItemCount ?? 0);
     setPublishedPublicItemCount(result.publishedPublicItemCount ?? 0);
-    setProfileItemClearEnabled(result.devTools?.profileItemClearEnabled === true);
+    setProfileItemClearEnabled(result.devTools?.profileResetEnabled === true || result.devTools?.profileItemClearEnabled === true);
+    setProfileResetActions(result.devTools?.profileResetActions ?? []);
   }
 
   useEffect(() => {
@@ -359,20 +364,18 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
     return true;
   }
 
-  async function clearProfileItems() {
+  async function clearProfileItems(mode: ProfileClearMode) {
     if (clearingProfileItems) {
       return;
     }
-    const confirmed = window.confirm(
-      "Clear all generated, published, and archived profile items for your current profile? This cannot be undone."
-    );
+    const confirmed = window.confirm(profileClearConfirmation(mode));
     if (!confirmed) {
       return;
     }
 
-    setClearingProfileItems(true);
+    setClearingProfileItems(mode);
     try {
-      const response = await fetch(`${apiBasePath}/profile/clear-items`, {
+      const response = await fetch(`${apiBasePath}/profile/clear-items?mode=${encodeURIComponent(mode)}`, {
         method: "DELETE"
       });
       const payload = (await response.json()) as { ok: true; result: ProfileWorkspacePayload } | { ok: false; error?: string; detail?: string };
@@ -383,11 +386,11 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
       }
       applyProfilePayload(payload.result);
       setActiveLifecycle("generated");
-      showWorkspaceMessage("Profile workspace items cleared for this user.", "success");
+      showWorkspaceMessage(profileClearSuccessMessage(mode), "success");
     } catch {
       showWorkspaceMessage("Profile clear failed. Try again after the API is available.", "error");
     } finally {
-      setClearingProfileItems(false);
+      setClearingProfileItems(null);
     }
   }
 
@@ -416,14 +419,38 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
             <SummaryMetric label="Published public" value={publishedPublicItemCount} />
           </div>
           {profileItemClearEnabled ? (
-            <button
-              className="button-action subtle-danger profile-clear-button"
-              disabled={clearingProfileItems}
-              onClick={clearProfileItems}
-              type="button"
-            >
-              {clearingProfileItems ? "Clearing..." : "Clear"}
-            </button>
+            <div className="profile-reset-actions" aria-label="Profile reset controls">
+              {profileResetActions.includes("generated_drafts") ? (
+                <button
+                  className="button-action subtle-danger profile-clear-button"
+                  disabled={Boolean(clearingProfileItems)}
+                  onClick={() => clearProfileItems("generated_drafts")}
+                  type="button"
+                >
+                  {clearingProfileItems === "generated_drafts" ? "Clearing..." : "Clear generated"}
+                </button>
+              ) : null}
+              {profileResetActions.includes("archived_generated") ? (
+                <button
+                  className="button-action subtle-danger profile-clear-button"
+                  disabled={Boolean(clearingProfileItems)}
+                  onClick={() => clearProfileItems("archived_generated")}
+                  type="button"
+                >
+                  {clearingProfileItems === "archived_generated" ? "Clearing..." : "Clear archived"}
+                </button>
+              ) : null}
+              {profileResetActions.includes("all_candidate_generated") ? (
+                <button
+                  className="button-action subtle-danger profile-clear-button"
+                  disabled={Boolean(clearingProfileItems)}
+                  onClick={() => clearProfileItems("all_candidate_generated")}
+                  type="button"
+                >
+                  {clearingProfileItems === "all_candidate_generated" ? "Resetting..." : "Hard reset"}
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
         <section className="profile-header-recent" aria-label="Recent profile changes">
@@ -466,6 +493,26 @@ export function ProfileWorkspace({ apiBasePath = "/api" }: { apiBasePath?: strin
       </div>
     </main>
   );
+}
+
+function profileClearConfirmation(mode: ProfileClearMode) {
+  if (mode === "generated_drafts") {
+    return "Clear generated draft profile items only? Published and archived profile items will be preserved.";
+  }
+  if (mode === "archived_generated") {
+    return "Clear archived generated profile items? This removes archived suppression history for future intake.";
+  }
+  return "Hard reset all candidate/generated profile data for this profile? Account, auth, tenant, and domain records will be preserved.";
+}
+
+function profileClearSuccessMessage(mode: ProfileClearMode) {
+  if (mode === "generated_drafts") {
+    return "Generated draft profile items cleared.";
+  }
+  if (mode === "archived_generated") {
+    return "Archived generated profile items cleared.";
+  }
+  return "Candidate/generated profile data reset for this profile.";
 }
 
 function CollapsiblePanel({

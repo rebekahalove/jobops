@@ -754,7 +754,7 @@ def test_profile_intake_second_empty_turn_preserves_merged_saved_draft(tmp_path:
         assert len(session.scalars(select(EvidenceArtifact)).all()) == 1
 
 
-def test_profile_intake_reactivates_matching_archived_draft_items(tmp_path: Path) -> None:
+def test_profile_intake_suppresses_matching_archived_draft_items_by_default(tmp_path: Path) -> None:
     session_factory = make_seeded_session_factory()
     basics = no_change_section_output("basics_and_targets")
     skills = section_output("skills", "skillClaims", skill_change("Python"))
@@ -805,13 +805,59 @@ def test_profile_intake_reactivates_matching_archived_draft_items(tmp_path: Path
         saved_experience = session.scalars(select(ExperienceProjectDraft)).one()
 
     assert result.status_code == 200
-    assert fact.review_status == "needs_review"
-    assert skill.verification_status == "needs_review"
+    assert fact.review_status == "rejected"
+    assert skill.verification_status == "rejected"
+    assert skill.publication_status == "archived"
+    assert saved_experience.review_status == "rejected"
+    assert saved_experience.publication_status == "archived"
+    assert len([item for item in result.body["result"]["skillClaims"] if item["status"] != "rejected"]) == 0
+    assert len([item for item in result.body["result"]["experienceAndProjects"] if item["status"] != "rejected"]) == 0
+    assert {match["type"] for match in result.body["result"]["archivedSuppressedMatches"]} >= {
+        "fact",
+        "skill",
+        "experience",
+    }
+
+
+def test_profile_intake_restore_mode_reactivates_archived_matches(tmp_path: Path) -> None:
+    session_factory = make_seeded_session_factory()
+    basics = no_change_section_output("basics_and_targets")
+    skills = section_output("skills", "skillClaims", skill_change("Python"))
+    experience = section_output("experience_projects", "experienceAndProjects", experience_change("Shadow Network Intelligence"))
+
+    with session_factory() as session:
+        run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(latest_user_message=fake_resume_text()),
+            connector=make_connector(RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        skill = session.scalars(select(SkillClaim)).one()
+        saved_experience = session.scalars(select(ExperienceProjectDraft)).one()
+        skill.verification_status = "rejected"
+        skill.publication_status = "archived"
+        saved_experience.review_status = "rejected"
+        saved_experience.publication_status = "archived"
+        session.commit()
+
+        result = run_profile_intake_extraction(
+            ProfileIntakeExtractRequest(
+                latest_user_message=f"{fake_resume_text()}\nPlease rebuild from scratch and restore archived matches.",
+                reconciliation_mode="restore_archived",
+            ),
+            connector=make_connector(RecordingSequenceProvider([json.dumps(basics), json.dumps(skills), json.dumps(experience)])),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+        skill = session.scalars(select(SkillClaim)).one()
+        saved_experience = session.scalars(select(ExperienceProjectDraft)).one()
+
+    assert result.status_code == 200
+    assert skill.verification_status == "draft"
     assert skill.publication_status == "not_published"
     assert saved_experience.review_status == "needs_review"
     assert saved_experience.publication_status == "not_published"
-    assert len([item for item in result.body["result"]["skillClaims"] if item["status"] != "rejected"]) == 1
-    assert len([item for item in result.body["result"]["experienceAndProjects"] if item["status"] != "rejected"]) == 1
 
 
 def test_profile_intake_merge_adds_new_facts_and_dedupes_without_clearing_fields(tmp_path: Path) -> None:
@@ -1445,6 +1491,18 @@ def test_profile_intake_context_bundle_includes_current_draft_and_recent_events(
             latest_user_message="I built an eval harness.",
             artifact_path=None,
         )
+        session.add(
+            SkillClaim(
+                candidate_profile_id=profile.id,
+                profile_intake_session_id=intake_session.id,
+                skill_name="Legacy COBOL",
+                skill_category="programming",
+                source="model",
+                visibility="private",
+                verification_status="rejected",
+                publication_status="archived",
+            )
+        )
         session.commit()
         current_draft = get_profile_draft_snapshot_for_session(session, intake_session)
 
@@ -1459,7 +1517,14 @@ def test_profile_intake_context_bundle_includes_current_draft_and_recent_events(
 
     assert bundle.latest_user_message == "Add Python and evals."
     assert bundle.current_generated_draft_profile["targetRoleIntent"] == {}
+    assert bundle.current_generated_draft_profile["skillClaims"] == []
     assert bundle.published_public_profile["slug"] == "rebekah-love"
+    assert bundle.archived_generated_items_avoidance_context[0]["skill"] == "Legacy COBOL"
+    assert bundle.context_manifest["current_user_message"]["included"] is True
+    assert bundle.context_manifest["transcript_turns"] == 1
+    assert bundle.context_manifest["transcript_context"] == "metadata_only"
+    assert bundle.context_manifest["archived_items"]["count"] == 1
+    assert bundle.context_manifest["archived_items"]["includedAs"] == "avoidance_context"
     assert bundle.conversation_transcript_metadata[0]["metadata"]["latestUserMessageLength"] == len("I built an eval harness.")
     assert "conversationTranscriptMetadata" in bundle.model_dump(by_alias=True)
     assert "conversationTranscript" not in bundle.model_dump(by_alias=True)

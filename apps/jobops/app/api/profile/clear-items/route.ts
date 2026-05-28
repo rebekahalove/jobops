@@ -15,7 +15,10 @@ export async function DELETE(request: Request) {
   }
 
   try {
-    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/profile/items`, {
+    const requestUrl = new URL(request.url);
+    const mode = requestUrl.searchParams.get("mode");
+    const query = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+    const apiResponse = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}/v1/profile/items${query}`, {
       cache: "no-store",
       headers: {
         "Content-Type": "application/json",
