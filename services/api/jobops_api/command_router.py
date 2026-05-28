@@ -254,6 +254,7 @@ Rules:
 - Route company research/finding/follow-list requests to company_discovery.
 - Route resume/profile/target-role/preference updates to profile_intake.
 - Route profile or career advice, brainstorming, wording help, role targeting discussion, and "what should I emphasize" questions to profile_guidance, career_discovery, discussion_only, clarifying_questions, or suggest_profile_changes_without_applying unless the user explicitly asks to save, update, apply, or add the changes.
+- Route questions about missing skills, skill gaps, positioning gaps, seniority, or what to emphasize to non-mutating guidance unless the user explicitly asks to save, update, apply, or add the changes.
 - If latest_user_message looks like a pasted resume/CV, route to profile_intake with high confidence even when the user does not explicitly say "update my profile".
 - Pasted resume/CV signals include long structured career text with headings such as PROFESSIONAL SUMMARY, CORE SKILLS, TECHNICAL SKILLS, PROFESSIONAL EXPERIENCE, WORK EXPERIENCE, PROJECTS, EDUCATION, CERTIFICATIONS, SELECTED TECHNICAL STRENGTHS, or profile links such as linkedin.com/in/.
 - Resume/CV text is not an unclear command and does not need a workspace clarification. Treat it as "use this resume to fill gaps in my profile draft." The profile intake agent can merge with the saved draft and ask whether to start clean if needed.
@@ -631,9 +632,14 @@ def looks_like_profile_discussion(normalized: str) -> bool:
         return False
     guidance_signals = [
         "can you help me figure out",
+        "can you help me decide",
         "help me figure out",
+        "help me decide",
         "what should i emphasize",
         "so what should i do",
+        "skills i may be missing",
+        "skills am i missing",
+        "skill gaps",
         "how should i describe",
         "what roles should i target",
         "which roles should i target",

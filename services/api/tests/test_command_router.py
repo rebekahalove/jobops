@@ -197,6 +197,7 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("I want to be an Applied AI Engineer", "profile_intake"),
             ("My preferred locations are remote US and DC", "profile_intake"),
             ("What should I emphasize for applied AI roles?", "profile_guidance"),
+            ("Can you help me decide what skills I may be missing?", "profile_guidance"),
         ]
         for command, expected_action in cases:
             result = run_command_router(

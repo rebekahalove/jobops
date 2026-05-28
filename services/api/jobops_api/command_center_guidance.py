@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -39,6 +40,7 @@ GUIDANCE_PROMPT_VERSION = "command-center-guidance-v1"
 GUIDANCE_SCHEMA_VERSION = "command-center-guidance-output-v1"
 GUIDANCE_TRANSCRIPT_CHAR_LIMIT = 32000
 GUIDANCE_MAX_OUTPUT_TOKENS = 2400
+logger = logging.getLogger(__name__)
 
 TranscriptStatus = Literal["included", "partial", "summarized", "missing"]
 TranscriptRole = Literal["user", "assistant", "status", "tool"]
@@ -133,6 +135,7 @@ def run_command_center_guidance(
         manifest=manifest,
     )
     routed_request = route_model_request(model_request, connector_config.routing)
+    log_guidance_model_request(active_settings, routed_request, connector_config.provider, manifest)
 
     try:
         active_connector = connector or create_model_connector(
@@ -157,6 +160,7 @@ def run_command_center_guidance(
     try:
         response = active_connector.generate(routed_request)
     except ModelProviderError as error:
+        log_guidance_model_failure(active_settings, routed_request, connector_config.provider, error)
         return CommandCenterGuidanceServiceResult(
             body={
                 "ok": False,
@@ -175,6 +179,7 @@ def run_command_center_guidance(
         output = CommandCenterGuidanceOutput.model_validate(json.loads(json_text))
     except (TypeError, ValueError, ValidationError) as error:
         issues = format_validation_issues(error) if isinstance(error, ValidationError) else [str(error)]
+        log_guidance_model_response(active_settings, routed_request, response, parse_status="failed", issues=issues)
         return CommandCenterGuidanceServiceResult(
             body={
                 "ok": False,
@@ -188,6 +193,7 @@ def run_command_center_guidance(
             status_code=502,
         )
 
+    log_guidance_model_response(active_settings, routed_request, response, parse_status="succeeded", issues=[])
     result = {
         **output.model_dump(by_alias=True),
         "mode": request.action_type,
@@ -509,3 +515,77 @@ def normalize_transcript_text(value: object) -> str:
         return ""
     lines = [" ".join(line.split()) for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     return "\n".join(line for line in lines if line).strip()
+
+
+def log_guidance_model_request(
+    settings: Settings,
+    request: ModelRequest,
+    provider: str,
+    manifest: dict[str, Any],
+) -> None:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return
+    logger.info(
+        "[command_center_guidance] model request diagnostics=%s",
+        {
+            "task": request.task,
+            "provider": provider,
+            "model": request.model,
+            "temperature": request.temperature,
+            "maxOutputTokens": request.max_output_tokens,
+            "responseMimeType": request.response_mime_type,
+            "thinkingBudget": request.thinking_budget,
+            "messageCharCounts": [len(message.content) for message in request.messages],
+            "metadata": request.metadata,
+            "contextManifest": manifest,
+        },
+    )
+
+
+def log_guidance_model_response(
+    settings: Settings,
+    request: ModelRequest,
+    response,
+    *,
+    parse_status: str,
+    issues: list[str],
+) -> None:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return
+    logger.info(
+        "[command_center_guidance] model response diagnostics=%s",
+        {
+            "task": request.task,
+            "provider": response.provider,
+            "model": response.model,
+            "finishReason": response.finish_reason,
+            "responseTextLength": len(response.text),
+            "parseStatus": parse_status,
+            "issues": issues,
+            "usage": response.usage.__dict__ if response.usage else None,
+            "metadata": response.metadata,
+        },
+    )
+
+
+def log_guidance_model_failure(
+    settings: Settings,
+    request: ModelRequest,
+    provider: str,
+    error: Exception,
+) -> None:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return
+    logger.warning(
+        "[command_center_guidance] model call failed diagnostics=%s",
+        {
+            "task": request.task,
+            "provider": provider,
+            "model": request.model,
+            "maxOutputTokens": request.max_output_tokens,
+            "responseMimeType": request.response_mime_type,
+            "messageCharCounts": [len(message.content) for message in request.messages],
+            "errorType": type(error).__name__,
+            "error": str(error),
+        },
+    )
