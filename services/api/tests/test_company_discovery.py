@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -14,9 +16,12 @@ from jobops_api.company_discovery import (
     CompanyDiscoveryRequest,
     build_candidate_target_context,
     build_company_discovery_model_request,
+    build_assistant_message,
+    company_discovery_validation_failure,
     parse_company_discovery_json,
     run_company_discovery,
     save_model_derived_companies,
+    validate_company_discovery_output,
 )
 from jobops_api.db.models import Base, RoleTarget, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
@@ -186,6 +191,112 @@ def test_parse_and_validate_company_discovery_output() -> None:
     assert output.assistant_message == "Added companies."
     assert output.companies[0].website_url == "https://example.org"
     assert output.companies[0].source_urls == ["https://example.org"]
+
+
+def test_company_discovery_preserves_model_assistant_message_for_chat() -> None:
+    output = CompanyDiscoveryOutput(
+        assistantMessage=(
+            "**Best pattern:** civic-tech and democracy infrastructure companies looked strongest.\n\n"
+            "- Example Civic fits applied AI/platform work.\n"
+            "- Verify current openings before prioritizing."
+        ),
+        companies=[
+            CompanyDiscoveryRecord(
+                name="Example Civic",
+                normalizedName="example civic",
+                websiteUrl="https://example.org",
+                sourceUrls=["https://example.org"],
+            )
+        ],
+        skippedExistingCompanies=[],
+        clarifyingQuestions=[],
+    )
+    added = [
+        TargetCompany(
+            candidate_profile_id="profile-1",
+            name="Example Civic",
+            normalized_name="example civic",
+            website_url="https://example.org",
+        )
+    ]
+
+    assert build_assistant_message(output, added, []) == output.assistant_message
+
+
+def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
+    request = build_company_discovery_model_request(
+        CompanyDiscoveryRequest(
+            latest_user_message="Find companies to follow.",
+            candidate_profile_slug="rebekah-love",
+        ),
+        current_saved_companies=[],
+        target_context={},
+        search_grounding_enabled=True,
+    )
+
+    system_prompt = request.messages[0].content
+    assert "assistantMessage as the chat answer" in system_prompt
+    assert "concise markdown" in system_prompt
+    assert "Do not make it a generic save-count receipt" in system_prompt
+
+
+def test_company_discovery_salvages_valid_records_from_partly_invalid_output() -> None:
+    output, warnings = validate_company_discovery_output(
+        json.dumps(
+            {
+                "assistantMessage": "**Found a few options.**",
+                "companies": [
+                    {
+                        "name": "Valid Civic",
+                        "normalizedName": "valid civic",
+                        "websiteUrl": "https://valid.example",
+                        "remotePolicy": "varies",
+                        "sourceUrls": [],
+                        "unexpectedModelField": "ignored",
+                    },
+                    {
+                        "name": "",
+                        "sourceUrls": [],
+                    },
+                ],
+                "skippedExistingCompanies": [],
+                "clarifyingQuestions": [],
+            }
+        )
+    )
+
+    assert output.assistant_message == "**Found a few options.**"
+    assert [company.name for company in output.companies] == ["Valid Civic"]
+    assert output.companies[0].remote_policy == "unknown"
+    assert output.companies[0].source_urls == ["https://valid.example"]
+    assert warnings
+
+
+def test_company_discovery_validation_failure_logs_preview(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="jobops_api.company_discovery")
+    response = SimpleNamespace(
+        finish_reason="STOP",
+        model="test-model",
+        provider="test-provider",
+        text="not json\nwith details that should be previewed",
+        metadata={},
+        usage=None,
+    )
+    request = build_company_discovery_model_request(
+        CompanyDiscoveryRequest(
+            latest_user_message="Find companies to follow.",
+            candidate_profile_slug="rebekah-love",
+        ),
+        current_saved_companies=[],
+        target_context={},
+        search_grounding_enabled=True,
+    )
+
+    result = company_discovery_validation_failure(make_settings(tmp_path), request, response, ["Output is not valid JSON."])
+
+    assert result.status_code == 502
+    assert "Company discovery model output validation failed." in caplog.text
+    assert caplog.records[-1].response_preview == "not json with details that should be previewed"
 
 
 def test_company_discovery_normalizes_null_remote_policy_to_unknown() -> None:

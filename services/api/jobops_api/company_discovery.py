@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -34,9 +35,46 @@ DerivationStatus = Literal["model_derived", "user_entered", "imported"]
 ReviewStatus = Literal["new", "reviewed", "needs_verification", "archived"]
 RemotePolicy = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 DataConfidence = Literal["low", "medium", "high"]
+COMPANY_DISCOVERY_RECORD_KEYS = {
+    "name",
+    "normalized_name",
+    "normalizedName",
+    "website_url",
+    "websiteUrl",
+    "careers_url",
+    "careersUrl",
+    "job_listings_url",
+    "jobListingsUrl",
+    "description",
+    "headquarters_city",
+    "headquartersCity",
+    "headquarters_country",
+    "headquartersCountry",
+    "operating_countries",
+    "operatingCountries",
+    "hiring_locations",
+    "hiringLocations",
+    "remote_policy",
+    "remotePolicy",
+    "role_fit_tags",
+    "roleFitTags",
+    "mission_fit_tags",
+    "missionFitTags",
+    "fit_reason",
+    "fitReason",
+    "source_urls",
+    "sourceUrls",
+    "source_summary",
+    "sourceSummary",
+    "data_confidence",
+    "dataConfidence",
+    "notes",
+}
 
 
 router = APIRouter(prefix="/v1", tags=["companies"], dependencies=[Depends(require_internal_api_key)])
+logger = logging.getLogger(__name__)
+MODEL_RESPONSE_LOG_PREVIEW_CHARS = 1200
 
 
 class ApiModel(BaseModel):
@@ -154,7 +192,19 @@ class CompanyDiscoveryRecord(ApiModel):
             return "unknown"
         if isinstance(value, str):
             stripped = value.strip().lower()
-            return stripped or "unknown"
+            if stripped in {"remote", "hybrid", "onsite", "flexible", "unknown"}:
+                return stripped
+            return "unknown"
+        return value
+
+    @field_validator("data_confidence", mode="before")
+    @classmethod
+    def normalize_data_confidence(cls, value: object) -> object:
+        if value is None:
+            return "medium"
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            return stripped if stripped in {"low", "medium", "high"} else "medium"
         return value
 
     @field_validator("operating_countries", "hiring_locations", "role_fit_tags", "mission_fit_tags", "source_urls")
@@ -183,7 +233,7 @@ class CompanyDiscoveryOutput(ApiModel):
         validation_alias=AliasChoices("assistant_message", "assistantMessage"),
         serialization_alias="assistantMessage",
         min_length=1,
-        max_length=600,
+        max_length=1200,
     )
     companies: list[CompanyDiscoveryRecord] = Field(default_factory=list, max_length=25)
     skipped_existing_companies: list[SkippedExistingCompany] = Field(
@@ -328,11 +378,9 @@ def run_company_discovery(
         )
 
     try:
-        output = CompanyDiscoveryOutput.model_validate(parse_company_discovery_json(response.text))
+        output, validation_warnings = validate_company_discovery_output(response.text)
     except CompanyDiscoveryValidationFailure as error:
         return company_discovery_validation_failure(active_settings, routed_request, response, error.issues)
-    except ValidationError as error:
-        return company_discovery_validation_failure(active_settings, routed_request, response, format_validation_issues(error))
 
     save_result = save_model_derived_companies(
         db_session,
@@ -344,6 +392,17 @@ def run_company_discovery(
         web_search_queries=response.metadata.get("webSearchQueries") if isinstance(response.metadata, dict) else None,
     )
     db_session.commit()
+    if validation_warnings:
+        logger.warning(
+            "Company discovery model output needed cleanup before saving.",
+            extra={
+                "finish_reason": response.finish_reason,
+                "provider": response.provider,
+                "saved_company_count": len(save_result.added),
+                "validation_issue_count": len(validation_warnings),
+                "validation_issues": validation_warnings[:8],
+            },
+        )
 
     added_companies = [serialize_company(company) for company in save_result.added]
     skipped = [item.model_dump() for item in [*output.skipped_existing_companies, *save_result.skipped]]
@@ -353,6 +412,7 @@ def run_company_discovery(
         "companies": added_companies,
         "skippedExistingCompanies": skipped,
         "clarifyingQuestions": output.clarifying_questions,
+        **({"validationWarnings": validation_warnings} if validation_warnings else {}),
         **model_request_debug_fields(active_settings, routed_request),
         **model_response_debug_fields(active_settings, response),
     }
@@ -413,6 +473,7 @@ Rules:
 - Include source URLs so the user can verify details.
 - In sourceUrls, include only concise public website, careers, or job-listing URLs. Do not include long vertexaisearch.cloud.google.com grounding redirect URLs.
 - Mark records as model-derived and needing user review/verification through the returned fields and caveats.
+- Write assistantMessage as the chat answer to the user in concise markdown. Explain the pattern you found, why the strongest matches fit, and any caveats from the sources. Do not make it a generic save-count receipt; persistence is handled by JobOps separately.
 - Keep records concise but useful.
 - Keep each description, fitReason, and sourceSummary under 240 characters.
 - Return up to 12 companies. If token budget is tight, return fewer complete records instead of truncated JSON.
@@ -420,7 +481,7 @@ Rules:
 
 Return exactly this JSON shape:
 {
-  "assistantMessage": "Short summary.",
+  "assistantMessage": "Concise markdown answer for the chat window.",
   "companies": [
     {
       "name": "Company Name",
@@ -622,16 +683,14 @@ def build_assistant_message(
     added: list[TargetCompany],
     skipped: list[SkippedExistingCompany],
 ) -> str:
-    names = ", ".join(company.name for company in added[:8])
-    more = f", plus {len(added) - 8} more" if len(added) > 8 else ""
+    model_message = output.assistant_message.strip()
     skipped_note = f" Skipped {len(skipped)} obvious duplicate(s)." if skipped else ""
-    if added:
-        return (
-            f"Added {len(added)} model-derived compan{'y' if len(added) == 1 else 'ies'} to Companies: "
-            f"{names}{more}. Please verify them from the source links.{skipped_note}"
-        )
-    if output.clarifying_questions:
-        return output.assistant_message
+    if model_message and added:
+        return model_message
+    if model_message and (output.clarifying_questions or skipped):
+        return f"{model_message}{skipped_note}"
+    if model_message:
+        return model_message
     return f"No new companies were saved. Please verify existing companies from their links.{skipped_note}"
 
 
@@ -656,6 +715,80 @@ def parse_company_discovery_json(raw_text: str) -> Any:
     raise CompanyDiscoveryValidationFailure(["Output is not valid JSON."])
 
 
+def validate_company_discovery_output(raw_text: str) -> tuple[CompanyDiscoveryOutput, list[str]]:
+    parsed = parse_company_discovery_json(raw_text)
+    try:
+        return CompanyDiscoveryOutput.model_validate(parsed), []
+    except ValidationError as error:
+        if not isinstance(parsed, dict):
+            raise CompanyDiscoveryValidationFailure(format_validation_issues(error)) from error
+        salvaged_output, warnings = salvage_company_discovery_output(parsed, error)
+        if salvaged_output.companies or salvaged_output.clarifying_questions:
+            return salvaged_output, warnings
+        raise CompanyDiscoveryValidationFailure(warnings or format_validation_issues(error)) from error
+
+
+def salvage_company_discovery_output(parsed: dict[str, Any], error: ValidationError) -> tuple[CompanyDiscoveryOutput, list[str]]:
+    warnings = format_validation_issues(error)
+    assistant_message = clean_assistant_message(parsed.get("assistantMessage") or parsed.get("assistant_message"))
+    companies: list[CompanyDiscoveryRecord] = []
+    raw_companies = parsed.get("companies")
+    if isinstance(raw_companies, list):
+        for index, raw_company in enumerate(raw_companies):
+            if not isinstance(raw_company, dict):
+                warnings.append(f"companies.{index}: skipped non-object company record.")
+                continue
+            try:
+                companies.append(CompanyDiscoveryRecord.model_validate(sanitize_company_discovery_record(raw_company)))
+            except ValidationError as record_error:
+                warnings.extend(f"companies.{index}.{issue}" for issue in format_validation_issues(record_error))
+
+    skipped: list[SkippedExistingCompany] = []
+    raw_skipped = parsed.get("skippedExistingCompanies") or parsed.get("skipped_existing_companies")
+    if isinstance(raw_skipped, list):
+        for item in raw_skipped:
+            if isinstance(item, dict):
+                try:
+                    skipped.append(SkippedExistingCompany.model_validate(item))
+                except ValidationError:
+                    continue
+
+    clarifying_questions = [
+        question.strip()
+        for question in parsed.get("clarifyingQuestions", parsed.get("clarifying_questions", []))
+        if isinstance(question, str) and question.strip()
+    ][:5]
+
+    output = CompanyDiscoveryOutput(
+        assistantMessage=assistant_message,
+        companies=companies,
+        skippedExistingCompanies=skipped,
+        clarifyingQuestions=clarifying_questions,
+    )
+    return output, warnings
+
+
+def clean_assistant_message(value: object) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()[:1200]
+    return "I found company-discovery results, but part of the model response needed cleanup before saving."
+
+
+def sanitize_company_discovery_record(raw_company: dict[str, Any]) -> dict[str, Any]:
+    record = {key: value for key, value in raw_company.items() if key in COMPANY_DISCOVERY_RECORD_KEYS}
+    source_urls = record.get("sourceUrls") if "sourceUrls" in record else record.get("source_urls")
+    if not source_urls:
+        fallback_urls = [
+            record.get("websiteUrl") or record.get("website_url"),
+            record.get("careersUrl") or record.get("careers_url"),
+            record.get("jobListingsUrl") or record.get("job_listings_url"),
+        ]
+        urls = [url for url in fallback_urls if isinstance(url, str) and url.strip()]
+        if urls:
+            record["sourceUrls"] = urls[:3]
+    return record
+
+
 class CompanyDiscoveryValidationFailure(Exception):
     def __init__(self, issues: list[str]) -> None:
         super().__init__("Company discovery output validation failed.")
@@ -664,6 +797,16 @@ class CompanyDiscoveryValidationFailure(Exception):
 
 def company_discovery_validation_failure(settings: Settings, request: ModelRequest, response, issues: list[str]) -> CompanyDiscoveryServiceResult:
     issues = add_truncation_hint(issues, response.finish_reason)
+    logger.warning(
+        "Company discovery model output validation failed.",
+        extra={
+            "finish_reason": response.finish_reason,
+            "provider": response.provider,
+            "response_preview": preview_model_response(response.text),
+            "validation_issue_count": len(issues),
+            "validation_issues": issues[:8],
+        },
+    )
     return CompanyDiscoveryServiceResult(
         body={
             "ok": False,
@@ -728,6 +871,10 @@ def add_truncation_hint(issues: list[str], finish_reason: str | None) -> list[st
 
 def validation_issues_indicate_truncation(issues: list[str]) -> bool:
     return any("truncated" in issue.lower() for issue in issues)
+
+
+def preview_model_response(text: str) -> str:
+    return text.replace("\r", " ").replace("\n", " ").strip()[:MODEL_RESPONSE_LOG_PREVIEW_CHARS]
 
 
 def serialize_company(company: TargetCompany) -> dict[str, Any]:

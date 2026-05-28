@@ -252,6 +252,7 @@ Rules:
 - Route company website, careers, job listings, source URL, or notes edits to company_update.
 - Route job-posting save/track/add requests to add_job_from_url.
 - Route company research/finding/follow-list requests to company_discovery.
+- Route requests asking whether, which, or what companies to follow, watch, track, research, or add to the watchlist to company_discovery, even when phrased as career advice.
 - Route resume/profile/target-role/preference updates to profile_intake.
 - Route profile or career advice, brainstorming, wording help, role targeting discussion, and "what should I emphasize" questions to profile_guidance, career_discovery, discussion_only, clarifying_questions, or suggest_profile_changes_without_applying unless the user explicitly asks to save, update, apply, or add the changes.
 - Route questions about missing skills, skill gaps, positioning gaps, seniority, or what to emphasize to non-mutating guidance unless the user explicitly asks to save, update, apply, or add the changes.
@@ -434,10 +435,8 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
             field=field,
             raw_text=None if field != "notes" else message,
         )
-    if looks_like_profile_discussion(normalized):
-        return router_json("profile_guidance", "high", "profile", "User is asking for profile or career guidance, not a saved profile update.")
-    if looks_like_profile_intake(normalized, context.get("active_workspace")):
-        return router_json("profile_intake", "high", "profile", "User is updating profile or target-role context.")
+    if looks_like_company_discovery(normalized, context.get("active_workspace")):
+        return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
     if "follow-up" in normalized or "follow up" in normalized:
         return router_json("follow_up_review", "high", "follow-ups", "User is asking about follow-ups.")
     if "material" in normalized or "cover letter" in normalized or "resume variant" in normalized:
@@ -446,10 +445,12 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
         return router_json("mark_applied", "high", "applications", "User is marking an application as applied.")
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return router_json("prioritize_jobs", "high", "jobs", "User is asking to prioritize saved jobs.")
-    if looks_like_company_discovery(normalized, context.get("active_workspace")):
-        return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
     if url and looks_like_job_url_intake(normalized):
         return router_json("add_job_from_url", "high", "jobs", "User is saving a specific job posting URL.", url=url)
+    if looks_like_profile_discussion(normalized):
+        return router_json("profile_guidance", "high", "profile", "User is asking for profile or career guidance, not a saved profile update.")
+    if looks_like_profile_intake(normalized, context.get("active_workspace")):
+        return router_json("profile_intake", "high", "profile", "User is updating profile or target-role context.")
     if url:
         return router_json(
             "unknown",
@@ -590,6 +591,16 @@ def looks_like_job_url_intake(normalized: str) -> bool:
 
 def looks_like_company_discovery(normalized: str, active_workspace: object) -> bool:
     signals = [
+        "companies to follow",
+        "companies i should follow",
+        "companies that i should follow",
+        "companies that i should be following",
+        "companies should i follow",
+        "companies should i be following",
+        "companies to watch",
+        "companies i should watch",
+        "companies to track",
+        "company watchlist",
         "find me companies",
         "find companies",
         "discover companies",
@@ -601,6 +612,12 @@ def looks_like_company_discovery(normalized: str, active_workspace: object) -> b
         "civic tech companies",
     ]
     if any(signal in normalized for signal in signals):
+        return True
+    if "companies" in normalized and "who hire" in normalized:
+        return True
+    if "companies" in normalized and "that hire" in normalized:
+        return True
+    if "companies" in normalized and any(signal in normalized for signal in ["follow", "following", "watch", "track", "research"]):
         return True
     return active_workspace == "companies" and any(signal in normalized for signal in ["find", "discover", "hire", "hiring"])
 

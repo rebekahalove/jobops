@@ -794,6 +794,10 @@ def get_profile_draft(slug: str, session: Session = Depends(get_db_session), aut
 def interpret_command(command: str, active_workspace: str | None = None) -> CommandActionType:
     normalized = " ".join(command.lower().split())
 
+    if is_company_update_command(normalized):
+        return "company_update"
+    if is_company_discovery_command(normalized, active_workspace):
+        return "company_discovery"
     if is_profile_discussion_command(normalized):
         return "profile_guidance"
     if is_profile_intake_command(normalized, active_workspace):
@@ -806,10 +810,6 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "mark_applied"
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return "prioritize_jobs"
-    if is_company_update_command(normalized):
-        return "company_update"
-    if is_company_discovery_command(normalized, active_workspace):
-        return "company_discovery"
     if is_job_url_intake_command(normalized):
         return "add_job_from_url"
     return "unknown"
@@ -882,6 +882,16 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         "watch this company",
         "watch companies",
         "follow companies",
+        "companies to follow",
+        "companies i should follow",
+        "companies that i should follow",
+        "companies that i should be following",
+        "companies should i follow",
+        "companies should i be following",
+        "companies to watch",
+        "companies i should watch",
+        "companies to track",
+        "company watchlist",
         "find me companies",
         "find companies",
         "discover companies",
@@ -892,6 +902,14 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         "companies that hire",
     ]
     if any(signal in normalized_command for signal in direct_signals):
+        return True
+    if "companies" in normalized_command and "who hire" in normalized_command:
+        return True
+    if "companies" in normalized_command and "that hire" in normalized_command:
+        return True
+    if "companies" in normalized_command and any(
+        signal in normalized_command for signal in ["follow", "following", "watch", "track", "research"]
+    ):
         return True
 
     if active_workspace == "companies" and any(
@@ -946,6 +964,14 @@ def looks_like_future_tool_command(normalized_command: str) -> bool:
         "add it to my jobs",
         "follow company",
         "follow companies",
+        "companies to follow",
+        "companies i should follow",
+        "companies that i should follow",
+        "companies that i should be following",
+        "companies should i follow",
+        "companies should i be following",
+        "companies to watch",
+        "companies to track",
         "find companies",
         "discover companies",
         "company discovery",

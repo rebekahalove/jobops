@@ -2,7 +2,7 @@ import React from "react";
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AiCommandCenter, buildCommandCenterClientContext, starterPrompts, type CommandMessage } from "./ai-command-center";
+import { AiCommandCenter, MarkdownMessage, buildCommandCenterClientContext, starterPrompts, type CommandMessage } from "./ai-command-center";
 import {
   classifyCommand,
   createPlannedAction,
@@ -102,6 +102,34 @@ describe("AI command center", () => {
     expect(html).toContain("href=\"/profile\"");
   });
 
+  it("renders assistant markdown with safe links, lists, emphasis, and code", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownMessage
+        text={[
+          "Here is **guidance** with *emphasis* and `inline code`.",
+          "",
+          "- First item",
+          "- [Safe link](https://example.com)",
+          "- [Unsafe link](javascript:alert(1))",
+          "",
+          "```ts",
+          "const ok = true;",
+          "```"
+        ].join("\n")}
+      />
+    );
+
+    expect(html).toContain("<strong>guidance</strong>");
+    expect(html).toContain("<em>emphasis</em>");
+    expect(html).toContain("<code>inline code</code>");
+    expect(html).toContain("<ul>");
+    expect(html).toContain('href="https://example.com"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain("const ok = true;");
+    expect(html).not.toContain("href=\"javascript:alert(1)\"");
+  });
+
   it("prints model request and response debug payloads on profile-intake action cards", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter
@@ -161,6 +189,9 @@ describe("AI command center", () => {
     expect(source).toContain("formatTranscriptMessage(submittedCommand)");
     expect(source).toContain("messages.map((message)");
     expect(source).toContain('message.role === "user" ? <strong>You</strong> : null');
+    expect(source).toContain("<MarkdownMessage text={message.text} />");
+    expect(source).toContain("if (isStructuredCommandCenterError(error))");
+    expect(source).toContain("isStructuredCommandCenterError(fallbackError)");
     expect(source).not.toContain("JobOps agent");
     expect(source).not.toContain("messages.slice(-4)");
   });
@@ -251,6 +282,7 @@ describe("AI command center", () => {
     expect(classifyCommand("Here's a job URL. Add it to my jobs list.").type).toBe("add_job_from_url");
     expect(classifyCommand("Follow this company.").type).toBe("company_discovery");
     expect(classifyCommand("Find civic tech companies to follow.").type).toBe("company_discovery");
+    expect(classifyCommand("Are there any companies that I should be following, who hire for roles like this?").type).toBe("company_discovery");
     expect(classifyCommand("Update CivicActions job listings URL to https://example.com/jobs").type).toBe("company_update");
     expect(classifyCommand("Which jobs should I apply to today?").type).toBe("prioritize_jobs");
     expect(classifyCommand("Prioritize my saved jobs.").type).toBe("prioritize_jobs");
@@ -315,6 +347,9 @@ describe("AI command center", () => {
     expect(css).toContain("color: var(--ink)");
     expect(css).toContain("command-scroll-latest");
     expect(css).toContain("position: absolute");
+    expect(css).toContain(".command-message.agent:not(.status)");
+    expect(css).toContain(".command-message.status");
+    expect(css).toContain(".command-message-markdown");
 
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
     expect(source).toContain("conversation.scrollTop = conversation.scrollHeight");

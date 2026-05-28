@@ -184,15 +184,22 @@ describe("command-center API proxy", () => {
     );
 
     expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({
+    const payload = await response.json();
+    expect(payload).toMatchObject({
       ok: false,
-      error: "Command-center API returned an unexpected response. Please try again."
+      diagnostic: {
+        code: "upstream_html_error",
+        contentType: "text/html; charset=utf-8",
+        status: 502
+      }
     });
+    expect(payload.error).toContain("Command-center API returned HTML instead of JSON.");
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "Command-center API returned a non-JSON response.",
       expect.objectContaining({
         bodyPreview: "<html><head><title>Service unavailable</title></head></html>",
         contentType: "text/html; charset=utf-8",
+        diagnosticCode: "upstream_html_error",
         requestPath: "/api/command-center",
         requestUrl: "http://fastapi.test/v1/command-center/commands",
         responseUrl: null,
@@ -270,15 +277,22 @@ describe("command-center API proxy", () => {
 
     expect(response.status).toBe(502);
     expect(response.headers.get("content-type")).toContain("application/json");
-    await expect(response.json()).resolves.toEqual({
+    const payload = await response.json();
+    expect(payload).toMatchObject({
       ok: false,
-      error: "Command-center stream returned an unexpected response. Please try again."
+      diagnostic: {
+        code: "upstream_auth_html",
+        contentType: "text/html; charset=utf-8",
+        status: 200
+      }
     });
+    expect(payload.error).toContain("Command-center stream expected NDJSON but upstream returned HTML.");
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "Command-center stream API returned an unexpected response.",
       expect.objectContaining({
         bodyPreview: "<html><body>Sign in required</body></html>",
         contentType: "text/html; charset=utf-8",
+        diagnosticCode: "upstream_auth_html",
         requestPath: "/jobops/api/command-center/stream",
         requestUrl: "http://fastapi.test/v1/command-center/commands/stream",
         responseUrl: null,

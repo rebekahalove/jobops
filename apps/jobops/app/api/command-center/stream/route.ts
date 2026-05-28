@@ -98,9 +98,19 @@ export async function POST(request: Request) {
     const responseContentType = apiResponse.headers.get("content-type") ?? "";
     if (!responseContentType.toLowerCase().includes("application/x-ndjson")) {
       const body = await apiResponse.text();
-      console.error("Command-center stream API returned an unexpected response.", {
+      const diagnostic = diagnoseUnexpectedUpstreamResponse({
+        apiUrl,
         bodyPreview: previewBody(body),
         contentType: responseContentType || null,
+        requestUrl: request.url,
+        responseUrl: apiResponse.url || null,
+        status: apiResponse.status
+      });
+      console.error("Command-center stream API returned an unexpected response.", {
+        bodyPreview: diagnostic.bodyPreview,
+        contentType: responseContentType || null,
+        diagnosticCode: diagnostic.code,
+        likelyCause: diagnostic.likelyCause,
         requestId,
         requestPath: new URL(request.url).pathname,
         requestUrl: apiUrl,
@@ -111,7 +121,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Command-center stream returned an unexpected response. Please try again."
+          error: diagnostic.message,
+          diagnostic: omitBodyPreview(diagnostic)
         },
         { status: 502 }
       );
@@ -148,4 +159,75 @@ function forwardCookieHeader(request: Request): Record<string, string> {
 
 function previewBody(text: string) {
   return text.replace(/\s+/g, " ").trim().slice(0, UNEXPECTED_STREAM_BODY_PREVIEW_CHARS);
+}
+
+function diagnoseUnexpectedUpstreamResponse({
+  apiUrl,
+  bodyPreview,
+  contentType,
+  requestUrl,
+  responseUrl,
+  status
+}: {
+  apiUrl: string;
+  bodyPreview: string;
+  contentType: string | null;
+  requestUrl: string;
+  responseUrl: string | null;
+  status: number;
+}) {
+  const lowerContentType = (contentType ?? "").toLowerCase();
+  const lowerPreview = bodyPreview.toLowerCase();
+  const apiHost = safeHost(apiUrl);
+  const requestHost = safeHost(requestUrl);
+  const responseHost = responseUrl ? safeHost(responseUrl) : null;
+
+  let code = "upstream_unexpected_content";
+  let likelyCause = "FastAPI returned a response that was not NDJSON.";
+  if (apiHost && requestHost && apiHost === requestHost) {
+    code = "jobops_api_base_url_points_to_next";
+    likelyCause = "JOBOPS_API_BASE_URL appears to point at the Next.js app instead of the FastAPI backend.";
+  } else if (lowerContentType.includes("text/html") && /sign in|login|log in|unauthorized/.test(lowerPreview)) {
+    code = "upstream_auth_html";
+    likelyCause = "The upstream returned an HTML sign-in or auth page, which usually means an expired session or auth middleware mismatch.";
+  } else if (status === 401 || status === 403) {
+    code = "upstream_auth_rejected";
+    likelyCause = "FastAPI rejected the forwarded session or internal API key.";
+  } else if (lowerContentType.includes("text/html")) {
+    code = "upstream_html_error";
+    likelyCause = "The upstream returned HTML, which can happen when JOBOPS_API_BASE_URL is wrong or a platform error page intercepted the request.";
+  }
+
+  return {
+    bodyPreview,
+    code,
+    contentType: contentType || null,
+    likelyCause,
+    message: `Command-center stream expected NDJSON but upstream returned ${contentTypeDescription(contentType)}. ${likelyCause}`,
+    responseHost,
+    status
+  };
+}
+
+function omitBodyPreview<T extends { bodyPreview: string }>(diagnostic: T) {
+  const { bodyPreview: _bodyPreview, ...safeDiagnostic } = diagnostic;
+  return safeDiagnostic;
+}
+
+function safeHost(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+function contentTypeDescription(contentType: string | null) {
+  if (!contentType) {
+    return "a response with no content type";
+  }
+  if (contentType.toLowerCase().includes("text/html")) {
+    return "HTML";
+  }
+  return contentType;
 }

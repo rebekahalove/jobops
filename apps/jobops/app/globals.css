@@ -467,6 +467,26 @@ textarea {
   color: var(--ink);
 }
 
+.command-message.agent:not(.status) {
+  width: min(100%, 760px);
+  justify-self: center;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(23, 33, 47, 0.06);
+  padding: 14px 16px;
+}
+
+.command-message.status {
+  max-width: min(680px, 90%);
+  border-left: 3px solid rgba(124, 92, 43, 0.42);
+  background: #fffaf1;
+  color: var(--focus);
+  font-size: 0.88rem;
+  justify-self: start;
+  padding: 8px 11px;
+}
+
 .command-message.user {
   justify-self: end;
   border: 1px solid rgba(15, 118, 110, 0.28);
@@ -487,6 +507,88 @@ textarea {
   margin-bottom: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.command-message-markdown {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+.command-message-markdown p,
+.command-message-markdown ul,
+.command-message-markdown ol,
+.command-message-markdown pre,
+.command-message-markdown h2,
+.command-message-markdown h3,
+.command-message-markdown h4 {
+  margin: 0;
+}
+
+.command-message-markdown h2,
+.command-message-markdown h3,
+.command-message-markdown h4 {
+  color: var(--ink);
+  line-height: 1.25;
+}
+
+.command-message-markdown h2 {
+  font-size: 1.08rem;
+}
+
+.command-message-markdown h3,
+.command-message-markdown h4 {
+  font-size: 0.98rem;
+}
+
+.command-message-markdown ul,
+.command-message-markdown ol {
+  display: grid;
+  gap: 6px;
+  padding-left: 22px;
+}
+
+.command-message-markdown p,
+.command-message-markdown li {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.command-message-markdown a {
+  color: var(--accent-strong);
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.command-message-markdown code {
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 6px;
+  background: #eef6f5;
+  color: #114240;
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.32em;
+}
+
+.command-message-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(23, 33, 47, 0.14);
+  border-radius: 8px;
+  background: #17212f;
+  color: #f7fbfa;
+  padding: 12px;
+}
+
+.command-message-markdown pre code {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  white-space: pre;
 }
 
 .starter-prompts {

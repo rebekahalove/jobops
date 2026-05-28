@@ -35,6 +35,14 @@ export type CommandCenterProxyResponse =
   | {
       ok: false;
       error: string;
+      diagnostic?: {
+        code: string;
+        contentType: string | null;
+        likelyCause: string;
+        message?: string;
+        responseHost?: string | null;
+        status: number;
+      };
     };
 
 export type CommandCenterStreamEvent =

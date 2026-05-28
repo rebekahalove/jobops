@@ -157,11 +157,23 @@ export function classifyCommand(command: string): ClassifiedCommand {
     normalized.includes("follow this company") ||
     normalized.includes("follow company") ||
     normalized.includes("follow companies") ||
+    normalized.includes("companies to follow") ||
+    normalized.includes("companies i should follow") ||
+    normalized.includes("companies that i should follow") ||
+    normalized.includes("companies that i should be following") ||
+    normalized.includes("companies should i follow") ||
+    normalized.includes("companies should i be following") ||
+    normalized.includes("companies to watch") ||
+    normalized.includes("companies to track") ||
     normalized.includes("watch this company") ||
     normalized.includes("watch companies") ||
     normalized.includes("find companies") ||
     normalized.includes("find me companies") ||
     (normalized.includes("find") && normalized.includes("companies")) ||
+    (normalized.includes("companies") && normalized.includes("who hire")) ||
+    (normalized.includes("companies") && normalized.includes("that hire")) ||
+    (normalized.includes("companies") &&
+      (normalized.includes("following") || normalized.includes("watch") || normalized.includes("track") || normalized.includes("research"))) ||
     normalized.includes("discover companies") ||
     normalized.includes("company discovery")
   ) {
