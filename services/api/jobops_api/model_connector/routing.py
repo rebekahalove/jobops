@@ -7,6 +7,7 @@ from .models import ModelRequest, ModelTask
 
 DEFAULT_MODEL_TASKS: set[ModelTask] = {
     "company_discovery",
+    "command_center_guidance",
     "profile_extract",
     "profile_draft_update",
     "intake_followup",

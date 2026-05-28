@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .auth import AuthContext, require_auth_context
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
 from .company_update import CompanyUpdateRequest, run_company_update
+from .command_center_guidance import CommandCenterGuidanceRequest, run_command_center_guidance
 from .command_router import (
     CommandRouterOutput,
     CommandRouterRequest,
@@ -414,7 +415,15 @@ def dispatch_command_center_action(
     interpreted_action = normalize_dispatch_action(action_type)
 
     if interpreted_action in NON_MUTATING_PROFILE_ACTIONS:
-        return non_mutating_profile_guidance_response(interpreted_action, router_payload)
+        return execute_non_mutating_profile_guidance_command(
+            request,
+            action_type=interpreted_action,
+            router_decision=router_decision,
+            router_payload=router_payload,
+            candidate_profile=candidate_profile,
+            session=session,
+            settings=settings,
+        )
 
     if interpreted_action in {"follow_company", "company_discovery"}:
         if candidate_slug is None:
@@ -964,28 +973,70 @@ def build_profile_action_summary(profile_draft: dict[str, Any]) -> str:
     )
 
 
-def non_mutating_profile_guidance_response(
+def execute_non_mutating_profile_guidance_command(
+    request: CommandCenterCommandRequest,
+    *,
     action_type: CommandActionType,
+    router_decision: CommandRouterOutput | None,
     router_payload: dict[str, Any] | None,
+    candidate_profile,
+    session: Session,
+    settings,
 ) -> CommandCenterCommandResponse:
+    guidance_result = run_command_center_guidance(
+        CommandCenterGuidanceRequest(
+            latestUserMessage=request.command,
+            actionType=action_type,
+            activeWorkspace=request.active_workspace,
+            clientContext=request.client_context,
+            routerDecision=router_decision.model_dump(by_alias=True) if router_decision is not None else None,
+            routerPayload=router_payload,
+        ),
+        db_session=session,
+        settings=settings,
+        candidate_profile=candidate_profile,
+    )
+
+    if guidance_result.status_code != 200 or not guidance_result.body.get("ok"):
+        error_message = guidance_result.body.get("error", "Guidance failed. No profile data was changed.")
+        result_payload = {
+            **guidance_result.body,
+            "mutated": False,
+            **router_debug_payload(router_payload),
+        }
+        return CommandCenterCommandResponse(
+            assistant_message=error_message,
+            actions=[
+                CommandCenterActionResult(
+                    type=action_type,
+                    status="failed",
+                    targetWorkspace=target_workspace_for_action(action_type),
+                    title=title_for_action(action_type),
+                    summary="No profile data was changed.",
+                    resultPayload=result_payload,
+                )
+            ],
+            target_workspace=target_workspace_for_action(action_type),
+            result_payload=result_payload,
+        )
+
+    guidance_payload = guidance_result.body.get("result") if isinstance(guidance_result.body.get("result"), dict) else {}
     result_payload = {
         "ok": True,
         "mode": action_type,
         "mutated": False,
+        **guidance_payload,
         **router_debug_payload(router_payload),
     }
     return CommandCenterCommandResponse(
-        assistant_message=(
-            "I can help think this through without changing your saved profile. Share the role, audience, or draft "
-            "wording you want to explore, and I can suggest options for you to review before anything is saved."
-        ),
+        assistant_message=str(guidance_payload.get("assistantMessage") or "I can help think this through without changing saved profile data."),
         actions=[
             CommandCenterActionResult(
                 type=action_type,
                 status="completed",
                 targetWorkspace=target_workspace_for_action(action_type),
                 title=title_for_action(action_type),
-                summary="No profile data was changed.",
+                summary="Read-only guidance completed. No profile data was changed.",
                 resultPayload=result_payload,
             )
         ],
@@ -1076,7 +1127,9 @@ def build_routing_status_update(
 def build_router_decision_status_update(router_decision: CommandRouterOutput) -> CommandCenterStatusUpdate:
     action_type = normalize_dispatch_action(router_decision.action_type)
     workspace = router_decision.target_workspace or target_workspace_for_action(action_type)
-    if router_decision.confidence == "high" and action_type != "unknown":
+    if action_type in NON_MUTATING_PROFILE_ACTIONS:
+        message = "Status update: thinking through guidance without changing saved profile data."
+    elif router_decision.confidence == "high" and action_type != "unknown":
         message = (
             f"Status update: routed this command to {title_for_action(action_type)}"
             f" ({action_type}) with high confidence."

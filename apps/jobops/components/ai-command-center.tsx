@@ -12,10 +12,11 @@ import {
 } from "../lib/command-center-actions";
 import type { CommandCenterApiResponse, CommandCenterProxyResponse, CommandCenterStreamEvent } from "../lib/command-center-contract";
 
-type CommandMessage = {
+export type CommandMessage = {
   id: string;
   role: "agent" | "user";
   text: string;
+  rawText?: string;
 };
 
 const starterPrompts = [
@@ -129,12 +130,14 @@ export function AiCommandCenter({
     }
 
     const submissionId = Date.now();
+    const clientContext = buildCommandCenterClientContext(messages, submittedCommand);
     setMessages((current) => [
       ...current,
       {
         id: `user-${submissionId}`,
         role: "user",
-        text: formatTranscriptMessage(submittedCommand)
+        text: formatTranscriptMessage(submittedCommand),
+        rawText: submittedCommand
       },
       {
         id: `agent-status-submitted-${submissionId}`,
@@ -149,6 +152,7 @@ export function AiCommandCenter({
       const result = await runCommandCenterStream({
         activeWorkspace,
         apiBasePath,
+        clientContext,
         command: submittedCommand,
         onStatus: (message) => {
           setMessages((current) => [
@@ -173,7 +177,8 @@ export function AiCommandCenter({
           },
           body: JSON.stringify({
             command: submittedCommand,
-            activeWorkspace
+            activeWorkspace,
+            clientContext
           })
         });
         const payload = await readCommandCenterProxyResponse(response, fallbackRequestUrl);
@@ -371,11 +376,13 @@ function isTextUpload(file: File, extension: string) {
 async function runCommandCenterStream({
   activeWorkspace,
   apiBasePath,
+  clientContext,
   command,
   onStatus
 }: {
   activeWorkspace?: WorkspaceTab;
   apiBasePath: string;
+  clientContext?: Record<string, unknown>;
   command: string;
   onStatus: (message: string) => void;
 }): Promise<CommandCenterApiResponse> {
@@ -387,7 +394,8 @@ async function runCommandCenterStream({
     },
     body: JSON.stringify({
       command,
-      activeWorkspace
+      activeWorkspace,
+      clientContext
     })
   });
 
@@ -451,6 +459,31 @@ async function runCommandCenterStream({
   }
 
   return result;
+}
+
+export function buildCommandCenterClientContext(messages: CommandMessage[], submittedCommand: string) {
+  return {
+    transcript: {
+      source: "jobops_command_center_active_thread",
+      messages: [
+        ...messages.map(commandMessageToTranscriptMessage),
+        {
+          role: "user",
+          type: "message",
+          text: submittedCommand
+        }
+      ]
+    }
+  };
+}
+
+function commandMessageToTranscriptMessage(message: CommandMessage) {
+  const isStatus = message.role === "agent" && message.text.startsWith("Status update:");
+  return {
+    role: message.role === "user" ? "user" : "assistant",
+    type: isStatus ? "status" : "message",
+    text: message.rawText ?? message.text
+  };
 }
 
 function parseCommandCenterStreamEvent(line: string): CommandCenterStreamEvent | null {

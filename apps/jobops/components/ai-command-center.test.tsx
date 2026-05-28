@@ -2,7 +2,7 @@ import React from "react";
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AiCommandCenter, starterPrompts } from "./ai-command-center";
+import { AiCommandCenter, buildCommandCenterClientContext, starterPrompts, type CommandMessage } from "./ai-command-center";
 import {
   classifyCommand,
   createPlannedAction,
@@ -149,6 +149,7 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("Status update: sending this command to the JobOps router.");
+    expect(source).toContain("buildCommandCenterClientContext(messages, submittedCommand)");
     expect(source).toContain('const requestUrl = `${apiBasePath}/command-center/stream`;');
     expect(source).toContain("fetch(requestUrl");
     expect(source).toContain("Command-center stream returned a non-NDJSON response.");
@@ -162,6 +163,37 @@ describe("AI command center", () => {
     expect(source).toContain('message.role === "user" ? <strong>You</strong> : null');
     expect(source).not.toContain("JobOps agent");
     expect(source).not.toContain("messages.slice(-4)");
+  });
+
+  it("builds command-center client context with the active transcript and raw submitted text", () => {
+    const messages: CommandMessage[] = [
+      {
+        id: "agent-0",
+        role: "agent",
+        text: "Tell JobOps what you want."
+      },
+      {
+        id: "user-1",
+        role: "user",
+        text: "Pasted message: \"short preview...\"",
+        rawText: "Full pasted resume text with RAG and LLM evaluation."
+      },
+      {
+        id: "agent-status-1",
+        role: "agent",
+        text: "Status update: previous guidance completed."
+      }
+    ];
+
+    const context = buildCommandCenterClientContext(messages, "So what should I do?");
+
+    expect(context.transcript.source).toBe("jobops_command_center_active_thread");
+    expect(context.transcript.messages).toEqual([
+      { role: "assistant", type: "message", text: "Tell JobOps what you want." },
+      { role: "user", type: "message", text: "Full pasted resume text with RAG and LLM evaluation." },
+      { role: "assistant", type: "status", text: "Status update: previous guidance completed." },
+      { role: "user", type: "message", text: "So what should I do?" }
+    ]);
   });
 
   it("submits textarea messages on Enter while preserving Shift+Enter for multiline input", async () => {
