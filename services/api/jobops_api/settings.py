@@ -22,6 +22,7 @@ class Settings:
     database_url: str | None
     repo_root: Path
     job_discovery_search_grounding_enabled: bool = True
+    job_discovery_source: str = "none"
     llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -49,9 +50,14 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         **os.environ
     }
 
+    model_provider = merged.get("JOBOPS_LLM_PROVIDER") or merged.get("MODEL_PROVIDER", "mock")
+    job_discovery_source = merged.get("JOBOPS_JOB_DISCOVERY_SOURCE")
+    if not job_discovery_source:
+        job_discovery_source = "mock" if model_provider.strip().lower() == "mock" else "none"
+
     return Settings(
         app_env=app_env,
-        model_provider=merged.get("JOBOPS_LLM_PROVIDER") or merged.get("MODEL_PROVIDER", "mock"),
+        model_provider=model_provider,
         default_model=merged.get("JOBOPS_DEFAULT_MODEL", "gemini-2.5-flash"),
         cheap_model=merged.get("JOBOPS_CHEAP_MODEL", "gemini-2.5-flash-lite"),
         gemini_api_key=merged.get("GEMINI_API_KEY"),
@@ -65,6 +71,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
             merged.get("JOBOPS_JOB_DISCOVERY_SEARCH_GROUNDING"),
             default=True,
         ),
+        job_discovery_source=job_discovery_source.strip().lower(),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root,
         llm_request_timeout_seconds=parse_float(merged.get("JOBOPS_LLM_TIMEOUT_SECONDS"), default=60),

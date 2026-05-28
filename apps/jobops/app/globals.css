@@ -665,6 +665,37 @@ textarea {
   padding: 4px 8px;
 }
 
+.agent-action-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.agent-action-diagnostics div {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px;
+}
+
+.agent-action-diagnostics dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-action-diagnostics dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .model-request-debug {
   display: grid;
   gap: 8px;
@@ -2613,7 +2644,8 @@ input:disabled {
 .company-fit,
 .company-source-summary,
 .job-description,
-.job-fit {
+.job-fit,
+.job-verification {
   margin-bottom: 0;
 }
 

@@ -28,6 +28,10 @@ describe("Jobs list", () => {
             canonical_url: "https://jobs.example.test/example-civic/applied-ai",
             apply_url: "https://jobs.example.test/example-civic/apply",
             source: "Company careers",
+            provenance: "provider_result",
+            url_verification_status: "verified",
+            url_verification_checked_at: "2026-05-28T12:00:00Z",
+            url_verification_summary: "Fetched page confirmed the job title and company.",
             location: "Remote US",
             remote_work_mode: "remote",
             employment_type: "Full-time",
@@ -55,6 +59,9 @@ describe("Jobs list", () => {
     expect(html).toContain("$150k-$180k");
     expect(html).toContain("May 28, 2026");
     expect(html).toContain("05/20/2026");
+    expect(html).toContain("URL check");
+    expect(html).toContain("Verified");
+    expect(html).toContain("Fetched page confirmed the job title and company.");
     expect(html).toContain("Matches applied AI and platform engineering goals.");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
     expect(html).toContain('target="_blank"');

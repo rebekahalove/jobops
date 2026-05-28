@@ -12,6 +12,14 @@ export type SavedJob = {
   canonical_url: string | null;
   apply_url: string | null;
   source: string | null;
+  source_provider?: string | null;
+  source_result_id?: string | null;
+  source_query?: string | null;
+  source_url?: string | null;
+  provenance?: string | null;
+  url_verification_status?: string | null;
+  url_verification_checked_at?: string | null;
+  url_verification_summary?: string | null;
   location: string | null;
   remote_work_mode: string | null;
   employment_type: string | null;
@@ -103,6 +111,7 @@ export function JobsList({
                   <div className="company-badges" aria-label={`${job.title} status`}>
                     <span>{formatStatus(job.status)}</span>
                     {job.source ? <span>{job.source}</span> : null}
+                    {job.provenance ? <span>{formatStatus(job.provenance)}</span> : null}
                   </div>
                 </div>
 
@@ -134,7 +143,12 @@ export function JobsList({
                     <dt>Posted</dt>
                     <dd>{formatDateOnly(job.posting_date)}</dd>
                   </div>
+                  <div>
+                    <dt>URL check</dt>
+                    <dd>{formatOptionalStatus(job.url_verification_status ?? null)}</dd>
+                  </div>
                 </dl>
+                {job.url_verification_summary ? <p className="job-verification">{job.url_verification_summary}</p> : null}
 
                 <div className="company-links" aria-label={`${job.title} links`}>
                   <a href={job.job_url} rel="noopener noreferrer" target="_blank">

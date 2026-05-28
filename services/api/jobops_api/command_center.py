@@ -885,15 +885,27 @@ def safe_action_log_metrics(action: CommandCenterActionResult) -> dict[str, Any]
         "currentSavedJobCount",
         "excludedJobUrlCount",
         "currentSavedCompanyCount",
+        "discoveredCount",
+        "verifiedCount",
+        "duplicateCount",
+        "skippedCount",
+        "providerResultCount",
+        "modelSelectedCount",
+        "verifiedUrlCount",
+        "savedJobCount",
     ]
     metrics = {key: payload.get(key) for key in metric_keys if isinstance(payload.get(key), int)}
-    skipped_reason_counts = payload.get("skippedReasonCounts")
+    skipped_reason_counts = payload.get("skippedReasonCounts") or payload.get("skippedReasons")
     if isinstance(skipped_reason_counts, dict):
-        metrics["skippedReasonCounts"] = {
+        metrics["skippedReasons"] = {
             str(reason)[:160]: count
             for reason, count in skipped_reason_counts.items()
             if isinstance(count, int)
         }
+    for key in ("jobDiscoveryMode", "providerName", "sourceName"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            metrics[key] = value[:120]
     return {
         "type": action.type,
         "status": action.status,

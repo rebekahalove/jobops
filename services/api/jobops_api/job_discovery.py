@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Any, Literal
@@ -46,6 +49,17 @@ from .settings import Settings, load_settings
 
 JobStatus = Literal["saved", "new", "archived"]
 RemoteWorkMode = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
+JobProvenance = Literal["provider_result", "fetched_page", "user_url", "mock"]
+SkipReasonCode = Literal[
+    "duplicate_for_user",
+    "duplicate_global_job",
+    "failed_url_verification",
+    "no_live_source_provenance",
+    "expired_or_closed",
+    "excluded_by_user_constraints",
+    "missing_required_url",
+]
+LIVE_JOB_DISCOVERY_SOURCES = {"mock"}
 JOB_DISCOVERY_RECORD_KEYS = {
     "title",
     "company_name",
@@ -253,6 +267,11 @@ class SkippedJobResult(ApiModel):
         validation_alias=AliasChoices("job_url", "jobUrl"),
         serialization_alias="jobUrl",
     )
+    reason_code: SkipReasonCode = Field(
+        default="no_live_source_provenance",
+        validation_alias=AliasChoices("reason_code", "reasonCode"),
+        serialization_alias="reasonCode",
+    )
     reason: str
 
 
@@ -288,6 +307,14 @@ class SavedJobResponse(BaseModel):
     canonical_url: str | None
     apply_url: str | None
     source: str | None
+    source_provider: str | None
+    source_result_id: str | None
+    source_query: str | None
+    source_url: str | None
+    provenance: str
+    url_verification_status: str
+    url_verification_checked_at: datetime | None
+    url_verification_summary: str | None
     location: str | None
     remote_work_mode: str | None
     employment_type: str | None
@@ -329,6 +356,46 @@ class JobDiscoverySaveResult:
     skipped: list[SkippedJobResult]
 
 
+@dataclass(frozen=True)
+class JobUrlVerificationResult:
+    status: str
+    checked_at: datetime
+    summary: str
+    final_url: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    description_excerpt: str | None = None
+    posting_date: date | None = None
+    expired_or_closed: bool = False
+
+    @property
+    def verified(self) -> bool:
+        return self.status == "verified"
+
+
+@dataclass(frozen=True)
+class LiveJobSourceResult:
+    title: str
+    company_name: str
+    job_url: str
+    source_provider: str
+    provenance: JobProvenance
+    source_result_id: str | None = None
+    source_query: str | None = None
+    source_url: str | None = None
+    location: str | None = None
+    remote_work_mode: str | None = None
+    employment_type: str | None = None
+    salary_text: str | None = None
+    description_excerpt: str | None = None
+    posting_date: date | None = None
+    fit_summary: str | None = None
+    source_urls: tuple[str, ...] = ()
+    url_verification_status: str = "provider_unverified"
+    url_verification_checked_at: datetime | None = None
+    url_verification_summary: str | None = None
+
+
 @router.get("/jobs", response_model=list[SavedJobResponse])
 def list_jobs(
     session: Session = Depends(get_db_session),
@@ -363,6 +430,16 @@ def run_job_discovery(
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
     private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
+    return run_live_source_job_discovery(
+        request,
+        db_session=db_session,
+        settings=active_settings,
+        candidate_profile=candidate_profile,
+        current_saved_jobs=current_saved_jobs,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
     model_request = build_job_discovery_model_request(
         request,
         current_saved_jobs=current_saved_jobs,
@@ -505,6 +582,132 @@ def run_job_discovery(
     }
 
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
+
+
+def run_live_source_job_discovery(
+    request: JobDiscoveryRequest,
+    *,
+    db_session: Session,
+    settings: Settings,
+    candidate_profile: CandidateProfile,
+    current_saved_jobs: list[dict[str, Any]],
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> JobDiscoveryServiceResult:
+    fresh_search_queries = build_fresh_job_search_queries(
+        request,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    source_name = settings.job_discovery_source.strip().lower()
+    user_urls = extract_http_urls(request.latest_user_message)
+    search_queries_used: list[str] = []
+    job_discovery_mode = resolve_job_discovery_mode(settings, source_name=source_name, user_urls=user_urls)
+
+    if user_urls:
+        source_results = build_user_url_source_results(user_urls)
+    elif source_name == "mock" or settings.model_provider.strip().lower() == "mock":
+        search_queries_used = fresh_search_queries[:4]
+        source_results = build_mock_live_job_source_results(search_queries_used)
+        job_discovery_mode = "mock"
+    elif source_name in {"", "none", "disabled"}:
+        mode = "grounded_model_only" if settings.job_discovery_search_grounding_enabled else "unavailable"
+        return live_job_discovery_unconfigured_response(
+            settings,
+            mode=mode,
+            source_name=source_name or "none",
+            search_queries=fresh_search_queries,
+        )
+    elif source_name not in LIVE_JOB_DISCOVERY_SOURCES:
+        return live_job_discovery_unconfigured_response(
+            settings,
+            mode="unavailable",
+            source_name=source_name,
+            search_queries=fresh_search_queries,
+            detail=f"Unsupported JOBOPS_JOB_DISCOVERY_SOURCE: {source_name}",
+        )
+    else:
+        source_results = []
+
+    save_result = save_live_job_source_results(
+        db_session,
+        candidate_profile=candidate_profile,
+        discovery_query=request.latest_user_message,
+        source_results=source_results,
+        search_queries_used=search_queries_used,
+        provider=source_name or job_discovery_mode,
+        verify_urls=job_discovery_mode != "mock",
+    )
+    db_session.commit()
+
+    saved_jobs = [serialize_saved_job(link) for link in save_result.saved_links]
+    updated_saved_jobs = [serialize_saved_job(link) for link in save_result.updated_existing_links]
+    skipped_jobs = [item.model_dump(by_alias=True) for item in save_result.skipped]
+    skipped_counts = skipped_reason_code_counts(save_result.skipped)
+    verified_count = sum(
+        1
+        for link in [*save_result.saved_links, *save_result.updated_existing_links]
+        if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
+    )
+    result_payload = {
+        "assistantMessage": build_live_job_discovery_assistant_message(save_result, source_results),
+        "jobs": saved_jobs,
+        "updatedExistingJobs": updated_saved_jobs,
+        "discoveredCount": len(source_results),
+        "verifiedCount": verified_count,
+        "savedCount": len(saved_jobs),
+        "updatedExistingCount": len(updated_saved_jobs),
+        "createdGlobalJobCount": len(save_result.created_jobs),
+        "updatedGlobalJobCount": len(save_result.updated_jobs),
+        "duplicateCount": skipped_counts.get("duplicate_for_user", 0) + skipped_counts.get("duplicate_global_job", 0),
+        "skippedCount": len(skipped_jobs),
+        "skippedJobCount": len(skipped_jobs),
+        "skippedJobs": skipped_jobs,
+        "skippedReasons": skipped_counts,
+        "jobDiscoveryMode": job_discovery_mode,
+        "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+        "providerName": source_name or job_discovery_mode,
+        "sourceName": source_name or job_discovery_mode,
+        "searchQueriesUsed": search_queries_used,
+        "providerResultCount": len(source_results),
+        "modelSelectedCount": 0,
+        "verifiedUrlCount": verified_count,
+        "savedJobCount": len(saved_jobs),
+        "currentSavedJobCount": len(current_saved_jobs),
+        "excludedJobUrlCount": len(current_saved_job_urls(current_saved_jobs)),
+        "currentSavedCompanyCount": len(current_saved_companies),
+    }
+    return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
+
+
+def live_job_discovery_unconfigured_response(
+    settings: Settings,
+    *,
+    mode: str,
+    source_name: str,
+    search_queries: list[str],
+    detail: str | None = None,
+) -> JobDiscoveryServiceResult:
+    body = {
+        "ok": False,
+        "error": "Live job discovery is not configured. No jobs were saved.",
+        "code": "live_job_discovery_not_configured",
+        "jobDiscoveryMode": mode,
+        "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+        "providerName": source_name,
+        "sourceName": source_name,
+        "searchQueriesUsed": search_queries,
+        "providerResultCount": 0,
+        "modelSelectedCount": 0,
+        "verifiedUrlCount": 0,
+        "savedJobCount": 0,
+        "skippedReasons": {},
+    }
+    if detail and settings.app_env.lower() not in {"prod", "production"}:
+        body["debugDetail"] = detail
+    return JobDiscoveryServiceResult(body=body, status_code=503)
 
 
 def build_job_discovery_model_request(
@@ -862,6 +1065,495 @@ def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) ->
     ]
 
 
+def save_live_job_source_results(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    discovery_query: str,
+    source_results: list[LiveJobSourceResult],
+    search_queries_used: list[str],
+    provider: str,
+    verify_urls: bool,
+) -> JobDiscoverySaveResult:
+    existing_jobs = {
+        job.normalized_url: job
+        for job in session.scalars(select(JobPosting))
+        if job.normalized_url
+    }
+    existing_links = {
+        link.job_id: link
+        for link in session.scalars(
+            select(CandidateSavedJob).where(CandidateSavedJob.candidate_profile_id == candidate_profile.id)
+        )
+    }
+    saved_links: list[CandidateSavedJob] = []
+    updated_existing_links: list[CandidateSavedJob] = []
+    created_jobs: list[JobPosting] = []
+    updated_jobs: list[JobPosting] = []
+    added_companies: list[TargetCompany] = []
+    skipped: list[SkippedJobResult] = []
+    now = datetime.now(timezone.utc)
+    seen_in_output: set[str] = set()
+
+    for result in source_results:
+        normalized_url = normalize_job_url(result.job_url)
+        if not normalized_url:
+            skipped.append(skip_from_source_result(result, "missing_required_url", "Missing reliable job URL."))
+            continue
+        if normalized_url in seen_in_output:
+            skipped.append(skip_from_source_result(result, "duplicate_global_job", "Duplicate result in provider response."))
+            continue
+        seen_in_output.add(normalized_url)
+
+        verification = source_result_verification(result, verify_url=verify_urls)
+        if verification.expired_or_closed:
+            skipped.append(skip_from_source_result(result, "expired_or_closed", verification.summary))
+            continue
+        if verification.status == "failed":
+            skipped.append(skip_from_source_result(result, "failed_url_verification", verification.summary))
+            continue
+        if result.provenance not in {"provider_result", "fetched_page", "user_url", "mock"}:
+            skipped.append(skip_from_source_result(result, "no_live_source_provenance", "Job result did not include live-source provenance."))
+            continue
+
+        existing_job = existing_jobs.get(normalized_url)
+        if existing_job is not None:
+            update_job_posting_from_source_result(existing_job, result, verification=verification, provider=provider, last_seen_at=now)
+            updated_jobs.append(existing_job)
+        else:
+            existing_job = JobPosting(
+                title=result.title.strip(),
+                company_name=result.company_name.strip(),
+                job_url=result.job_url,
+                canonical_url=verification.final_url or result.job_url,
+                apply_url=result.job_url,
+                normalized_url=normalized_url,
+                source=result.source_provider,
+                source_provider=result.source_provider,
+                source_result_id=result.source_result_id,
+                source_query=result.source_query,
+                source_url=result.source_url or result.job_url,
+                provenance=result.provenance,
+                location=result.location,
+                remote_work_mode=result.remote_work_mode,
+                employment_type=result.employment_type,
+                salary_text=result.salary_text,
+                description_excerpt=verification.description_excerpt or result.description_excerpt,
+                discovered_by=provider,
+                url_verification_status=verification.status,
+                url_verification_checked_at=verification.checked_at,
+                url_verification_summary=verification.summary,
+                posting_date=result.posting_date or verification.posting_date,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            session.add(existing_job)
+            session.flush()
+            created_jobs.append(existing_job)
+            existing_jobs[normalized_url] = existing_job
+
+        if existing_job.id in existing_links:
+            link = existing_links[existing_job.id]
+            link.fit_summary = result.fit_summary or link.fit_summary
+            link.source_command = discovery_query
+            link.discovery_metadata = {
+                "discovery_query": discovery_query,
+                "search_queries_used": search_queries_used,
+                "provider": provider,
+                "provenance": result.provenance,
+                "source_result_id": result.source_result_id,
+                "url_verification_status": verification.status,
+            }
+            updated_existing_links.append(link)
+            skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
+            continue
+
+        job_record = source_result_to_job_record(result, verification)
+        added_company = ensure_candidate_company_for_job(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            job=job_record,
+            provider=provider,
+            discovery_query=discovery_query,
+        )
+        if added_company is not None:
+            added_companies.append(added_company)
+
+        link = CandidateSavedJob(
+            candidate_profile_id=candidate_profile.id,
+            job_id=existing_job.id,
+            status="saved",
+            fit_summary=result.fit_summary,
+            user_notes=None,
+            source_command=discovery_query,
+            discovery_metadata={
+                "discovery_query": discovery_query,
+                "search_queries_used": search_queries_used,
+                "provider": provider,
+                "provenance": result.provenance,
+                "source_result_id": result.source_result_id,
+                "url_verification_status": verification.status,
+            },
+            added_at=now,
+        )
+        session.add(link)
+        session.flush()
+        saved_links.append(link)
+        existing_links[existing_job.id] = link
+
+    return JobDiscoverySaveResult(
+        saved_links=saved_links,
+        updated_existing_links=updated_existing_links,
+        created_jobs=created_jobs,
+        updated_jobs=updated_jobs,
+        added_companies=added_companies,
+        skipped=skipped,
+    )
+
+
+def source_result_verification(result: LiveJobSourceResult, *, verify_url: bool) -> JobUrlVerificationResult:
+    if result.provenance == "mock":
+        return JobUrlVerificationResult(
+            status="mock_verified",
+            checked_at=datetime.now(timezone.utc),
+            summary="Mock job result for local/test mode.",
+            final_url=result.job_url,
+            posting_date=result.posting_date,
+        )
+    if not verify_url and result.provenance == "provider_result":
+        return JobUrlVerificationResult(
+            status=result.url_verification_status or "provider_unverified",
+            checked_at=result.url_verification_checked_at or datetime.now(timezone.utc),
+            summary=result.url_verification_summary or "Trusted provider result; URL fetch was not required.",
+            final_url=result.job_url,
+            posting_date=result.posting_date,
+        )
+    return verify_job_url(
+        result.job_url,
+        expected_title=None if result.provenance == "user_url" else result.title,
+        expected_company=None if result.provenance == "user_url" else result.company_name,
+    )
+
+
+def verify_job_url(job_url: str, *, expected_title: str | None = None, expected_company: str | None = None) -> JobUrlVerificationResult:
+    checked_at = datetime.now(timezone.utc)
+    normalized_url = normalize_job_url(job_url)
+    if not normalized_url:
+        return JobUrlVerificationResult(status="failed", checked_at=checked_at, summary="URL is not valid http(s).")
+
+    request = urllib.request.Request(
+        normalized_url,
+        headers={
+            "User-Agent": "JobOps/0.1 (+https://jobops.local)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            status = getattr(response, "status", 200)
+            final_url = response.geturl()
+            content_type = response.headers.get("content-type", "")
+            body = response.read(300_000)
+    except urllib.error.HTTPError as error:
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary=f"Job URL returned HTTP {error.code}.",
+            final_url=error.geturl(),
+            expired_or_closed=error.code in {404, 410},
+        )
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        return JobUrlVerificationResult(status="failed", checked_at=checked_at, summary=f"Job URL fetch failed: {type(error).__name__}.")
+
+    if status >= 400:
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary=f"Job URL returned HTTP {status}.",
+            final_url=final_url,
+            expired_or_closed=status in {404, 410},
+        )
+    if "text/html" not in content_type.lower() and "text/plain" not in content_type.lower() and content_type:
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary=f"Job URL returned unsupported content type {content_type[:80]}.",
+            final_url=final_url,
+        )
+
+    text = decode_response_body(body)
+    visible_text = html_to_text(text)
+    lower_visible = visible_text.casefold()
+    if looks_like_error_or_signin_page(lower_visible):
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary="Fetched page appears to be a sign-in, access, or error page.",
+            final_url=final_url,
+        )
+    if looks_like_closed_job_page(lower_visible):
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary="Fetched page indicates the job is expired, closed, or no longer available.",
+            final_url=final_url,
+            expired_or_closed=True,
+        )
+
+    title_ok = text_contains_enough(visible_text, expected_title)
+    company_ok = text_contains_enough(visible_text, expected_company)
+    if expected_title and not title_ok:
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary="Fetched page did not confirm the expected job title.",
+            final_url=final_url,
+        )
+    if expected_company and not company_ok:
+        return JobUrlVerificationResult(
+            status="failed",
+            checked_at=checked_at,
+            summary="Fetched page did not confirm the expected company.",
+            final_url=final_url,
+        )
+
+    return JobUrlVerificationResult(
+        status="verified",
+        checked_at=checked_at,
+        summary="Fetched page confirmed the job title and company.",
+        final_url=final_url,
+        title=expected_title,
+        company_name=expected_company,
+        description_excerpt=visible_text[:600],
+    )
+
+
+def decode_response_body(body: bytes) -> str:
+    for encoding in ("utf-8", "windows-1252", "latin-1"):
+        try:
+            return body.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return body.decode("utf-8", errors="replace")
+
+
+def html_to_text(value: str) -> str:
+    without_scripts = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+    without_tags = re.sub(r"(?s)<[^>]+>", " ", without_scripts)
+    return " ".join(without_tags.split())
+
+
+def looks_like_error_or_signin_page(lower_visible_text: str) -> bool:
+    signals = [
+        "sign in to continue",
+        "login to continue",
+        "access denied",
+        "forbidden",
+        "page not found",
+        "not found",
+        "something went wrong",
+    ]
+    return any(signal in lower_visible_text[:4000] for signal in signals)
+
+
+def looks_like_closed_job_page(lower_visible_text: str) -> bool:
+    signals = [
+        "job is no longer available",
+        "position is no longer available",
+        "posting is no longer available",
+        "this job has expired",
+        "this position has been filled",
+        "no longer accepting applications",
+        "job posting has closed",
+    ]
+    return any(signal in lower_visible_text[:6000] for signal in signals)
+
+
+def text_contains_enough(text: str, expected: str | None) -> bool:
+    if not expected:
+        return True
+    normalized_text = normalize_match_text(text)
+    tokens = [token for token in normalize_match_text(expected).split() if len(token) >= 3]
+    if not tokens:
+        return True
+    matches = sum(1 for token in tokens if token in normalized_text)
+    return matches >= max(1, min(len(tokens), 2))
+
+
+def normalize_match_text(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.casefold()).split())
+
+
+def skip_from_source_result(result: LiveJobSourceResult, reason_code: SkipReasonCode, reason: str) -> SkippedJobResult:
+    return SkippedJobResult(title=result.title, companyName=result.company_name, jobUrl=result.job_url, reasonCode=reason_code, reason=reason)
+
+
+def source_result_to_job_record(result: LiveJobSourceResult, verification: JobUrlVerificationResult) -> JobDiscoveryRecord:
+    return JobDiscoveryRecord(
+        title=result.title,
+        companyName=result.company_name,
+        jobUrl=result.job_url,
+        sourceUrls=[url for url in [result.source_url, result.job_url, *result.source_urls] if url],
+        source=result.source_provider,
+        location=result.location,
+        remoteWorkMode=result.remote_work_mode or "unknown",
+        employmentType=result.employment_type,
+        salaryText=result.salary_text,
+        descriptionExcerpt=verification.description_excerpt or result.description_excerpt,
+        fitSummary=result.fit_summary,
+        postingDate=result.posting_date or verification.posting_date,
+    )
+
+
+def update_job_posting_from_source_result(
+    job_posting: JobPosting,
+    result: LiveJobSourceResult,
+    *,
+    verification: JobUrlVerificationResult,
+    provider: str,
+    last_seen_at: datetime,
+) -> None:
+    job_posting.title = result.title.strip()
+    job_posting.company_name = result.company_name.strip()
+    job_posting.job_url = result.job_url
+    job_posting.canonical_url = verification.final_url or job_posting.canonical_url or result.job_url
+    job_posting.apply_url = job_posting.apply_url or result.job_url
+    job_posting.source = result.source_provider or job_posting.source or provider
+    job_posting.source_provider = result.source_provider
+    job_posting.source_result_id = result.source_result_id or job_posting.source_result_id
+    job_posting.source_query = result.source_query or job_posting.source_query
+    job_posting.source_url = result.source_url or job_posting.source_url or result.job_url
+    job_posting.provenance = result.provenance
+    job_posting.location = result.location or job_posting.location
+    job_posting.remote_work_mode = result.remote_work_mode or job_posting.remote_work_mode
+    job_posting.employment_type = result.employment_type or job_posting.employment_type
+    job_posting.salary_text = result.salary_text or job_posting.salary_text
+    job_posting.description_excerpt = verification.description_excerpt or result.description_excerpt or job_posting.description_excerpt
+    job_posting.discovered_by = provider
+    job_posting.url_verification_status = verification.status
+    job_posting.url_verification_checked_at = verification.checked_at
+    job_posting.url_verification_summary = verification.summary
+    job_posting.posting_date = result.posting_date or verification.posting_date or job_posting.posting_date
+    job_posting.last_seen_at = last_seen_at
+
+
+def count_verified_source_results(source_results: list[LiveJobSourceResult]) -> int:
+    return sum(1 for result in source_results if result.url_verification_status in {"verified", "mock_verified", "provider_unverified"})
+
+
+def skipped_reason_code_counts(skipped: list[SkippedJobResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in skipped:
+        counts[item.reason_code] = counts.get(item.reason_code, 0) + 1
+    return counts
+
+
+def build_live_job_discovery_assistant_message(save_result: JobDiscoverySaveResult, source_results: list[LiveJobSourceResult]) -> str:
+    saved_count = len(save_result.saved_links)
+    updated_count = len(save_result.updated_existing_links)
+    skipped_count = len(save_result.skipped)
+    if saved_count:
+        message = f"Saved {saved_count} verified job(s) from live source results."
+        if updated_count:
+            message += f" Refreshed {updated_count} already-saved job(s)."
+        if skipped_count:
+            message += f" Skipped {skipped_count} result(s): {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+        return message
+    if skipped_count:
+        reason_counts = skipped_reason_code_counts(save_result.skipped)
+        if reason_counts.get("duplicate_for_user") == skipped_count:
+            return f"I found {skipped_count} job(s) already in your Jobs list, so I did not add duplicates."
+        return f"No new jobs were saved. I skipped {skipped_count} result(s): {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+    if source_results:
+        return "No new jobs were saved from the live source results."
+    return "No live job results were found, so no jobs were saved."
+
+
+def format_reason_code_counts(counts: dict[str, int]) -> str:
+    return "; ".join(f"{count} {code}" for code, count in sorted(counts.items()))
+
+
+def resolve_job_discovery_mode(settings: Settings, *, source_name: str, user_urls: list[str]) -> str:
+    if user_urls:
+        return "live_provider"
+    if source_name == "mock" or settings.model_provider.strip().lower() == "mock":
+        return "mock"
+    if source_name in LIVE_JOB_DISCOVERY_SOURCES:
+        return "live_provider"
+    if settings.job_discovery_search_grounding_enabled:
+        return "grounded_model_only"
+    return "unavailable"
+
+
+def extract_http_urls(text: str) -> list[str]:
+    return compact_unique_strings(re.findall(r"https?://[^\s<>)\"']+", text), limit=10)
+
+
+def build_user_url_source_results(urls: list[str]) -> list[LiveJobSourceResult]:
+    results: list[LiveJobSourceResult] = []
+    for url in urls:
+        domain = domain_from_url(url) or "Unknown company"
+        results.append(
+            LiveJobSourceResult(
+                title="User-provided job posting",
+                company_name=domain,
+                job_url=url,
+                source_provider="user_url",
+                provenance="user_url",
+                source_url=url,
+                fit_summary="Saved from a user-provided job URL.",
+            )
+        )
+    return results
+
+
+def build_mock_live_job_source_results(search_queries: list[str]) -> list[LiveJobSourceResult]:
+    query = search_queries[0] if search_queries else "mock job discovery"
+    return [
+        LiveJobSourceResult(
+            title="Applied AI Engineer",
+            company_name="Civic AI Labs",
+            job_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
+            source_provider="mock_job_source",
+            source_result_id="mock-civic-ai-applied",
+            source_query=query,
+            source_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
+            provenance="mock",
+            location="Remote US",
+            remote_work_mode="remote",
+            employment_type="Full-time",
+            salary_text="$150k-$190k",
+            description_excerpt="Build applied AI workflows for civic teams.",
+            posting_date=date(2026, 5, 20),
+            fit_summary="Matches applied AI, platform, and public-interest technology goals.",
+            url_verification_status="mock_verified",
+            url_verification_checked_at=datetime.now(timezone.utc),
+            url_verification_summary="Mock source result for local/test mode.",
+        ),
+        LiveJobSourceResult(
+            title="AI Platform Engineer",
+            company_name="Open Data Works",
+            job_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
+            source_provider="mock_job_source",
+            source_result_id="mock-open-data-platform",
+            source_query=query,
+            source_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
+            provenance="mock",
+            location="Hybrid NYC",
+            remote_work_mode="hybrid",
+            employment_type="Full-time",
+            salary_text="$160k-$205k",
+            description_excerpt="Own LLM evaluation, retrieval, and deployment tooling.",
+            posting_date=None,
+            fit_summary="Strong fit for AI platform engineering and RAG evaluation experience.",
+            url_verification_status="mock_verified",
+            url_verification_checked_at=datetime.now(timezone.utc),
+            url_verification_summary="Mock source result for local/test mode.",
+        ),
+    ]
+
+
 def save_discovered_jobs(
     session: Session,
     *,
@@ -906,19 +1598,45 @@ def save_discovered_jobs(
         normalized_url = normalize_job_url(job.job_url)
         if not normalized_url:
             skipped.append(
-                SkippedJobResult(title=job.title, companyName=job.company_name, jobUrl=job.job_url, reason="Missing reliable job URL.")
+                SkippedJobResult(
+                    title=job.title,
+                    companyName=job.company_name,
+                    jobUrl=job.job_url,
+                    reasonCode="missing_required_url",
+                    reason="Missing reliable job URL.",
+                )
             )
             continue
         if normalized_url in seen_in_output:
-            skipped.append(SkippedJobResult(title=job.title, companyName=job.company_name, jobUrl=job.job_url, reason="Duplicate result."))
+            skipped.append(
+                SkippedJobResult(
+                    title=job.title,
+                    companyName=job.company_name,
+                    jobUrl=job.job_url,
+                    reasonCode="duplicate_global_job",
+                    reason="Duplicate result.",
+                )
+            )
             continue
         seen_in_output.add(normalized_url)
+        if provider != "mock":
+            skipped.append(
+                SkippedJobResult(
+                    title=job.title,
+                    companyName=job.company_name,
+                    jobUrl=job.job_url,
+                    reasonCode="no_live_source_provenance",
+                    reason="Freeform model output cannot create saved jobs without live-source provenance.",
+                )
+            )
+            continue
         if require_grounded_job_urls and not job_url_is_grounded(job.job_url, job.source_urls, grounded_urls):
             skipped.append(
                 SkippedJobResult(
                     title=job.title,
                     companyName=job.company_name,
                     jobUrl=job.job_url,
+                    reasonCode="no_live_source_provenance",
                     reason="Job URL was not supported by fresh search grounding/source URLs.",
                 )
             )
@@ -942,12 +1660,20 @@ def save_discovered_jobs(
                 apply_url=job.job_url,
                 normalized_url=normalized_url,
                 source=job.source or provider,
+                source_provider=provider,
+                source_result_id=None,
+                source_query=None,
+                source_url=job.job_url,
+                provenance="mock" if provider == "mock" else "unknown",
                 location=job.location,
                 remote_work_mode=job.remote_work_mode,
                 employment_type=job.employment_type,
                 salary_text=job.salary_text,
                 description_excerpt=job.description_excerpt,
                 discovered_by=provider,
+                url_verification_status="mock_verified" if provider == "mock" else "unverified",
+                url_verification_checked_at=now,
+                url_verification_summary="Mock model result." if provider == "mock" else "Legacy model output was not live-source verified.",
                 posting_date=job.posting_date,
                 first_seen_at=now,
                 last_seen_at=now,
@@ -1013,12 +1739,20 @@ def update_job_posting_from_record(
     job_posting.canonical_url = job_posting.canonical_url or job.job_url
     job_posting.apply_url = job_posting.apply_url or job.job_url
     job_posting.source = job.source or job_posting.source or provider
+    job_posting.source_provider = job_posting.source_provider or provider
+    job_posting.source_url = job_posting.source_url or job.job_url
+    job_posting.provenance = job_posting.provenance or ("mock" if provider == "mock" else "unknown")
     job_posting.location = job.location or job_posting.location
     job_posting.remote_work_mode = job.remote_work_mode or job_posting.remote_work_mode
     job_posting.employment_type = job.employment_type or job_posting.employment_type
     job_posting.salary_text = job.salary_text or job_posting.salary_text
     job_posting.description_excerpt = job.description_excerpt or job_posting.description_excerpt
     job_posting.discovered_by = provider
+    job_posting.url_verification_status = job_posting.url_verification_status or ("mock_verified" if provider == "mock" else "unverified")
+    job_posting.url_verification_checked_at = job_posting.url_verification_checked_at or last_seen_at
+    job_posting.url_verification_summary = job_posting.url_verification_summary or (
+        "Mock model result." if provider == "mock" else "Legacy model output was not live-source verified."
+    )
     job_posting.posting_date = job.posting_date or job_posting.posting_date
     job_posting.last_seen_at = last_seen_at
 
@@ -1340,6 +2074,14 @@ def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
         "canonical_url": job.canonical_url,
         "apply_url": job.apply_url,
         "source": job.source,
+        "source_provider": job.source_provider,
+        "source_result_id": job.source_result_id,
+        "source_query": job.source_query,
+        "source_url": job.source_url,
+        "provenance": job.provenance,
+        "url_verification_status": job.url_verification_status,
+        "url_verification_checked_at": job.url_verification_checked_at.isoformat() if job.url_verification_checked_at else None,
+        "url_verification_summary": job.url_verification_summary,
         "location": job.location,
         "remote_work_mode": job.remote_work_mode,
         "employment_type": job.employment_type,

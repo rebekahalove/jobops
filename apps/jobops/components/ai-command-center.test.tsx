@@ -166,6 +166,42 @@ describe("AI command center", () => {
     expect(html).toContain("Drafted.");
   });
 
+  it("renders job discovery diagnostics on action cards", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-job-debug",
+            type: "job_discovery",
+            title: "Discover jobs",
+            summary: "No new jobs were saved.",
+            status: "completed",
+            targetWorkspace: "jobs",
+            resultPayload: {
+              jobDiscoveryMode: "live_provider",
+              sourceName: "test_provider",
+              providerResultCount: 8,
+              verifiedUrlCount: 6,
+              savedJobCount: 2,
+              duplicateCount: 4,
+              skippedReasons: {
+                duplicate_for_user: 4,
+                failed_url_verification: 2
+              }
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Job discovery diagnostics");
+    expect(html).toContain("live_provider");
+    expect(html).toContain("test_provider");
+    expect(html).toContain("Provider results");
+    expect(html).toContain("Verified URLs");
+    expect(html).toContain("duplicate_for_user: 4");
+  });
+
   it("notifies the profile workspace after completed profile-intake commands", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,9 +26,10 @@ from jobops_api.job_discovery import (
     list_jobs,
     run_job_discovery,
     save_discovered_jobs,
+    save_live_job_source_results,
+    LiveJobSourceResult,
     validate_job_discovery_output,
 )
-from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
 
 
@@ -82,7 +84,8 @@ def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_
         assert second.status_code == 200
         assert second.body["result"]["savedCount"] == 0
         assert second.body["result"]["updatedExistingCount"] == 2
-        assert second.body["result"]["modelJobCount"] == 2
+        assert second.body["result"]["providerResultCount"] == 2
+        assert second.body["result"]["modelSelectedCount"] == 0
         assert second.body["result"]["currentSavedJobCount"] == 2
         assert second.body["result"]["excludedJobUrlCount"] == 2
         assert "already in your Jobs list" in second.body["result"]["assistantMessage"]
@@ -253,7 +256,7 @@ def test_job_discovery_request_passes_user_constraints_into_context() -> None:
     assert "https://jobs.example.test/existing" in saved_job_prompt
 
 
-def test_job_discovery_requires_grounded_exact_source_url_before_saving() -> None:
+def test_model_output_is_not_saved_even_when_search_grounding_mentions_url() -> None:
     engine = create_seeded_engine()
     grounding_metadata = {
         "groundingChunks": [
@@ -301,13 +304,157 @@ def test_job_discovery_requires_grounded_exact_source_url_before_saving() -> Non
         )
         session.commit()
 
-        assert [link.job.title for link in result.saved_links] == ["Current AI Engineer"]
-        assert len(result.skipped) == 2
+        assert result.saved_links == []
+        assert len(result.skipped) == 3
+        assert {item.reason_code for item in result.skipped} == {"no_live_source_provenance"}
+        assert len(session.scalars(select(JobPosting)).all()) == 0
     assert job_url_is_grounded(
         "https://company.example/jobs/current-ai-engineer",
         ["https://company.example/jobs/current-ai-engineer"],
         extract_grounded_urls(grounding_metadata),
     )
+
+
+def test_model_only_url_shaped_job_is_not_saved_without_provenance() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        output = JobDiscoveryOutput(
+            assistantMessage="Found jobs.",
+            jobs=[
+                JobDiscoveryRecord(
+                    title="Invented AI Engineer",
+                    companyName="Maybe Real",
+                    jobUrl="https://maybe-real.example/jobs/ai-engineer",
+                    sourceUrls=[],
+                )
+            ],
+            skippedJobs=[],
+            clarifyingQuestions=[],
+        )
+
+        result = save_discovered_jobs(
+            session,
+            candidate_profile=profile,
+            discovery_query="Find jobs",
+            output=output,
+            provider="gemini",
+            grounding_metadata={},
+            web_search_queries=[],
+            require_grounded_job_urls=True,
+        )
+
+        assert result.saved_links == []
+        assert result.skipped[0].reason_code == "no_live_source_provenance"
+        assert len(session.scalars(select(JobPosting)).all()) == 0
+
+
+def test_404_job_url_is_skipped(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        result = save_live_job_source_results(
+            session,
+            candidate_profile=profile,
+            discovery_query="Find jobs",
+            source_results=[
+                LiveJobSourceResult(
+                    title="Applied AI Engineer",
+                    company_name="Closed Co",
+                    job_url="https://closed.example/jobs/old",
+                    source_provider="test_provider",
+                    provenance="provider_result",
+                )
+            ],
+            search_queries_used=["Applied AI Engineer jobs"],
+            provider="test_provider",
+            verify_urls=True,
+        )
+
+        assert result.saved_links == []
+        assert result.skipped[0].reason_code == "expired_or_closed"
+        assert len(session.scalars(select(JobPosting)).all()) == 0
+
+
+def test_provider_result_can_be_saved_with_provenance_without_fetch() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        result = save_live_job_source_results(
+            session,
+            candidate_profile=profile,
+            discovery_query="Find jobs",
+            source_results=[
+                LiveJobSourceResult(
+                    title="Applied AI Engineer",
+                    company_name="Provider Co",
+                    job_url="https://provider.example/jobs/applied-ai",
+                    source_provider="test_provider",
+                    source_result_id="job-123",
+                    source_query="Applied AI Engineer jobs",
+                    source_url="https://provider.example/jobs/applied-ai",
+                    provenance="provider_result",
+                    posting_date=None,
+                    fit_summary="Provider-backed result.",
+                )
+            ],
+            search_queries_used=["Applied AI Engineer jobs"],
+            provider="test_provider",
+            verify_urls=False,
+        )
+
+        assert len(result.saved_links) == 1
+        job = result.saved_links[0].job
+        assert job.provenance == "provider_result"
+        assert job.source_provider == "test_provider"
+        assert job.source_result_id == "job-123"
+        assert job.url_verification_status == "provider_unverified"
+        assert job.posting_date is None
+
+
+def test_user_provided_valid_job_url_can_be_saved_when_fetched(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self):
+            return "https://company.example/jobs/live"
+
+        def read(self, _size):
+            return b"<html><title>Live Role</title><body>Live Role at Company Example is open for applications.</body></html>"
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Save this job https://company.example/jobs/live",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path, model_provider="gemini", job_discovery_source="none"),
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["savedCount"] == 1
+        saved_job = session.scalar(select(JobPosting))
+        assert saved_job is not None
+        assert saved_job.provenance == "user_url"
+        assert saved_job.url_verification_status == "verified"
+        assert saved_job.posting_date is None
 
 
 def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, monkeypatch) -> None:
@@ -327,70 +474,31 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
         assert response.actions[0].status == "completed"
         assert response.target_workspace == "jobs"
         assert response.result_payload is not None
-        assert response.result_payload["modelRequest"]["task"] == "job_discovery"
-        assert response.result_payload["jobs"][0]["job_url"].startswith("https://jobs.example.test/")
+        assert response.result_payload["jobDiscoveryMode"] == "mock"
+        assert response.result_payload["providerResultCount"] == 2
+        assert response.result_payload["jobs"][0]["job_url"].startswith("https://civic-ai-labs.example.test/")
         assert response.result_payload["jobs"][0]["added_at"]
         assert len(session.scalars(select(JobPosting)).all()) == 2
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 2
 
 
-def test_job_discovery_retries_with_compact_request_after_truncation(tmp_path: Path) -> None:
-    class TruncatingThenValidConnector:
-        def __init__(self) -> None:
-            self.requests: list[Any] = []
-
-        def generate(self, request):
-            self.requests.append(request)
-            if len(self.requests) == 1:
-                return ModelResponse(
-                    text='{"assistantMessage":"Found jobs","jobs":[',
-                    provider="mock",
-                    model="mock",
-                    finish_reason="MAX_TOKENS",
-                    metadata={},
-                )
-            return ModelResponse(
-                text=json.dumps(
-                    {
-                        "assistantMessage": "Saved one compact retry result.",
-                        "jobs": [
-                            {
-                                "title": "Applied AI Engineer",
-                                "companyName": "Compact Civic",
-                                "jobUrl": "https://jobs.example.test/compact-civic/applied-ai",
-                                "sourceUrls": ["https://jobs.example.test/compact-civic/applied-ai"],
-                                "fitSummary": "Matches applied AI platform work.",
-                            }
-                        ],
-                        "skippedJobs": [],
-                        "clarifyingQuestions": [],
-                    }
-                ),
-                provider="mock",
-                model="mock",
-                finish_reason="STOP",
-                metadata={},
-            )
-
+def test_job_discovery_returns_clear_error_when_live_source_not_configured(tmp_path: Path) -> None:
     engine = create_seeded_engine()
-    connector = TruncatingThenValidConnector()
+    settings = make_settings(tmp_path, model_provider="gemini", job_discovery_source="none")
 
     with Session(engine) as session:
         result = run_job_discovery(
             JobDiscoveryRequest(latest_user_message="Find some jobs for me to apply to.", candidate_profile_slug="rebekah-love"),
-            connector=connector,
             db_session=session,
-            settings=make_settings(tmp_path),
+            settings=settings,
         )
 
-        assert result.status_code == 200
-        assert result.body["result"]["savedCount"] == 1
-        assert result.body["result"]["validationWarnings"] == [
-            "First job discovery model response was truncated; compact retry succeeded."
-        ]
-        assert len(connector.requests) == 2
-        assert connector.requests[1].metadata["retry"] == "compact_after_truncation"
-        assert "Compact retry rules" in connector.requests[1].messages[0].content
+        assert result.status_code == 503
+        assert result.body["code"] == "live_job_discovery_not_configured"
+        assert result.body["error"] == "Live job discovery is not configured. No jobs were saved."
+        assert result.body["jobDiscoveryMode"] == "grounded_model_only"
+        assert result.body["providerResultCount"] == 0
+        assert len(session.scalars(select(JobPosting)).all()) == 0
 
 
 def test_command_center_job_discovery_passes_actual_chat_transcript(tmp_path: Path, monkeypatch) -> None:
@@ -514,7 +622,7 @@ def test_command_center_safe_action_log_metrics_are_counts_only() -> None:
         "currentSavedJobCount": 8,
         "excludedJobUrlCount": 8,
         "currentSavedCompanyCount": 44,
-        "skippedReasonCounts": {"Job URL was not supported by fresh search grounding/source URLs.": 3},
+        "skippedReasons": {"Job URL was not supported by fresh search grounding/source URLs.": 3},
     }
 
 
@@ -555,7 +663,7 @@ def create_seeded_engine(*, include_second_profile: bool = False):
     return engine
 
 
-def make_settings(repo_root: Path) -> Settings:
+def make_settings(repo_root: Path, *, model_provider: str = "mock", job_discovery_source: str = "mock") -> Settings:
     return Settings(
         app_env="test",
         cheap_model="mock-cheap",
@@ -563,7 +671,8 @@ def make_settings(repo_root: Path) -> Settings:
         database_url=None,
         default_model="mock-default",
         gemini_api_key=None,
-        model_provider="mock",
+        model_provider=model_provider,
+        job_discovery_source=job_discovery_source,
         profile_intake_save_artifacts=False,
         profile_intake_save_raw_text=False,
         repo_root=repo_root,
