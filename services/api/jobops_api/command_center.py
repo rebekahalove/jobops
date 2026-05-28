@@ -32,6 +32,11 @@ CommandActionType = Literal[
     "add_job_from_url",
     "company_discovery",
     "company_update",
+    "discussion_only",
+    "career_discovery",
+    "profile_guidance",
+    "clarifying_questions",
+    "suggest_profile_changes_without_applying",
     "follow_company",
     "prioritize_jobs",
     "generate_materials",
@@ -42,6 +47,13 @@ CommandActionType = Literal[
 ]
 
 ActionStatus = Literal["planned", "needs_confirmation", "completed", "failed"]
+NON_MUTATING_PROFILE_ACTIONS = {
+    "discussion_only",
+    "career_discovery",
+    "profile_guidance",
+    "clarifying_questions",
+    "suggest_profile_changes_without_applying",
+}
 
 
 router = APIRouter(prefix="/v1/command-center", tags=["command-center"], dependencies=[Depends(require_internal_api_key)])
@@ -401,6 +413,9 @@ def dispatch_command_center_action(
 ) -> CommandCenterCommandResponse:
     interpreted_action = normalize_dispatch_action(action_type)
 
+    if interpreted_action in NON_MUTATING_PROFILE_ACTIONS:
+        return non_mutating_profile_guidance_response(interpreted_action, router_payload)
+
     if interpreted_action in {"follow_company", "company_discovery"}:
         if candidate_slug is None:
             return missing_candidate_slug_response("company_discovery", "companies", "Discover companies")
@@ -473,6 +488,7 @@ def dispatch_command_center_action(
             latest_user_message=request.command,
             existing_draft=current_draft,
             candidate_profile_slug=candidate_slug,
+            reconciliation_mode=profile_intake_reconciliation_mode(request.command),
         ),
         db_session=session,
         settings=settings,
@@ -747,7 +763,9 @@ def save_command_interaction_log(
                 "routerOk": bool(router_payload and router_payload.get("ok")),
                 "actionStatuses": [action.status for action in actions],
             },
-            action_applied=any(action.status == "completed" for action in actions),
+            action_applied=any(
+                action.status == "completed" and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
+            ),
             final_response=response.assistant_message if response is not None else "",
             error_details={"type": type(error).__name__, "message": str(error)} if error else {},
             latency_ms=latency_ms,
@@ -767,6 +785,8 @@ def get_profile_draft(slug: str, session: Session = Depends(get_db_session), aut
 def interpret_command(command: str, active_workspace: str | None = None) -> CommandActionType:
     normalized = " ".join(command.lower().split())
 
+    if is_profile_discussion_command(normalized):
+        return "profile_guidance"
     if is_profile_intake_command(normalized, active_workspace):
         return "profile_intake"
     if "follow-up" in normalized or "follow up" in normalized:
@@ -809,6 +829,41 @@ def is_profile_intake_command(normalized_command: str, active_workspace: str | N
         return True
 
     return False
+
+
+def is_profile_discussion_command(normalized_command: str) -> bool:
+    if explicit_profile_mutation_signal(normalized_command):
+        return False
+    signals = [
+        "can you help me figure out",
+        "help me figure out",
+        "what should i emphasize",
+        "how should i describe",
+        "what roles should i target",
+        "which roles should i target",
+        "what should my profile say",
+        "how should i position",
+        "can you suggest profile",
+        "suggest profile changes",
+    ]
+    return any(signal in normalized_command for signal in signals)
+
+
+def explicit_profile_mutation_signal(normalized_command: str) -> bool:
+    return any(
+        signal in normalized_command
+        for signal in [
+            "update my profile",
+            "save this",
+            "save these",
+            "apply this",
+            "apply these",
+            "add this",
+            "add these",
+            "put this in my profile",
+            "use this to update",
+        ]
+    )
 
 
 def is_company_discovery_command(normalized_command: str, active_workspace: str | None) -> bool:
@@ -907,6 +962,51 @@ def build_profile_action_summary(profile_draft: dict[str, Any]) -> str:
         f"Updated the saved profile draft with {fact_count} fact(s), {skill_count} skill claim(s), "
         f"and {experience_count} experience/project item(s)."
     )
+
+
+def non_mutating_profile_guidance_response(
+    action_type: CommandActionType,
+    router_payload: dict[str, Any] | None,
+) -> CommandCenterCommandResponse:
+    result_payload = {
+        "ok": True,
+        "mode": action_type,
+        "mutated": False,
+        **router_debug_payload(router_payload),
+    }
+    return CommandCenterCommandResponse(
+        assistant_message=(
+            "I can help think this through without changing your saved profile. Share the role, audience, or draft "
+            "wording you want to explore, and I can suggest options for you to review before anything is saved."
+        ),
+        actions=[
+            CommandCenterActionResult(
+                type=action_type,
+                status="completed",
+                targetWorkspace=target_workspace_for_action(action_type),
+                title=title_for_action(action_type),
+                summary="No profile data was changed.",
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace=target_workspace_for_action(action_type),
+        result_payload=result_payload,
+    )
+
+
+def profile_intake_reconciliation_mode(command: str) -> str:
+    normalized = " ".join(command.casefold().split())
+    restore_signals = [
+        "restore archived",
+        "restore old",
+        "restore previous",
+        "rebuild from scratch",
+        "start from scratch",
+        "ignore archived history",
+        "ignore archive history",
+        "restore everything",
+    ]
+    return "restore_archived" if any(signal in normalized for signal in restore_signals) else "respect_archived"
 
 
 def active_profile_draft_item(item: object) -> bool:
@@ -1143,6 +1243,11 @@ def target_workspace_for_action(action_type: CommandActionType) -> str | None:
         "add_job_from_url": "jobs",
         "company_discovery": "companies",
         "company_update": "companies",
+        "discussion_only": None,
+        "career_discovery": "profile",
+        "profile_guidance": "profile",
+        "clarifying_questions": "profile",
+        "suggest_profile_changes_without_applying": "profile",
         "follow_company": "companies",
         "prioritize_jobs": "jobs",
         "generate_materials": "materials",
@@ -1158,6 +1263,11 @@ def title_for_action(action_type: CommandActionType) -> str:
         "add_job_from_url": "Add job from URL",
         "company_discovery": "Discover companies",
         "company_update": "Update company",
+        "discussion_only": "Discuss",
+        "career_discovery": "Explore career direction",
+        "profile_guidance": "Profile guidance",
+        "clarifying_questions": "Clarify profile direction",
+        "suggest_profile_changes_without_applying": "Suggest profile changes",
         "follow_company": "Follow company",
         "prioritize_jobs": "Prioritize saved jobs",
         "generate_materials": "Generate application materials",

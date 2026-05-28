@@ -132,6 +132,8 @@ def run_profile_intake_extraction(
         authoritative_current_draft=authoritative_current_draft,
         authoritative_current_draft_source=authoritative_current_draft_source,
     )
+    if active_settings.app_env.lower() not in {"prod", "production"}:
+        logger.info("[profile_intake] context manifest %s", context_bundle.context_manifest)
     artifact_run.write_json("request-metadata.json", build_orchestrator_request_metadata(context_bundle, input_metrics.to_json()))
 
     try:
@@ -281,6 +283,7 @@ def run_profile_intake_extraction(
             input_metrics=input_metrics,
             artifact_path=artifact_run.artifact_path,
             model_run_id=artifact_run.run_id,
+            restore_archived_matches=request.reconciliation_mode == "restore_archived",
         )
         db_session.commit()
 
@@ -291,6 +294,7 @@ def run_profile_intake_extraction(
             **model_requests_debug_fields(active_settings, orchestration_result),
             **model_responses_debug_fields(active_settings, orchestration_result),
             **section_failure_debug_fields(active_settings, orchestration_result),
+            **context_manifest_debug_fields(active_settings, context_bundle),
         },
         status_code=200,
     )
@@ -443,8 +447,16 @@ def build_orchestrator_request_metadata(context_bundle, input_metrics: dict[str,
             "experienceAndProjects": len(current_draft.get("experienceAndProjects") or []) if isinstance(current_draft, dict) else 0,
             "evidenceLinks": len(current_draft.get("evidenceLinks") or []) if isinstance(current_draft, dict) else 0,
         },
+        "contextManifest": context_bundle.context_manifest,
+        "reconciliationMode": context_bundle.reconciliation_mode,
         "sections": ["basics_and_targets", "skills", "experience_projects"],
     }
+
+
+def context_manifest_debug_fields(settings: Settings, context_bundle) -> dict[str, Any]:
+    if settings.app_env.lower() in {"prod", "production"}:
+        return {}
+    return {"contextManifest": context_bundle.context_manifest}
 
 
 def first_request(result: ProfileIntakeOrchestratorResult) -> ModelRequest | None:

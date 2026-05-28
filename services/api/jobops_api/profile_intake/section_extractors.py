@@ -194,6 +194,7 @@ Return strict JSON only. You are only extracting or proposing updates for this o
 Rules:
 - Use the user message, transcript/context, resume/document text, and existing profile state.
 - Do not duplicate facts already present.
+- archivedGeneratedItemsAvoidanceContext contains items the user previously archived or rejected. Do not recreate them unless reconciliationMode is restore_archived or the latest user message explicitly asks to restore, rebuild from scratch, or ignore archived history.
 - Do not remove or clear data unless the user explicitly requested removal. In Phase 1, do not perform clear/archive actions; report that a clear request was detected in userUpdate or candidateFollowUpQuestions.
 - Return no_changes if there is no reliable new information for this section.
 - Return section_complete if this section already appears complete based on current profile state and new context.

@@ -202,14 +202,56 @@ def persist_profile_intake_output(
     input_metrics: ProfileIntakeInputMetrics,
     artifact_path: str | None,
     model_run_id: str | None,
+    restore_archived_matches: bool = False,
 ) -> dict[str, Any]:
-    sync_profile_basics_fields(session, candidate_profile, output)
+    suppressed_archived_matches: list[dict[str, Any]] = []
+    sync_profile_basics_fields(
+        session,
+        candidate_profile,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
     saved_role_target = sync_role_target(session, candidate_profile, intake_session, output)
-    sync_target_role_fields(session, candidate_profile, output)
-    saved_facts = sync_draft_facts(session, candidate_profile, intake_session, output)
-    saved_skills = sync_skill_claims(session, candidate_profile, intake_session, output)
-    saved_experiences = sync_experience_projects(session, candidate_profile, intake_session, output)
-    saved_evidence = sync_evidence_links(session, candidate_profile, intake_session, output)
+    sync_target_role_fields(
+        session,
+        candidate_profile,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
+    saved_facts = sync_draft_facts(
+        session,
+        candidate_profile,
+        intake_session,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
+    saved_skills = sync_skill_claims(
+        session,
+        candidate_profile,
+        intake_session,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
+    saved_experiences = sync_experience_projects(
+        session,
+        candidate_profile,
+        intake_session,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
+    saved_evidence = sync_evidence_links(
+        session,
+        candidate_profile,
+        intake_session,
+        output,
+        restore_archived_matches=restore_archived_matches,
+        suppressed_archived_matches=suppressed_archived_matches,
+    )
     session.flush()
 
     saved_snapshot = build_saved_profile_draft_snapshot(
@@ -220,6 +262,8 @@ def persist_profile_intake_output(
         experiences=saved_experiences,
         evidence=saved_evidence,
     )
+    if suppressed_archived_matches:
+        saved_snapshot["archivedSuppressedMatches"] = suppressed_archived_matches[:25]
     draft_counts = draft_count_metadata_from_saved(
         facts=saved_facts,
         skills=saved_skills,
@@ -244,6 +288,12 @@ def persist_profile_intake_output(
         draft_counts,
         active_counts,
     )
+    if suppressed_archived_matches:
+        logger.info(
+            "[profile_intake] suppressed archived profile matches count=%s matches=%s",
+            len(suppressed_archived_matches),
+            suppressed_archived_matches[:25],
+        )
 
     intake_session.last_turn_at = datetime.now(timezone.utc)
     intake_session.target_role_summary = role_target_summary_from_row(saved_role_target) or intake_session.target_role_summary
@@ -251,6 +301,7 @@ def persist_profile_intake_output(
         "artifactPath": artifact_path,
         "draftCounts": draft_counts,
         "activeDraftCounts": active_counts,
+        "suppressedArchivedMatches": suppressed_archived_matches[:25],
         "input": input_metrics.to_json(),
         "lastChangeSummaryCount": len(output.change_summary),
         "lastClarifyingQuestionCount": len(output.clarifying_questions),
@@ -551,6 +602,9 @@ def sync_profile_basics_fields(
     session: Session,
     candidate_profile: CandidateProfile,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> None:
     basics = output.updated_draft_profile.profile_basics.model_dump(by_alias=True, exclude_none=True)
     for field_name, value in basics.items():
@@ -558,6 +612,15 @@ def sync_profile_basics_fields(
         if text is None:
             continue
         definition = intake_field_definition("profile_basics", field_name)
+        if handle_archived_field_match(
+            session,
+            candidate_profile,
+            definition,
+            text,
+            restore_archived_matches=restore_archived_matches,
+            suppressed_archived_matches=suppressed_archived_matches,
+        ):
+            continue
         ensure_generated_field(session, candidate_profile, definition, text, source="model")
 
 
@@ -565,6 +628,9 @@ def sync_target_role_fields(
     session: Session,
     candidate_profile: CandidateProfile,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> None:
     intent = output.updated_draft_profile.target_role_intent
     values = {
@@ -582,7 +648,53 @@ def sync_target_role_fields(
         if text is None and field_name not in removed_names:
             continue
         definition = intake_field_definition("targets", field_name)
+        if text is not None and handle_archived_field_match(
+            session,
+            candidate_profile,
+            definition,
+            text,
+            restore_archived_matches=restore_archived_matches,
+            suppressed_archived_matches=suppressed_archived_matches,
+        ):
+            continue
         ensure_generated_field(session, candidate_profile, definition, text or "", source="model")
+
+
+def handle_archived_field_match(
+    session: Session,
+    candidate_profile: CandidateProfile,
+    definition: ProfileFieldDefinition,
+    text: str,
+    *,
+    restore_archived_matches: bool,
+    suppressed_archived_matches: list[dict[str, Any]] | None,
+) -> bool:
+    archived = next(
+        (
+            row
+            for row in field_value_rows(session, candidate_profile.id, group=definition.group)
+            if row.field_name == definition.name
+            and row.lifecycle_status == "archived"
+            and normalize_key(row.value_text) == normalize_key(text)
+        ),
+        None,
+    )
+    if archived is None:
+        return False
+    record_archived_match(
+        suppressed_archived_matches,
+        item_type="profile-field",
+        item_id=archived.id,
+        key=f"{definition.group}.{definition.name}",
+        action="restored" if restore_archived_matches else "suppressed",
+    )
+    if restore_archived_matches:
+        archived.lifecycle_status = "generated"
+        archived.visibility = None
+        archived.archive_reason = None
+        archived.archived_at = None
+        archived.source = "model"
+    return True
 
 
 def sync_draft_facts(
@@ -590,6 +702,9 @@ def sync_draft_facts(
     candidate_profile: CandidateProfile,
     intake_session: ProfileIntakeSession,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> list[ProfileFactDraft]:
     saved = get_session_facts(session, intake_session.id)
     existing_by_id = {row.id: row for row in saved}
@@ -605,6 +720,16 @@ def sync_draft_facts(
         if existing is not None:
             returned_ids.add(existing.id)
             if not draft_fact_is_published(existing):
+                if draft_fact_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="fact",
+                        item_id=existing.id,
+                        key=fact_key(claim, category),
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.claim = claim
                 existing.fact_type = category
                 existing.source = fact.source
@@ -617,6 +742,16 @@ def sync_draft_facts(
             existing = existing_by_key[key]
             returned_ids.add(existing.id)
             if not draft_fact_is_published(existing):
+                if draft_fact_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="fact",
+                        item_id=existing.id,
+                        key=key,
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.source = fact.source
                 if draft_fact_should_reactivate(existing):
                     reactivate_draft_fact(existing, fact.status)
@@ -656,6 +791,9 @@ def sync_skill_claims(
     candidate_profile: CandidateProfile,
     intake_session: ProfileIntakeSession,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> list[SkillClaim]:
     saved = get_session_skills(session, intake_session.id)
     existing_by_id = {row.id: row for row in saved}
@@ -672,6 +810,16 @@ def sync_skill_claims(
         if existing is not None:
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if skill_claim_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="skill",
+                        item_id=existing.id,
+                        key=skill_key(skill_name, category),
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.skill_name = skill_name
                 existing.skill_category = category
                 existing.evidence_summary = evidence
@@ -687,6 +835,16 @@ def sync_skill_claims(
             existing = existing_by_key[key]
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if skill_claim_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="skill",
+                        item_id=existing.id,
+                        key=key,
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.skill_name = skill_name
                 existing.skill_category = category
                 existing.evidence_summary = evidence
@@ -731,6 +889,9 @@ def sync_experience_projects(
     candidate_profile: CandidateProfile,
     intake_session: ProfileIntakeSession,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> list[ExperienceProjectDraft]:
     saved = get_session_experiences(session, intake_session.id)
     existing_by_id = {row.id: row for row in saved}
@@ -747,6 +908,16 @@ def sync_experience_projects(
         if existing is not None:
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if experience_project_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="experience",
+                        item_id=existing.id,
+                        key=experience_key(title, organization),
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.title = title
                 existing.organization = organization
                 existing.summary = summary
@@ -761,6 +932,16 @@ def sync_experience_projects(
         if existing is not None:
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if experience_project_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="experience",
+                        item_id=existing.id,
+                        key=experience_key(title, organization),
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.title = title
                 if organization:
                     existing.organization = organization
@@ -812,6 +993,9 @@ def sync_evidence_links(
     candidate_profile: CandidateProfile,
     intake_session: ProfileIntakeSession,
     output: ProfileIntakeOutput,
+    *,
+    restore_archived_matches: bool = False,
+    suppressed_archived_matches: list[dict[str, Any]] | None = None,
 ) -> list[EvidenceArtifact]:
     saved = get_session_evidence(session, intake_session.id)
     existing_by_id = {row.id: row for row in saved}
@@ -827,6 +1011,16 @@ def sync_evidence_links(
         if existing is not None:
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if evidence_link_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="evidence",
+                        item_id=existing.id,
+                        key=evidence_key(url, label),
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.uri = url
                 existing.label = label or url or "Evidence link"
                 existing.source = link.source
@@ -839,6 +1033,16 @@ def sync_evidence_links(
             existing = existing_by_key[key]
             returned_ids.add(existing.id)
             if existing.publication_status != "published":
+                if evidence_link_should_reactivate(existing):
+                    record_archived_match(
+                        suppressed_archived_matches,
+                        item_type="evidence",
+                        item_id=existing.id,
+                        key=key,
+                        action="restored" if restore_archived_matches else "suppressed",
+                    )
+                    if not restore_archived_matches:
+                        continue
                 existing.uri = url
                 existing.label = label or url or "Evidence link"
                 existing.source = link.source
@@ -874,6 +1078,26 @@ def sync_evidence_links(
 
     session.flush()
     return get_session_evidence(session, intake_session.id)
+
+
+def record_archived_match(
+    suppressed_archived_matches: list[dict[str, Any]] | None,
+    *,
+    item_type: str,
+    item_id: str,
+    key: str,
+    action: str = "suppressed",
+) -> None:
+    if suppressed_archived_matches is None:
+        return
+    match = {
+        "type": item_type,
+        "id": item_id,
+        "key": key,
+        "action": action,
+    }
+    if match not in suppressed_archived_matches:
+        suppressed_archived_matches.append(match)
 
 
 def reactivate_draft_fact(row: ProfileFactDraft, status: str) -> None:
@@ -1308,9 +1532,15 @@ def active_draft_count_metadata_from_saved(
 ) -> dict[str, int]:
     return {
         "draftFactCount": len([item for item in facts if item.review_status != "rejected"]),
-        "skillClaimCount": len([item for item in skills if item.verification_status != "rejected"]),
-        "experienceAndProjectCount": len([item for item in experiences if item.review_status != "rejected"]),
-        "evidenceLinkCount": len([item for item in evidence if item.review_status != "rejected"]),
+        "skillClaimCount": len(
+            [item for item in skills if item.verification_status != "rejected" and item.publication_status != "archived"]
+        ),
+        "experienceAndProjectCount": len(
+            [item for item in experiences if item.review_status != "rejected" and item.publication_status != "archived"]
+        ),
+        "evidenceLinkCount": len(
+            [item for item in evidence if item.review_status != "rejected" and item.publication_status != "archived"]
+        ),
     }
 
 

@@ -153,12 +153,16 @@ B.A., Fine Arts - Indiana University
     profile_intake_action = next(
         action for action in payload["router_context"]["available_actions"] if action["actionType"] == "profile_intake"
     )
+    profile_guidance_action = next(
+        action for action in payload["router_context"]["available_actions"] if action["actionType"] == "profile_guidance"
+    )
 
     assert "pasted resume/CV" in system_prompt
     assert "route to profile_intake with high confidence" in system_prompt
     assert "does not need a workspace clarification" in system_prompt
     assert "set extracted.rawText to null" in system_prompt
     assert "Never copy a pasted resume/CV" in system_prompt
+    assert "without saving profile changes" in profile_guidance_action["description"]
     assert "pasted resumes/CVs" in profile_intake_action["description"]
 
 
@@ -192,6 +196,7 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Find me a dozen progressive politics companies who hire AI engineers", "company_discovery"),
             ("I want to be an Applied AI Engineer", "profile_intake"),
             ("My preferred locations are remote US and DC", "profile_intake"),
+            ("What should I emphasize for applied AI roles?", "profile_guidance"),
         ]
         for command, expected_action in cases:
             result = run_command_router(

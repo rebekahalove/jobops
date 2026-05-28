@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -43,6 +43,7 @@ router = APIRouter(prefix="/v1/profile", tags=["profile"], dependencies=[Depends
 
 DraftItemType = Literal["fact", "skill", "experience", "evidence", "target-role"]
 PublishedItemType = DraftItemType
+ProfileClearMode = Literal["generated_drafts", "archived_generated", "all_candidate_generated"]
 
 
 class ProfileFieldsUpdate(BaseModel):
@@ -117,7 +118,7 @@ class ProfileFieldUpdate(BaseModel):
 
 @router.get("/current")
 def get_current_profile(session: Session = Depends(get_db_session), auth: AuthContext = Depends(require_auth_context)) -> dict[str, Any]:
-    return current_profile_payload(session, auth.candidate_profile, auth.tenant.slug)
+    return current_profile_payload(session, auth.candidate_profile, auth.tenant.slug, auth=auth)
 
 
 @router.patch("/current")
@@ -134,7 +135,7 @@ def update_current_profile(
     if request.summary is not None:
         profile.summary = request.summary.strip()
     session.commit()
-    return current_profile_payload(session, profile, auth.tenant.slug)
+    return current_profile_payload(session, profile, auth.tenant.slug, auth=auth)
 
 
 @router.patch("/fields/{field_group}/{field_name}")
@@ -181,7 +182,7 @@ def update_profile_field(
         archive_field_value(row)
 
     session.commit()
-    return current_profile_payload(session, profile, auth.tenant.slug)
+    return current_profile_payload(session, profile, auth.tenant.slug, auth=auth)
 
 
 @router.patch("/draft-items/{item_type}/{item_id}")
@@ -229,7 +230,7 @@ def update_draft_item(
         publish_single_item_as(session, profile, item_type, item, request.publish_visibility)
 
     session.commit()
-    return current_profile_payload(session, profile, auth.tenant.slug)
+    return current_profile_payload(session, profile, auth.tenant.slug, auth=auth)
 
 
 @router.patch("/published-items/{item_type}/{item_id}")
@@ -250,7 +251,7 @@ def update_published_item(
         archive_published_item(item)
 
     session.commit()
-    return current_profile_payload(session, profile, auth.tenant.slug)
+    return current_profile_payload(session, profile, auth.tenant.slug, auth=auth)
 
 
 @router.post("/publish")
@@ -264,30 +265,40 @@ def publish_current_profile(
         profile.profile_status = "published"
     session.commit()
     return {
-        **current_profile_payload(session, profile, auth.tenant.slug),
+        **current_profile_payload(session, profile, auth.tenant.slug, auth=auth),
         "publishedCount": published_count,
     }
 
 
 @router.delete("/items")
 def clear_current_profile_items(
+    mode: ProfileClearMode = Query(default="all_candidate_generated"),
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
 ) -> dict[str, Any]:
-    if not dev_profile_clear_enabled():
-        raise HTTPException(status_code=404, detail="Profile item clearing is only available in dev.")
+    if not profile_reset_enabled(auth):
+        raise HTTPException(status_code=404, detail="Profile item clearing is only available to the current alpha user.")
 
     profile = auth.candidate_profile
-    deleted_counts = delete_profile_items_for_profile(session, profile.id)
-    profile.profile_status = "draft"
+    deleted_counts = delete_profile_items_for_profile(session, profile.id, mode=mode)
+    if mode == "all_candidate_generated":
+        profile.profile_status = "draft"
     session.commit()
     return {
-        **current_profile_payload(session, profile, auth.tenant.slug),
+        **current_profile_payload(session, profile, auth.tenant.slug, auth=auth),
         "deletedCounts": deleted_counts,
+        "clearMode": mode,
     }
 
 
-def current_profile_payload(session: Session, profile: CandidateProfile, tenant_slug: str) -> dict[str, Any]:
+def current_profile_payload(
+    session: Session,
+    profile: CandidateProfile,
+    tenant_slug: str,
+    *,
+    auth: AuthContext | None = None,
+) -> dict[str, Any]:
+    reset_enabled = profile_reset_enabled(auth)
     return {
         "ok": True,
         "result": {
@@ -309,32 +320,119 @@ def current_profile_payload(session: Session, profile: CandidateProfile, tenant_
             "publishedPublicItemCount": public_content_count(session, profile.id),
             "archivedItemCount": archived_content_count(session, profile.id),
             "devTools": {
-                "profileItemClearEnabled": dev_profile_clear_enabled(),
+                "profileItemClearEnabled": reset_enabled,
+                "profileResetEnabled": reset_enabled,
+                "profileResetActions": [
+                    "generated_drafts",
+                    "archived_generated",
+                    "all_candidate_generated",
+                ]
+                if reset_enabled
+                else [],
             },
         },
     }
 
 
+def profile_reset_enabled(auth: AuthContext | None = None) -> bool:
+    settings = load_settings()
+    if settings.app_env.lower() in {"dev", "test"}:
+        return True
+    return auth is not None
+
+
 def dev_profile_clear_enabled() -> bool:
-    return load_settings().app_env.lower() == "dev"
+    return profile_reset_enabled()
 
 
-def delete_profile_items_for_profile(session: Session, candidate_profile_id: str) -> dict[str, int]:
+def delete_profile_items_for_profile(
+    session: Session,
+    candidate_profile_id: str,
+    *,
+    mode: ProfileClearMode = "all_candidate_generated",
+) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for model, label in (
-        (ProfileFieldValue, "profileFieldValues"),
-        (ProfileFact, "profileFacts"),
-        (ProfileFactDraft, "profileFactDrafts"),
-        (SkillClaim, "skillClaims"),
-        (ExperienceProjectDraft, "experienceAndProjects"),
-        (EvidenceArtifact, "evidenceLinks"),
-        (RoleTarget, "roleTargets"),
-        (ProfileIntakeEvent, "profileIntakeEvents"),
-        (ProfileIntakeSession, "profileIntakeSessions"),
-    ):
-        result = session.execute(delete(model).where(model.candidate_profile_id == candidate_profile_id))
+    for model, label, criteria in clear_item_delete_plan(mode):
+        statement = delete(model).where(model.candidate_profile_id == candidate_profile_id)
+        for criterion in criteria:
+            statement = statement.where(criterion)
+        result = session.execute(statement)
         counts[label] = int(result.rowcount or 0)
+    if mode != "all_candidate_generated":
+        clear_profile_intake_snapshots(session, candidate_profile_id)
     return counts
+
+
+def clear_item_delete_plan(mode: ProfileClearMode):
+    if mode == "generated_drafts":
+        return (
+            (ProfileFieldValue, "profileFieldValues", (ProfileFieldValue.lifecycle_status == "generated",)),
+            (ProfileFactDraft, "profileFactDrafts", (ProfileFactDraft.review_status != "rejected",)),
+            (
+                SkillClaim,
+                "skillClaims",
+                (SkillClaim.publication_status != "published", SkillClaim.verification_status != "rejected"),
+            ),
+            (
+                ExperienceProjectDraft,
+                "experienceAndProjects",
+                (ExperienceProjectDraft.publication_status != "published", ExperienceProjectDraft.review_status != "rejected"),
+            ),
+            (
+                EvidenceArtifact,
+                "evidenceLinks",
+                (EvidenceArtifact.publication_status != "published", EvidenceArtifact.review_status != "rejected"),
+            ),
+            (RoleTarget, "roleTargets", (RoleTarget.publication_status != "published", RoleTarget.review_status != "rejected")),
+        )
+    if mode == "archived_generated":
+        return (
+            (ProfileFieldValue, "profileFieldValues", (ProfileFieldValue.lifecycle_status == "archived",)),
+            (ProfileFact, "profileFacts", (ProfileFact.verification_status == "rejected",)),
+            (ProfileFactDraft, "profileFactDrafts", (ProfileFactDraft.review_status == "rejected",)),
+            (
+                SkillClaim,
+                "skillClaims",
+                ((SkillClaim.publication_status == "archived") | (SkillClaim.verification_status == "rejected"),),
+            ),
+            (
+                ExperienceProjectDraft,
+                "experienceAndProjects",
+                (
+                    (ExperienceProjectDraft.publication_status == "archived")
+                    | (ExperienceProjectDraft.review_status == "rejected"),
+                ),
+            ),
+            (
+                EvidenceArtifact,
+                "evidenceLinks",
+                ((EvidenceArtifact.publication_status == "archived") | (EvidenceArtifact.review_status == "rejected"),),
+            ),
+            (RoleTarget, "roleTargets", ((RoleTarget.publication_status == "archived") | (RoleTarget.review_status == "rejected"),)),
+        )
+    return (
+        (ProfileFieldValue, "profileFieldValues", ()),
+        (ProfileFact, "profileFacts", ()),
+        (ProfileFactDraft, "profileFactDrafts", ()),
+        (SkillClaim, "skillClaims", ()),
+        (ExperienceProjectDraft, "experienceAndProjects", ()),
+        (EvidenceArtifact, "evidenceLinks", ()),
+        (RoleTarget, "roleTargets", ()),
+        (ProfileIntakeEvent, "profileIntakeEvents", ()),
+        (ProfileIntakeSession, "profileIntakeSessions", ()),
+    )
+
+
+def clear_profile_intake_snapshots(session: Session, candidate_profile_id: str) -> None:
+    for intake_session in session.scalars(
+        select(ProfileIntakeSession).where(ProfileIntakeSession.candidate_profile_id == candidate_profile_id)
+    ):
+        redacted_state = intake_session.redacted_state if isinstance(intake_session.redacted_state, dict) else {}
+        intake_session.redacted_state = {
+            key: value
+            for key, value in redacted_state.items()
+            if key not in {"latestDraftSnapshot", "draftCounts", "activeDraftCounts", "suppressedArchivedMatches"}
+        }
 
 
 def generated_profile_review_snapshot(session: Session, profile: CandidateProfile) -> dict[str, Any]:

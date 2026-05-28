@@ -901,6 +901,11 @@ p {
   justify-self: stretch;
 }
 
+.profile-reset-actions {
+  display: grid;
+  gap: 6px;
+}
+
 .profile-header-recent {
   display: grid;
   gap: 5px;

@@ -29,6 +29,7 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
+    assert command_center_module.interpret_command("What should I emphasize for AI platform roles?", active_workspace="profile") == "profile_guidance"
 
 
 def test_profile_action_summary_counts_only_active_saved_draft_items() -> None:
@@ -437,6 +438,30 @@ def test_non_profile_command_returns_planned_action_without_profile_intake(tmp_p
     assert response.actions[0].type == "prioritize_jobs"
     assert response.actions[0].status == "planned"
     assert response.target_workspace == "jobs"
+
+
+def test_profile_guidance_command_does_not_run_profile_intake(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("profile intake should not run for guidance-only profile commands")
+
+    monkeypatch.setattr(command_center_module, "run_profile_intake_extraction", fail_if_called)
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="What should I emphasize for applied AI roles?",
+                active_workspace="profile",
+            ),
+            session=session,
+        )
+
+    assert response.actions[0].type == "profile_guidance"
+    assert response.actions[0].summary == "No profile data was changed."
+    assert response.result_payload is not None
+    assert response.result_payload["mutated"] is False
 
 
 def test_command_center_routes_company_url_update_to_company_update(tmp_path: Path, monkeypatch) -> None:
