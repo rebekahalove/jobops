@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..service import (
+from ..models import (
     JobDiscoveryProvider,
     JobProviderConfigurationError,
     JobProviderRuntimeError,
@@ -21,4 +21,3 @@ __all__ = [
     "ProviderSearchOutcome",
     "ProviderType",
 ]
-

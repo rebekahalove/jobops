@@ -6,7 +6,7 @@ from typing import Any
 
 from ...settings import Settings
 from .base import JobSearchRequest, LiveJobSourceResult, ProviderDiagnostic, ProviderSearchOutcome, ProviderType
-from ..service import (
+from ..provider_utils import (
     clean_text_value,
     compact_unique_strings,
     fetch_json,

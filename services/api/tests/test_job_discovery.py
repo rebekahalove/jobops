@@ -311,6 +311,57 @@ def test_provider_registry_parses_multiple_providers() -> None:
     assert [provider.provider_type for provider in providers] == ["broad_search", "ats_board", "ats_board", "mock"]
 
 
+def test_provider_modules_do_not_import_service_module() -> None:
+    provider_dir = Path(command_center_module.__file__).parent / "job_discovery" / "providers"
+    for module_name in ("adzuna.py", "greenhouse.py", "mock.py", "ashby.py", "base.py", "registry.py"):
+        source = (provider_dir / module_name).read_text(encoding="utf-8")
+        assert "..service" not in source
+        assert "job_discovery.service" not in source
+
+
+def test_provider_registry_returns_provider_classes() -> None:
+    from jobops_api.job_discovery.providers.adzuna import AdzunaJobDiscoveryProvider
+    from jobops_api.job_discovery.providers.ashby import AshbyJobDiscoveryProvider
+    from jobops_api.job_discovery.providers.greenhouse import GreenhouseJobDiscoveryProvider
+    from jobops_api.job_discovery.providers.mock import MockJobDiscoveryProvider
+
+    providers = resolve_job_discovery_providers(("mock", "adzuna", "greenhouse", "ashby"))
+
+    assert isinstance(providers[0], MockJobDiscoveryProvider)
+    assert isinstance(providers[1], AdzunaJobDiscoveryProvider)
+    assert isinstance(providers[2], GreenhouseJobDiscoveryProvider)
+    assert isinstance(providers[3], AshbyJobDiscoveryProvider)
+    assert providers[1].provider_type == "broad_search"
+    assert providers[2].provider_type == "ats_board"
+
+
+def test_selection_serializes_normalized_candidates_without_provider_class() -> None:
+    from jobops_api.job_discovery.models import CandidatePoolEntry
+    from jobops_api.job_discovery.selection import serialize_candidate_pool_entry
+
+    entry = CandidatePoolEntry(
+        candidate_id="J001",
+        result=LiveJobSourceResult(
+            title="AI Platform Engineer",
+            company_name="Example Co",
+            job_url="https://example.com/jobs/ai-platform",
+            source_provider="adzuna",
+            provider_type="broad_search",
+            source_result_id="adzuna-1",
+            description_excerpt="Build LLM platform workflows.",
+        ),
+        rough_score=12,
+        flags=("posting_date_unknown",),
+    )
+
+    payload = serialize_candidate_pool_entry(entry)
+
+    assert payload["candidateId"] == "J001"
+    assert payload["providerName"] == "adzuna"
+    assert payload["providerType"] == "broad_search"
+    assert payload["title"] == "AI Platform Engineer"
+
+
 def test_provider_registry_rejects_unknown_provider() -> None:
     try:
         resolve_job_discovery_providers(("adzuna", "unknown-provider"))
@@ -696,7 +747,11 @@ def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tm
         def generate(self, request):
             return ModelResponse(text="not json", provider="fake", model="fake-model", finish_reason="stop")
 
-    caplog.set_level(logging.WARNING, logger="jobops_api.job_discovery")
+    logging.disable(logging.NOTSET)
+    selection_logger = logging.getLogger("jobops_api.job_discovery.selection")
+    selection_logger.disabled = False
+    selection_logger.propagate = True
+    caplog.set_level(logging.WARNING, logger="jobops_api.job_discovery.selection")
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = make_settings(

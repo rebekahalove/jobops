@@ -6,7 +6,7 @@ from typing import Any
 
 from ...settings import Settings
 from .base import JobProviderRuntimeError, JobSearchRequest, LiveJobSourceResult, ProviderDiagnostic, ProviderSearchOutcome, ProviderType
-from ..service import (
+from ..provider_utils import (
     build_adzuna_exclusions,
     clean_text_value,
     dedupe_provider_results,
@@ -119,4 +119,3 @@ def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> L
         url_verification_status="provider_unverified",
         url_verification_summary="Adzuna provider result; URL may redirect through Adzuna.",
     )
-
