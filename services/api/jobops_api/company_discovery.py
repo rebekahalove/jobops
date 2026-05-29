@@ -5,14 +5,20 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .auth import AuthContext, require_auth_context
-from .db.models import CandidateProfile, RoleTarget, TargetCompany
+from .company_canonicalization import (
+    clean_company_source_urls,
+    domain_from_url,
+    ensure_candidate_company_link,
+    normalize_company_name,
+    upsert_canonical_company,
+)
+from .db.models import CandidateCompany, CandidateProfile, RoleTarget
 from .db.session import get_db_session
 from .model_connector import (
     ModelConfigurationError,
@@ -252,9 +258,12 @@ class CompanyDiscoveryOutput(ApiModel):
 
 class CompanyResponse(BaseModel):
     id: str
+    company_id: str
     candidate_profile_id: str
     name: str
     normalized_name: str | None
+    domain: str | None = None
+    normalized_domain: str | None = None
     website_url: str | None
     careers_url: str | None
     job_listings_url: str | None
@@ -275,6 +284,8 @@ class CompanyResponse(BaseModel):
     derivation_status: str
     review_status: str
     notes: str
+    added_at: datetime
+    archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     last_checked_at: datetime | None
@@ -294,7 +305,7 @@ class CompanyDiscoveryServiceResult:
 
 @dataclass(frozen=True)
 class CompanyDiscoverySaveResult:
-    added: list[TargetCompany]
+    added: list[CandidateCompany]
     skipped: list[SkippedExistingCompany]
 
 
@@ -305,16 +316,17 @@ def list_companies(
     review_status: ReviewStatus | None = None,
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
-) -> list[TargetCompany]:
+) -> list[dict[str, Any]]:
     statement = (
-        select(TargetCompany)
-        .where(TargetCompany.candidate_profile_id == auth.candidate_profile.id)
-        .order_by(TargetCompany.created_at.desc())
+        select(CandidateCompany)
+        .options(selectinload(CandidateCompany.company))
+        .where(CandidateCompany.candidate_profile_id == auth.candidate_profile.id)
+        .order_by(CandidateCompany.added_at.desc(), CandidateCompany.created_at.desc())
     )
     if review_status is not None:
-        statement = statement.where(TargetCompany.review_status == review_status)
+        statement = statement.where(CandidateCompany.review_status == review_status)
 
-    return list(session.scalars(statement))
+    return [serialize_company(link) for link in session.scalars(statement)]
 
 
 def run_company_discovery(
@@ -541,23 +553,36 @@ def build_company_discovery_user_prompt(
 
 
 def serialize_current_saved_companies(session: Session, candidate_profile_id: str) -> list[dict[str, Any]]:
-    companies = list(
+    links = list(
         session.scalars(
-            select(TargetCompany)
-            .where(TargetCompany.candidate_profile_id == candidate_profile_id)
-            .order_by(TargetCompany.name.asc())
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile_id)
+            .order_by(CandidateCompany.added_at.desc(), CandidateCompany.created_at.desc())
         )
     )
     return [
         {
-            "name": company.name,
-            "normalized_name": company.normalized_name or normalize_company_name(company.name),
-            "website_url": company.website_url,
-            "careers_url": company.careers_url,
-            "job_listings_url": company.job_listings_url,
-            "domains": [domain for domain in [domain_from_url(company.website_url)] if domain],
+            "id": link.id,
+            "company_id": link.company_id,
+            "name": link.company.name,
+            "normalized_name": link.company.normalized_name or normalize_company_name(link.company.name),
+            "website_url": link.company.website_url,
+            "careers_url": link.company.careers_url,
+            "job_listings_url": link.company.job_listings_url,
+            "domains": [
+                domain
+                for domain in [
+                    link.company.normalized_domain,
+                    domain_from_url(link.company.website_url),
+                    domain_from_url(link.company.careers_url),
+                    domain_from_url(link.company.job_listings_url),
+                ]
+                if domain
+            ],
         }
-        for company in companies
+        for link in links
+        if link.company is not None
     ]
 
 
@@ -612,37 +637,56 @@ def save_model_derived_companies(
     web_search_queries: object,
 ) -> CompanyDiscoverySaveResult:
     existing = list(
-        session.scalars(select(TargetCompany).where(TargetCompany.candidate_profile_id == candidate_profile.id))
+        session.scalars(
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile.id)
+        )
     )
     existing_normalized_names = {
-        normalize_company_name(company.normalized_name or company.name)
-        for company in existing
-        if normalize_company_name(company.normalized_name or company.name)
+        normalize_company_name(link.company.normalized_name or link.company.name)
+        for link in existing
+        if link.company is not None and normalize_company_name(link.company.normalized_name or link.company.name)
     }
     existing_domains = {
         domain
-        for company in existing
-        for domain in [domain_from_url(company.website_url), domain_from_url(company.careers_url), domain_from_url(company.job_listings_url)]
+        for link in existing
+        if link.company is not None
+        for domain in [
+            link.company.normalized_domain,
+            domain_from_url(link.company.website_url),
+            domain_from_url(link.company.careers_url),
+            domain_from_url(link.company.job_listings_url),
+            *(domain_from_url(url) for url in (link.company.source_urls or [])),
+        ]
         if domain
     }
-
-    added: list[TargetCompany] = []
+    added: list[CandidateCompany] = []
     skipped: list[SkippedExistingCompany] = []
     search_queries = [query for query in web_search_queries if isinstance(query, str)] if isinstance(web_search_queries, list) else []
     safe_grounding_metadata = grounding_metadata if isinstance(grounding_metadata, dict) else {}
 
     for company in output.companies:
         normalized_name = normalize_company_name(company.normalized_name or company.name)
-        website_domain = domain_from_url(company.website_url)
+        candidate_domains = {
+            domain
+            for domain in [
+                domain_from_url(company.website_url),
+                domain_from_url(company.careers_url),
+                domain_from_url(company.job_listings_url),
+                *(domain_from_url(url) for url in company.source_urls),
+            ]
+            if domain
+        }
         if normalized_name and normalized_name in existing_normalized_names:
             skipped.append(SkippedExistingCompany(name=company.name, reason="Already tracked by normalized name."))
             continue
-        if website_domain and website_domain in existing_domains:
+        if candidate_domains and existing_domains.intersection(candidate_domains):
             skipped.append(SkippedExistingCompany(name=company.name, reason="Already tracked by website domain."))
             continue
 
-        row = TargetCompany(
-            candidate_profile_id=candidate_profile.id,
+        canonical = upsert_canonical_company(
+            session,
             name=company.name.strip(),
             normalized_name=normalized_name or None,
             website_url=company.website_url,
@@ -654,33 +698,39 @@ def save_model_derived_companies(
             operating_countries=company.operating_countries,
             hiring_locations=company.hiring_locations,
             remote_policy=company.remote_policy,
-            role_fit_tags=company.role_fit_tags,
-            mission_fit_tags=company.mission_fit_tags,
-            fit_reason=company.fit_reason,
             source_urls=company.source_urls,
             source_summary=company.source_summary,
+            data_confidence=company.data_confidence,
+        )
+        link_result = ensure_candidate_company_link(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            company=canonical,
+            review_status="new",
+            derivation_status="model_derived",
+            fit_reason=company.fit_reason,
+            role_fit_tags=company.role_fit_tags,
+            mission_fit_tags=company.mission_fit_tags,
+            notes=company.notes,
             discovery_query=discovery_query,
             search_queries_used=search_queries,
             provider_grounding_metadata=safe_grounding_metadata,
             discovered_by=provider,
-            derivation_status="model_derived",
-            review_status="new",
-            notes=company.notes or "",
         )
-        session.add(row)
-        session.flush()
-        added.append(row)
+        if link_result.created_link:
+            added.append(link_result.link)
+        else:
+            skipped.append(SkippedExistingCompany(name=company.name, reason="Already followed by this profile."))
         if normalized_name:
             existing_normalized_names.add(normalized_name)
-        if website_domain:
-            existing_domains.add(website_domain)
+        existing_domains.update(candidate_domains)
 
     return CompanyDiscoverySaveResult(added=added, skipped=skipped)
 
 
 def build_assistant_message(
     output: CompanyDiscoveryOutput,
-    added: list[TargetCompany],
+    added: list[CandidateCompany],
     skipped: list[SkippedExistingCompany],
 ) -> str:
     model_message = output.assistant_message.strip()
@@ -797,6 +847,7 @@ class CompanyDiscoveryValidationFailure(Exception):
 
 def company_discovery_validation_failure(settings: Settings, request: ModelRequest, response, issues: list[str]) -> CompanyDiscoveryServiceResult:
     issues = add_truncation_hint(issues, response.finish_reason)
+    logger.disabled = False
     logger.warning(
         "Company discovery model output validation failed.",
         extra={
@@ -877,12 +928,16 @@ def preview_model_response(text: str) -> str:
     return text.replace("\r", " ").replace("\n", " ").strip()[:MODEL_RESPONSE_LOG_PREVIEW_CHARS]
 
 
-def serialize_company(company: TargetCompany) -> dict[str, Any]:
+def serialize_company(link: CandidateCompany) -> dict[str, Any]:
+    company = link.company
     return {
-        "id": company.id,
-        "candidate_profile_id": company.candidate_profile_id,
+        "id": link.id,
+        "company_id": link.company_id,
+        "candidate_profile_id": link.candidate_profile_id,
         "name": company.name,
         "normalized_name": company.normalized_name,
+        "domain": company.domain,
+        "normalized_domain": company.normalized_domain,
         "website_url": company.website_url,
         "careers_url": company.careers_url,
         "job_listings_url": company.job_listings_url,
@@ -892,20 +947,22 @@ def serialize_company(company: TargetCompany) -> dict[str, Any]:
         "operating_countries": company.operating_countries or [],
         "hiring_locations": company.hiring_locations or [],
         "remote_policy": company.remote_policy,
-        "role_fit_tags": company.role_fit_tags or [],
-        "mission_fit_tags": company.mission_fit_tags or [],
-        "fit_reason": company.fit_reason,
-        "source_urls": company.source_urls or [],
+        "role_fit_tags": link.role_fit_tags or [],
+        "mission_fit_tags": link.mission_fit_tags or [],
+        "fit_reason": link.fit_reason,
+        "source_urls": clean_company_source_urls([*(company.source_urls or []), *(link.personal_source_urls or [])]),
         "source_summary": company.source_summary,
-        "discovery_query": company.discovery_query,
-        "search_queries_used": company.search_queries_used or [],
-        "discovered_by": company.discovered_by,
-        "derivation_status": company.derivation_status,
-        "review_status": company.review_status,
-        "notes": company.notes,
-        "created_at": company.created_at.isoformat() if company.created_at else None,
-        "updated_at": company.updated_at.isoformat() if company.updated_at else None,
-        "last_checked_at": company.last_checked_at.isoformat() if company.last_checked_at else None,
+        "discovery_query": link.discovery_query,
+        "search_queries_used": link.search_queries_used or [],
+        "discovered_by": link.discovered_by,
+        "derivation_status": link.derivation_status,
+        "review_status": link.review_status,
+        "notes": link.notes,
+        "added_at": link.added_at.isoformat() if link.added_at else None,
+        "archived_at": link.archived_at.isoformat() if link.archived_at else None,
+        "created_at": link.created_at.isoformat() if link.created_at else None,
+        "updated_at": link.updated_at.isoformat() if link.updated_at else None,
+        "last_checked_at": link.last_checked_at.isoformat() if link.last_checked_at else None,
     }
 
 
@@ -928,18 +985,6 @@ def resolve_optional_candidate_profile(
         return candidate_profile
 
     return None
-
-
-def normalize_company_name(value: str | None) -> str:
-    return " ".join((value or "").split()).casefold()
-
-
-def domain_from_url(value: str | None) -> str | None:
-    if not value:
-        return None
-    parsed = urlparse(value if "://" in value else f"https://{value}")
-    hostname = (parsed.hostname or "").casefold()
-    return hostname.removeprefix("www.") or None
 
 
 def split_compact_list(value: object, *, semicolon_first: bool = False) -> list[str]:

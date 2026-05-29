@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 export type TrackedCompany = {
   id: string;
+  company_id?: string;
   name: string;
   normalized_name: string | null;
   website_url: string | null;
@@ -26,6 +27,7 @@ export type TrackedCompany = {
   derivation_status: string;
   review_status: string;
   notes: string;
+  added_at?: string;
   created_at: string;
   updated_at: string;
   last_checked_at: string | null;
@@ -70,7 +72,7 @@ export function CompaniesList({
   }, [apiBasePath]);
 
   const sortedCompanies = useMemo(
-    () => [...companies].sort((left, right) => right.created_at.localeCompare(left.created_at)),
+    () => [...companies].sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
     [companies]
   );
 
@@ -101,6 +103,7 @@ export function CompaniesList({
                   <div>
                     <h2>{company.name}</h2>
                     <p>{company.description || company.fit_reason || "No description saved yet."}</p>
+                    <p className="company-added">Added {formatDate(company.added_at || company.created_at)}</p>
                   </div>
                   <div className="company-badges" aria-label={`${company.name} status`}>
                     <span>{formatStatus(company.review_status)}</span>
@@ -189,4 +192,8 @@ function formatList(values: string[]) {
 
 function formatStatus(value: string) {
   return value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }

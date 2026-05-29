@@ -20,6 +20,7 @@ describe("Companies list", () => {
         initialCompanies={[
           {
             id: "company-1",
+            company_id: "canonical-company-1",
             name: "CivicActions",
             normalized_name: "civicactions",
             website_url: "https://civicactions.com",
@@ -42,8 +43,9 @@ describe("Companies list", () => {
             derivation_status: "model_derived",
             review_status: "new",
             notes: "",
-            created_at: "2026-05-18T00:00:00Z",
-            updated_at: "2026-05-18T00:00:00Z",
+            added_at: "2026-05-18T12:00:00Z",
+            created_at: "2026-05-18T12:00:00Z",
+            updated_at: "2026-05-18T12:00:00Z",
             last_checked_at: null
           }
         ]}
@@ -54,6 +56,7 @@ describe("Companies list", () => {
     expect(html).toContain("New");
     expect(html).toContain("Model derived");
     expect(html).toContain("Remote US, Washington, DC");
+    expect(html).toContain("Added May 18, 2026");
     expect(html).toContain("Applied AI");
     expect(html).toContain("Public-interest technology");
     expect(html).toContain('href="https://civicactions.com/careers"');

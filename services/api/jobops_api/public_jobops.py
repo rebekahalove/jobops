@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 from .db.models import (
     AlphaAccessRequest,
     Application,
+    CandidateCompany,
     CommandInteractionLog,
     JobRole,
     ProfileFact,
     ProfileFactDraft,
-    TargetCompany,
     User,
 )
 from .db.session import get_db_session
@@ -63,7 +63,7 @@ def get_public_metrics(session: Session = Depends(get_db_session)) -> dict[str, 
     metrics = [
         metric("alphaAccessRequests", "Alpha access requests", count_rows(session, AlphaAccessRequest)),
         metric("usersOnboarded", "Alpha users onboarded", count_rows(session, User)),
-        metric("companiesTracked", "Companies tracked", count_rows(session, TargetCompany)),
+        metric("companiesTracked", "Companies tracked", count_rows(session, CandidateCompany)),
         metric("jobsTracked", "Jobs saved", count_rows(session, JobRole)),
         metric("profileDraftsCreated", "Profile drafts created", count_rows(session, ProfileFactDraft)),
         metric(

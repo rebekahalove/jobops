@@ -23,7 +23,8 @@ from jobops_api.company_discovery import (
     save_model_derived_companies,
     validate_company_discovery_output,
 )
-from jobops_api.db.models import Base, RoleTarget, TargetCompany
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from jobops_api.db.models import Base, CandidateCompany, Company, RoleTarget
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.settings import Settings
 
@@ -50,15 +51,13 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
                 is_active=True,
             )
         )
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="CivicActions",
-                normalized_name="civicactions",
-                website_url="https://civicactions.com",
-                derivation_status="user_entered",
-                review_status="reviewed",
-            )
+        add_candidate_company(
+            session,
+            profile.id,
+            "CivicActions",
+            website_url="https://civicactions.com",
+            derivation_status="user_entered",
+            review_status="reviewed",
         )
         session.commit()
 
@@ -90,8 +89,8 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     assert response.result_payload["companies"][0]["review_status"] == "new"
 
     with Session(engine) as session:
-        saved = list(session.scalars(select(TargetCompany).order_by(TargetCompany.name.asc())))
-        assert [company.name for company in saved] == ["CivicActions", "Higher Ground Labs"]
+        saved = list(session.scalars(select(CandidateCompany).join(Company).order_by(Company.name.asc())))
+        assert [link.company.name for link in saved] == ["CivicActions", "Higher Ground Labs"]
 
 
 def test_candidate_target_context_uses_only_published_internal_or_public_targets() -> None:
@@ -211,14 +210,11 @@ def test_company_discovery_preserves_model_assistant_message_for_chat() -> None:
         skippedExistingCompanies=[],
         clarifyingQuestions=[],
     )
-    added = [
-        TargetCompany(
-            candidate_profile_id="profile-1",
-            name="Example Civic",
-            normalized_name="example civic",
-            website_url="https://example.org",
-        )
-    ]
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        added = [add_candidate_company(session, profile.id, "Example Civic", website_url="https://example.org")]
 
     assert build_assistant_message(output, added, []) == output.assistant_message
 
@@ -316,13 +312,12 @@ def test_save_model_derived_companies_skips_normalized_name_and_domain_duplicate
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="Existing Civic",
-                normalized_name="existing civic",
-                website_url="https://existing.example",
-            )
+        add_candidate_company(
+            session,
+            profile.id,
+            "Existing Civic",
+            normalized_name="existing civic",
+            website_url="https://existing.example",
         )
         session.commit()
 
@@ -362,13 +357,71 @@ def test_save_model_derived_companies_skips_normalized_name_and_domain_duplicate
         )
         session.commit()
 
-        assert [company.name for company in result.added] == ["New Civic"]
+        assert [link.company.name for link in result.added] == ["New Civic"]
         assert len(result.skipped) == 2
-        saved = session.scalar(select(TargetCompany).where(TargetCompany.name == "New Civic"))
+        saved = session.scalar(select(CandidateCompany).join(Company).where(Company.name == "New Civic"))
         assert saved is not None
         assert saved.derivation_status == "model_derived"
         assert saved.review_status == "new"
         assert saved.search_queries_used == ["civic tech hiring"]
+
+
+def test_save_model_derived_companies_reuses_canonical_company_across_profiles() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        first_profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert first_profile is not None
+        second_profile = seed_public_profile(
+            session,
+            {
+                "slug": "second-candidate",
+                "displayName": "Second Candidate",
+                "headline": "Candidate profile setup in progress",
+                "summary": "",
+                "profileStatus": "draft",
+            },
+            hostname="second.example",
+        )
+        output = CompanyDiscoveryOutput(
+            assistantMessage="Added companies.",
+            companies=[
+                CompanyDiscoveryRecord(
+                    name="Shared Civic",
+                    normalizedName="shared civic",
+                    websiteUrl="https://shared.example",
+                    sourceUrls=["https://shared.example"],
+                    fitReason="Profile-specific fit.",
+                )
+            ],
+            skippedExistingCompanies=[],
+            clarifyingQuestions=[],
+        )
+
+        first = save_model_derived_companies(
+            session,
+            candidate_profile=first_profile,
+            discovery_query="Find companies",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        second = save_model_derived_companies(
+            session,
+            candidate_profile=second_profile,
+            discovery_query="Find companies",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        session.commit()
+
+        assert len(first.added) == 1
+        assert len(second.added) == 1
+        assert len(session.scalars(select(Company)).all()) == 1
+        assert len(session.scalars(select(CandidateCompany)).all()) == 2
+        assert first.added[0].company_id == second.added[0].company_id
 
 
 def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> None:
@@ -413,6 +466,32 @@ def create_seeded_engine():
         session.commit()
 
     return engine
+
+
+def add_candidate_company(
+    session: Session,
+    candidate_profile_id: str,
+    name: str,
+    *,
+    normalized_name: str | None = None,
+    website_url: str | None = None,
+    derivation_status: str = "model_derived",
+    review_status: str = "new",
+) -> CandidateCompany:
+    company = upsert_canonical_company(
+        session,
+        name=name,
+        normalized_name=normalized_name or name.casefold(),
+        website_url=website_url,
+    )
+    result = ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=company,
+        derivation_status=derivation_status,
+        review_status=review_status,
+    )
+    return result.link
 
 
 def make_settings(repo_root: Path) -> Settings:

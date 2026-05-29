@@ -2643,10 +2643,17 @@ input:disabled {
 .job-card-header p,
 .company-fit,
 .company-source-summary,
+.company-added,
 .job-description,
 .job-fit,
 .job-verification {
   margin-bottom: 0;
+}
+
+.company-added {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .company-badges,

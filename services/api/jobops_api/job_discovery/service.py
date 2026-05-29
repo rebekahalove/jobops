@@ -14,11 +14,17 @@ from sqlalchemy.orm import Session
 from ..auth import AuthContext, require_auth_context
 from ..company_discovery import (
     build_candidate_target_context,
-    domain_from_url,
     normalize_company_name,
     serialize_current_saved_companies,
 )
-from ..db.models import CandidateProfile, CandidateSavedJob, JobPosting, TargetCompany
+from ..company_canonicalization import (
+    CompanyProfileLinkResult,
+    clean_company_source_urls,
+    domain_from_url,
+    ensure_candidate_company_link,
+    upsert_canonical_company,
+)
+from ..db.models import CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting
 from ..db.session import get_db_session
 from ..model_connector import ModelConnector
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
@@ -1140,7 +1146,7 @@ def save_live_job_source_results(
     updated_existing_links: list[CandidateSavedJob] = []
     created_jobs: list[JobPosting] = []
     updated_jobs: list[JobPosting] = []
-    added_companies: list[TargetCompany] = []
+    added_companies: list[CandidateCompany] = []
     skipped: list[SkippedJobResult] = []
     now = datetime.now(timezone.utc)
     seen_in_output: set[str] = set()
@@ -1219,6 +1225,20 @@ def save_live_job_source_results(
             created_jobs.append(existing_job)
             existing_jobs[normalized_url] = existing_job
 
+        job_record = source_result_to_job_record(result, verification)
+        company_link_result = ensure_candidate_company_for_job(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            job=job_record,
+            provider=provider,
+            discovery_query=discovery_query,
+            ats_provider=result.ats_provider,
+            ats_board_token=result.ats_board_token,
+        )
+        existing_job.company_id = company_link_result.company.id
+        if company_link_result.created_link:
+            added_companies.append(company_link_result.link)
+
         if existing_job.id in existing_links:
             link = existing_links[existing_job.id]
             link.fit_summary = result.fit_summary or link.fit_summary
@@ -1235,17 +1255,6 @@ def save_live_job_source_results(
             updated_existing_links.append(link)
             skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
             continue
-
-        job_record = source_result_to_job_record(result, verification)
-        added_company = ensure_candidate_company_for_job(
-            session,
-            candidate_profile_id=candidate_profile.id,
-            job=job_record,
-            provider=provider,
-            discovery_query=discovery_query,
-        )
-        if added_company is not None:
-            added_companies.append(added_company)
 
         link = CandidateSavedJob(
             candidate_profile_id=candidate_profile.id,
@@ -1436,35 +1445,16 @@ def ensure_candidate_company_for_job(
     job: JobDiscoveryRecord,
     provider: str,
     discovery_query: str,
-) -> TargetCompany | None:
+    ats_provider: str | None = None,
+    ats_board_token: str | None = None,
+) -> CompanyProfileLinkResult:
     normalized_name = normalize_company_name(job.company_name)
     company_urls = clean_company_source_urls(
         [job.company_website_url, job.company_careers_url, job.company_job_listings_url, *job.company_source_urls]
     )
     source_urls = company_urls or clean_company_source_urls([job.job_url])
-    candidate_domains = {domain for domain in (domain_from_url(url) for url in source_urls) if domain}
-    existing = list(session.scalars(select(TargetCompany).where(TargetCompany.candidate_profile_id == candidate_profile_id)))
-    for company in existing:
-        existing_name = normalize_company_name(company.normalized_name or company.name)
-        existing_domains = {
-            domain
-            for domain in [
-                domain_from_url(company.website_url),
-                domain_from_url(company.careers_url),
-                domain_from_url(company.job_listings_url),
-                *(domain_from_url(url) for url in (company.source_urls or [])),
-            ]
-            if domain
-        }
-        if normalized_name and existing_name == normalized_name:
-            merge_company_source_fields(company, job, source_urls)
-            return None
-        if candidate_domains and existing_domains.intersection(candidate_domains):
-            merge_company_source_fields(company, job, source_urls)
-            return None
-
-    row = TargetCompany(
-        candidate_profile_id=candidate_profile_id,
+    canonical = upsert_canonical_company(
+        session,
         name=job.company_name.strip(),
         normalized_name=normalized_name or None,
         website_url=job.company_website_url,
@@ -1472,39 +1462,18 @@ def ensure_candidate_company_for_job(
         job_listings_url=job.company_job_listings_url,
         source_urls=source_urls[:12],
         source_summary="Added from job discovery because a relevant posting was saved.",
+        greenhouse_board_token=ats_board_token if ats_provider == "greenhouse" else None,
+    )
+    return ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=canonical,
+        review_status="new",
+        derivation_status="model_derived",
+        fit_reason=job.fit_summary,
         discovery_query=discovery_query,
         discovered_by=provider,
-        derivation_status="model_derived",
-        review_status="new",
-        fit_reason=job.fit_summary,
-        notes="",
     )
-    session.add(row)
-    session.flush()
-    return row
-
-
-def merge_company_source_fields(company: TargetCompany, job: JobDiscoveryRecord, source_urls: list[str]) -> None:
-    company.website_url = company.website_url or job.company_website_url
-    company.careers_url = company.careers_url or job.company_careers_url
-    company.job_listings_url = company.job_listings_url or job.company_job_listings_url
-    merged_urls = clean_company_source_urls([*(company.source_urls or []), *source_urls])
-    company.source_urls = merged_urls[:12]
-    company.fit_reason = company.fit_reason or job.fit_summary
-
-
-def clean_company_source_urls(values: list[str | None]) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not value:
-            continue
-        stripped = value.strip()
-        key = stripped.casefold()
-        if stripped and key not in seen:
-            cleaned.append(stripped)
-            seen.add(key)
-    return cleaned
 
 
 

@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from ..db.models import CandidateSavedJob, JobPosting, TargetCompany
+from ..db.models import CandidateCompany, CandidateSavedJob, JobPosting
 from ..model_connector import ModelRequest
 
 
@@ -296,7 +296,7 @@ class JobDiscoverySaveResult:
     updated_existing_links: list[CandidateSavedJob]
     created_jobs: list[JobPosting]
     updated_jobs: list[JobPosting]
-    added_companies: list[TargetCompany]
+    added_companies: list[CandidateCompany]
     skipped: list[SkippedJobResult]
 
 

@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from jobops_api.auth import AuthContext, require_auth_context
-from jobops_api.company_discovery import normalize_company_name
-from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, JobRole, TargetCompany
+from jobops_api.company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
+from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, Company, JobRole
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
@@ -81,10 +81,10 @@ def create_application(
     candidate_profile = auth.candidate_profile
     company_name = request.company_name.strip()
     job_title = request.job_title.strip()
-    target_company = get_or_create_target_company(session, candidate_profile.id, company_name)
+    company = get_or_create_company(session, candidate_profile.id, company_name)
     job_role = JobRole(
         candidate_profile_id=candidate_profile.id,
-        target_company_id=target_company.id,
+        company_id=company.id,
         title=job_title,
         job_url=clean_optional_text(request.job_url),
         location=clean_optional_text(request.location),
@@ -96,7 +96,7 @@ def create_application(
 
     application = Application(
         candidate_profile_id=candidate_profile.id,
-        target_company_id=target_company.id,
+        company_id=company.id,
         job_role_id=job_role.id,
         company_name=company_name,
         job_title=job_title,
@@ -216,26 +216,20 @@ def resolve_optional_candidate_profile(
     return None
 
 
-def get_or_create_target_company(session: Session, candidate_profile_id: str, company_name: str) -> TargetCompany:
-    target_company = session.scalar(
-        select(TargetCompany).where(
-            TargetCompany.candidate_profile_id == candidate_profile_id,
-            TargetCompany.name == company_name,
-        )
-    )
-    if target_company is not None:
-        return target_company
-
-    target_company = TargetCompany(
-        candidate_profile_id=candidate_profile_id,
+def get_or_create_company(session: Session, candidate_profile_id: str, company_name: str) -> Company:
+    company = upsert_canonical_company(
+        session,
         name=company_name,
         normalized_name=normalize_company_name(company_name),
+    )
+    ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=company,
         derivation_status="user_entered",
         review_status="reviewed",
     )
-    session.add(target_company)
-    session.flush()
-    return target_company
+    return company
 
 
 def clean_optional_text(value: str | None) -> str | None:

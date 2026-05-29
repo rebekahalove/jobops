@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .company_discovery import (
     build_candidate_target_context,
@@ -19,7 +19,7 @@ from .company_discovery import (
     normalize_company_name,
     safe_error_detail_fields,
 )
-from .db.models import CandidateProfile, TargetCompany
+from .db.models import CandidateCompany, CandidateProfile
 from .model_connector import (
     ModelConfigurationError,
     ModelConnector,
@@ -338,21 +338,24 @@ def serialize_router_companies(
     latest_user_message: str,
     cap: int,
 ) -> list[dict[str, Any]]:
-    companies = list(
+    links = list(
         session.scalars(
-            select(TargetCompany)
-            .where(TargetCompany.candidate_profile_id == candidate_profile_id)
-            .order_by(TargetCompany.name.asc())
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile_id)
+            .order_by(CandidateCompany.added_at.desc(), CandidateCompany.created_at.desc())
             .limit(cap)
         )
     )
-    return [serialize_router_company(company) for company in companies]
+    return [serialize_router_company(link) for link in links if link.company is not None]
 
 
-def serialize_router_company(company: TargetCompany) -> dict[str, Any]:
+def serialize_router_company(link: CandidateCompany) -> dict[str, Any]:
+    company = link.company
     domains = [
         domain
         for domain in {
+            company.normalized_domain,
             domain_from_url(company.website_url),
             domain_from_url(company.careers_url),
             domain_from_url(company.job_listings_url),
@@ -361,7 +364,8 @@ def serialize_router_company(company: TargetCompany) -> dict[str, Any]:
         if domain
     ]
     return {
-        "id": company.id,
+        "id": link.id,
+        "company_id": link.company_id,
         "name": company.name,
         "normalized_name": company.normalized_name or normalize_company_name(company.name),
         "website_url": company.website_url,
@@ -371,6 +375,7 @@ def serialize_router_company(company: TargetCompany) -> dict[str, Any]:
         "aliases": [],
         "domains": sorted(domains),
     }
+
 
 
 def available_router_actions() -> list[dict[str, str]]:

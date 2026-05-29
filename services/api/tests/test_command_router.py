@@ -13,7 +13,8 @@ from jobops_api.command_router import (
     build_command_router_model_request,
     run_command_router,
 )
-from jobops_api.db.models import Base, ProfileFactDraft, ProfileFieldValue, RoleTarget, TargetCompany
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from jobops_api.db.models import Base, ProfileFactDraft, ProfileFieldValue, RoleTarget
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.settings import Settings
@@ -61,16 +62,14 @@ def test_command_router_request_includes_compact_context(tmp_path: Path) -> None
                 ),
             ]
         )
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="CivicActions",
-                normalized_name="civicactions",
-                website_url="https://civicactions.com",
-                careers_url="https://civicactions.com/careers",
-                job_listings_url="https://civicactions.com/jobs",
-                source_urls=["https://civicactions.com"],
-            )
+        add_candidate_company(
+            session,
+            profile.id,
+            "CivicActions",
+            website_url="https://civicactions.com",
+            careers_url="https://civicactions.com/careers",
+            job_listings_url="https://civicactions.com/jobs",
+            source_urls=["https://civicactions.com"],
         )
         session.add(
             ProfileFactDraft(
@@ -172,22 +171,8 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
     with Session(engine) as session:
         profile = get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        session.add_all(
-            [
-                TargetCompany(
-                    candidate_profile_id=profile.id,
-                    name="CivicActions",
-                    normalized_name="civicactions",
-                    website_url="https://civicactions.com",
-                ),
-                TargetCompany(
-                    candidate_profile_id=profile.id,
-                    name="Higher Ground Labs",
-                    normalized_name="higher ground labs",
-                    website_url="https://highergroundlabs.com",
-                ),
-            ]
-        )
+        add_candidate_company(session, profile.id, "CivicActions", website_url="https://civicactions.com")
+        add_candidate_company(session, profile.id, "Higher Ground Labs", website_url="https://highergroundlabs.com")
         session.commit()
 
         cases = [
@@ -247,6 +232,28 @@ def create_seeded_engine():
         )
         session.commit()
     return engine
+
+
+def add_candidate_company(
+    session: Session,
+    candidate_profile_id: str,
+    name: str,
+    *,
+    website_url: str | None = None,
+    careers_url: str | None = None,
+    job_listings_url: str | None = None,
+    source_urls: list[str] | None = None,
+) -> None:
+    company = upsert_canonical_company(
+        session,
+        name=name,
+        normalized_name=name.casefold(),
+        website_url=website_url,
+        careers_url=careers_url,
+        job_listings_url=job_listings_url,
+        source_urls=source_urls or [],
+    )
+    ensure_candidate_company_link(session, candidate_profile_id=candidate_profile_id, company=company)
 
 
 def make_settings(repo_root: Path) -> Settings:

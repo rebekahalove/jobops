@@ -4,7 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy import inspect as inspect_database
 from sqlalchemy.orm import Session
 
@@ -82,12 +82,80 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     }.issubset(field_value_columns)
     experience_columns = {column["name"] for column in inspector.get_columns("experience_project_drafts")}
     assert {"start_date", "end_date", "location"}.issubset(experience_columns)
-    company_columns = {column["name"] for column in inspector.get_columns("target_companies")}
+    assert "target_companies" not in inspector.get_table_names()
+    canonical_company_columns = {column["name"] for column in inspector.get_columns("companies")}
     assert {
         "normalized_name",
+        "normalized_domain",
+        "website_url",
         "careers_url",
         "job_listings_url",
-        "derivation_status",
-        "review_status",
-        "provider_grounding_metadata",
-    }.issubset(company_columns)
+        "greenhouse_board_token",
+        "first_seen_at",
+        "last_seen_at",
+    }.issubset(canonical_company_columns)
+    candidate_company_columns = {column["name"] for column in inspector.get_columns("candidate_companies")}
+    assert {
+        "candidate_profile_id",
+        "company_id",
+        "fit_reason",
+        "role_fit_tags",
+        "mission_fit_tags",
+        "notes",
+        "added_at",
+    }.issubset(candidate_company_columns)
+    job_role_columns = {column["name"] for column in inspector.get_columns("job_roles")}
+    application_columns = {column["name"] for column in inspector.get_columns("applications")}
+    assert "company_id" in job_role_columns
+    assert "target_company_id" not in job_role_columns
+    assert "company_id" in application_columns
+    assert "target_company_id" not in application_columns
+
+
+def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_company_backfill_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "20260528_0016")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO tenants (id, name, slug) VALUES ('tenant-1', 'Tenant', 'tenant')"))
+        connection.execute(
+            text(
+                "INSERT INTO candidate_profiles (id, tenant_id, slug, display_name, headline, summary, profile_status) "
+                "VALUES ('profile-1', 'tenant-1', 'one', 'One', 'Headline', '', 'draft'), "
+                "('profile-2', 'tenant-1', 'two', 'Two', 'Headline', '', 'draft')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO target_companies "
+                "(id, candidate_profile_id, name, normalized_name, website_url, source_urls, role_fit_tags, mission_fit_tags, fit_reason, review_status, derivation_status, notes) "
+                "VALUES "
+                "('target-1', 'profile-1', 'Civic Co', 'civic co', 'https://civic.example', '[\"https://civic.example\"]', '[\"AI\"]', '[\"Civic tech\"]', 'Good fit', 'new', 'model_derived', 'Private note'), "
+                "('target-2', 'profile-2', 'Civic Co', 'civic co', 'https://civic.example/about', '[\"https://civic.example/about\"]', '[\"Backend\"]', '[\"Public interest\"]', 'Other fit', 'reviewed', 'user_entered', 'Second note')"
+            )
+        )
+
+    command.upgrade(alembic_config, "head")
+
+    with engine.connect() as connection:
+        companies_count = connection.scalar(text("SELECT COUNT(*) FROM companies"))
+        links_count = connection.scalar(text("SELECT COUNT(*) FROM candidate_companies"))
+        notes = list(connection.execute(text("SELECT notes FROM candidate_companies ORDER BY candidate_profile_id")).scalars())
+
+    assert companies_count == 1
+    assert links_count == 2
+    assert notes == ["Private note", "Second note"]
+
+    command.downgrade(alembic_config, "20260528_0016")
+    inspector = inspect_database(engine)
+    assert "target_companies" in inspector.get_table_names()
+    assert "companies" not in inspector.get_table_names()
+    assert "candidate_companies" not in inspector.get_table_names()

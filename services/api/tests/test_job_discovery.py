@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
-from jobops_api.db.models import Base, CandidateSavedJob, JobPosting, TargetCompany
+from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
@@ -58,7 +58,9 @@ def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> 
         assert result.body["result"]["createdGlobalJobCount"] == 2
         assert len(session.scalars(select(JobPosting)).all()) == 2
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 2
-        assert len(session.scalars(select(TargetCompany)).all()) == 2
+        assert len(session.scalars(select(Company)).all()) == 2
+        assert len(session.scalars(select(CandidateCompany)).all()) == 2
+        assert all(job.company_id is not None for job in session.scalars(select(JobPosting)).all())
 
         saved_link = session.scalars(select(CandidateSavedJob).order_by(CandidateSavedJob.added_at.asc())).first()
         assert saved_link is not None

@@ -11,16 +11,17 @@ from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, hash_token, now_utc, seed_initial_user
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from jobops_api.command_router import CommandRouterServiceResult
 from jobops_api.db.models import (
     Application,
     Base,
+    CandidateCompany,
     CandidateProfile,
     InviteToken,
     PasswordResetToken,
     ProfileFact,
     ProfileFactDraft,
-    TargetCompany,
     User,
     UserSession,
 )
@@ -587,7 +588,7 @@ def test_command_context_and_ai_actions_do_not_cross_tenants(monkeypatch, tmp_pa
         assert "secret-rebekah" not in router_prompt
 
         with Session(engine) as session:
-            rebekah_company = session.scalar(select(TargetCompany).where(TargetCompany.name == "Rebekah Private Co"))
+            rebekah_company = session.scalar(select(CandidateCompany).join(CandidateCompany.company).where(CandidateCompany.company.has(name="Rebekah Private Co")))
             assert rebekah_company is not None
 
         malicious_action = command_center_module.CommandRouterOutput(
@@ -621,9 +622,9 @@ def test_command_context_and_ai_actions_do_not_cross_tenants(monkeypatch, tmp_pa
         assert action_response.json()["actions"][0]["status"] == "needs_confirmation"
 
         with Session(engine) as session:
-            unchanged = session.get(TargetCompany, rebekah_company.id)
+            unchanged = session.get(CandidateCompany, rebekah_company.id)
             assert unchanged is not None
-            assert unchanged.job_listings_url == "https://secret-rebekah.example/jobs"
+            assert unchanged.company.job_listings_url == "https://secret-rebekah.example/jobs"
 
 
 def test_prompt_exfiltration_and_destructive_commands_are_blocked(monkeypatch, tmp_path: Path) -> None:
@@ -687,18 +688,20 @@ def seed_cross_tenant_records(engine) -> tuple[str, str, str]:
         rebekah = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
         alpha = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "chance-alpha"))
         assert rebekah is not None and alpha is not None
-        company = TargetCompany(
-            candidate_profile_id=rebekah.id,
+        company = upsert_canonical_company(
+            session,
             name="Rebekah Private Co",
             normalized_name="rebekah private co",
             job_listings_url="https://secret-rebekah.example/jobs",
         )
+        link = ensure_candidate_company_link(session, candidate_profile_id=rebekah.id, company=company)
         application = Application(
             candidate_profile_id=rebekah.id,
+            company_id=company.id,
             company_name="Rebekah Private Co",
             job_title="Secret Role",
         )
-        session.add_all([company, application])
+        session.add_all([link.link, application])
         session.commit()
         return rebekah.id, alpha.id, application.id
 
