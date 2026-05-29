@@ -25,7 +25,10 @@ class Settings:
     job_discovery_source: str = "none"
     job_discovery_providers: tuple[str, ...] = ()
     job_discovery_allow_partial_provider_failures: bool = False
-    job_discovery_results_per_provider: int = 20
+    job_discovery_results_per_provider: int = 50
+    job_discovery_candidate_pool_limit: int = 100
+    job_discovery_save_limit: int = 5
+    job_discovery_company_candidate_cap: int = 10
     adzuna_app_id: str | None = None
     adzuna_app_key: str | None = None
     adzuna_country: str = "us"
@@ -90,7 +93,19 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         ),
         job_discovery_results_per_provider=parse_int(
             merged.get("JOBOPS_JOB_DISCOVERY_RESULTS_PER_PROVIDER"),
-            default=20,
+            default=50,
+        ),
+        job_discovery_candidate_pool_limit=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_CANDIDATE_POOL_LIMIT"),
+            default=100,
+        ),
+        job_discovery_save_limit=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_SAVE_LIMIT"),
+            default=5,
+        ),
+        job_discovery_company_candidate_cap=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_COMPANY_CANDIDATE_CAP"),
+            default=10,
         ),
         adzuna_app_id=merged.get("JOBOPS_ADZUNA_APP_ID"),
         adzuna_app_key=merged.get("JOBOPS_ADZUNA_APP_KEY"),

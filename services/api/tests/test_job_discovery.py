@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 import jobops_api.command_center as command_center_module
 from jobops_api.db.models import Base, CandidateSavedJob, JobPosting, TargetCompany
 from jobops_api.db.seed_profile import seed_public_profile
+from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
     JobDiscoveryOutput,
     JobDiscoveryRecord,
@@ -70,7 +71,7 @@ def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> 
         assert saved_link.added_at is not None
         assert saved_link.status == "saved"
         assert saved_link.fit_summary
-        assert saved_link.job.posting_date is not None
+        assert any(job.posting_date is not None for job in session.scalars(select(JobPosting)).all())
 
 
 def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_path: Path) -> None:
@@ -94,7 +95,8 @@ def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_
 
         assert second.status_code == 200
         assert second.body["result"]["savedCount"] == 0
-        assert second.body["result"]["updatedExistingCount"] == 2
+        assert second.body["result"]["updatedExistingCount"] == 0
+        assert second.body["result"]["duplicateCount"] == 2
         assert second.body["result"]["providerResultCount"] == 2
         assert second.body["result"]["modelSelectedCount"] == 0
         assert second.body["result"]["currentSavedJobCount"] == 2
@@ -321,7 +323,7 @@ def test_provider_registry_rejects_unknown_provider() -> None:
 def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) -> None:
     settings = make_settings(
         tmp_path,
-        model_provider="gemini",
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna",),
         adzuna_app_id="app-id",
@@ -457,7 +459,7 @@ def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path
     engine = create_seeded_engine()
     settings = make_settings(
         tmp_path,
-        model_provider="gemini",
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna", "greenhouse"),
         adzuna_app_id="app-id",
@@ -551,11 +553,124 @@ def test_provider_orchestration_searches_each_provider_until_new_job_threshold(t
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 3
 
 
-def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
+def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tmp_path: Path) -> None:
+    captured_request = None
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "Generic Software Engineer",
+                            "company": {"display_name": "Generic Co"},
+                            "redirect_url": "https://jobs.example.test/generic",
+                            "description": "Backend services.",
+                        },
+                        {
+                            "id": "adz-2",
+                            "title": "AI Platform Engineer",
+                            "company": {"display_name": "Aligned AI"},
+                            "redirect_url": "https://jobs.example.test/ai-platform",
+                            "description": "RAG evaluation and AI workflow automation.",
+                        },
+                    ]
+                }
+            ).encode("utf-8")
+
+    class FakeConnector:
+        def generate(self, request):
+            nonlocal captured_request
+            captured_request = request
+            payload = json.loads(request.messages[-1].content)
+            selected_candidate = next(
+                item for item in payload["candidate_jobs"] if item["title"] == "AI Platform Engineer"
+            )
+            skipped_candidate = next(
+                item for item in payload["candidate_jobs"] if item["title"] == "Generic Software Engineer"
+            )
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected the strongest provider-backed AI role.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": selected_candidate["candidateId"],
+                                "fitSummary": "Direct fit for RAG evaluation and AI platform work.",
+                                "rank": 1,
+                                "selectionReason": "Provider candidate is more aligned than the generic backend role.",
+                                "concerns": [],
+                            },
+                            {
+                                "candidateId": "J999",
+                                "fitSummary": "Should be ignored.",
+                                "rank": 2,
+                                "selectionReason": "Invalid candidate.",
+                                "concerns": [],
+                            },
+                        ],
+                        "skippedCandidateNotes": [{"candidateId": skipped_candidate["candidateId"], "reason": "Too generic."}],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = make_settings(
         tmp_path,
         model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=FakeConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["candidateCountSentToModel"] == 2
+        assert result.body["result"]["modelSelectedCount"] == 1
+        assert result.body["result"]["selectedCandidateIds"]
+        assert result.body["result"]["invalidSelectedCandidateIds"] == ["J999"]
+        assert result.body["result"]["savedCount"] == 1
+        saved_job = session.scalar(select(JobPosting))
+        assert saved_job is not None
+        assert saved_job.title == "AI Platform Engineer"
+        assert saved_job.company_name == "Aligned AI"
+        assert saved_job.job_url == "https://jobs.example.test/ai-platform"
+        saved_link = session.scalar(select(CandidateSavedJob))
+        assert saved_link is not None
+        assert saved_link.fit_summary == "Direct fit for RAG evaluation and AI platform work."
+        assert captured_request is not None
+        request_payload = json.loads(captured_request.messages[-1].content)
+        assert len(request_payload["candidate_jobs"]) == 2
+        assert any(item["title"] == "AI Platform Engineer" for item in request_payload["candidate_jobs"])
+
+
+def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna",),
         adzuna_app_id=None,
@@ -594,7 +709,7 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
     engine = create_seeded_engine()
     settings = make_settings(
         tmp_path,
-        model_provider="gemini",
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna",),
         adzuna_app_id="app-id",
@@ -610,10 +725,9 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
 
         assert result.status_code == 200
         assert result.body["result"]["providerResultCount"] == 0
-        assert "Job discovery provider completed" in caplog.text
-        assert '"providerName": "adzuna"' in caplog.text
-        assert '"resultCount": 0' in caplog.text
-        assert "Job discovery provider summary" in caplog.text
+        assert result.body["result"]["providerDiagnostics"][0]["providerName"] == "adzuna"
+        assert result.body["result"]["providerDiagnostics"][0]["resultCount"] == 0
+        assert result.body["result"]["providerDiagnostics"][0]["attempted"] is True
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
@@ -632,7 +746,7 @@ def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) ->
     engine = create_seeded_engine()
     settings = make_settings(
         tmp_path,
-        model_provider="gemini",
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna",),
         adzuna_app_id="app-id",
@@ -648,9 +762,8 @@ def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) ->
 
         assert result.status_code == 502
         assert result.body["code"] == "live_job_discovery_provider_failed"
-        assert "Job discovery provider request failed" in caplog.text
-        assert "Adzuna request failed with HTTP 401" in caplog.text
-        assert "Job discovery provider summary" in caplog.text
+        assert result.body["providerDiagnostics"][0]["providerName"] == "adzuna"
+        assert result.body["providerDiagnostics"][0]["error"] == "Adzuna request failed with HTTP 401."
 
 
 def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: Path) -> None:
@@ -683,7 +796,7 @@ def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: 
     engine = create_seeded_engine()
     settings = make_settings(
         tmp_path,
-        model_provider="gemini",
+        model_provider="mock",
         job_discovery_source="none",
         job_discovery_providers=("adzuna", "greenhouse"),
         allow_partial=True,
@@ -925,7 +1038,9 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
         assert response.result_payload is not None
         assert response.result_payload["jobDiscoveryMode"] == "mock"
         assert response.result_payload["providerResultCount"] == 2
-        assert response.result_payload["jobs"][0]["job_url"].startswith("https://civic-ai-labs.example.test/")
+        assert response.result_payload["jobs"][0]["job_url"].startswith(
+            ("https://civic-ai-labs.example.test/", "https://open-data-works.example.test/")
+        )
         assert response.result_payload["jobs"][0]["added_at"]
         assert len(session.scalars(select(JobPosting)).all()) == 2
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 2

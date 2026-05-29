@@ -61,7 +61,7 @@ SkipReasonCode = Literal[
     "missing_required_url",
 ]
 KNOWN_JOB_DISCOVERY_PROVIDERS = {"mock", "adzuna", "greenhouse", "ashby"}
-JOB_DISCOVERY_TARGET_NEW_JOBS = 5
+JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX = "J"
 JOB_DISCOVERY_RECORD_KEYS = {
     "title",
     "company_name",
@@ -299,6 +299,50 @@ class JobDiscoveryOutput(ApiModel):
     )
 
 
+class JobCandidateSelectionItem(ApiModel):
+    candidate_id: str = Field(validation_alias=AliasChoices("candidate_id", "candidateId"), serialization_alias="candidateId")
+    fit_summary: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("fit_summary", "fitSummary"),
+        serialization_alias="fitSummary",
+    )
+    rank: int | None = None
+    selection_reason: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("selection_reason", "selectionReason"),
+        serialization_alias="selectionReason",
+    )
+    concerns: list[str] = Field(default_factory=list)
+
+
+class JobCandidateSkippedNote(ApiModel):
+    candidate_id: str = Field(validation_alias=AliasChoices("candidate_id", "candidateId"), serialization_alias="candidateId")
+    reason: str
+
+
+class JobCandidateSelectionOutput(ApiModel):
+    assistant_message: str = Field(
+        default="I reviewed the live provider candidates and selected the strongest matches.",
+        validation_alias=AliasChoices("assistant_message", "assistantMessage"),
+        serialization_alias="assistantMessage",
+    )
+    selected_jobs: list[JobCandidateSelectionItem] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("selected_jobs", "selectedJobs"),
+        serialization_alias="selectedJobs",
+    )
+    skipped_candidate_notes: list[JobCandidateSkippedNote] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("skipped_candidate_notes", "skippedCandidateNotes"),
+        serialization_alias="skippedCandidateNotes",
+    )
+    clarifying_questions: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("clarifying_questions", "clarifyingQuestions"),
+        serialization_alias="clarifyingQuestions",
+    )
+
+
 class SavedJobResponse(BaseModel):
     id: str
     candidate_profile_id: str
@@ -430,9 +474,11 @@ class ProviderDiagnostic:
     configured: bool
     attempted: bool
     result_count: int = 0
+    raw_result_count: int | None = None
     error: str | None = None
     query: str | None = None
     board_token: str | None = None
+    search_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -441,9 +487,11 @@ class ProviderDiagnostic:
             "configured": self.configured,
             "attempted": self.attempted,
             "resultCount": self.result_count,
+            "rawResultCount": self.raw_result_count,
             "error": self.error,
             "query": self.query,
             "boardToken": self.board_token,
+            "searchMode": self.search_mode,
         }
 
 
@@ -462,6 +510,37 @@ class ProviderSearchSaveOutcome:
     errors: list[str]
     provider_result_count: int
     search_queries_used: list[str]
+
+
+@dataclass(frozen=True)
+class CandidatePoolEntry:
+    candidate_id: str
+    result: LiveJobSourceResult
+    rough_score: int = 0
+    flags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CandidatePoolBuildResult:
+    entries: list[CandidatePoolEntry]
+    skipped: list[SkippedJobResult]
+    count_after_provider_normalization: int
+    count_after_dedupe: int
+    count_after_hard_exclusion_filter: int
+    count_after_diversity_cap: int
+    trimmed_by_company_cap_count: int
+    trimmed_by_provider_cap_count: int
+
+
+@dataclass(frozen=True)
+class JobCandidateSelectionResult:
+    output: JobCandidateSelectionOutput
+    selected_entries: list[CandidatePoolEntry]
+    invalid_candidate_ids: list[str]
+    response_provider: str
+    response_model: str
+    request: ModelRequest
+    response: Any | None
 
 
 class JobDiscoveryProvider(Protocol):
@@ -511,6 +590,7 @@ def run_job_discovery(
     private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
     return run_live_source_job_discovery(
         request,
+        connector=connector,
         db_session=db_session,
         settings=active_settings,
         candidate_profile=candidate_profile,
@@ -666,6 +746,7 @@ def run_job_discovery(
 def run_live_source_job_discovery(
     request: JobDiscoveryRequest,
     *,
+    connector: ModelConnector | None = None,
     db_session: Session,
     settings: Settings,
     candidate_profile: CandidateProfile,
@@ -685,7 +766,7 @@ def run_live_source_job_discovery(
     search_request = JobSearchRequest(
         latest_user_message=request.latest_user_message,
         search_queries=fresh_search_queries,
-        results_per_provider=min(settings.job_discovery_results_per_provider, JOB_DISCOVERY_TARGET_NEW_JOBS),
+        results_per_provider=settings.job_discovery_results_per_provider,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
@@ -758,92 +839,108 @@ def run_live_source_job_discovery(
                 detail=str(error),
             )
         job_discovery_mode = "mock" if provider_names == ("mock",) else "live_provider"
-        if job_discovery_mode != "mock" and len(fresh_search_queries) > 1:
-            provider_search_save = run_configured_job_providers_until_new_job_threshold(
-                db_session,
-                providers=providers,
-                base_request=search_request,
-                settings=settings,
-                candidate_profile=candidate_profile,
-                discovery_query=request.latest_user_message,
+        search_outcome = run_configured_job_providers(providers, search_request, settings)
+        provider_diagnostics = search_outcome.diagnostics
+        provider_errors = search_outcome.errors
+        if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
+            log_job_discovery_provider_summary(
+                settings,
                 provider_names=provider_names,
-                max_new_jobs=JOB_DISCOVERY_TARGET_NEW_JOBS,
+                diagnostics=provider_diagnostics,
+                provider_result_count=len(search_outcome.results),
+                candidate_count_after_dedupe=0,
+                saved_count=0,
+                skipped_count=0,
+                errors=provider_errors,
+                level=logging.WARNING,
             )
-            provider_diagnostics = provider_search_save.diagnostics
-            provider_errors = provider_search_save.errors
-            if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
-                log_job_discovery_provider_summary(
-                    settings,
-                    provider_names=provider_names,
-                    diagnostics=provider_diagnostics,
-                    provider_result_count=provider_search_save.provider_result_count,
-                    candidate_count_after_dedupe=len(provider_search_save.source_results),
-                    saved_count=len(provider_search_save.save_result.saved_links),
-                    skipped_count=len(provider_search_save.save_result.skipped),
-                    errors=provider_errors,
-                    level=logging.WARNING,
-                )
-                return live_job_discovery_provider_error_response(
-                    settings,
-                    provider_names=provider_names,
-                    search_queries=provider_search_save.search_queries_used,
-                    provider_diagnostics=provider_diagnostics,
-                    errors=provider_errors,
-                )
-            provider_result_count = provider_search_save.provider_result_count
-            source_results = provider_search_save.source_results
-            search_queries_used = provider_search_save.search_queries_used
-            save_result = provider_search_save.save_result
-        else:
-            search_outcome = run_configured_job_providers(providers, search_request, settings)
-            provider_diagnostics = search_outcome.diagnostics
-            provider_errors = search_outcome.errors
-            if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
-                log_job_discovery_provider_summary(
-                    settings,
-                    provider_names=provider_names,
-                    diagnostics=provider_diagnostics,
-                    provider_result_count=len(search_outcome.results),
-                    candidate_count_after_dedupe=0,
-                    saved_count=0,
-                    skipped_count=0,
-                    errors=provider_errors,
-                    level=logging.WARNING,
-                )
-                return live_job_discovery_provider_error_response(
-                    settings,
-                    provider_names=provider_names,
-                    search_queries=fresh_search_queries,
-                    provider_diagnostics=provider_diagnostics,
-                    errors=provider_errors,
-                )
-            provider_result_count = len(search_outcome.results)
-            source_results = dedupe_provider_results(search_outcome.results)
+            return live_job_discovery_provider_error_response(
+                settings,
+                provider_names=provider_names,
+                search_queries=fresh_search_queries,
+                provider_diagnostics=provider_diagnostics,
+                errors=provider_errors,
+            )
+        provider_result_count = len(search_outcome.results)
+        source_results = search_outcome.results
 
-    if save_result is None:
+    selection_result: JobCandidateSelectionResult | None = None
+    candidate_pool = build_candidate_pool(
+        source_results,
+        current_saved_jobs=current_saved_jobs,
+        user_constraints=search_request.user_constraints,
+        save_limit=settings.job_discovery_save_limit,
+        candidate_pool_limit=settings.job_discovery_candidate_pool_limit,
+        company_cap=settings.job_discovery_company_candidate_cap,
+    )
+    preselection_skipped = candidate_pool.skipped
+    source_results = [entry.result for entry in candidate_pool.entries]
+
+    if save_result is None and provider_names == ("user_url",):
         save_result = save_live_job_source_results(
             db_session,
             candidate_profile=candidate_profile,
             discovery_query=request.latest_user_message,
             source_results=source_results,
             search_queries_used=search_queries_used,
+            provider="user_url",
+            verify_urls=True,
+            user_constraints=search_request.user_constraints,
+        )
+    elif save_result is None:
+        if candidate_pool.entries:
+            selection_result_or_error = select_job_candidates_with_model(
+                request,
+                connector=connector,
+                settings=settings,
+                candidate_entries=candidate_pool.entries,
+                current_saved_jobs=current_saved_jobs,
+                current_saved_companies=current_saved_companies,
+                target_context=target_context,
+                private_profile_context=private_profile_context,
+                provider_diagnostics=provider_diagnostics,
+                user_constraints=search_request.user_constraints,
+                save_limit=settings.job_discovery_save_limit,
+            )
+            if isinstance(selection_result_or_error, JobDiscoveryServiceResult):
+                return selection_result_or_error
+            selection_result = selection_result_or_error
+            selected_results = [
+                apply_model_selection_to_source_result(entry.result, selection)
+                for entry, selection in selected_selection_pairs(selection_result)
+            ]
+        else:
+            selection_result = build_empty_job_candidate_selection_result(settings)
+            selected_results = []
+        save_result = save_live_job_source_results(
+            db_session,
+            candidate_profile=candidate_profile,
+            discovery_query=request.latest_user_message,
+            source_results=selected_results,
+            search_queries_used=search_queries_used,
             provider=",".join(provider_names) if provider_names else job_discovery_mode,
-            verify_urls=job_discovery_mode != "mock",
+            verify_urls=True,
             user_constraints=search_request.user_constraints,
         )
     db_session.commit()
 
     saved_jobs = [serialize_saved_job(link) for link in save_result.saved_links]
     updated_saved_jobs = [serialize_saved_job(link) for link in save_result.updated_existing_links]
-    skipped_jobs = [item.model_dump(by_alias=True) for item in save_result.skipped]
-    skipped_counts = skipped_reason_code_counts(save_result.skipped)
+    all_skipped_results = [*preselection_skipped, *save_result.skipped]
+    skipped_jobs = [item.model_dump(by_alias=True) for item in all_skipped_results]
+    skipped_counts = skipped_reason_code_counts(all_skipped_results)
     verified_count = sum(
         1
         for link in [*save_result.saved_links, *save_result.updated_existing_links]
         if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
     )
     result_payload = {
-        "assistantMessage": build_live_job_discovery_assistant_message(save_result, source_results),
+        "assistantMessage": build_selected_job_discovery_assistant_message(
+            selection_result,
+            save_result,
+            source_results,
+            all_skipped_results,
+        ),
         "jobs": saved_jobs,
         "updatedExistingJobs": updated_saved_jobs,
         "discoveredCount": len(source_results),
@@ -865,8 +962,18 @@ def run_live_source_job_discovery(
         "sourceName": ",".join(provider_names) if provider_names else job_discovery_mode,
         "searchQueriesUsed": search_queries_used,
         "providerResultCount": provider_result_count,
-        "candidateCountAfterDedupe": len(source_results),
-        "modelSelectedCount": 0,
+        "providerRawResultCount": provider_result_count,
+        "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
+        "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
+        "candidateCountAfterHardExclusionFilter": candidate_pool.count_after_hard_exclusion_filter,
+        "candidateCountAfterDiversityCap": candidate_pool.count_after_diversity_cap,
+        "candidateCountSentToModel": len(candidate_pool.entries) if selection_result is not None else 0,
+        "modelSelectedCount": len(selection_result.selected_entries) if selection_result is not None else len(saved_jobs),
+        "selectedCandidateIds": [entry.candidate_id for entry in selection_result.selected_entries] if selection_result is not None else [],
+        "invalidSelectedCandidateIds": selection_result.invalid_candidate_ids if selection_result is not None else [],
+        "savedJobIds": [job["id"] for job in saved_jobs],
+        "trimmedByCompanyCapCount": candidate_pool.trimmed_by_company_cap_count,
+        "trimmedByProviderCapCount": candidate_pool.trimmed_by_provider_cap_count,
         "verifiedUrlCount": verified_count,
         "savedJobCount": len(saved_jobs),
         "currentSavedJobCount": len(current_saved_jobs),
@@ -1013,6 +1120,10 @@ def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: Provid
         "attempted": diagnostic.attempted,
         "resultCount": diagnostic.result_count,
     }
+    if diagnostic.raw_result_count is not None:
+        payload["rawResultCount"] = diagnostic.raw_result_count
+    if diagnostic.search_mode:
+        payload["searchMode"] = diagnostic.search_mode
     if diagnostic.board_token:
         payload["boardToken"] = diagnostic.board_token
     if diagnostic.query and should_log_job_discovery_debug(settings):
@@ -1145,6 +1256,433 @@ def run_configured_job_providers(
         diagnostics.extend(outcome.diagnostics)
         errors.extend(outcome.errors)
     return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+def build_candidate_pool(
+    source_results: list[LiveJobSourceResult],
+    *,
+    current_saved_jobs: list[dict[str, Any]],
+    user_constraints: list[str],
+    save_limit: int,
+    candidate_pool_limit: int,
+    company_cap: int,
+) -> CandidatePoolBuildResult:
+    normalized_results = [result for result in source_results if normalize_job_url(result.job_url)]
+    deduped_results = dedupe_provider_results(normalized_results)
+    saved_urls = {url.casefold() for url in current_saved_job_urls(current_saved_jobs)}
+    skipped: list[SkippedJobResult] = []
+    hard_filtered: list[LiveJobSourceResult] = []
+    for result in deduped_results:
+        normalized_url = normalize_job_url(result.job_url)
+        if normalized_url and normalized_url.casefold() in saved_urls:
+            skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
+            continue
+        excluded_term = result_matches_exclusion(result, user_constraints)
+        if excluded_term:
+            skipped.append(
+                skip_from_source_result(
+                    result,
+                    "excluded_by_user_constraints",
+                    f"Result matched excluded user constraint: {excluded_term}.",
+                )
+            )
+            continue
+        hard_filtered.append(result)
+
+    scored = sorted(
+        hard_filtered,
+        key=lambda result: rough_candidate_score(result, user_constraints),
+        reverse=True,
+    )
+    diverse_results: list[LiveJobSourceResult] = []
+    company_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
+    trimmed_by_company = 0
+    trimmed_by_provider = 0
+    provider_cap = max(candidate_pool_limit // 2, save_limit * 2, 10)
+    for result in scored:
+        company_key = normalize_company_name(result.company_name) or result.company_name.casefold()
+        provider_key = result.source_provider.casefold()
+        if company_cap > 0 and company_counts.get(company_key, 0) >= company_cap:
+            trimmed_by_company += 1
+            continue
+        if provider_cap > 0 and provider_counts.get(provider_key, 0) >= provider_cap:
+            trimmed_by_provider += 1
+            continue
+        diverse_results.append(result)
+        company_counts[company_key] = company_counts.get(company_key, 0) + 1
+        provider_counts[provider_key] = provider_counts.get(provider_key, 0) + 1
+        if len(diverse_results) >= candidate_pool_limit:
+            break
+
+    entries = [
+        CandidatePoolEntry(
+            candidate_id=f"{JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX}{index:03d}",
+            result=result,
+            rough_score=rough_candidate_score(result, user_constraints),
+            flags=tuple(candidate_flags(result, user_constraints)),
+        )
+        for index, result in enumerate(diverse_results, start=1)
+    ]
+    return CandidatePoolBuildResult(
+        entries=entries,
+        skipped=skipped,
+        count_after_provider_normalization=len(normalized_results),
+        count_after_dedupe=len(deduped_results),
+        count_after_hard_exclusion_filter=len(hard_filtered),
+        count_after_diversity_cap=len(entries),
+        trimmed_by_company_cap_count=trimmed_by_company,
+        trimmed_by_provider_cap_count=trimmed_by_provider,
+    )
+
+
+def rough_candidate_score(result: LiveJobSourceResult, user_constraints: list[str]) -> int:
+    text = " ".join(
+        part
+        for part in [
+            result.title,
+            result.company_name,
+            result.description_excerpt or "",
+            result.location or "",
+        ]
+        if part
+    ).casefold()
+    score = 0
+    weighted_terms = {
+        "applied ai": 8,
+        "ai system": 8,
+        "agent": 6,
+        "rag": 6,
+        "llm": 6,
+        "evaluation": 5,
+        "eval": 5,
+        "workflow": 4,
+        "automation": 4,
+        "platform": 4,
+        "forward deployed": 4,
+        "civic": 3,
+        "legal": 3,
+        "transparency": 3,
+        "data": 2,
+        "machine learning": 2,
+    }
+    for term, weight in weighted_terms.items():
+        if term in text:
+            score += weight
+    if result.remote_work_mode == "remote":
+        score += 2
+    if result.posting_date:
+        score += 1
+    if result_matches_exclusion(result, user_constraints):
+        score -= 100
+    return score
+
+
+def candidate_flags(result: LiveJobSourceResult, user_constraints: list[str]) -> list[str]:
+    flags: list[str] = []
+    if result_matches_exclusion(result, user_constraints):
+        flags.append("matches_user_exclusion")
+    if not result.posting_date:
+        flags.append("posting_date_unknown")
+    if result.provider_type == "ats_board":
+        flags.append("company_board")
+    return flags
+
+
+def select_job_candidates_with_model(
+    request: JobDiscoveryRequest,
+    *,
+    connector: ModelConnector | None,
+    settings: Settings,
+    candidate_entries: list[CandidatePoolEntry],
+    current_saved_jobs: list[dict[str, Any]],
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+    provider_diagnostics: list[ProviderDiagnostic],
+    user_constraints: list[str],
+    save_limit: int,
+) -> JobCandidateSelectionResult | JobDiscoveryServiceResult:
+    model_request = build_job_candidate_selection_model_request(
+        request,
+        candidate_entries=candidate_entries,
+        current_saved_jobs=current_saved_jobs,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        provider_diagnostics=provider_diagnostics,
+        user_constraints=user_constraints,
+        save_limit=save_limit,
+    )
+    connector_config = read_model_connector_config_from_settings(settings)
+    routed_request = route_model_request(model_request, connector_config.routing)
+    try:
+        active_connector = connector or create_model_connector(
+            connector_config,
+            mock_responses_by_task={"job_candidate_selection": build_mock_job_candidate_selection_response},
+        )
+    except ModelConfigurationError as error:
+        return JobDiscoveryServiceResult(
+            body={
+                "ok": False,
+                "error": "Job candidate selection model is not configured. No jobs were saved.",
+                "code": error.code,
+                **safe_error_detail_fields(settings, error),
+                **model_request_debug_fields(settings, routed_request),
+            },
+            status_code=503,
+        )
+    try:
+        response = active_connector.generate(routed_request)
+    except ModelProviderError as error:
+        return JobDiscoveryServiceResult(
+            body={
+                "ok": False,
+                "error": "Job candidate selection model call failed. No jobs were saved.",
+                "code": error.code,
+                **model_request_debug_fields(settings, routed_request),
+            },
+            status_code=502,
+        )
+
+    try:
+        output = validate_job_candidate_selection_output(response.text)
+    except JobDiscoveryValidationFailure as error:
+        logger.warning(
+            "Job candidate selection model output validation failed.",
+            extra={
+                "provider": response.provider,
+                "finish_reason": response.finish_reason,
+                "validation_issues": error.issues[:8],
+                "response_preview": preview_model_response(response.text)[:MODEL_RESPONSE_LOG_PREVIEW_CHARS],
+            },
+        )
+        return JobDiscoveryServiceResult(
+            body={
+                "ok": False,
+                "error": "Job candidate selection model returned invalid JSON. No jobs were saved.",
+                "code": "job_candidate_selection_validation_failed",
+                "validationIssues": error.issues[:8],
+                **model_request_debug_fields(settings, routed_request),
+                **model_response_debug_fields(settings, response),
+            },
+            status_code=502,
+        )
+
+    candidate_map = {entry.candidate_id: entry for entry in candidate_entries}
+    selected_entries: list[CandidatePoolEntry] = []
+    invalid_candidate_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for selection in sorted(output.selected_jobs, key=lambda item: item.rank or 999):
+        candidate_id = selection.candidate_id.strip()
+        if candidate_id in seen_ids:
+            continue
+        seen_ids.add(candidate_id)
+        entry = candidate_map.get(candidate_id)
+        if entry is None:
+            invalid_candidate_ids.append(candidate_id)
+            continue
+        selected_entries.append(entry)
+        if len(selected_entries) >= save_limit:
+            break
+    if invalid_candidate_ids:
+        logger.warning(
+            "Job candidate selection returned unknown candidate IDs: %s",
+            json.dumps({"invalidCandidateIds": invalid_candidate_ids[:10]}, sort_keys=True),
+        )
+    return JobCandidateSelectionResult(
+        output=output,
+        selected_entries=selected_entries,
+        invalid_candidate_ids=invalid_candidate_ids,
+        response_provider=response.provider,
+        response_model=response.model,
+        request=routed_request,
+        response=response,
+    )
+
+
+def build_empty_job_candidate_selection_result(settings: Settings) -> JobCandidateSelectionResult:
+    request = ModelRequest(task="job_candidate_selection", messages=[], model=settings.default_model)
+    return JobCandidateSelectionResult(
+        output=JobCandidateSelectionOutput(
+            assistantMessage="No live provider candidates were available for model selection, so no jobs were saved."
+        ),
+        selected_entries=[],
+        invalid_candidate_ids=[],
+        response_provider="none",
+        response_model="none",
+        request=request,
+        response=None,
+    )
+
+
+def selected_selection_pairs(
+    selection_result: JobCandidateSelectionResult,
+) -> list[tuple[CandidatePoolEntry, JobCandidateSelectionItem]]:
+    selections = {selection.candidate_id: selection for selection in selection_result.output.selected_jobs}
+    return [(entry, selections[entry.candidate_id]) for entry in selection_result.selected_entries if entry.candidate_id in selections]
+
+
+def apply_model_selection_to_source_result(
+    result: LiveJobSourceResult,
+    selection: JobCandidateSelectionItem,
+) -> LiveJobSourceResult:
+    fit_summary = selection.fit_summary or selection.selection_reason
+    return replace(result, fit_summary=fit_summary)
+
+
+def build_job_candidate_selection_model_request(
+    request: JobDiscoveryRequest,
+    *,
+    candidate_entries: list[CandidatePoolEntry],
+    current_saved_jobs: list[dict[str, Any]],
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+    provider_diagnostics: list[ProviderDiagnostic],
+    user_constraints: list[str],
+    save_limit: int,
+) -> ModelRequest:
+    payload = {
+        "latest_user_message": request.latest_user_message,
+        "active_workspace": request.active_workspace,
+        "client_context": compact_client_context(request.client_context),
+        "save_limit": save_limit,
+        "candidate_target_context": target_context,
+        "private_profile_context": private_profile_context,
+        "current_saved_jobs": current_saved_jobs[:50],
+        "current_saved_companies": current_saved_companies[:50],
+        "user_constraints": user_constraints,
+        "provider_diagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
+        "candidate_jobs": [serialize_candidate_pool_entry(entry) for entry in candidate_entries],
+        "selection_rules": {
+            "select_by_candidate_id_only": True,
+            "do_not_introduce_job_facts": True,
+            "max_selected_jobs": save_limit,
+            "provider_facts_are_source_of_truth": True,
+        },
+    }
+    return ModelRequest(
+        task="job_candidate_selection",
+        temperature=0.1,
+        max_output_tokens=8000,
+        response_mime_type="application/json",
+        search_grounding=False,
+        metadata={
+            "feature": "job_candidate_selection",
+            "candidate_count": len(candidate_entries),
+            "save_limit": save_limit,
+        },
+        messages=[
+            ModelMessage(role="system", content=JOB_CANDIDATE_SELECTION_SYSTEM_PROMPT),
+            ModelMessage(role="user", content=json.dumps(payload, sort_keys=True, default=str)),
+        ],
+    )
+
+
+JOB_CANDIDATE_SELECTION_SYSTEM_PROMPT = """You are the JobOps Job Candidate Selection Agent.
+
+You select the best jobs from provider-backed candidate jobs. The provider data is the only source of truth for job title, company, URL, posting date, provider, and source metadata.
+
+Rules:
+- Return JSON only.
+- Select jobs only by candidateId from the provided candidate_jobs list.
+- Do not invent or modify job titles, companies, URLs, posting dates, salaries, locations, or provider facts.
+- If a candidate is weak, duplicate, excluded by the user's constraints, or a poor role fit, do not select it.
+- Prioritize Applied AI Systems Engineer, AI systems, agentic AI, RAG, LLM evaluation, workflow automation, forward-deployed AI, AI platform, and full-stack AI roles.
+- Prefer roles where JobOps, DMT, SNI, campaign finance, public records, RAG, evaluation, workflow orchestration, and production data/AI platform experience are directly relevant.
+- Favor mission-aligned, applied, product/platform, civic, democracy, transparency, legal-tech, public-interest, and progressive organizations when the role is a strong fit.
+- Avoid defense contractors, right-wing political organizations/supporters, sports betting/gambling, tobacco, booze/alcohol, and crypto when requested. If uncertain for an excluded category, skip.
+- Do not overvalue generic software roles unless they clearly involve AI, data, workflow automation, or platform work.
+- Distinguish an interesting company from a good role fit.
+- Return at most save_limit selected jobs.
+
+Return exactly this JSON shape:
+{
+  "assistantMessage": "Concise markdown summary.",
+  "selectedJobs": [
+    {
+      "candidateId": "J001",
+      "fitSummary": "Why this provider-backed candidate is a strong fit.",
+      "rank": 1,
+      "selectionReason": "Short grounded reason.",
+      "concerns": []
+    }
+  ],
+  "skippedCandidateNotes": [
+    {
+      "candidateId": "J002",
+      "reason": "Weak AI fit or excluded industry."
+    }
+  ],
+  "clarifyingQuestions": []
+}"""
+
+
+def serialize_candidate_pool_entry(entry: CandidatePoolEntry) -> dict[str, Any]:
+    result = entry.result
+    return {
+        "candidateId": entry.candidate_id,
+        "roughScore": entry.rough_score,
+        "flags": list(entry.flags),
+        "providerName": result.source_provider,
+        "providerType": result.provider_type,
+        "sourceResultId": result.source_result_id,
+        "title": result.title,
+        "companyName": result.company_name,
+        "location": result.location,
+        "remoteWorkMode": result.remote_work_mode,
+        "employmentType": result.employment_type,
+        "salaryText": result.salary_text,
+        "descriptionExcerpt": result.description_excerpt,
+        "postingDate": result.posting_date.isoformat() if result.posting_date else None,
+        "sourceUpdatedAt": result.source_updated_at.isoformat() if result.source_updated_at else None,
+        "jobUrl": result.job_url,
+        "applyUrl": result.apply_url,
+        "sourceQuery": result.source_query,
+        "atsProvider": result.ats_provider,
+        "atsBoardToken": result.ats_board_token,
+    }
+
+
+def validate_job_candidate_selection_output(raw_text: str) -> JobCandidateSelectionOutput:
+    try:
+        parsed = parse_job_discovery_json(raw_text)
+        return JobCandidateSelectionOutput.model_validate(parsed)
+    except (json.JSONDecodeError, ValueError, ValidationError) as error:
+        issues = [str(error)]
+        if isinstance(error, ValidationError):
+            issues = format_validation_issues(error)
+        raise JobDiscoveryValidationFailure(issues) from error
+
+
+def build_mock_job_candidate_selection_response(request: ModelRequest) -> str:
+    payload = json.loads(request.messages[-1].content) if request.messages else {}
+    save_limit = int(payload.get("save_limit") or 5) if isinstance(payload, dict) else 5
+    candidates = payload.get("candidate_jobs") if isinstance(payload, dict) else []
+    if not isinstance(candidates, list):
+        candidates = []
+    selected = []
+    for index, candidate in enumerate(candidates[:save_limit], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        selected.append(
+            {
+                "candidateId": candidate.get("candidateId"),
+                "fitSummary": "Strong provider-backed match for the current job search.",
+                "rank": index,
+                "selectionReason": "Mock selector chose the highest-ranked rough candidate.",
+                "concerns": [],
+            }
+        )
+    return json.dumps(
+        {
+            "assistantMessage": f"Selected {len(selected)} provider-backed job candidate(s) to save.",
+            "selectedJobs": selected,
+            "skippedCandidateNotes": [],
+            "clarifyingQuestions": [],
+        }
+    )
 
 
 def run_configured_job_providers_until_new_job_threshold(
@@ -1316,7 +1854,9 @@ class AdzunaJobDiscoveryProvider:
                     configured=True,
                     attempted=True,
                     result_count=len(query_results),
+                    raw_result_count=len(raw_results),
                     query=query,
+                    search_mode="broad_keyword_search",
                 )
             )
         results = dedupe_provider_results(results)[: request.results_per_provider]
@@ -1391,8 +1931,10 @@ class GreenhouseJobDiscoveryProvider:
                     configured=True,
                     attempted=True,
                     result_count=len(board_results),
+                    raw_result_count=len(raw_jobs),
                     query=query,
                     board_token=token,
+                    search_mode="board_fetch_local_filter",
                 )
             )
         return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
@@ -2622,6 +3164,32 @@ def build_live_job_discovery_assistant_message(save_result: JobDiscoverySaveResu
     if source_results:
         return "No new jobs were saved from the live source results."
     return "No live job results were found, so no jobs were saved."
+
+
+def build_selected_job_discovery_assistant_message(
+    selection_result: JobCandidateSelectionResult | None,
+    save_result: JobDiscoverySaveResult,
+    source_results: list[LiveJobSourceResult],
+    all_skipped_results: list[SkippedJobResult] | None = None,
+) -> str:
+    all_skipped_results = all_skipped_results or save_result.skipped
+    if selection_result is not None and selection_result.output.assistant_message:
+        selected_count = len(selection_result.selected_entries)
+        saved_count = len(save_result.saved_links)
+        if saved_count:
+            return selection_result.output.assistant_message
+        if selected_count and save_result.skipped:
+            return (
+                f"The model selected {selected_count} provider-backed job candidate(s), "
+                f"but none were newly saved: {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+            )
+        if source_results:
+            return "The model reviewed the provider-backed candidates, but did not select any new jobs to save."
+    if all_skipped_results:
+        reason_counts = skipped_reason_code_counts(all_skipped_results)
+        if reason_counts.get("duplicate_for_user") == len(all_skipped_results):
+            return f"I found {len(all_skipped_results)} job(s) already in your Jobs list, so I did not add duplicates."
+    return build_live_job_discovery_assistant_message(save_result, source_results)
 
 
 def format_reason_code_counts(counts: dict[str, int]) -> str:

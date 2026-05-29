@@ -177,10 +177,20 @@ Preferred provider configuration is a comma-separated list:
 ```text
 JOBOPS_JOB_DISCOVERY_PROVIDERS=adzuna,greenhouse
 JOBOPS_JOB_DISCOVERY_ALLOW_PARTIAL_PROVIDER_FAILURES=false
-JOBOPS_JOB_DISCOVERY_RESULTS_PER_PROVIDER=20
+JOBOPS_JOB_DISCOVERY_RESULTS_PER_PROVIDER=50
+JOBOPS_JOB_DISCOVERY_CANDIDATE_POOL_LIMIT=100
+JOBOPS_JOB_DISCOVERY_SAVE_LIMIT=5
+JOBOPS_JOB_DISCOVERY_COMPANY_CANDIDATE_CAP=10
 ```
 
 `JOBOPS_JOB_DISCOVERY_SOURCE` is still accepted as a backward-compatible single-provider setting, but `JOBOPS_JOB_DISCOVERY_PROVIDERS` should be used for new environments. With no real provider configured outside mock mode, broad discovery returns `live_job_discovery_not_configured` and saves nothing.
+
+Discovery uses a two-stage pipeline:
+
+1. Providers collect a rough pool of live, provider-backed candidates.
+2. JobOps normalizes, dedupes, applies high-confidence hard exclusions, caps overrepresented companies/providers, and sends up to `JOBOPS_JOB_DISCOVERY_CANDIDATE_POOL_LIMIT` candidates to the model.
+3. The model selects by stable `candidateId` only. The model may write fit summaries, but persisted title/company/URL/posting-date/provider facts are copied from provider results.
+4. Only selected candidates are saved, up to `JOBOPS_JOB_DISCOVERY_SAVE_LIMIT`.
 
 Mock provider:
 
@@ -205,13 +215,15 @@ JOBOPS_JOB_DISCOVERY_PROVIDERS=greenhouse
 JOBOPS_GREENHOUSE_BOARD_TOKENS=civicactions,exampleboard
 ```
 
+Greenhouse is a company-board provider, not a broad search engine. JobOps fetches jobs from configured board tokens or mappings, then locally keeps rough matches for the current profile/search before model selection.
+
 Multiple providers can run in order:
 
 ```text
 JOBOPS_JOB_DISCOVERY_PROVIDERS=adzuna,greenhouse
 ```
 
-Job discovery diagnostics include configured providers, per-provider attempted/configured/result/error status, raw provider result count, deduped candidate count, verified URL count, saved count, duplicate count, skipped count, and grouped skipped reasons. Provider-backed URLs may be stored as `provider_unverified` when a trusted provider result exists but server-side fetch is blocked; obvious 404/410/dead links are skipped. Posting dates are stored only when supplied by the provider or fetched page.
+Job discovery diagnostics include configured providers, per-provider attempted/configured/result/error status, raw provider result count, candidate counts at each pipeline stage, candidate count sent to the model, selected candidate IDs, saved job IDs, verified URL count, saved count, duplicate count, skipped count, and grouped skipped reasons. Provider-backed URLs may be stored as `provider_unverified` when a trusted provider result exists but server-side fetch is blocked; obvious 404/410/dead links are skipped. Posting dates are stored only when supplied by the provider or fetched page.
 
 ## Database
 
