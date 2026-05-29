@@ -158,21 +158,157 @@ def normalize_text_for_constraint_matching(value: object) -> str:
     return re.sub(r"[^a-z0-9+]+", " ", cleaned.casefold()).strip()
 
 
+REMOTE_LOCATION_RE = re.compile(r"\b(remote|work\s+from\s+home|wfh|distributed)\b", flags=re.IGNORECASE)
+COMMAND_LOCATION_RE = re.compile(
+    r"\b(?:in|near|around|within|based\s+in|located\s+in|from)\s+(?P<location>[^.?!\n]+)",
+    flags=re.IGNORECASE,
+)
+LOCATION_TRAILING_STOP_RE = re.compile(
+    r"\b(?:as\s+well|but|for|that|to\s+apply|who|with|while|please|if|unless)\b",
+    flags=re.IGNORECASE,
+)
+LOCATION_GENERIC_TERMS = {
+    "apply",
+    "career",
+    "careers",
+    "company",
+    "companies",
+    "job",
+    "jobs",
+    "office",
+    "offices",
+    "opening",
+    "openings",
+    "opportunity",
+    "opportunities",
+    "position",
+    "positions",
+    "role",
+    "roles",
+}
+LOCATION_FIELD_KEYS = {
+    "currentLocation",
+    "current_location",
+    "location",
+    "locations",
+    "preferredLocation",
+    "preferred_location",
+    "preferredLocations",
+    "preferred_locations",
+    "targetLocation",
+    "target_location",
+    "targetLocations",
+    "target_locations",
+}
+PREFERRED_LOCATION_FIELD_KEYS = {
+    "preferredLocation",
+    "preferred_location",
+    "preferredLocations",
+    "preferred_locations",
+    "targetLocation",
+    "target_location",
+    "targetLocations",
+    "target_locations",
+}
+
+
 def infer_location_query(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> str | None:
-    text = " ".join(
-        [
-            latest_user_message,
-            json.dumps(target_context, sort_keys=True, default=str)[:2000],
-            json.dumps(private_profile_context, sort_keys=True, default=str)[:2000],
-        ]
-    ).casefold()
-    if "remote" in text:
+    if text_indicates_remote(latest_user_message):
         return None
-    if "new york" in text or "nyc" in text:
-        return "New York"
-    if "louisville" in text:
-        return "Louisville"
+    command_location = extract_location_from_command(latest_user_message)
+    if command_location:
+        return command_location
+    if context_indicates_remote(target_context) or context_indicates_remote(private_profile_context):
+        return None
+    return first_structured_location(target_context, private_profile_context)
+
+
+def text_indicates_remote(value: object) -> bool:
+    return bool(isinstance(value, str) and REMOTE_LOCATION_RE.search(value))
+
+
+def extract_location_from_command(value: object) -> str | None:
+    text = clean_text_value(value)
+    if not text:
+        return None
+    for match in COMMAND_LOCATION_RE.finditer(text):
+        candidate = LOCATION_TRAILING_STOP_RE.split(match.group("location"), maxsplit=1)[0]
+        location = clean_location_value(candidate)
+        if location:
+            return location
     return None
+
+
+def context_indicates_remote(value: object) -> bool:
+    for location in iter_structured_location_values(value):
+        if text_indicates_remote(location):
+            return True
+    return False
+
+
+def first_structured_location(*contexts: object) -> str | None:
+    fallback_locations: list[str] = []
+    for context in contexts:
+        preferred = [
+            location
+            for location in iter_structured_location_values(context, preferred_only=True)
+            if not text_indicates_remote(location)
+        ]
+        if preferred:
+            return preferred[0]
+        fallback_locations.extend(
+            location
+            for location in iter_structured_location_values(context)
+            if not text_indicates_remote(location)
+        )
+    return fallback_locations[0] if fallback_locations else None
+
+
+def iter_structured_location_values(value: object, *, preferred_only: bool = False) -> list[str]:
+    if isinstance(value, str):
+        return split_location_values(value)
+    if isinstance(value, (list, tuple, set)):
+        locations: list[str] = []
+        for item in value:
+            locations.extend(iter_structured_location_values(item, preferred_only=preferred_only))
+        return locations
+    if not isinstance(value, dict):
+        return []
+
+    allowed_keys = PREFERRED_LOCATION_FIELD_KEYS if preferred_only else LOCATION_FIELD_KEYS
+    locations = []
+    for key, item in value.items():
+        if str(key) in allowed_keys:
+            locations.extend(iter_structured_location_values(item, preferred_only=False))
+            continue
+        if isinstance(item, dict):
+            locations.extend(iter_structured_location_values(item, preferred_only=preferred_only))
+    return compact_unique_strings(locations, limit=20)
+
+
+def split_location_values(value: str) -> list[str]:
+    locations: list[str] = []
+    for part in re.split(r";|\n|\s+\|\s+", value):
+        location = clean_location_value(part)
+        if location:
+            locations.append(location)
+    return compact_unique_strings(locations, limit=10)
+
+
+def clean_location_value(value: object) -> str | None:
+    cleaned = clean_text_value(value)
+    if not cleaned:
+        return None
+    cleaned = re.sub(r"^[,;:\-\s]+|[,;:\-\s]+$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    normalized = cleaned.casefold()
+    if not normalized or normalized in LOCATION_GENERIC_TERMS or text_indicates_remote(cleaned):
+        return None
+    if not re.search(r"[a-zA-Z]", cleaned):
+        return None
+    if len(cleaned) > 80:
+        return None
+    return cleaned
 
 
 def infer_remote_mode(value: str) -> str:

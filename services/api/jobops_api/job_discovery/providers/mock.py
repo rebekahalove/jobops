@@ -70,7 +70,7 @@ def build_mock_live_job_source_results(search_queries: list[str]) -> list[LiveJo
             source_query=query,
             source_url=f"https://sample-growth-co.example.test/jobs/{secondary_slug}",
             provenance="mock",
-            location="Hybrid NYC",
+            location="Hybrid Example City",
             remote_work_mode="hybrid",
             employment_type="Full-time",
             salary_text="$160k-$205k",

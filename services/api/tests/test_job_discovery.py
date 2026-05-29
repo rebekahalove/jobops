@@ -29,6 +29,7 @@ from jobops_api.job_discovery.models import (
 from jobops_api.job_discovery.providers.adzuna import build_adzuna_request, normalize_adzuna_result
 from jobops_api.job_discovery.providers.greenhouse import normalize_greenhouse_result
 from jobops_api.job_discovery.providers.registry import resolve_job_discovery_providers
+from jobops_api.job_discovery.provider_utils import infer_location_query
 from jobops_api.job_discovery.service import (
     build_provider_job_search_queries,
     infer_user_constraint_terms,
@@ -402,6 +403,46 @@ def test_job_discovery_constraint_terms_are_not_limited_to_fixed_industries() ->
     assert "gas" in constraints
     assert "unpaid internships" in constraints
     assert "fast fashion" in constraints
+
+
+def test_location_query_uses_explicit_command_location() -> None:
+    location = infer_location_query(
+        "Find product manager roles near Portland, OR for climate orgs",
+        target_context={"preferred_locations": ["Remote US"]},
+        private_profile_context={},
+    )
+
+    assert location == "Portland, OR"
+
+
+def test_location_query_uses_saved_preferred_location_without_command_location() -> None:
+    location = infer_location_query(
+        "Find product manager roles",
+        target_context={"preferred_locations": ["Chicago, IL", "Denver, CO"]},
+        private_profile_context={},
+    )
+
+    assert location == "Chicago, IL"
+
+
+def test_location_query_remote_command_does_not_send_restrictive_location() -> None:
+    location = infer_location_query(
+        "Find remote product manager roles",
+        target_context={"preferred_locations": ["Chicago, IL"]},
+        private_profile_context={},
+    )
+
+    assert location is None
+
+
+def test_location_query_returns_none_without_command_or_profile_location() -> None:
+    assert infer_location_query("Find product manager roles", target_context={}, private_profile_context={}) is None
+
+
+def test_location_query_has_no_hard_coded_personal_city_behavior() -> None:
+    assert infer_location_query("Find product manager roles", target_context={}, private_profile_context={}) is None
+    assert infer_location_query("Find product manager roles", target_context={"notes": "Louisville"}, private_profile_context={}) is None
+    assert infer_location_query("Find product manager roles", target_context={"notes": "NYC"}, private_profile_context={}) is None
 
 
 def test_greenhouse_provider_normalizes_board_jobs() -> None:
