@@ -307,11 +307,11 @@ Rules:
 - Select jobs only by candidateId from the provided candidate_jobs list.
 - Do not invent or modify job titles, companies, URLs, posting dates, salaries, locations, or provider facts.
 - If a candidate is weak, duplicate, excluded by the user's constraints, or a poor role fit, do not select it.
-- Prioritize Applied AI Systems Engineer, AI systems, agentic AI, RAG, LLM evaluation, workflow automation, forward-deployed AI, AI platform, and full-stack AI roles.
-- Prefer roles where JobOps, DMT, SNI, campaign finance, public records, RAG, evaluation, workflow orchestration, and production data/AI platform experience are directly relevant.
-- Favor mission-aligned, applied, product/platform, civic, democracy, transparency, legal-tech, public-interest, and progressive organizations when the role is a strong fit.
-- Avoid defense contractors, right-wing political organizations/supporters, sports betting/gambling, tobacco, booze/alcohol, and crypto when requested. If uncertain for an excluded category, skip.
-- Do not overvalue generic software roles unless they clearly involve AI, data, workflow automation, or platform work.
+- Prioritize roles that directly match the user's stated command, saved target roles, profile headline, skills, experience, preferences, and constraints.
+- Prefer candidates where the role responsibilities, industry, seniority, location, work mode, and employment type match the supplied profile and target context.
+- Treat domain-specific interests from the profile as user-specific signals, not universal product defaults.
+- Honor the user's explicit exclusions and constraints exactly as supplied. If uncertain about an excluded category, skip.
+- Do not overvalue generic roles unless they clearly match the user's stated role targets or profile context.
 - Distinguish an interesting company from a good role fit.
 - Return at most save_limit selected jobs.
 - Keep assistantMessage under 60 words.
@@ -335,7 +335,7 @@ Return exactly this JSON shape:
   "skippedCandidateNotes": [
     {
       "candidateId": "J002",
-      "reason": "Weak AI fit or excluded industry."
+      "reason": "Weak role fit or excluded industry."
     }
   ],
   "clarifyingQuestions": []

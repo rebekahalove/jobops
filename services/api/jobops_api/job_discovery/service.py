@@ -50,7 +50,13 @@ from .selection import (
     select_job_candidates_with_model,
     selected_selection_pairs,
 )
-from .provider_utils import clean_text_value, compact_unique_strings, safe_log_preview
+from .provider_utils import (
+    clean_text_value,
+    compact_unique_strings,
+    normalize_exclusion_terms,
+    normalize_text_for_constraint_matching,
+    safe_log_preview,
+)
 from .url_verification import source_result_verification
 
 
@@ -236,6 +242,12 @@ def run_live_source_job_discovery(
         save_limit=settings.job_discovery_save_limit,
         candidate_pool_limit=settings.job_discovery_candidate_pool_limit,
         company_cap=settings.job_discovery_company_candidate_cap,
+        relevance_terms=build_job_relevance_terms(
+            request.latest_user_message,
+            search_queries=fresh_search_queries,
+            target_context=target_context,
+            private_profile_context=private_profile_context,
+        ),
     )
     preselection_skipped = candidate_pool.skipped
     source_results = [entry.result for entry in candidate_pool.entries]
@@ -607,6 +619,7 @@ def build_candidate_pool(
     save_limit: int,
     candidate_pool_limit: int,
     company_cap: int,
+    relevance_terms: list[str],
 ) -> CandidatePoolBuildResult:
     normalized_results = [result for result in source_results if normalize_job_url(result.job_url)]
     deduped_results = dedupe_provider_results(normalized_results)
@@ -632,7 +645,7 @@ def build_candidate_pool(
 
     scored = sorted(
         hard_filtered,
-        key=lambda result: rough_candidate_score(result, user_constraints),
+        key=lambda result: rough_candidate_score(result, user_constraints, relevance_terms),
         reverse=True,
     )
     diverse_results: list[LiveJobSourceResult] = []
@@ -660,7 +673,7 @@ def build_candidate_pool(
         CandidatePoolEntry(
             candidate_id=f"{JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX}{index:03d}",
             result=result,
-            rough_score=rough_candidate_score(result, user_constraints),
+            rough_score=rough_candidate_score(result, user_constraints, relevance_terms),
             flags=tuple(candidate_flags(result, user_constraints)),
         )
         for index, result in enumerate(diverse_results, start=1)
@@ -677,7 +690,7 @@ def build_candidate_pool(
     )
 
 
-def rough_candidate_score(result: LiveJobSourceResult, user_constraints: list[str]) -> int:
+def rough_candidate_score(result: LiveJobSourceResult, user_constraints: list[str], relevance_terms: list[str]) -> int:
     text = " ".join(
         part
         for part in [
@@ -688,28 +701,26 @@ def rough_candidate_score(result: LiveJobSourceResult, user_constraints: list[st
         ]
         if part
     ).casefold()
+    title_text = result.title.casefold()
+    description_text = (result.description_excerpt or "").casefold()
     score = 0
-    weighted_terms = {
-        "applied ai": 8,
-        "ai system": 8,
-        "agent": 6,
-        "rag": 6,
-        "llm": 6,
-        "evaluation": 5,
-        "eval": 5,
-        "workflow": 4,
-        "automation": 4,
-        "platform": 4,
-        "forward deployed": 4,
-        "civic": 3,
-        "legal": 3,
-        "transparency": 3,
-        "data": 2,
-        "machine learning": 2,
-    }
-    for term, weight in weighted_terms.items():
-        if term in text:
-            score += weight
+    for term in relevance_terms[:20]:
+        normalized_term = term.casefold()
+        if not normalized_term:
+            continue
+        if normalized_term in title_text:
+            score += 8
+        elif normalized_term in description_text:
+            score += 3
+        term_tokens = meaningful_relevance_tokens(normalized_term)
+        if term_tokens:
+            title_matches = sum(1 for token in term_tokens if token in title_text)
+            text_matches = sum(1 for token in term_tokens if token in text)
+            score += min(title_matches * 3, 9)
+            score += min(text_matches, 6)
+    source_query_tokens = meaningful_relevance_tokens(result.source_query or "")
+    if source_query_tokens:
+        score += min(sum(1 for token in source_query_tokens if token in text), 6)
     if result.remote_work_mode == "remote":
         score += 2
     if result.posting_date:
@@ -751,28 +762,73 @@ def dedupe_provider_results(results: list[LiveJobSourceResult]) -> list[LiveJobS
     return deduped
 
 
+EXPLICIT_EXCLUSION_RE = re.compile(
+    r"\b(?:avoid|exclude|excluding|without|dont\s+want|do\s+not\s+want|don't\s+want|no)\b(?P<body>[^.?!\n]+)",
+    flags=re.IGNORECASE,
+)
+
+
 def infer_user_constraint_terms(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[str]:
-    text = " ".join(
-        [
-            latest_user_message,
-            json.dumps(target_context, sort_keys=True, default=str)[:3000],
-            json.dumps(private_profile_context, sort_keys=True, default=str)[:3000],
-        ]
-    ).casefold()
     constraints: list[str] = []
-    for term in ["defense", "right-wing", "sports", "booze", "alcohol", "tobacco", "gambling", "crypto"]:
-        if term in text:
-            constraints.append(term)
-    return constraints
+    constraints.extend(extract_explicit_exclusion_terms(latest_user_message))
+    constraints.extend(extract_structured_constraint_terms(target_context))
+    constraints.extend(extract_structured_constraint_terms(private_profile_context))
+    return compact_unique_strings(constraints, limit=30)
+
+
+def extract_explicit_exclusion_terms(value: object) -> list[str]:
+    text = clean_text_value(value)
+    if not text:
+        return []
+    terms: list[str] = []
+    for match in EXPLICIT_EXCLUSION_RE.finditer(text):
+        terms.extend(normalize_exclusion_terms(match.group("body")))
+    return terms
+
+
+def extract_structured_constraint_terms(value: object) -> list[str]:
+    terms: list[str] = []
+    for item in iter_structured_constraint_values(value):
+        if isinstance(item, str):
+            terms.extend(extract_explicit_exclusion_terms(item) or normalize_exclusion_terms(item))
+        elif isinstance(item, (list, tuple, set)):
+            for nested in item:
+                if isinstance(nested, str):
+                    terms.extend(extract_explicit_exclusion_terms(nested) or normalize_exclusion_terms(nested))
+                else:
+                    terms.extend(extract_structured_constraint_terms(nested))
+        elif isinstance(item, dict):
+            terms.extend(extract_structured_constraint_terms(item))
+    return terms
+
+
+def iter_structured_constraint_values(value: object) -> list[object]:
+    if not isinstance(value, dict):
+        return []
+    values: list[object] = []
+    for key, item in value.items():
+        key_text = str(key).casefold()
+        if any(marker in key_text for marker in ("avoid", "exclude", "constraint", "restriction", "dealbreaker", "red_flag")):
+            values.append(item)
+            continue
+        if isinstance(item, dict):
+            values.extend(iter_structured_constraint_values(item))
+        elif isinstance(item, list):
+            for nested in item:
+                values.extend(iter_structured_constraint_values(nested))
+    return values
 
 
 def result_matches_exclusion(result: LiveJobSourceResult, constraints: list[str]) -> str | None:
-    haystack = " ".join(
-        str(value or "")
-        for value in [result.title, result.company_name, result.description_excerpt, result.source_provider, result.salary_text]
-    ).casefold()
+    haystack = normalize_text_for_constraint_matching(
+        " ".join(
+            str(value or "")
+            for value in [result.title, result.company_name, result.description_excerpt, result.source_provider, result.salary_text]
+        )
+    )
     for term in constraints:
-        if term in haystack:
+        normalized_term = normalize_text_for_constraint_matching(term)
+        if normalized_term and normalized_term in haystack:
             return term
     return None
 
@@ -838,10 +894,30 @@ def build_fresh_job_search_queries(
         )
         if not domain:
             continue
-        role = role_queries[0] if role_queries else "AI engineer"
+        role = role_queries[0] if role_queries else "jobs"
         queries.append(f'site:{domain} "{role}" jobs careers apply')
 
     return compact_unique_strings(queries, limit=12)
+
+
+def build_job_relevance_terms(
+    latest_user_message: str,
+    *,
+    search_queries: list[str],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    terms: list[str] = []
+    terms.extend(search_queries)
+    terms.extend(infer_job_search_role_queries(latest_user_message, target_context=target_context, private_profile_context=private_profile_context))
+    terms.extend(coerce_string_list(target_context.get("skills")))
+    terms.extend(coerce_string_list(target_context.get("keywords")))
+    basics = private_profile_context.get("profile_basics") if isinstance(private_profile_context, dict) else None
+    if isinstance(basics, dict):
+        terms.extend(coerce_string_list(basics.get("headline")))
+    for key in ("skills", "keywords", "interests", "preferences"):
+        terms.extend(coerce_string_list(private_profile_context.get(key)))
+    return compact_unique_strings(terms, limit=30)
 
 
 def infer_job_search_role_queries(
@@ -854,24 +930,14 @@ def infer_job_search_role_queries(
     roles.extend(extract_explicit_target_titles(target_context, private_profile_context))
     roles.extend(extract_role_queries_from_message(latest_user_message))
     roles.extend(extract_profile_headline_role(private_profile_context))
-
-    text = " ".join(
-        [
-            latest_user_message,
-            json.dumps(target_context, sort_keys=True, default=str)[:4000],
-            json.dumps(private_profile_context, sort_keys=True, default=str)[:4000],
-        ]
-    ).casefold()
-    if "ai platform" in text or "platform" in text:
-        roles.append("AI Platform Engineer")
-    if "llm" in text or "rag" in text:
-        roles.append("LLM Engineer")
-    if "data" in text or "machine learning" in text or "ml " in f"{text} ":
-        roles.append("Machine Learning Engineer")
-    if "backend" in text:
-        roles.append("Backend AI Engineer")
     if not roles:
-        roles.extend(["Software Engineer", "AI Engineer", "Machine Learning Engineer"])
+        roles.extend(extract_generic_profile_role_queries(private_profile_context))
+    if not roles and latest_user_message.strip():
+        phrase = clean_role_query_phrase(latest_user_message)
+        if phrase and phrase.casefold() not in {"find jobs", "find me jobs", "please find jobs"}:
+            roles.append(title_case_role_query(phrase))
+    if not roles:
+        roles.append("jobs")
     return compact_unique_strings(roles, limit=6)
 
 
@@ -921,15 +987,56 @@ def extract_profile_headline_role(private_profile_context: dict[str, Any]) -> li
         return []
     candidate = re.split(r"\s+[|•]\s+|\s+-\s+|\s+with\s+", headline, maxsplit=1, flags=re.IGNORECASE)[0]
     candidate = clean_role_query_phrase(candidate)
-    if not candidate:
-        return []
-    if not re.search(
-        r"\b(engineer|developer|architect|manager|scientist|analyst|designer|lead|director|strategist|specialist)\b",
-        candidate,
-        flags=re.IGNORECASE,
-    ):
+    if not candidate or profile_role_candidate_is_placeholder(candidate):
         return []
     return [candidate]
+
+
+def extract_generic_profile_role_queries(private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("desired_roles", "target_roles", "roles"):
+        values.extend(coerce_string_list(private_profile_context.get(key)))
+    return [value for value in values if not profile_role_candidate_is_placeholder(value)]
+
+
+def profile_role_candidate_is_placeholder(value: str) -> bool:
+    normalized = value.casefold()
+    return normalized in {"candidate", "profile", "candidate profile setup in progress"} or "setup in progress" in normalized
+
+
+def meaningful_relevance_tokens(value: str) -> list[str]:
+    stop_words = {
+        "and",
+        "apply",
+        "careers",
+        "current",
+        "find",
+        "for",
+        "job",
+        "jobs",
+        "me",
+        "more",
+        "new",
+        "open",
+        "opening",
+        "opportunities",
+        "opportunity",
+        "please",
+        "position",
+        "positions",
+        "remote",
+        "role",
+        "roles",
+        "some",
+        "the",
+        "to",
+    }
+    tokens: list[str] = []
+    for raw in re.findall(r"[a-z0-9]+", value.casefold()):
+        if len(raw) < 3 or raw in stop_words:
+            continue
+        tokens.append(raw)
+    return compact_unique_strings(tokens, limit=8)
 
 
 def clean_role_query_phrase(value: str) -> str | None:

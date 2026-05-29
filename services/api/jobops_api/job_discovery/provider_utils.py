@@ -69,8 +69,93 @@ def normalize_job_url_for_dedupe(value: str | None) -> str | None:
     )
 
 
+EXCLUSION_TERM_STOP_WORDS = {
+    "a",
+    "about",
+    "all",
+    "also",
+    "an",
+    "and",
+    "any",
+    "apply",
+    "avoid",
+    "career",
+    "careers",
+    "companies",
+    "company",
+    "contractor",
+    "contractors",
+    "do",
+    "dont",
+    "employer",
+    "employers",
+    "exclude",
+    "excluding",
+    "for",
+    "from",
+    "group",
+    "groups",
+    "industry",
+    "industries",
+    "job",
+    "jobs",
+    "not",
+    "of",
+    "opportunities",
+    "opportunity",
+    "or",
+    "organization",
+    "organizations",
+    "orgs",
+    "posting",
+    "postings",
+    "related",
+    "relating",
+    "role",
+    "roles",
+    "sector",
+    "sectors",
+    "supporter",
+    "supporters",
+    "the",
+    "to",
+    "want",
+    "with",
+    "without",
+    "work",
+    "working",
+}
+
+
 def build_adzuna_exclusions(constraints: list[str]) -> str | None:
-    return " ".join(term for term in constraints if term in {"defense", "gambling", "crypto", "tobacco", "alcohol", "sports"}) or None
+    terms: list[str] = []
+    for constraint in constraints:
+        terms.extend(normalize_exclusion_terms(constraint))
+    return " ".join(compact_unique_strings(terms, limit=20)) or None
+
+
+def normalize_exclusion_terms(value: object) -> list[str]:
+    cleaned = clean_text_value(value)
+    if not cleaned:
+        return []
+    normalized = cleaned.casefold().replace("don't", "dont").replace("do not", "dont")
+    parts = re.split(r"[,;]+|\s+\b(?:and|or|but|plus)\b\s+", normalized)
+    terms: list[str] = []
+    for part in parts:
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9+-]*", part)
+            if len(token) >= 2 and token not in EXCLUSION_TERM_STOP_WORDS
+        ]
+        if not tokens:
+            continue
+        terms.append(" ".join(tokens[:5]))
+    return compact_unique_strings(terms, limit=20)
+
+
+def normalize_text_for_constraint_matching(value: object) -> str:
+    cleaned = clean_text_value(value) or ""
+    return re.sub(r"[^a-z0-9+]+", " ", cleaned.casefold()).strip()
 
 
 def infer_location_query(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> str | None:

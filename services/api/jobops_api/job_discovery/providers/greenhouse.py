@@ -168,20 +168,22 @@ def source_result_matches_query(result: LiveJobSourceResult, query: str) -> bool
 
 def meaningful_query_terms(query: str) -> list[str]:
     stop_words = {
-        "ai",
-        "ml",
         "job",
         "jobs",
+        "opening",
+        "openings",
+        "opportunity",
+        "opportunities",
+        "position",
+        "positions",
         "role",
         "roles",
-        "engineer",
-        "engineering",
-        "developer",
-        "software",
         "senior",
         "staff",
         "lead",
         "remote",
+        "hybrid",
+        "onsite",
     }
     terms = []
     for raw in re.findall(r"[a-z0-9]+", query.casefold()):

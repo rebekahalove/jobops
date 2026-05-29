@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 
 from ...settings import Settings
@@ -33,48 +34,61 @@ class MockJobDiscoveryProvider:
 
 def build_mock_live_job_source_results(search_queries: list[str]) -> list[LiveJobSourceResult]:
     query = search_queries[0] if search_queries else "mock job discovery"
+    role_title = mock_role_title_from_query(query)
+    secondary_role_title = f"Senior {role_title}" if not role_title.casefold().startswith("senior ") else f"Lead {role_title}"
+    primary_slug = slugify_mock_value(role_title)
+    secondary_slug = slugify_mock_value(secondary_role_title)
     return [
         LiveJobSourceResult(
-            title="Applied AI Engineer",
-            company_name="Civic AI Labs",
-            job_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
+            title=role_title,
+            company_name="Example Mission Org",
+            job_url=f"https://example-mission-org.example.test/jobs/{primary_slug}",
             source_provider="mock_job_source",
             provider_type="mock",
-            source_result_id="mock-civic-ai-applied",
+            source_result_id=f"mock-{primary_slug}",
             source_query=query,
-            source_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
+            source_url=f"https://example-mission-org.example.test/jobs/{primary_slug}",
             provenance="mock",
             location="Remote US",
             remote_work_mode="remote",
             employment_type="Full-time",
             salary_text="$150k-$190k",
-            description_excerpt="Build applied AI workflows for civic teams.",
+            description_excerpt=f"Mock provider-backed opening for {role_title}.",
             posting_date=date(2026, 5, 20),
-            fit_summary="Matches applied AI, platform, and public-interest technology goals.",
+            fit_summary="Mock result matching the current job search query.",
             url_verification_status="mock_verified",
             url_verification_checked_at=datetime.now(timezone.utc),
             url_verification_summary="Mock source result for local/test mode.",
         ),
         LiveJobSourceResult(
-            title="AI Platform Engineer",
-            company_name="Open Data Works",
-            job_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
+            title=secondary_role_title,
+            company_name="Sample Growth Co",
+            job_url=f"https://sample-growth-co.example.test/jobs/{secondary_slug}",
             source_provider="mock_job_source",
             provider_type="mock",
-            source_result_id="mock-open-data-platform",
+            source_result_id=f"mock-{secondary_slug}",
             source_query=query,
-            source_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
+            source_url=f"https://sample-growth-co.example.test/jobs/{secondary_slug}",
             provenance="mock",
             location="Hybrid NYC",
             remote_work_mode="hybrid",
             employment_type="Full-time",
             salary_text="$160k-$205k",
-            description_excerpt="Own LLM evaluation, retrieval, and deployment tooling.",
+            description_excerpt=f"Mock provider-backed opening for {secondary_role_title}.",
             posting_date=None,
-            fit_summary="Strong fit for AI platform engineering and RAG evaluation experience.",
+            fit_summary="Mock result matching the current job search query.",
             url_verification_status="mock_verified",
             url_verification_checked_at=datetime.now(timezone.utc),
             url_verification_summary="Mock source result for local/test mode.",
         ),
     ]
 
+
+def mock_role_title_from_query(query: str) -> str:
+    cleaned = re.sub(r"\b(remote|hybrid|onsite|on-site|job|jobs|role|roles|opening|openings|apply|careers)\b", " ", query, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-\"'")
+    return cleaned or "Sample Role"
+
+
+def slugify_mock_value(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "sample-role"

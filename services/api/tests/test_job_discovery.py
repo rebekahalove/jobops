@@ -31,6 +31,7 @@ from jobops_api.job_discovery.providers.greenhouse import normalize_greenhouse_r
 from jobops_api.job_discovery.providers.registry import resolve_job_discovery_providers
 from jobops_api.job_discovery.service import (
     build_provider_job_search_queries,
+    infer_user_constraint_terms,
     infer_job_search_role_queries,
     save_live_job_source_results,
 )
@@ -241,6 +242,33 @@ def test_provider_queries_do_not_rewrite_profile_applied_ai_phrase_to_target_tit
     assert "Applied AI Engineer" not in queries
 
 
+def test_provider_queries_support_non_technical_profile_roles() -> None:
+    queries = infer_job_search_role_queries(
+        "please find some jobs for me to apply to",
+        target_context={},
+        private_profile_context={
+            "profile_basics": {
+                "headline": "Museum Collections Manager | Archives and Public Programming",
+            },
+            "targets": {},
+        },
+    )
+
+    assert queries[0] == "Museum Collections Manager"
+    assert "AI Engineer" not in queries
+    assert "Machine Learning Engineer" not in queries
+
+
+def test_provider_queries_without_profile_do_not_default_to_ai_roles() -> None:
+    queries = infer_job_search_role_queries(
+        "please find some jobs for me to apply to",
+        target_context={},
+        private_profile_context={},
+    )
+
+    assert queries == ["jobs"]
+
+
 def test_provider_registry_parses_multiple_providers() -> None:
     providers = resolve_job_discovery_providers(("adzuna", "greenhouse", "ashby", "mock"))
 
@@ -319,13 +347,13 @@ def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) ->
         adzuna_country="us",
     )
     request = JobSearchRequest(
-        latest_user_message="Find remote applied AI jobs but avoid gambling",
+        latest_user_message="Find remote applied AI jobs but avoid gambling, night shift, and commission-only sales",
         search_queries=["Applied AI Engineer remote"],
         results_per_provider=12,
         current_saved_companies=[],
         target_context={},
         private_profile_context={},
-        user_constraints=["gambling"],
+        user_constraints=["gambling", "night shift", "commission-only sales"],
     )
 
     url, params = build_adzuna_request(settings, request, query="Applied AI Engineer remote")
@@ -351,13 +379,29 @@ def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) ->
     assert params["app_key"] == "app-key"
     assert params["what"] == "Applied AI Engineer remote"
     assert params["results_per_page"] == 12
-    assert params["what_exclude"] == "gambling"
+    assert params["what_exclude"] == "gambling night shift commission-only sales"
     assert result is not None
     assert result.source_provider == "adzuna"
     assert result.provider_type == "broad_search"
     assert result.job_url == "https://www.adzuna.com/land/ad/1"
     assert result.posting_date is not None
     assert result.source_updated_at is not None
+
+
+def test_job_discovery_constraint_terms_are_not_limited_to_fixed_industries() -> None:
+    constraints = infer_user_constraint_terms(
+        "Find sales roles, but avoid night shift, commission-only work, and booze brands.",
+        target_context={"constraints": ["No oil and gas", "avoid unpaid internships"]},
+        private_profile_context={"preferences": {"excluded_industries": ["fast fashion"]}},
+    )
+
+    assert "night shift" in constraints
+    assert "commission-only" in constraints
+    assert "booze brands" in constraints
+    assert "oil" in constraints
+    assert "gas" in constraints
+    assert "unpaid internships" in constraints
+    assert "fast fashion" in constraints
 
 
 def test_greenhouse_provider_normalizes_board_jobs() -> None:
@@ -1017,7 +1061,7 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
         assert response.result_payload["jobDiscoveryMode"] == "mock"
         assert response.result_payload["providerResultCount"] == 2
         assert response.result_payload["jobs"][0]["job_url"].startswith(
-            ("https://civic-ai-labs.example.test/", "https://open-data-works.example.test/")
+            ("https://example-mission-org.example.test/", "https://sample-growth-co.example.test/")
         )
         assert response.result_payload["jobs"][0]["added_at"]
         assert len(session.scalars(select(JobPosting)).all()) == 2
