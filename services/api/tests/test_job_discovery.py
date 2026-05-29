@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,30 +16,23 @@ from jobops_api.db.models import Base, CandidateSavedJob, JobPosting, TargetComp
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
-    JobDiscoveryOutput,
-    JobDiscoveryRecord,
     JobDiscoveryRequest,
-    JobDiscoverySaveResult,
     JobDiscoveryServiceResult,
-    JobSearchRequest,
-    ProviderSearchOutcome,
-    build_provider_job_search_queries,
-    build_job_discovery_assistant_message,
-    build_job_discovery_model_request,
-    build_adzuna_request,
-    extract_grounded_urls,
-    job_url_is_grounded,
     list_jobs,
-    normalize_adzuna_result,
-    normalize_greenhouse_result,
-    resolve_job_discovery_providers,
-    infer_job_search_role_queries,
-    run_configured_job_providers_until_new_job_threshold,
     run_job_discovery,
-    save_discovered_jobs,
-    save_live_job_source_results,
+)
+from jobops_api.job_discovery.models import (
+    JobSearchRequest,
     LiveJobSourceResult,
-    validate_job_discovery_output,
+    ProviderSearchOutcome,
+)
+from jobops_api.job_discovery.providers.adzuna import build_adzuna_request, normalize_adzuna_result
+from jobops_api.job_discovery.providers.greenhouse import normalize_greenhouse_result
+from jobops_api.job_discovery.providers.registry import resolve_job_discovery_providers
+from jobops_api.job_discovery.service import (
+    build_provider_job_search_queries,
+    infer_job_search_role_queries,
+    save_live_job_source_results,
 )
 from jobops_api.settings import Settings
 
@@ -133,37 +125,33 @@ def test_saved_job_link_fields_are_profile_specific_and_list_is_scoped() -> None
     engine = create_seeded_engine(include_second_profile=True)
     with Session(engine) as session:
         profiles = {profile.slug: profile for profile in session.scalars(select(command_center_module.CandidateProfile)).all()}
-        output = JobDiscoveryOutput(
-            assistantMessage="Found one job.",
-            jobs=[
-                JobDiscoveryRecord(
-                    title="Applied AI Engineer",
-                    companyName="Example Civic",
-                    jobUrl="https://jobs.example.test/example-civic/applied-ai",
-                    fitSummary="Matches applied AI for this profile.",
-                    postingDate=None,
-                )
-            ],
-            skippedJobs=[],
-            clarifyingQuestions=[],
-        )
-        first = save_discovered_jobs(
+        source_results = [
+            LiveJobSourceResult(
+                title="Applied AI Engineer",
+                company_name="Example Civic",
+                job_url="https://jobs.example.test/example-civic/applied-ai",
+                source_provider="test_provider",
+                provenance="provider_result",
+                fit_summary="Matches applied AI for this profile.",
+            )
+        ]
+        first = save_live_job_source_results(
             session,
             candidate_profile=profiles["rebekah-love"],
             discovery_query="Find jobs",
-            output=output,
-            provider="mock",
-            grounding_metadata={},
-            web_search_queries=[],
+            source_results=source_results,
+            search_queries_used=["Applied AI Engineer"],
+            provider="test_provider",
+            verify_urls=False,
         )
-        second = save_discovered_jobs(
+        second = save_live_job_source_results(
             session,
             candidate_profile=profiles["alex-love"],
             discovery_query="Find jobs",
-            output=output,
-            provider="mock",
-            grounding_metadata={},
-            web_search_queries=[],
+            source_results=source_results,
+            search_queries_used=["Applied AI Engineer"],
+            provider="test_provider",
+            verify_urls=False,
         )
         first.saved_links[0].user_notes = "Private first-user note"
         first.saved_links[0].status = "review"
@@ -183,90 +171,39 @@ def test_saved_job_link_fields_are_profile_specific_and_list_is_scoped() -> None
 
 
 def test_job_discovery_requires_reliable_url_and_allows_null_posting_date() -> None:
-    output, warnings = validate_job_discovery_output(
-        json.dumps(
-            {
-                "assistantMessage": "Found jobs.",
-                "jobs": [
-                    {
-                        "title": "No URL Role",
-                        "companyName": "Example Civic",
-                        "jobUrl": "",
-                    },
-                    {
-                        "title": "Backend AI Engineer",
-                        "companyName": "Example Civic",
-                        "jobUrl": "https://jobs.example.test/example-civic/backend-ai",
-                        "postingDate": None,
-                    },
-                ],
-                "skippedJobs": [],
-                "clarifyingQuestions": [],
-            }
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        result = save_live_job_source_results(
+            session,
+            candidate_profile=profile,
+            discovery_query="Find jobs",
+            source_results=[
+                LiveJobSourceResult(
+                    title="No URL Role",
+                    company_name="Example Civic",
+                    job_url="",
+                    source_provider="test_provider",
+                    provenance="provider_result",
+                ),
+                LiveJobSourceResult(
+                    title="Backend AI Engineer",
+                    company_name="Example Civic",
+                    job_url="https://jobs.example.test/example-civic/backend-ai",
+                    source_provider="test_provider",
+                    provenance="provider_result",
+                    posting_date=None,
+                ),
+            ],
+            search_queries_used=["Backend AI Engineer"],
+            provider="test_provider",
+            verify_urls=False,
         )
-    )
 
-    assert warnings
-    assert [job.title for job in output.jobs] == ["Backend AI Engineer"]
-    assert output.jobs[0].posting_date is None
-    assert output.skipped_jobs[0].reason == "Skipped invalid or incomplete job result."
-
-
-def test_job_discovery_request_passes_user_constraints_into_context() -> None:
-    request = build_job_discovery_model_request(
-        JobDiscoveryRequest(
-            latest_user_message=(
-                "Find me applied AI jobs, but avoid defense contractors, right-wing political groups, "
-                "sports, booze, tobacco, gambling, and crypto."
-            ),
-            candidate_profile_slug="rebekah-love",
-            active_workspace="jobs",
-            client_context={"transcript": {"messages": [{"role": "user", "type": "message", "text": "avoid gambling"}]}},
-        ),
-        current_saved_jobs=[],
-        current_saved_companies=[{"name": "CivicActions", "careers_url": "https://civicactions.com/careers"}],
-        target_context={"constraints": {"industries": "avoid defense"}},
-        private_profile_context={"headline": "Applied AI Engineer"},
-        search_grounding_enabled=True,
-    )
-
-    user_prompt = request.messages[1].content
-    system_prompt = request.messages[0].content
-    assert request.task == "job_discovery"
-    assert request.search_grounding is True
-    assert request.metadata["fresh_search_required"] is True
-    assert request.metadata["fresh_search_query_count"] > 0
-    assert "current_saved_companies" in system_prompt
-    assert "Fresh web search is mandatory" in system_prompt
-    assert "exclusions only" in system_prompt
-    assert "company's original job posting" in system_prompt
-    assert "company-owned posting URL" in system_prompt
-    assert "fresh_search_required" in user_prompt
-    assert "fresh_search_queries" in user_prompt
-    assert "current_saved_jobs_are_exclusions_only" in user_prompt
-    assert "avoid defense contractors" in user_prompt
-    assert "right-wing political groups" in user_prompt
-    assert "avoid gambling" in user_prompt
-    assert "CivicActions" in user_prompt
-    assert "current_saved_companies" in user_prompt
-    assert "private_profile_context" in user_prompt
-    saved_job_prompt = build_job_discovery_model_request(
-        JobDiscoveryRequest(latest_user_message="Find more jobs.", candidate_profile_slug="rebekah-love"),
-        current_saved_jobs=[
-            {
-                "title": "Existing Role",
-                "company_name": "Existing Co",
-                "job_url": "https://jobs.example.test/existing?utm_source=old",
-                "normalized_url": "https://jobs.example.test/existing",
-            }
-        ],
-        current_saved_companies=[],
-        target_context={},
-        private_profile_context={},
-        search_grounding_enabled=True,
-    ).messages[1].content
-    assert "do_not_return_job_urls" in saved_job_prompt
-    assert "https://jobs.example.test/existing" in saved_job_prompt
+        assert [link.job.title for link in result.saved_links] == ["Backend AI Engineer"]
+        assert result.saved_links[0].job.posting_date is None
+        assert result.skipped[0].reason_code == "missing_required_url"
 
 
 def test_provider_queries_use_explicit_targets_before_profile_inference() -> None:
@@ -536,72 +473,6 @@ def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path
         assert saved_job is not None
         assert saved_job.source_provider == "adzuna"
 
-
-def test_provider_orchestration_searches_each_provider_until_new_job_threshold(tmp_path: Path) -> None:
-    calls: list[tuple[str, str]] = []
-
-    class FakeProvider:
-        def __init__(self, name: str, provider_type: str) -> None:
-            self.provider_name = name
-            self.provider_type = provider_type
-
-        def is_configured(self, settings: Settings) -> bool:
-            return True
-
-        def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
-            query = request.search_queries[0]
-            calls.append((self.provider_name, query))
-            slug = re.sub(r"[^a-z0-9]+", "-", f"{query}-{self.provider_name}".casefold()).strip("-")
-            return ProviderSearchOutcome(
-                results=[
-                    LiveJobSourceResult(
-                        title=f"{query} {self.provider_name}",
-                        company_name=f"{self.provider_name.title()} Co",
-                        job_url=f"https://jobs.example.test/{slug}",
-                        source_provider=self.provider_name,
-                        provider_type=self.provider_type,
-                        source_result_id=slug,
-                        source_query=query,
-                    )
-                ],
-                diagnostics=[],
-                errors=[],
-            )
-
-    engine = create_seeded_engine()
-    settings = make_settings(tmp_path, model_provider="gemini", job_discovery_source="none")
-    base_request = JobSearchRequest(
-        latest_user_message="Find jobs.",
-        search_queries=["Role One", "Role Two", "Role Three"],
-        results_per_provider=5,
-        current_saved_companies=[],
-        target_context={},
-        private_profile_context={},
-        user_constraints=[],
-    )
-
-    with Session(engine) as session:
-        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
-        assert profile is not None
-        outcome = run_configured_job_providers_until_new_job_threshold(
-            session,
-            providers=[FakeProvider("adzuna", "broad_search"), FakeProvider("greenhouse", "ats_board")],
-            base_request=base_request,
-            settings=settings,
-            candidate_profile=profile,
-            discovery_query="Find jobs.",
-            provider_names=("adzuna", "greenhouse"),
-            max_new_jobs=3,
-        )
-
-        assert len(outcome.save_result.saved_links) == 3
-        assert outcome.search_queries_used == ["Role One", "Role Two"]
-        assert calls == [
-            ("adzuna", "Role One"),
-            ("greenhouse", "Role One"),
-            ("adzuna", "Role Two"),
-        ]
-        assert len(session.scalars(select(CandidateSavedJob)).all()) == 3
 
 
 def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tmp_path: Path) -> None:
@@ -1018,99 +889,6 @@ def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: 
         assert result.body["result"]["providerDiagnostics"][1]["resultCount"] == 1
 
 
-def test_model_output_is_not_saved_even_when_search_grounding_mentions_url() -> None:
-    engine = create_seeded_engine()
-    grounding_metadata = {
-        "groundingChunks": [
-            {"web": {"uri": "https://company.example/jobs/current-ai-engineer", "title": "Current AI Engineer"}}
-        ]
-    }
-    with Session(engine) as session:
-        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
-        assert profile is not None
-        output = JobDiscoveryOutput(
-            assistantMessage="Found jobs.",
-            jobs=[
-                JobDiscoveryRecord(
-                    title="Current AI Engineer",
-                    companyName="Example Company",
-                    jobUrl="https://company.example/jobs/current-ai-engineer",
-                    sourceUrls=["https://company.example/jobs/current-ai-engineer"],
-                ),
-                JobDiscoveryRecord(
-                    title="Stale AI Engineer",
-                    companyName="Example Company",
-                    jobUrl="https://company.example/jobs/stale-ai-engineer",
-                    sourceUrls=["https://company.example/jobs/stale-ai-engineer"],
-                ),
-                JobDiscoveryRecord(
-                    title="Unsourced AI Engineer",
-                    companyName="Example Company",
-                    jobUrl="https://company.example/jobs/unsourced-ai-engineer",
-                    sourceUrls=[],
-                ),
-            ],
-            skippedJobs=[],
-            clarifyingQuestions=[],
-        )
-
-        result = save_discovered_jobs(
-            session,
-            candidate_profile=profile,
-            discovery_query="Find jobs",
-            output=output,
-            provider="gemini",
-            grounding_metadata=grounding_metadata,
-            web_search_queries=["site:company.example jobs ai engineer"],
-            require_grounded_job_urls=True,
-        )
-        session.commit()
-
-        assert result.saved_links == []
-        assert len(result.skipped) == 3
-        assert {item.reason_code for item in result.skipped} == {"no_live_source_provenance"}
-        assert len(session.scalars(select(JobPosting)).all()) == 0
-    assert job_url_is_grounded(
-        "https://company.example/jobs/current-ai-engineer",
-        ["https://company.example/jobs/current-ai-engineer"],
-        extract_grounded_urls(grounding_metadata),
-    )
-
-
-def test_model_only_url_shaped_job_is_not_saved_without_provenance() -> None:
-    engine = create_seeded_engine()
-    with Session(engine) as session:
-        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
-        assert profile is not None
-        output = JobDiscoveryOutput(
-            assistantMessage="Found jobs.",
-            jobs=[
-                JobDiscoveryRecord(
-                    title="Invented AI Engineer",
-                    companyName="Maybe Real",
-                    jobUrl="https://maybe-real.example/jobs/ai-engineer",
-                    sourceUrls=[],
-                )
-            ],
-            skippedJobs=[],
-            clarifyingQuestions=[],
-        )
-
-        result = save_discovered_jobs(
-            session,
-            candidate_profile=profile,
-            discovery_query="Find jobs",
-            output=output,
-            provider="gemini",
-            grounding_metadata={},
-            web_search_queries=[],
-            require_grounded_job_urls=True,
-        )
-
-        assert result.saved_links == []
-        assert result.skipped[0].reason_code == "no_live_source_provenance"
-        assert len(session.scalars(select(JobPosting)).all()) == 0
-
 
 def test_404_job_url_is_skipped(monkeypatch) -> None:
     def fake_urlopen(request, timeout):
@@ -1260,7 +1038,7 @@ def test_job_discovery_returns_clear_error_when_live_source_not_configured(tmp_p
         assert result.status_code == 503
         assert result.body["code"] == "live_job_discovery_not_configured"
         assert result.body["error"] == "Live job discovery is not configured. No jobs were saved."
-        assert result.body["jobDiscoveryMode"] == "grounded_model_only"
+        assert result.body["jobDiscoveryMode"] == "unavailable"
         assert result.body["providerResultCount"] == 0
         assert len(session.scalars(select(JobPosting)).all()) == 0
 
@@ -1331,27 +1109,6 @@ def test_command_center_job_discovery_passes_actual_chat_transcript(tmp_path: Pa
     assert captured["latest_user_message"] == "Find me more applied AI jobs."
     assert captured["client_context"] == client_context
 
-
-def test_job_discovery_assistant_message_reports_duplicate_rediscovery() -> None:
-    output = JobDiscoveryOutput(
-        assistantMessage="I found 8 promising remote job opportunities and ensured none are duplicates.",
-        jobs=[],
-        skippedJobs=[],
-        clarifyingQuestions=[],
-    )
-    save_result = JobDiscoverySaveResult(
-        saved_links=[],
-        updated_existing_links=[object(), object()],  # type: ignore[list-item]
-        created_jobs=[],
-        updated_jobs=[],
-        added_companies=[],
-        skipped=[],
-    )
-
-    message = build_job_discovery_assistant_message(output, save_result)
-
-    assert "already in your Jobs list" in message
-    assert "ensured none are duplicates" not in message
 
 
 def test_command_center_safe_action_log_metrics_are_counts_only() -> None:

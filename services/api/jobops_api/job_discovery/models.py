@@ -191,28 +191,6 @@ class SkippedJobResult(ApiModel):
     reason: str
 
 
-class JobDiscoveryOutput(ApiModel):
-    assistant_message: str = Field(
-        validation_alias=AliasChoices("assistant_message", "assistantMessage"),
-        serialization_alias="assistantMessage",
-        min_length=1,
-        max_length=1200,
-    )
-    jobs: list[JobDiscoveryRecord] = Field(default_factory=list, max_length=25)
-    skipped_jobs: list[SkippedJobResult] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("skipped_jobs", "skippedJobs"),
-        serialization_alias="skippedJobs",
-        max_length=25,
-    )
-    clarifying_questions: list[str] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("clarifying_questions", "clarifyingQuestions"),
-        serialization_alias="clarifyingQuestions",
-        max_length=5,
-    )
-
-
 class JobCandidateSelectionItem(ApiModel):
     candidate_id: str = Field(validation_alias=AliasChoices("candidate_id", "candidateId"), serialization_alias="candidateId")
     fit_summary: str | None = Field(
@@ -414,16 +392,6 @@ class ProviderSearchOutcome:
     results: list[LiveJobSourceResult]
     diagnostics: list[ProviderDiagnostic]
     errors: list[str]
-
-
-@dataclass(frozen=True)
-class ProviderSearchSaveOutcome:
-    source_results: list[LiveJobSourceResult]
-    save_result: JobDiscoverySaveResult
-    diagnostics: list[ProviderDiagnostic]
-    errors: list[str]
-    provider_result_count: int
-    search_queries_used: list[str]
 
 
 @dataclass(frozen=True)
