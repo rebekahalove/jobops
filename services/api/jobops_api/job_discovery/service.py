@@ -15,8 +15,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .auth import AuthContext, require_auth_context
-from .company_discovery import (
+from ..auth import AuthContext, require_auth_context
+from ..company_discovery import (
     add_truncation_hint,
     build_candidate_target_context,
     domain_from_url,
@@ -30,9 +30,9 @@ from .company_discovery import (
     serialize_current_saved_companies,
     validation_issues_indicate_truncation,
 )
-from .db.models import CandidateProfile, CandidateSavedJob, JobPosting, TargetCompany
-from .db.session import get_db_session
-from .model_connector import (
+from ..db.models import CandidateProfile, CandidateSavedJob, JobPosting, TargetCompany
+from ..db.session import get_db_session
+from ..model_connector import (
     ModelConfigurationError,
     ModelConnector,
     ModelMessage,
@@ -42,9 +42,9 @@ from .model_connector import (
     read_model_connector_config_from_settings,
     route_model_request,
 )
-from .profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
-from .security import require_internal_api_key
-from .settings import Settings, load_settings
+from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
+from ..security import require_internal_api_key
+from ..settings import Settings, load_settings
 
 
 JobStatus = Literal["saved", "new", "archived"]
@@ -1165,19 +1165,9 @@ def configured_job_provider_names(settings: Settings) -> tuple[str, ...]:
 
 
 def resolve_job_discovery_providers(provider_names: tuple[str, ...]) -> list[JobDiscoveryProvider]:
-    providers: list[JobDiscoveryProvider] = []
-    for name in provider_names:
-        if name == "mock":
-            providers.append(MockJobDiscoveryProvider())
-        elif name == "adzuna":
-            providers.append(AdzunaJobDiscoveryProvider())
-        elif name == "greenhouse":
-            providers.append(GreenhouseJobDiscoveryProvider())
-        elif name == "ashby":
-            providers.append(AshbyJobDiscoveryProvider())
-        else:
-            raise JobProviderConfigurationError(f"Unknown job discovery provider: {name}")
-    return providers
+    from .providers.registry import resolve_job_discovery_providers as resolve_from_registry
+
+    return resolve_from_registry(provider_names)
 
 
 def run_configured_job_providers(
