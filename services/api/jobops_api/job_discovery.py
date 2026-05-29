@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, Depends
@@ -50,6 +50,7 @@ from .settings import Settings, load_settings
 JobStatus = Literal["saved", "new", "archived"]
 RemoteWorkMode = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 JobProvenance = Literal["provider_result", "fetched_page", "user_url", "mock"]
+ProviderType = Literal["broad_search", "ats_board", "mock"]
 SkipReasonCode = Literal[
     "duplicate_for_user",
     "duplicate_global_job",
@@ -59,7 +60,8 @@ SkipReasonCode = Literal[
     "excluded_by_user_constraints",
     "missing_required_url",
 ]
-LIVE_JOB_DISCOVERY_SOURCES = {"mock"}
+KNOWN_JOB_DISCOVERY_PROVIDERS = {"mock", "adzuna", "greenhouse", "ashby"}
+JOB_DISCOVERY_TARGET_NEW_JOBS = 5
 JOB_DISCOVERY_RECORD_KEYS = {
     "title",
     "company_name",
@@ -308,9 +310,15 @@ class SavedJobResponse(BaseModel):
     apply_url: str | None
     source: str | None
     source_provider: str | None
+    provider_type: str | None
     source_result_id: str | None
     source_query: str | None
     source_url: str | None
+    source_updated_at: datetime | None
+    company_website_url: str | None
+    company_careers_url: str | None
+    ats_provider: str | None
+    ats_board_token: str | None
     provenance: str
     url_verification_status: str
     url_verification_checked_at: datetime | None
@@ -379,21 +387,92 @@ class LiveJobSourceResult:
     company_name: str
     job_url: str
     source_provider: str
-    provenance: JobProvenance
+    provenance: JobProvenance = "provider_result"
+    provider_type: ProviderType = "broad_search"
     source_result_id: str | None = None
     source_query: str | None = None
     source_url: str | None = None
+    apply_url: str | None = None
     location: str | None = None
     remote_work_mode: str | None = None
     employment_type: str | None = None
     salary_text: str | None = None
     description_excerpt: str | None = None
     posting_date: date | None = None
+    source_updated_at: datetime | None = None
+    company_website_url: str | None = None
+    company_careers_url: str | None = None
+    ats_provider: str | None = None
+    ats_board_token: str | None = None
     fit_summary: str | None = None
     source_urls: tuple[str, ...] = ()
+    raw_metadata: dict[str, Any] | None = None
     url_verification_status: str = "provider_unverified"
     url_verification_checked_at: datetime | None = None
     url_verification_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class JobSearchRequest:
+    latest_user_message: str
+    search_queries: list[str]
+    results_per_provider: int
+    current_saved_companies: list[dict[str, Any]]
+    target_context: dict[str, Any]
+    private_profile_context: dict[str, Any]
+    user_constraints: list[str]
+
+
+@dataclass(frozen=True)
+class ProviderDiagnostic:
+    provider_name: str
+    provider_type: ProviderType | str
+    configured: bool
+    attempted: bool
+    result_count: int = 0
+    error: str | None = None
+    query: str | None = None
+    board_token: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "providerName": self.provider_name,
+            "providerType": self.provider_type,
+            "configured": self.configured,
+            "attempted": self.attempted,
+            "resultCount": self.result_count,
+            "error": self.error,
+            "query": self.query,
+            "boardToken": self.board_token,
+        }
+
+
+@dataclass(frozen=True)
+class ProviderSearchOutcome:
+    results: list[LiveJobSourceResult]
+    diagnostics: list[ProviderDiagnostic]
+    errors: list[str]
+
+
+@dataclass(frozen=True)
+class ProviderSearchSaveOutcome:
+    source_results: list[LiveJobSourceResult]
+    save_result: JobDiscoverySaveResult
+    diagnostics: list[ProviderDiagnostic]
+    errors: list[str]
+    provider_result_count: int
+    search_queries_used: list[str]
+
+
+class JobDiscoveryProvider(Protocol):
+    provider_name: str
+    provider_type: ProviderType
+
+    def is_configured(self, settings: Settings) -> bool:
+        ...
+
+    def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+        ...
 
 
 @router.get("/jobs", response_model=list[SavedJobResponse])
@@ -595,51 +674,163 @@ def run_live_source_job_discovery(
     target_context: dict[str, Any],
     private_profile_context: dict[str, Any],
 ) -> JobDiscoveryServiceResult:
-    fresh_search_queries = build_fresh_job_search_queries(
+    fresh_search_queries = build_provider_job_search_queries(
         request,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
     )
-    source_name = settings.job_discovery_source.strip().lower()
     user_urls = extract_http_urls(request.latest_user_message)
-    search_queries_used: list[str] = []
-    job_discovery_mode = resolve_job_discovery_mode(settings, source_name=source_name, user_urls=user_urls)
+    provider_names = configured_job_provider_names(settings)
+    search_request = JobSearchRequest(
+        latest_user_message=request.latest_user_message,
+        search_queries=fresh_search_queries,
+        results_per_provider=min(settings.job_discovery_results_per_provider, JOB_DISCOVERY_TARGET_NEW_JOBS),
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        user_constraints=infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
+    )
+    search_queries_used: list[str] = fresh_search_queries
+    provider_diagnostics: list[ProviderDiagnostic] = []
+    provider_errors: list[str] = []
+    save_result: JobDiscoverySaveResult | None = None
+
+    log_job_discovery_provider_plan(
+        settings,
+        provider_names=provider_names,
+        user_url_count=len(user_urls),
+        search_queries=fresh_search_queries,
+        saved_job_count=len(current_saved_jobs),
+        saved_company_count=len(current_saved_companies),
+    )
 
     if user_urls:
         source_results = build_user_url_source_results(user_urls)
-    elif source_name == "mock" or settings.model_provider.strip().lower() == "mock":
-        search_queries_used = fresh_search_queries[:4]
-        source_results = build_mock_live_job_source_results(search_queries_used)
-        job_discovery_mode = "mock"
-    elif source_name in {"", "none", "disabled"}:
+        provider_result_count = len(source_results)
+        job_discovery_mode = "live_provider"
+        provider_names = ("user_url",)
+        provider_diagnostics = [
+            ProviderDiagnostic(
+                provider_name="user_url",
+                provider_type="broad_search",
+                configured=True,
+                attempted=True,
+                result_count=len(source_results),
+                query="user-provided-url",
+            )
+        ]
+    elif not provider_names:
         mode = "grounded_model_only" if settings.job_discovery_search_grounding_enabled else "unavailable"
+        payload = {
+            "jobDiscoveryMode": mode,
+            "configuredProviders": [],
+            "searchQueryCount": len(fresh_search_queries),
+            "userUrlCount": 0,
+        }
+        logger.warning(
+            "Job discovery live providers are not configured: %s",
+            json.dumps(payload, sort_keys=True),
+        )
         return live_job_discovery_unconfigured_response(
             settings,
             mode=mode,
-            source_name=source_name or "none",
+            provider_names=(),
             search_queries=fresh_search_queries,
-        )
-    elif source_name not in LIVE_JOB_DISCOVERY_SOURCES:
-        return live_job_discovery_unconfigured_response(
-            settings,
-            mode="unavailable",
-            source_name=source_name,
-            search_queries=fresh_search_queries,
-            detail=f"Unsupported JOBOPS_JOB_DISCOVERY_SOURCE: {source_name}",
         )
     else:
-        source_results = []
+        try:
+            providers = resolve_job_discovery_providers(provider_names)
+        except JobProviderConfigurationError as error:
+            payload = {
+                "configuredProviders": list(provider_names),
+                "error": safe_log_preview(str(error), limit=240),
+            }
+            logger.warning(
+                "Job discovery provider configuration failed: %s",
+                json.dumps(payload, sort_keys=True),
+            )
+            return live_job_discovery_unconfigured_response(
+                settings,
+                mode="unavailable",
+                provider_names=provider_names,
+                search_queries=fresh_search_queries,
+                detail=str(error),
+            )
+        job_discovery_mode = "mock" if provider_names == ("mock",) else "live_provider"
+        if job_discovery_mode != "mock" and len(fresh_search_queries) > 1:
+            provider_search_save = run_configured_job_providers_until_new_job_threshold(
+                db_session,
+                providers=providers,
+                base_request=search_request,
+                settings=settings,
+                candidate_profile=candidate_profile,
+                discovery_query=request.latest_user_message,
+                provider_names=provider_names,
+                max_new_jobs=JOB_DISCOVERY_TARGET_NEW_JOBS,
+            )
+            provider_diagnostics = provider_search_save.diagnostics
+            provider_errors = provider_search_save.errors
+            if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
+                log_job_discovery_provider_summary(
+                    settings,
+                    provider_names=provider_names,
+                    diagnostics=provider_diagnostics,
+                    provider_result_count=provider_search_save.provider_result_count,
+                    candidate_count_after_dedupe=len(provider_search_save.source_results),
+                    saved_count=len(provider_search_save.save_result.saved_links),
+                    skipped_count=len(provider_search_save.save_result.skipped),
+                    errors=provider_errors,
+                    level=logging.WARNING,
+                )
+                return live_job_discovery_provider_error_response(
+                    settings,
+                    provider_names=provider_names,
+                    search_queries=provider_search_save.search_queries_used,
+                    provider_diagnostics=provider_diagnostics,
+                    errors=provider_errors,
+                )
+            provider_result_count = provider_search_save.provider_result_count
+            source_results = provider_search_save.source_results
+            search_queries_used = provider_search_save.search_queries_used
+            save_result = provider_search_save.save_result
+        else:
+            search_outcome = run_configured_job_providers(providers, search_request, settings)
+            provider_diagnostics = search_outcome.diagnostics
+            provider_errors = search_outcome.errors
+            if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
+                log_job_discovery_provider_summary(
+                    settings,
+                    provider_names=provider_names,
+                    diagnostics=provider_diagnostics,
+                    provider_result_count=len(search_outcome.results),
+                    candidate_count_after_dedupe=0,
+                    saved_count=0,
+                    skipped_count=0,
+                    errors=provider_errors,
+                    level=logging.WARNING,
+                )
+                return live_job_discovery_provider_error_response(
+                    settings,
+                    provider_names=provider_names,
+                    search_queries=fresh_search_queries,
+                    provider_diagnostics=provider_diagnostics,
+                    errors=provider_errors,
+                )
+            provider_result_count = len(search_outcome.results)
+            source_results = dedupe_provider_results(search_outcome.results)
 
-    save_result = save_live_job_source_results(
-        db_session,
-        candidate_profile=candidate_profile,
-        discovery_query=request.latest_user_message,
-        source_results=source_results,
-        search_queries_used=search_queries_used,
-        provider=source_name or job_discovery_mode,
-        verify_urls=job_discovery_mode != "mock",
-    )
+    if save_result is None:
+        save_result = save_live_job_source_results(
+            db_session,
+            candidate_profile=candidate_profile,
+            discovery_query=request.latest_user_message,
+            source_results=source_results,
+            search_queries_used=search_queries_used,
+            provider=",".join(provider_names) if provider_names else job_discovery_mode,
+            verify_urls=job_discovery_mode != "mock",
+            user_constraints=search_request.user_constraints,
+        )
     db_session.commit()
 
     saved_jobs = [serialize_saved_job(link) for link in save_result.saved_links]
@@ -667,11 +858,14 @@ def run_live_source_job_discovery(
         "skippedJobs": skipped_jobs,
         "skippedReasons": skipped_counts,
         "jobDiscoveryMode": job_discovery_mode,
+        "configuredProviders": list(provider_names),
+        "providerDiagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
         "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
-        "providerName": source_name or job_discovery_mode,
-        "sourceName": source_name or job_discovery_mode,
+        "providerName": ",".join(provider_names) if provider_names else job_discovery_mode,
+        "sourceName": ",".join(provider_names) if provider_names else job_discovery_mode,
         "searchQueriesUsed": search_queries_used,
-        "providerResultCount": len(source_results),
+        "providerResultCount": provider_result_count,
+        "candidateCountAfterDedupe": len(source_results),
         "modelSelectedCount": 0,
         "verifiedUrlCount": verified_count,
         "savedJobCount": len(saved_jobs),
@@ -679,6 +873,20 @@ def run_live_source_job_discovery(
         "excludedJobUrlCount": len(current_saved_job_urls(current_saved_jobs)),
         "currentSavedCompanyCount": len(current_saved_companies),
     }
+    summary_level = logging.INFO
+    if provider_errors or (provider_names and provider_result_count == 0):
+        summary_level = logging.WARNING
+    log_job_discovery_provider_summary(
+        settings,
+        provider_names=provider_names,
+        diagnostics=provider_diagnostics,
+        provider_result_count=provider_result_count,
+        candidate_count_after_dedupe=len(source_results),
+        saved_count=len(saved_jobs),
+        skipped_count=len(skipped_jobs),
+        errors=provider_errors,
+        level=summary_level,
+    )
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
 
 
@@ -686,20 +894,24 @@ def live_job_discovery_unconfigured_response(
     settings: Settings,
     *,
     mode: str,
-    source_name: str,
+    provider_names: tuple[str, ...],
     search_queries: list[str],
     detail: str | None = None,
 ) -> JobDiscoveryServiceResult:
+    provider_name = ",".join(provider_names) if provider_names else "none"
     body = {
         "ok": False,
         "error": "Live job discovery is not configured. No jobs were saved.",
         "code": "live_job_discovery_not_configured",
         "jobDiscoveryMode": mode,
+        "configuredProviders": list(provider_names),
+        "providerDiagnostics": [],
         "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
-        "providerName": source_name,
-        "sourceName": source_name,
+        "providerName": provider_name,
+        "sourceName": provider_name,
         "searchQueriesUsed": search_queries,
         "providerResultCount": 0,
+        "candidateCountAfterDedupe": 0,
         "modelSelectedCount": 0,
         "verifiedUrlCount": 0,
         "savedJobCount": 0,
@@ -708,6 +920,794 @@ def live_job_discovery_unconfigured_response(
     if detail and settings.app_env.lower() not in {"prod", "production"}:
         body["debugDetail"] = detail
     return JobDiscoveryServiceResult(body=body, status_code=503)
+
+
+def live_job_discovery_provider_error_response(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    search_queries: list[str],
+    provider_diagnostics: list[ProviderDiagnostic],
+    errors: list[str],
+) -> JobDiscoveryServiceResult:
+    return JobDiscoveryServiceResult(
+        body={
+            "ok": False,
+            "error": "Live job discovery provider failed. No jobs were saved.",
+            "code": "live_job_discovery_provider_failed",
+            "jobDiscoveryMode": "live_provider",
+            "configuredProviders": list(provider_names),
+            "providerDiagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
+            "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+            "providerName": ",".join(provider_names),
+            "sourceName": ",".join(provider_names),
+            "searchQueriesUsed": search_queries,
+            "providerResultCount": 0,
+            "candidateCountAfterDedupe": 0,
+            "modelSelectedCount": 0,
+            "verifiedUrlCount": 0,
+            "savedJobCount": 0,
+            "skippedReasons": {},
+            "providerErrors": errors if settings.app_env.lower() not in {"prod", "production"} else [],
+        },
+        status_code=502,
+    )
+
+
+def log_job_discovery_provider_plan(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    user_url_count: int,
+    search_queries: list[str],
+    saved_job_count: int,
+    saved_company_count: int,
+) -> None:
+    payload: dict[str, Any] = {
+        "configuredProviders": list(provider_names),
+        "userUrlCount": user_url_count,
+        "searchQueryCount": len(search_queries),
+        "savedJobCount": saved_job_count,
+        "savedCompanyCount": saved_company_count,
+    }
+    if should_log_job_discovery_debug(settings):
+        payload["searchQueryPreviews"] = [safe_log_preview(query, limit=160) for query in search_queries[:5]]
+    logger.info("Job discovery provider plan: %s", json.dumps(payload, sort_keys=True))
+
+
+def log_job_discovery_provider_summary(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_count_after_dedupe: int,
+    saved_count: int,
+    skipped_count: int,
+    errors: list[str],
+    level: int = logging.INFO,
+) -> None:
+    payload: dict[str, Any] = {
+        "configuredProviders": list(provider_names),
+        "providerResultCount": provider_result_count,
+        "candidateCountAfterDedupe": candidate_count_after_dedupe,
+        "savedCount": saved_count,
+        "skippedCount": skipped_count,
+        "providerDiagnostics": [
+            serialize_provider_diagnostic_for_log(settings, diagnostic) for diagnostic in diagnostics
+        ],
+    }
+    if errors:
+        if should_log_job_discovery_debug(settings):
+            payload["providerErrors"] = [safe_log_preview(error, limit=240) for error in errors[:8]]
+        else:
+            payload["providerErrorCount"] = len(errors)
+    logger.log(level, "Job discovery provider summary: %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: ProviderDiagnostic) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "providerName": diagnostic.provider_name,
+        "providerType": diagnostic.provider_type,
+        "configured": diagnostic.configured,
+        "attempted": diagnostic.attempted,
+        "resultCount": diagnostic.result_count,
+    }
+    if diagnostic.board_token:
+        payload["boardToken"] = diagnostic.board_token
+    if diagnostic.query and should_log_job_discovery_debug(settings):
+        payload["queryPreview"] = safe_log_preview(diagnostic.query, limit=160)
+    if diagnostic.error:
+        payload["error"] = (
+            safe_log_preview(diagnostic.error, limit=240)
+            if should_log_job_discovery_debug(settings)
+            else "present"
+        )
+    return payload
+
+
+def should_log_job_discovery_debug(settings: Settings) -> bool:
+    return settings.app_env.lower() not in {"prod", "production"}
+
+
+def safe_log_preview(value: str, *, limit: int) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    return normalized[:limit]
+
+
+class JobProviderConfigurationError(Exception):
+    pass
+
+
+class JobProviderRuntimeError(Exception):
+    pass
+
+
+def configured_job_provider_names(settings: Settings) -> tuple[str, ...]:
+    providers = tuple(compact_unique_strings(list(settings.job_discovery_providers), limit=20))
+    if providers:
+        return providers
+    source = settings.job_discovery_source.strip().lower()
+    if source and source not in {"none", "disabled"}:
+        return (source,)
+    return ("mock",) if settings.model_provider.strip().lower() == "mock" else ()
+
+
+def resolve_job_discovery_providers(provider_names: tuple[str, ...]) -> list[JobDiscoveryProvider]:
+    providers: list[JobDiscoveryProvider] = []
+    for name in provider_names:
+        if name == "mock":
+            providers.append(MockJobDiscoveryProvider())
+        elif name == "adzuna":
+            providers.append(AdzunaJobDiscoveryProvider())
+        elif name == "greenhouse":
+            providers.append(GreenhouseJobDiscoveryProvider())
+        elif name == "ashby":
+            providers.append(AshbyJobDiscoveryProvider())
+        else:
+            raise JobProviderConfigurationError(f"Unknown job discovery provider: {name}")
+    return providers
+
+
+def run_configured_job_providers(
+    providers: list[JobDiscoveryProvider],
+    request: JobSearchRequest,
+    settings: Settings,
+) -> ProviderSearchOutcome:
+    results: list[LiveJobSourceResult] = []
+    diagnostics: list[ProviderDiagnostic] = []
+    errors: list[str] = []
+    for provider in providers:
+        configured = provider.is_configured(settings)
+        if not configured:
+            message = f"Job discovery provider {provider.provider_name} is not configured."
+            logger.warning(
+                "Job discovery provider is not configured: %s",
+                json.dumps(
+                    {
+                        "providerName": provider.provider_name,
+                        "providerType": provider.provider_type,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=provider.provider_name,
+                    provider_type=provider.provider_type,
+                    configured=False,
+                    attempted=False,
+                    error=message,
+                )
+            )
+            errors.append(message)
+            continue
+        try:
+            outcome = provider.search(request, settings)
+        except JobProviderRuntimeError as error:
+            logger.warning(
+                "Job discovery provider request failed: %s",
+                json.dumps(
+                    {
+                        "providerName": provider.provider_name,
+                        "providerType": provider.provider_type,
+                        "error": safe_log_preview(str(error), limit=240),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=provider.provider_name,
+                    provider_type=provider.provider_type,
+                    configured=True,
+                    attempted=True,
+                    error=str(error),
+                    query=request.search_queries[0] if request.search_queries else None,
+                )
+            )
+            errors.append(str(error))
+            continue
+        logger.info(
+            "Job discovery provider completed: %s",
+            json.dumps(
+                {
+                    "providerName": provider.provider_name,
+                    "providerType": provider.provider_type,
+                    "resultCount": len(outcome.results),
+                    "diagnosticCount": len(outcome.diagnostics),
+                    "errorCount": len(outcome.errors),
+                },
+                sort_keys=True,
+            ),
+        )
+        results.extend(outcome.results)
+        diagnostics.extend(outcome.diagnostics)
+        errors.extend(outcome.errors)
+    return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+def run_configured_job_providers_until_new_job_threshold(
+    session: Session,
+    *,
+    providers: list[JobDiscoveryProvider],
+    base_request: JobSearchRequest,
+    settings: Settings,
+    candidate_profile: CandidateProfile,
+    discovery_query: str,
+    provider_names: tuple[str, ...],
+    max_new_jobs: int,
+) -> ProviderSearchSaveOutcome:
+    aggregate_save = empty_job_discovery_save_result()
+    diagnostics: list[ProviderDiagnostic] = []
+    errors: list[str] = []
+    source_results: list[LiveJobSourceResult] = []
+    seen_source_urls: set[str] = set()
+    provider_result_count = 0
+    search_queries_used: list[str] = []
+
+    for query in base_request.search_queries:
+        query_request = replace(base_request, search_queries=[query])
+        search_queries_used.append(query)
+        for provider in providers:
+            outcome = run_configured_job_providers([provider], query_request, settings)
+            diagnostics.extend(outcome.diagnostics)
+            errors.extend(outcome.errors)
+            provider_result_count += len(outcome.results)
+            if errors and not settings.job_discovery_allow_partial_provider_failures:
+                return ProviderSearchSaveOutcome(
+                    source_results=source_results,
+                    save_result=aggregate_save,
+                    diagnostics=diagnostics,
+                    errors=errors,
+                    provider_result_count=provider_result_count,
+                    search_queries_used=search_queries_used,
+                )
+
+            query_results = dedupe_provider_results(outcome.results)
+            for result in query_results:
+                normalized_url = normalize_job_url(result.job_url) or result.job_url
+                lookup = normalized_url.casefold()
+                if lookup in seen_source_urls:
+                    continue
+                seen_source_urls.add(lookup)
+                source_results.append(result)
+
+            query_save = save_live_job_source_results(
+                session,
+                candidate_profile=candidate_profile,
+                discovery_query=discovery_query,
+                source_results=query_results,
+                search_queries_used=search_queries_used,
+                provider=",".join(provider_names),
+                verify_urls=True,
+                user_constraints=base_request.user_constraints,
+            )
+            merge_job_discovery_save_results(aggregate_save, query_save)
+            logger.info(
+                "Job discovery query save summary: %s",
+                json.dumps(
+                    {
+                        "queryPreview": safe_log_preview(query, limit=160),
+                        "providerName": provider.provider_name,
+                        "newSavedCount": len(query_save.saved_links),
+                        "totalNewSavedCount": len(aggregate_save.saved_links),
+                        "skippedCount": len(query_save.skipped),
+                        "providerResultCount": len(outcome.results),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            if len(aggregate_save.saved_links) >= max_new_jobs:
+                break
+        if len(aggregate_save.saved_links) >= max_new_jobs:
+            break
+
+    return ProviderSearchSaveOutcome(
+        source_results=source_results,
+        save_result=aggregate_save,
+        diagnostics=diagnostics,
+        errors=errors,
+        provider_result_count=provider_result_count,
+        search_queries_used=search_queries_used,
+    )
+
+
+def empty_job_discovery_save_result() -> JobDiscoverySaveResult:
+    return JobDiscoverySaveResult(
+        saved_links=[],
+        updated_existing_links=[],
+        created_jobs=[],
+        updated_jobs=[],
+        added_companies=[],
+        skipped=[],
+    )
+
+
+def merge_job_discovery_save_results(target: JobDiscoverySaveResult, source: JobDiscoverySaveResult) -> None:
+    target.saved_links.extend(source.saved_links)
+    target.updated_existing_links.extend(source.updated_existing_links)
+    target.created_jobs.extend(source.created_jobs)
+    target.updated_jobs.extend(source.updated_jobs)
+    target.added_companies.extend(source.added_companies)
+    target.skipped.extend(source.skipped)
+
+
+class MockJobDiscoveryProvider:
+    provider_name = "mock"
+    provider_type: ProviderType = "mock"
+
+    def is_configured(self, settings: Settings) -> bool:
+        return settings.model_provider.strip().lower() == "mock" or "mock" in settings.job_discovery_providers
+
+    def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+        results = build_mock_live_job_source_results(request.search_queries[:4])
+        return ProviderSearchOutcome(
+            results=results,
+            diagnostics=[
+                ProviderDiagnostic(
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    configured=True,
+                    attempted=True,
+                    result_count=len(results),
+                    query=request.search_queries[0] if request.search_queries else None,
+                )
+            ],
+            errors=[],
+        )
+
+
+class AdzunaJobDiscoveryProvider:
+    provider_name = "adzuna"
+    provider_type: ProviderType = "broad_search"
+
+    def is_configured(self, settings: Settings) -> bool:
+        return bool(settings.adzuna_app_id and settings.adzuna_app_key)
+
+    def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+        queries = request.search_queries[:3] or [request.latest_user_message]
+        results_per_query = max(5, min(20, (request.results_per_provider + len(queries) - 1) // len(queries)))
+        results: list[LiveJobSourceResult] = []
+        diagnostics: list[ProviderDiagnostic] = []
+        errors: list[str] = []
+        for query in queries:
+            query_request = replace(request, results_per_provider=results_per_query)
+            url, params = build_adzuna_request(settings, query_request, query=query)
+            try:
+                payload = fetch_json(url, params=params)
+            except urllib.error.HTTPError as error:
+                raise JobProviderRuntimeError(f"Adzuna request failed with HTTP {error.code}.") from error
+            except urllib.error.URLError as error:
+                raise JobProviderRuntimeError(f"Adzuna request failed: {type(error.reason).__name__}") from error
+            except Exception as error:
+                raise JobProviderRuntimeError(f"Adzuna request failed: {type(error).__name__}") from error
+            raw_results = payload.get("results") if isinstance(payload, dict) else []
+            if not isinstance(raw_results, list):
+                raw_results = []
+            query_results = [
+                result for raw in raw_results if (result := normalize_adzuna_result(raw, query=query, settings=settings))
+            ]
+            results.extend(query_results)
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    configured=True,
+                    attempted=True,
+                    result_count=len(query_results),
+                    query=query,
+                )
+            )
+        results = dedupe_provider_results(results)[: request.results_per_provider]
+        return ProviderSearchOutcome(
+            results=results,
+            diagnostics=diagnostics,
+            errors=errors,
+        )
+
+
+class GreenhouseJobDiscoveryProvider:
+    provider_name = "greenhouse"
+    provider_type: ProviderType = "ats_board"
+
+    def is_configured(self, settings: Settings) -> bool:
+        return bool(resolve_greenhouse_board_tokens(settings))
+
+    def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+        results: list[LiveJobSourceResult] = []
+        diagnostics: list[ProviderDiagnostic] = []
+        errors: list[str] = []
+        for token in resolve_greenhouse_board_tokens(settings):
+            url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
+            try:
+                payload = fetch_json(url, params={"content": "true"})
+            except urllib.error.HTTPError as error:
+                message = f"Greenhouse board {token} returned HTTP {error.code}."
+                diagnostics.append(
+                    ProviderDiagnostic(
+                        provider_name=self.provider_name,
+                        provider_type=self.provider_type,
+                        configured=True,
+                        attempted=True,
+                        result_count=0,
+                        error=message,
+                        board_token=token,
+                    )
+                )
+                errors.append(message)
+                continue
+            except Exception as error:
+                message = f"Greenhouse board {token} request failed: {type(error).__name__}"
+                diagnostics.append(
+                    ProviderDiagnostic(
+                        provider_name=self.provider_name,
+                        provider_type=self.provider_type,
+                        configured=True,
+                        attempted=True,
+                        result_count=0,
+                        error=message,
+                        board_token=token,
+                    )
+                )
+                errors.append(message)
+                continue
+            raw_jobs = payload.get("jobs") if isinstance(payload, dict) else []
+            if not isinstance(raw_jobs, list):
+                raw_jobs = []
+            board_results = [
+                result
+                for raw in raw_jobs
+                if (result := normalize_greenhouse_result(raw, board_token=token, request=request))
+            ]
+            query = request.search_queries[0] if request.search_queries else None
+            if query:
+                board_results = [result for result in board_results if source_result_matches_query(result, query)]
+            results.extend(board_results)
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    configured=True,
+                    attempted=True,
+                    result_count=len(board_results),
+                    query=query,
+                    board_token=token,
+                )
+            )
+        return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+class AshbyJobDiscoveryProvider:
+    provider_name = "ashby"
+    provider_type: ProviderType = "ats_board"
+
+    def is_configured(self, settings: Settings) -> bool:
+        return False
+
+    def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+        return ProviderSearchOutcome(
+            results=[],
+            diagnostics=[
+                ProviderDiagnostic(
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    configured=False,
+                    attempted=False,
+                    error="Ashby job discovery provider is not implemented yet.",
+                )
+            ],
+            errors=["Ashby job discovery provider is not implemented yet."],
+        )
+
+
+def fetch_json(url: str, *, params: dict[str, object] | None = None) -> Any:
+    query = urlencode(
+        [(key, str(value)) for key, value in (params or {}).items() if value is not None and str(value) != ""],
+        doseq=True,
+    )
+    full_url = f"{url}?{query}" if query else url
+    request = urllib.request.Request(
+        full_url,
+        headers={"User-Agent": "JobOps/0.1 (+https://jobops.local)", "Accept": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def build_adzuna_request(settings: Settings, request: JobSearchRequest, *, query: str) -> tuple[str, dict[str, object]]:
+    country = settings.adzuna_country or "us"
+    url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
+    params: dict[str, object] = {
+        "app_id": settings.adzuna_app_id,
+        "app_key": settings.adzuna_app_key,
+        "what": query,
+        "results_per_page": request.results_per_provider,
+        "content-type": "application/json",
+    }
+    where = infer_location_query(request.latest_user_message, request.target_context, request.private_profile_context)
+    if where:
+        params["where"] = where
+    exclusions = build_adzuna_exclusions(request.user_constraints)
+    if exclusions:
+        params["what_exclude"] = exclusions
+    return url, params
+
+
+def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> LiveJobSourceResult | None:
+    if not isinstance(raw, dict):
+        return None
+    title = clean_text_value(raw.get("title"))
+    company_name = clean_text_value(nested_get(raw, "company", "display_name"))
+    job_url = clean_text_value(raw.get("redirect_url"))
+    if not title or not company_name or not job_url:
+        return None
+    salary_text = format_salary_text(raw.get("salary_min"), raw.get("salary_max"))
+    created = parse_datetime_value(raw.get("created"))
+    return LiveJobSourceResult(
+        title=title,
+        company_name=company_name,
+        job_url=job_url,
+        apply_url=job_url,
+        source_provider="adzuna",
+        provider_type="broad_search",
+        source_result_id=str(raw.get("id")) if raw.get("id") is not None else None,
+        source_query=query,
+        source_url=job_url,
+        provenance="provider_result",
+        location=clean_text_value(nested_get(raw, "location", "display_name")),
+        remote_work_mode=infer_remote_mode(" ".join(str(raw.get(key) or "") for key in ("title", "description"))),
+        employment_type=clean_text_value(raw.get("contract_time") or raw.get("contract_type")),
+        salary_text=salary_text,
+        description_excerpt=html_to_text(str(raw.get("description") or ""))[:600] or None,
+        posting_date=created.date() if created else None,
+        source_updated_at=created,
+        raw_metadata=safe_provider_raw_metadata(raw),
+        url_verification_status="provider_unverified",
+        url_verification_summary="Adzuna provider result; URL may redirect through Adzuna.",
+    )
+
+
+def resolve_greenhouse_board_tokens(settings: Settings) -> tuple[str, ...]:
+    tokens = list(settings.greenhouse_board_tokens)
+    if settings.greenhouse_company_boards:
+        tokens.extend(settings.greenhouse_company_boards.values())
+    return tuple(compact_unique_strings(tokens, limit=100))
+
+
+def normalize_greenhouse_result(raw: object, *, board_token: str, request: JobSearchRequest) -> LiveJobSourceResult | None:
+    if not isinstance(raw, dict):
+        return None
+    title = clean_text_value(raw.get("title"))
+    job_url = clean_text_value(raw.get("absolute_url"))
+    job_id = raw.get("id")
+    company_name = company_name_for_greenhouse_board(board_token, request.current_saved_companies)
+    if not title or not company_name or not job_url:
+        return None
+    content = html_to_text(str(raw.get("content") or ""))[:600] or None
+    updated_at = parse_datetime_value(raw.get("updated_at"))
+    return LiveJobSourceResult(
+        title=title,
+        company_name=company_name,
+        job_url=job_url,
+        apply_url=job_url,
+        source_provider="greenhouse",
+        provider_type="ats_board",
+        source_result_id=f"{board_token}:{job_id}" if job_id is not None else board_token,
+        source_query=request.search_queries[0] if request.search_queries else None,
+        source_url=job_url,
+        provenance="provider_result",
+        location=clean_text_value(nested_get(raw, "location", "name")),
+        remote_work_mode=infer_remote_mode(f"{title} {content or ''}"),
+        description_excerpt=content,
+        posting_date=None,
+        source_updated_at=updated_at,
+        ats_provider="greenhouse",
+        ats_board_token=board_token,
+        raw_metadata=safe_provider_raw_metadata(raw),
+        url_verification_status="provider_unverified",
+        url_verification_summary="Greenhouse public job board result.",
+    )
+
+
+def company_name_for_greenhouse_board(board_token: str, current_saved_companies: list[dict[str, Any]]) -> str:
+    for company in current_saved_companies:
+        values = [
+            company.get("job_listings_url"),
+            company.get("jobListingsUrl"),
+            company.get("careers_url"),
+            company.get("careersUrl"),
+            *(company.get("source_urls") or company.get("sourceUrls") or []),
+        ]
+        if any(isinstance(value, str) and board_token.casefold() in value.casefold() for value in values):
+            name = clean_text_value(company.get("name"))
+            if name:
+                return name
+    return board_token.replace("-", " ").replace("_", " ").title()
+
+
+def source_result_matches_query(result: LiveJobSourceResult, query: str) -> bool:
+    terms = meaningful_query_terms(query)
+    if not terms:
+        return True
+    haystack = " ".join(
+        part
+        for part in [
+            result.title,
+            result.company_name,
+            result.location or "",
+            result.description_excerpt or "",
+        ]
+        if part
+    ).casefold()
+    return all(term in haystack for term in terms[:3])
+
+
+def meaningful_query_terms(query: str) -> list[str]:
+    stop_words = {
+        "ai",
+        "ml",
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "engineer",
+        "engineering",
+        "developer",
+        "software",
+        "senior",
+        "staff",
+        "lead",
+        "remote",
+    }
+    terms = []
+    for raw in re.findall(r"[a-z0-9]+", query.casefold()):
+        if len(raw) < 3 or raw in stop_words:
+            continue
+        terms.append(raw)
+    return compact_unique_strings(terms, limit=5)
+
+
+def dedupe_provider_results(results: list[LiveJobSourceResult]) -> list[LiveJobSourceResult]:
+    deduped: list[LiveJobSourceResult] = []
+    seen_urls: set[str] = set()
+    seen_provider_ids: set[tuple[str, str]] = set()
+    for result in results:
+        normalized_url = normalize_job_url(result.job_url)
+        provider_key = (result.source_provider, result.source_result_id or "")
+        if normalized_url and normalized_url in seen_urls:
+            continue
+        if provider_key[1] and provider_key in seen_provider_ids:
+            continue
+        if normalized_url:
+            seen_urls.add(normalized_url)
+        if provider_key[1]:
+            seen_provider_ids.add(provider_key)
+        deduped.append(result)
+    return deduped
+
+
+def infer_user_constraint_terms(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[str]:
+    text = " ".join(
+        [
+            latest_user_message,
+            json.dumps(target_context, sort_keys=True, default=str)[:3000],
+            json.dumps(private_profile_context, sort_keys=True, default=str)[:3000],
+        ]
+    ).casefold()
+    constraints: list[str] = []
+    for term in ["defense", "right-wing", "sports", "booze", "alcohol", "tobacco", "gambling", "crypto"]:
+        if term in text:
+            constraints.append(term)
+    return constraints
+
+
+def result_matches_exclusion(result: LiveJobSourceResult, constraints: list[str]) -> str | None:
+    haystack = " ".join(
+        str(value or "")
+        for value in [result.title, result.company_name, result.description_excerpt, result.source_provider, result.salary_text]
+    ).casefold()
+    for term in constraints:
+        if term in haystack:
+            return term
+    return None
+
+
+def build_adzuna_exclusions(constraints: list[str]) -> str | None:
+    return " ".join(term for term in constraints if term not in {"right-wing"})
+
+
+def infer_location_query(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> str | None:
+    text = latest_user_message.casefold()
+    if "remote" in text:
+        return None
+    for candidate in ("New York", "NYC", "United States", "US"):
+        if candidate.casefold() in text:
+            return candidate
+    return None
+
+
+def infer_remote_mode(value: str) -> str:
+    text = value.casefold()
+    if "remote" in text:
+        return "remote"
+    if "hybrid" in text:
+        return "hybrid"
+    if "onsite" in text or "on-site" in text:
+        return "onsite"
+    return "unknown"
+
+
+def parse_datetime_value(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        try:
+            parsed_date = date.fromisoformat(raw[:10])
+        except ValueError:
+            return None
+        return datetime.combine(parsed_date, datetime.min.time(), timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def format_salary_text(salary_min: object, salary_max: object) -> str | None:
+    if salary_min in {None, ""} and salary_max in {None, ""}:
+        return None
+    if salary_min not in {None, ""} and salary_max not in {None, ""}:
+        return f"{salary_min}-{salary_max}"
+    return str(salary_min or salary_max)
+
+
+def nested_get(value: object, *keys: str) -> object:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def clean_text_value(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).split())
+    return cleaned or None
+
+
+def safe_provider_raw_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in {"description", "content"}:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+        elif isinstance(value, dict):
+            safe[key] = {str(nested_key): nested_value for nested_key, nested_value in value.items() if isinstance(nested_value, (str, int, float, bool)) or nested_value is None}
+    return safe
 
 
 def build_job_discovery_model_request(
@@ -912,6 +1912,33 @@ def build_job_discovery_user_prompt(
     )
 
 
+def build_provider_job_search_queries(
+    request: JobDiscoveryRequest,
+    *,
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    role_queries = infer_job_search_role_queries(
+        request.latest_user_message,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    queries: list[str] = []
+    queries.extend(role_queries[:5])
+
+    message = request.latest_user_message.casefold()
+    if "remote" in message:
+        queries.extend([f"Remote {role}" for role in role_queries[:3]])
+
+    # Broad job APIs expect role-like search terms, while company ATS providers use
+    # configured boards rather than site: queries. Saved companies remain in context
+    # for provider selection and fit summaries without polluting provider keywords.
+    _ = current_saved_companies
+
+    return compact_unique_strings(queries, limit=12)
+
+
 def build_fresh_job_search_queries(
     request: JobDiscoveryRequest,
     *,
@@ -957,6 +1984,11 @@ def infer_job_search_role_queries(
     target_context: dict[str, Any],
     private_profile_context: dict[str, Any],
 ) -> list[str]:
+    roles: list[str] = []
+    roles.extend(extract_explicit_target_titles(target_context, private_profile_context))
+    roles.extend(extract_role_queries_from_message(latest_user_message))
+    roles.extend(extract_profile_headline_role(private_profile_context))
+
     text = " ".join(
         [
             latest_user_message,
@@ -964,9 +1996,6 @@ def infer_job_search_role_queries(
             json.dumps(private_profile_context, sort_keys=True, default=str)[:4000],
         ]
     ).casefold()
-    roles: list[str] = []
-    if "applied ai" in text:
-        roles.append("Applied AI Engineer")
     if "ai platform" in text or "platform" in text:
         roles.append("AI Platform Engineer")
     if "llm" in text or "rag" in text:
@@ -975,8 +2004,95 @@ def infer_job_search_role_queries(
         roles.append("Machine Learning Engineer")
     if "backend" in text:
         roles.append("Backend AI Engineer")
-    roles.extend(["Applied AI Engineer", "AI Platform Engineer", "LLM Engineer", "RAG Engineer"])
+    if not roles:
+        roles.extend(["Software Engineer", "AI Engineer", "Machine Learning Engineer"])
     return compact_unique_strings(roles, limit=6)
+
+
+def extract_explicit_target_titles(
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    values.extend(coerce_string_list(target_context.get("target_role_titles")))
+    targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(targets, dict):
+        values.extend(coerce_string_list(targets.get("targetTitles")))
+        values.extend(coerce_string_list(targets.get("target_role_titles")))
+    for item_key in ("published_internal_items", "published_public_items"):
+        items = private_profile_context.get(item_key) if isinstance(private_profile_context, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("collection") != "targetRoleIntent":
+                continue
+            values.extend(coerce_string_list(item.get("targetTitles")))
+            values.extend(coerce_string_list(item.get("target_role_titles")))
+    return values
+
+
+def extract_role_queries_from_message(latest_user_message: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", latest_user_message).strip()
+    patterns = [
+        r"\bfind\s+(?:me\s+)?(?:some\s+)?(.+?)\s+(?:jobs|roles|positions)\b",
+        r"\bshow\s+(?:me\s+)?(.+?)\s+(?:jobs|roles|positions)\b",
+    ]
+    roles: list[str] = []
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            continue
+        phrase = clean_role_query_phrase(match.group(1))
+        if phrase:
+            roles.append(title_case_role_query(phrase))
+    return roles
+
+
+def extract_profile_headline_role(private_profile_context: dict[str, Any]) -> list[str]:
+    basics = private_profile_context.get("profile_basics") if isinstance(private_profile_context, dict) else None
+    headline = clean_text_value(basics.get("headline")) if isinstance(basics, dict) else None
+    if not headline:
+        return []
+    candidate = re.split(r"\s+[|•]\s+|\s+-\s+|\s+with\s+", headline, maxsplit=1, flags=re.IGNORECASE)[0]
+    candidate = clean_role_query_phrase(candidate)
+    if not candidate:
+        return []
+    if not re.search(
+        r"\b(engineer|developer|architect|manager|scientist|analyst|designer|lead|director|strategist|specialist)\b",
+        candidate,
+        flags=re.IGNORECASE,
+    ):
+        return []
+    return [candidate]
+
+
+def clean_role_query_phrase(value: str) -> str | None:
+    cleaned = re.sub(r"\b(remote|hybrid|onsite|on-site|some|more|new|open|current|to apply to|for me)\b", " ", value, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(that fit my profile|like this|i should consider)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[\"'`]+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    if not cleaned or cleaned.casefold() in {"jobs", "roles", "positions"}:
+        return None
+    return cleaned
+
+
+def title_case_role_query(value: str) -> str:
+    small_words = {"ai", "ml", "llm", "rag", "api", "ux", "ui"}
+    words = []
+    for word in value.split():
+        lookup = re.sub(r"[^A-Za-z0-9]", "", word).casefold()
+        words.append(word.upper() if lookup in small_words else word[:1].upper() + word[1:])
+    return " ".join(words)
+
+
+def coerce_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.replace("\n", ";").split(";") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
 
 
 def compact_unique_strings(values: list[str], *, limit: int) -> list[str]:
@@ -1074,6 +2190,7 @@ def save_live_job_source_results(
     search_queries_used: list[str],
     provider: str,
     verify_urls: bool,
+    user_constraints: list[str] | None = None,
 ) -> JobDiscoverySaveResult:
     existing_jobs = {
         job.normalized_url: job
@@ -1096,6 +2213,16 @@ def save_live_job_source_results(
     seen_in_output: set[str] = set()
 
     for result in source_results:
+        excluded_term = result_matches_exclusion(result, user_constraints or [])
+        if excluded_term:
+            skipped.append(
+                skip_from_source_result(
+                    result,
+                    "excluded_by_user_constraints",
+                    f"Result matched excluded user constraint: {excluded_term}.",
+                )
+            )
+            continue
         normalized_url = normalize_job_url(result.job_url)
         if not normalized_url:
             skipped.append(skip_from_source_result(result, "missing_required_url", "Missing reliable job URL."))
@@ -1126,13 +2253,20 @@ def save_live_job_source_results(
                 company_name=result.company_name.strip(),
                 job_url=result.job_url,
                 canonical_url=verification.final_url or result.job_url,
-                apply_url=result.job_url,
+                apply_url=result.apply_url or result.job_url,
                 normalized_url=normalized_url,
                 source=result.source_provider,
                 source_provider=result.source_provider,
+                provider_type=result.provider_type,
                 source_result_id=result.source_result_id,
                 source_query=result.source_query,
                 source_url=result.source_url or result.job_url,
+                source_updated_at=result.source_updated_at,
+                provider_raw_metadata=result.raw_metadata or {},
+                company_website_url=result.company_website_url,
+                company_careers_url=result.company_careers_url,
+                ats_provider=result.ats_provider,
+                ats_board_token=result.ats_board_token,
                 provenance=result.provenance,
                 location=result.location,
                 remote_work_mode=result.remote_work_mode,
@@ -1162,6 +2296,7 @@ def save_live_job_source_results(
                 "provider": provider,
                 "provenance": result.provenance,
                 "source_result_id": result.source_result_id,
+                "provider_type": result.provider_type,
                 "url_verification_status": verification.status,
             }
             updated_existing_links.append(link)
@@ -1192,6 +2327,7 @@ def save_live_job_source_results(
                 "provider": provider,
                 "provenance": result.provenance,
                 "source_result_id": result.source_result_id,
+                "provider_type": result.provider_type,
                 "url_verification_status": verification.status,
             },
             added_at=now,
@@ -1228,11 +2364,20 @@ def source_result_verification(result: LiveJobSourceResult, *, verify_url: bool)
             final_url=result.job_url,
             posting_date=result.posting_date,
         )
-    return verify_job_url(
+    verification = verify_job_url(
         result.job_url,
         expected_title=None if result.provenance == "user_url" else result.title,
         expected_company=None if result.provenance == "user_url" else result.company_name,
     )
+    if result.provenance == "provider_result" and verification.status == "failed" and not verification.expired_or_closed:
+        return JobUrlVerificationResult(
+            status="provider_unverified",
+            checked_at=verification.checked_at,
+            summary=f"Provider-backed URL could not be fully fetched/verified: {verification.summary}",
+            final_url=verification.final_url or result.job_url,
+            posting_date=result.posting_date,
+        )
+    return verification
 
 
 def verify_job_url(job_url: str, *, expected_title: str | None = None, expected_company: str | None = None) -> JobUrlVerificationResult:
@@ -1252,7 +2397,7 @@ def verify_job_url(job_url: str, *, expected_title: str | None = None, expected_
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
             status = getattr(response, "status", 200)
-            final_url = response.geturl()
+            final_url = response.geturl() if hasattr(response, "geturl") else normalized_url
             content_type = response.headers.get("content-type", "")
             body = response.read(300_000)
     except urllib.error.HTTPError as error:
@@ -1394,6 +2539,8 @@ def source_result_to_job_record(result: LiveJobSourceResult, verification: JobUr
         title=result.title,
         companyName=result.company_name,
         jobUrl=result.job_url,
+        companyWebsiteUrl=result.company_website_url,
+        companyCareersUrl=result.company_careers_url,
         sourceUrls=[url for url in [result.source_url, result.job_url, *result.source_urls] if url],
         source=result.source_provider,
         location=result.location,
@@ -1421,9 +2568,16 @@ def update_job_posting_from_source_result(
     job_posting.apply_url = job_posting.apply_url or result.job_url
     job_posting.source = result.source_provider or job_posting.source or provider
     job_posting.source_provider = result.source_provider
+    job_posting.provider_type = result.provider_type
     job_posting.source_result_id = result.source_result_id or job_posting.source_result_id
     job_posting.source_query = result.source_query or job_posting.source_query
     job_posting.source_url = result.source_url or job_posting.source_url or result.job_url
+    job_posting.source_updated_at = result.source_updated_at or job_posting.source_updated_at
+    job_posting.provider_raw_metadata = result.raw_metadata or job_posting.provider_raw_metadata or {}
+    job_posting.company_website_url = result.company_website_url or job_posting.company_website_url
+    job_posting.company_careers_url = result.company_careers_url or job_posting.company_careers_url
+    job_posting.ats_provider = result.ats_provider or job_posting.ats_provider
+    job_posting.ats_board_token = result.ats_board_token or job_posting.ats_board_token
     job_posting.provenance = result.provenance
     job_posting.location = result.location or job_posting.location
     job_posting.remote_work_mode = result.remote_work_mode or job_posting.remote_work_mode
@@ -1479,7 +2633,7 @@ def resolve_job_discovery_mode(settings: Settings, *, source_name: str, user_url
         return "live_provider"
     if source_name == "mock" or settings.model_provider.strip().lower() == "mock":
         return "mock"
-    if source_name in LIVE_JOB_DISCOVERY_SOURCES:
+    if source_name in KNOWN_JOB_DISCOVERY_PROVIDERS:
         return "live_provider"
     if settings.job_discovery_search_grounding_enabled:
         return "grounded_model_only"
@@ -1500,6 +2654,7 @@ def build_user_url_source_results(urls: list[str]) -> list[LiveJobSourceResult]:
                 company_name=domain,
                 job_url=url,
                 source_provider="user_url",
+                provider_type="broad_search",
                 provenance="user_url",
                 source_url=url,
                 fit_summary="Saved from a user-provided job URL.",
@@ -1516,6 +2671,7 @@ def build_mock_live_job_source_results(search_queries: list[str]) -> list[LiveJo
             company_name="Civic AI Labs",
             job_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
             source_provider="mock_job_source",
+            provider_type="mock",
             source_result_id="mock-civic-ai-applied",
             source_query=query,
             source_url="https://civic-ai-labs.example.test/jobs/applied-ai-engineer",
@@ -1536,6 +2692,7 @@ def build_mock_live_job_source_results(search_queries: list[str]) -> list[LiveJo
             company_name="Open Data Works",
             job_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
             source_provider="mock_job_source",
+            provider_type="mock",
             source_result_id="mock-open-data-platform",
             source_query=query,
             source_url="https://open-data-works.example.test/jobs/ai-platform-engineer",
@@ -2075,9 +3232,15 @@ def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
         "apply_url": job.apply_url,
         "source": job.source,
         "source_provider": job.source_provider,
+        "provider_type": job.provider_type,
         "source_result_id": job.source_result_id,
         "source_query": job.source_query,
         "source_url": job.source_url,
+        "source_updated_at": job.source_updated_at.isoformat() if job.source_updated_at else None,
+        "company_website_url": job.company_website_url,
+        "company_careers_url": job.company_careers_url,
+        "ats_provider": job.ats_provider,
+        "ats_board_token": job.ats_board_token,
         "provenance": job.provenance,
         "url_verification_status": job.url_verification_status,
         "url_verification_checked_at": job.url_verification_checked_at.isoformat() if job.url_verification_checked_at else None,

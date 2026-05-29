@@ -168,6 +168,51 @@ JOBOPS_PROFILE_INTAKE_SAVE_RAW_TEXT=false
 
 Artifacts are written to `artifacts/profile-intake/<timestamp>_<run_id>/`. Enable raw text only for local debugging because `prompt.txt` and `raw-response.txt` may contain resume or chat content.
 
+## Job Discovery Providers
+
+Command-center job discovery saves only jobs backed by live provider results, verified fetched pages, user-provided URLs, or explicit mock results. Freeform model output is not allowed to create canonical job postings.
+
+Preferred provider configuration is a comma-separated list:
+
+```text
+JOBOPS_JOB_DISCOVERY_PROVIDERS=adzuna,greenhouse
+JOBOPS_JOB_DISCOVERY_ALLOW_PARTIAL_PROVIDER_FAILURES=false
+JOBOPS_JOB_DISCOVERY_RESULTS_PER_PROVIDER=20
+```
+
+`JOBOPS_JOB_DISCOVERY_SOURCE` is still accepted as a backward-compatible single-provider setting, but `JOBOPS_JOB_DISCOVERY_PROVIDERS` should be used for new environments. With no real provider configured outside mock mode, broad discovery returns `live_job_discovery_not_configured` and saves nothing.
+
+Mock provider:
+
+```text
+JOBOPS_LLM_PROVIDER=mock
+JOBOPS_JOB_DISCOVERY_PROVIDERS=mock
+```
+
+Adzuna broad-search provider:
+
+```text
+JOBOPS_JOB_DISCOVERY_PROVIDERS=adzuna
+JOBOPS_ADZUNA_APP_ID=your_adzuna_app_id
+JOBOPS_ADZUNA_APP_KEY=your_adzuna_app_key
+JOBOPS_ADZUNA_COUNTRY=us
+```
+
+Greenhouse ATS-board provider:
+
+```text
+JOBOPS_JOB_DISCOVERY_PROVIDERS=greenhouse
+JOBOPS_GREENHOUSE_BOARD_TOKENS=civicactions,exampleboard
+```
+
+Multiple providers can run in order:
+
+```text
+JOBOPS_JOB_DISCOVERY_PROVIDERS=adzuna,greenhouse
+```
+
+Job discovery diagnostics include configured providers, per-provider attempted/configured/result/error status, raw provider result count, deduped candidate count, verified URL count, saved count, duplicate count, skipped count, and grouped skipped reasons. Provider-backed URLs may be stored as `provider_unverified` when a trusted provider result exists but server-side fetch is blocked; obvious 404/410/dead links are skipped. Posting dates are stored only when supplied by the provider or fetched page.
+
 ## Database
 
 The API reads `.env`, then `.env.<APP_ENV>`, so local development can keep the Neon URL in `.env.dev`.

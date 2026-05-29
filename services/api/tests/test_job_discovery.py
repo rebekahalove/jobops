@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,11 +21,20 @@ from jobops_api.job_discovery import (
     JobDiscoveryRequest,
     JobDiscoverySaveResult,
     JobDiscoveryServiceResult,
+    JobSearchRequest,
+    ProviderSearchOutcome,
+    build_provider_job_search_queries,
     build_job_discovery_assistant_message,
     build_job_discovery_model_request,
+    build_adzuna_request,
     extract_grounded_urls,
     job_url_is_grounded,
     list_jobs,
+    normalize_adzuna_result,
+    normalize_greenhouse_result,
+    resolve_job_discovery_providers,
+    infer_job_search_role_queries,
+    run_configured_job_providers_until_new_job_threshold,
     run_job_discovery,
     save_discovered_jobs,
     save_live_job_source_results,
@@ -254,6 +265,444 @@ def test_job_discovery_request_passes_user_constraints_into_context() -> None:
     ).messages[1].content
     assert "do_not_return_job_urls" in saved_job_prompt
     assert "https://jobs.example.test/existing" in saved_job_prompt
+
+
+def test_provider_queries_use_explicit_targets_before_profile_inference() -> None:
+    queries = infer_job_search_role_queries(
+        "Find me jobs to apply to.",
+        target_context={"target_role_titles": ["AI Product Engineer", "Developer Tools Engineer"]},
+        private_profile_context={
+            "profile_basics": {
+                "headline": "Applied AI Systems Engineer | RAG, LLM Evaluation & Production AI Platforms",
+            },
+            "summary": "Strong fit for applied AI and data-intensive product roles.",
+        },
+    )
+
+    assert queries[:2] == ["AI Product Engineer", "Developer Tools Engineer"]
+    assert "Applied AI Engineer" not in queries
+
+
+def test_provider_queries_do_not_rewrite_profile_applied_ai_phrase_to_target_title() -> None:
+    request = JobDiscoveryRequest(latest_user_message="please find some jobs for me to apply to", candidate_profile_slug="rebekah-love")
+    queries = build_provider_job_search_queries(
+        request,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={
+            "profile_basics": {
+                "headline": "Applied AI Systems Engineer | RAG, LLM Evaluation & Production AI Platforms",
+                "summary": "Strong fit for applied AI and forward-deployed engineering.",
+            },
+            "targets": {},
+        },
+    )
+
+    assert queries[0] == "Applied AI Systems Engineer"
+    assert "Applied AI Engineer" not in queries
+
+
+def test_provider_registry_parses_multiple_providers() -> None:
+    providers = resolve_job_discovery_providers(("adzuna", "greenhouse", "ashby", "mock"))
+
+    assert [provider.provider_name for provider in providers] == ["adzuna", "greenhouse", "ashby", "mock"]
+    assert [provider.provider_type for provider in providers] == ["broad_search", "ats_board", "ats_board", "mock"]
+
+
+def test_provider_registry_rejects_unknown_provider() -> None:
+    try:
+        resolve_job_discovery_providers(("adzuna", "unknown-provider"))
+    except Exception as error:
+        assert "Unknown job discovery provider" in str(error)
+    else:
+        raise AssertionError("Expected unknown provider to fail")
+
+
+def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+        adzuna_country="us",
+    )
+    request = JobSearchRequest(
+        latest_user_message="Find remote applied AI jobs but avoid gambling",
+        search_queries=["Applied AI Engineer remote"],
+        results_per_provider=12,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        user_constraints=["gambling"],
+    )
+
+    url, params = build_adzuna_request(settings, request, query="Applied AI Engineer remote")
+    result = normalize_adzuna_result(
+        {
+            "id": "adz-1",
+            "title": "Applied AI Engineer",
+            "company": {"display_name": "Provider Co"},
+            "redirect_url": "https://www.adzuna.com/land/ad/1",
+            "location": {"display_name": "Remote US"},
+            "description": "<p>Build LLM tools</p>",
+            "created": "2026-05-20T10:30:00Z",
+            "salary_min": 150000,
+            "salary_max": 180000,
+            "contract_time": "full_time",
+        },
+        query="Applied AI Engineer remote",
+        settings=settings,
+    )
+
+    assert url == "https://api.adzuna.com/v1/api/jobs/us/search/1"
+    assert params["app_id"] == "app-id"
+    assert params["app_key"] == "app-key"
+    assert params["what"] == "Applied AI Engineer remote"
+    assert params["results_per_page"] == 12
+    assert params["what_exclude"] == "gambling"
+    assert result is not None
+    assert result.source_provider == "adzuna"
+    assert result.provider_type == "broad_search"
+    assert result.job_url == "https://www.adzuna.com/land/ad/1"
+    assert result.posting_date is not None
+    assert result.source_updated_at is not None
+
+
+def test_greenhouse_provider_normalizes_board_jobs() -> None:
+    request = JobSearchRequest(
+        latest_user_message="Find platform jobs",
+        search_queries=["AI Platform Engineer"],
+        results_per_provider=20,
+        current_saved_companies=[{"name": "Example Civic", "careers_url": "https://boards.greenhouse.io/examplecivic"}],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+    )
+
+    result = normalize_greenhouse_result(
+        {
+            "id": 123,
+            "title": "AI Platform Engineer",
+            "absolute_url": "https://boards.greenhouse.io/examplecivic/jobs/123",
+            "updated_at": "2026-05-21T12:00:00-04:00",
+            "location": {"name": "Remote"},
+            "content": "<p>Own retrieval and evaluation systems.</p>",
+        },
+        board_token="examplecivic",
+        request=request,
+    )
+
+    assert result is not None
+    assert result.source_provider == "greenhouse"
+    assert result.provider_type == "ats_board"
+    assert result.source_result_id == "examplecivic:123"
+    assert result.company_name == "Example Civic"
+    assert result.job_url == "https://boards.greenhouse.io/examplecivic/jobs/123"
+    assert result.description_excerpt == "Own retrieval and evaluation systems."
+    assert result.source_updated_at is not None
+    assert result.posting_date is None
+
+
+def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        if "adzuna" in url:
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "Applied AI Engineer",
+                            "company": {"display_name": "Example Civic"},
+                            "redirect_url": "https://jobs.example.com/shared",
+                            "location": {"display_name": "Remote"},
+                            "description": "Applied AI role",
+                        }
+                    ]
+                }
+            )
+        return FakeResponse(
+            {
+                "jobs": [
+                    {
+                        "id": 123,
+                        "title": "Applied AI Engineer",
+                        "absolute_url": "https://jobs.example.com/shared",
+                        "location": {"name": "Remote"},
+                        "content": "Applied AI role",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna", "greenhouse"),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+        greenhouse_board_tokens=("examplecivic",),
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["configuredProviders"] == ["adzuna", "greenhouse"]
+        assert result.body["result"]["providerResultCount"] == 2
+        assert result.body["result"]["candidateCountAfterDedupe"] == 1
+        assert result.body["result"]["savedCount"] == 1
+        assert len(result.body["result"]["providerDiagnostics"]) == 2
+        assert [item["providerName"] for item in result.body["result"]["providerDiagnostics"]] == ["adzuna", "greenhouse"]
+        saved_job = session.scalar(select(JobPosting))
+        assert saved_job is not None
+        assert saved_job.source_provider == "adzuna"
+
+
+def test_provider_orchestration_searches_each_provider_until_new_job_threshold(tmp_path: Path) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeProvider:
+        def __init__(self, name: str, provider_type: str) -> None:
+            self.provider_name = name
+            self.provider_type = provider_type
+
+        def is_configured(self, settings: Settings) -> bool:
+            return True
+
+        def search(self, request: JobSearchRequest, settings: Settings) -> ProviderSearchOutcome:
+            query = request.search_queries[0]
+            calls.append((self.provider_name, query))
+            slug = re.sub(r"[^a-z0-9]+", "-", f"{query}-{self.provider_name}".casefold()).strip("-")
+            return ProviderSearchOutcome(
+                results=[
+                    LiveJobSourceResult(
+                        title=f"{query} {self.provider_name}",
+                        company_name=f"{self.provider_name.title()} Co",
+                        job_url=f"https://jobs.example.test/{slug}",
+                        source_provider=self.provider_name,
+                        provider_type=self.provider_type,
+                        source_result_id=slug,
+                        source_query=query,
+                    )
+                ],
+                diagnostics=[],
+                errors=[],
+            )
+
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path, model_provider="gemini", job_discovery_source="none")
+    base_request = JobSearchRequest(
+        latest_user_message="Find jobs.",
+        search_queries=["Role One", "Role Two", "Role Three"],
+        results_per_provider=5,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+    )
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        outcome = run_configured_job_providers_until_new_job_threshold(
+            session,
+            providers=[FakeProvider("adzuna", "broad_search"), FakeProvider("greenhouse", "ats_board")],
+            base_request=base_request,
+            settings=settings,
+            candidate_profile=profile,
+            discovery_query="Find jobs.",
+            provider_names=("adzuna", "greenhouse"),
+            max_new_jobs=3,
+        )
+
+        assert len(outcome.save_result.saved_links) == 3
+        assert outcome.search_queries_used == ["Role One", "Role Two"]
+        assert calls == [
+            ("adzuna", "Role One"),
+            ("greenhouse", "Role One"),
+            ("adzuna", "Role Two"),
+        ]
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 3
+
+
+def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id=None,
+        adzuna_app_key=None,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 502
+        assert result.body["code"] == "live_job_discovery_provider_failed"
+        assert result.body["providerDiagnostics"][0]["configured"] is False
+        assert len(session.scalars(select(JobPosting)).all()) == 0
+
+
+def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"results": []}).encode("utf-8")
+
+    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["providerResultCount"] == 0
+        assert "Job discovery provider completed" in caplog.text
+        assert '"providerName": "adzuna"' in caplog.text
+        assert '"resultCount": 0' in caplog.text
+        assert "Job discovery provider summary" in caplog.text
+
+
+def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
+
+    def fake_urlopen(_request, timeout):
+        raise urllib.error.HTTPError(
+            url="https://api.adzuna.com/v1/api/jobs/us/search/1",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 502
+        assert result.body["code"] == "live_job_discovery_provider_failed"
+        assert "Job discovery provider request failed" in caplog.text
+        assert "Adzuna request failed with HTTP 401" in caplog.text
+        assert "Job discovery provider summary" in caplog.text
+
+
+def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": 123,
+                            "title": "AI Platform Engineer",
+                            "absolute_url": "https://boards.greenhouse.io/examplecivic/jobs/123",
+                            "location": {"name": "Remote"},
+                            "content": "AI platform role",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna", "greenhouse"),
+        allow_partial=True,
+        adzuna_app_id=None,
+        adzuna_app_key=None,
+        greenhouse_board_tokens=("examplecivic",),
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["savedCount"] == 1
+        assert result.body["result"]["providerDiagnostics"][0]["configured"] is False
+        assert result.body["result"]["providerDiagnostics"][1]["resultCount"] == 1
 
 
 def test_model_output_is_not_saved_even_when_search_grounding_mentions_url() -> None:
@@ -663,7 +1112,18 @@ def create_seeded_engine(*, include_second_profile: bool = False):
     return engine
 
 
-def make_settings(repo_root: Path, *, model_provider: str = "mock", job_discovery_source: str = "mock") -> Settings:
+def make_settings(
+    repo_root: Path,
+    *,
+    model_provider: str = "mock",
+    job_discovery_source: str = "mock",
+    job_discovery_providers: tuple[str, ...] = (),
+    allow_partial: bool = False,
+    adzuna_app_id: str | None = None,
+    adzuna_app_key: str | None = None,
+    adzuna_country: str = "us",
+    greenhouse_board_tokens: tuple[str, ...] = (),
+) -> Settings:
     return Settings(
         app_env="test",
         cheap_model="mock-cheap",
@@ -673,6 +1133,13 @@ def make_settings(repo_root: Path, *, model_provider: str = "mock", job_discover
         gemini_api_key=None,
         model_provider=model_provider,
         job_discovery_source=job_discovery_source,
+        job_discovery_providers=job_discovery_providers,
+        job_discovery_allow_partial_provider_failures=allow_partial,
+        job_discovery_results_per_provider=20,
+        adzuna_app_id=adzuna_app_id,
+        adzuna_app_key=adzuna_app_key,
+        adzuna_country=adzuna_country,
+        greenhouse_board_tokens=greenhouse_board_tokens,
         profile_intake_save_artifacts=False,
         profile_intake_save_raw_text=False,
         repo_root=repo_root,

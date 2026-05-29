@@ -23,6 +23,14 @@ class Settings:
     repo_root: Path
     job_discovery_search_grounding_enabled: bool = True
     job_discovery_source: str = "none"
+    job_discovery_providers: tuple[str, ...] = ()
+    job_discovery_allow_partial_provider_failures: bool = False
+    job_discovery_results_per_provider: int = 20
+    adzuna_app_id: str | None = None
+    adzuna_app_key: str | None = None
+    adzuna_country: str = "us"
+    greenhouse_board_tokens: tuple[str, ...] = ()
+    greenhouse_company_boards: dict[str, str] | None = None
     llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -52,8 +60,11 @@ def load_settings(repo_root: Path | None = None) -> Settings:
 
     model_provider = merged.get("JOBOPS_LLM_PROVIDER") or merged.get("MODEL_PROVIDER", "mock")
     job_discovery_source = merged.get("JOBOPS_JOB_DISCOVERY_SOURCE")
+    job_discovery_providers = parse_csv_list(merged.get("JOBOPS_JOB_DISCOVERY_PROVIDERS"))
     if not job_discovery_source:
         job_discovery_source = "mock" if model_provider.strip().lower() == "mock" else "none"
+    if not job_discovery_providers:
+        job_discovery_providers = (job_discovery_source.strip().lower(),) if job_discovery_source.strip().lower() not in {"", "none"} else ()
 
     return Settings(
         app_env=app_env,
@@ -72,6 +83,20 @@ def load_settings(repo_root: Path | None = None) -> Settings:
             default=True,
         ),
         job_discovery_source=job_discovery_source.strip().lower(),
+        job_discovery_providers=tuple(provider.strip().lower() for provider in job_discovery_providers if provider.strip()),
+        job_discovery_allow_partial_provider_failures=parse_bool(
+            merged.get("JOBOPS_JOB_DISCOVERY_ALLOW_PARTIAL_PROVIDER_FAILURES"),
+            default=False,
+        ),
+        job_discovery_results_per_provider=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_RESULTS_PER_PROVIDER"),
+            default=20,
+        ),
+        adzuna_app_id=merged.get("JOBOPS_ADZUNA_APP_ID"),
+        adzuna_app_key=merged.get("JOBOPS_ADZUNA_APP_KEY"),
+        adzuna_country=(merged.get("JOBOPS_ADZUNA_COUNTRY") or "us").strip().lower(),
+        greenhouse_board_tokens=parse_csv_list(merged.get("JOBOPS_GREENHOUSE_BOARD_TOKENS")),
+        greenhouse_company_boards=parse_json_object(merged.get("JOBOPS_GREENHOUSE_COMPANY_BOARDS")),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root,
         llm_request_timeout_seconds=parse_float(merged.get("JOBOPS_LLM_TIMEOUT_SECONDS"), default=60),
@@ -109,6 +134,17 @@ def parse_float(value: str | None, *, default: float) -> float:
     if value is None or not value.strip():
         return default
     return float(value)
+
+
+def parse_json_object(value: str | None) -> dict[str, str] | None:
+    if value is None or not value.strip():
+        return None
+    import json
+
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        return None
+    return {str(key): str(val) for key, val in parsed.items() if val is not None}
 
 
 def find_repo_root() -> Path:
