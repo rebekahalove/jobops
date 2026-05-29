@@ -1448,26 +1448,82 @@ def select_job_candidates_with_model(
     try:
         output = validate_job_candidate_selection_output(response.text)
     except JobDiscoveryValidationFailure as error:
+        first_issues = add_truncation_hint(error.issues, response.finish_reason)
+        failure_payload = {
+            "provider": response.provider,
+            "model": response.model,
+            "finishReason": response.finish_reason,
+            "validationIssues": first_issues[:8],
+            "responsePreview": preview_model_response(response.text)[:MODEL_RESPONSE_LOG_PREVIEW_CHARS],
+        }
         logger.warning(
-            "Job candidate selection model output validation failed.",
-            extra={
-                "provider": response.provider,
-                "finish_reason": response.finish_reason,
-                "validation_issues": error.issues[:8],
-                "response_preview": preview_model_response(response.text)[:MODEL_RESPONSE_LOG_PREVIEW_CHARS],
-            },
+            "Job candidate selection model output validation failed: %s",
+            json.dumps(failure_payload, sort_keys=True, default=str),
         )
-        return JobDiscoveryServiceResult(
-            body={
-                "ok": False,
-                "error": "Job candidate selection model returned invalid JSON. No jobs were saved.",
-                "code": "job_candidate_selection_validation_failed",
-                "validationIssues": error.issues[:8],
-                **model_request_debug_fields(settings, routed_request),
-                **model_response_debug_fields(settings, response),
-            },
-            status_code=502,
-        )
+        if validation_issues_indicate_truncation(first_issues):
+            retry_request = build_compact_job_candidate_selection_retry_request(routed_request)
+            try:
+                response = active_connector.generate(retry_request)
+                output = validate_job_candidate_selection_output(response.text)
+                routed_request = retry_request
+            except ModelProviderError as retry_error:
+                return JobDiscoveryServiceResult(
+                    body={
+                        "ok": False,
+                        "error": "Job candidate selection model retry failed after truncation. No jobs were saved.",
+                        "code": retry_error.code,
+                        **model_request_debug_fields(settings, retry_request),
+                    },
+                    status_code=502,
+                )
+            except JobDiscoveryValidationFailure as retry_validation_error:
+                retry_issues = add_truncation_hint(retry_validation_error.issues, response.finish_reason)
+                logger.warning(
+                    "Job candidate selection compact retry validation failed: %s",
+                    json.dumps(
+                        {
+                            "provider": response.provider,
+                            "model": response.model,
+                            "finishReason": response.finish_reason,
+                            "validationIssues": retry_issues[:8],
+                            "responsePreview": preview_model_response(response.text)[:MODEL_RESPONSE_LOG_PREVIEW_CHARS],
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ),
+                )
+                return JobDiscoveryServiceResult(
+                    body={
+                        "ok": False,
+                        "error": (
+                            "Job candidate selection model response was truncated before valid JSON completed. "
+                            "No jobs were saved."
+                            if validation_issues_indicate_truncation(retry_issues)
+                            else "Job candidate selection model returned invalid JSON. No jobs were saved."
+                        ),
+                        "code": (
+                            "job_candidate_selection_truncated"
+                            if validation_issues_indicate_truncation(retry_issues)
+                            else "job_candidate_selection_validation_failed"
+                        ),
+                        "validationIssues": retry_issues[:8],
+                        **model_request_debug_fields(settings, retry_request),
+                        **model_response_debug_fields(settings, response),
+                    },
+                    status_code=502,
+                )
+        else:
+            return JobDiscoveryServiceResult(
+                body={
+                    "ok": False,
+                    "error": "Job candidate selection model returned invalid JSON. No jobs were saved.",
+                    "code": "job_candidate_selection_validation_failed",
+                    "validationIssues": first_issues[:8],
+                    **model_request_debug_fields(settings, routed_request),
+                    **model_response_debug_fields(settings, response),
+                },
+                status_code=502,
+            )
 
     candidate_map = {entry.candidate_id: entry for entry in candidate_entries}
     selected_entries: list[CandidatePoolEntry] = []
@@ -1565,7 +1621,7 @@ def build_job_candidate_selection_model_request(
     return ModelRequest(
         task="job_candidate_selection",
         temperature=0.1,
-        max_output_tokens=8000,
+        max_output_tokens=16000,
         response_mime_type="application/json",
         search_grounding=False,
         metadata={
@@ -1596,6 +1652,11 @@ Rules:
 - Do not overvalue generic software roles unless they clearly involve AI, data, workflow automation, or platform work.
 - Distinguish an interesting company from a good role fit.
 - Return at most save_limit selected jobs.
+- Keep assistantMessage under 60 words.
+- Keep fitSummary under 140 characters.
+- Keep selectionReason under 100 characters.
+- concerns must be [] unless a short concern is essential.
+- skippedCandidateNotes may be [] and should include at most 5 items.
 
 Return exactly this JSON shape:
 {
@@ -1617,6 +1678,120 @@ Return exactly this JSON shape:
   ],
   "clarifyingQuestions": []
 }"""
+
+
+COMPACT_JOB_CANDIDATE_SELECTION_RETRY_INSTRUCTIONS = """
+
+Compact retry rules because the previous selection response was truncated:
+- Return valid JSON only.
+- Do not include markdown fences or text outside JSON.
+- selectedJobs must contain only candidateId, fitSummary, rank, selectionReason, concerns.
+- fitSummary max 90 characters.
+- selectionReason max 70 characters.
+- concerns must be [].
+- skippedCandidateNotes must be [].
+- assistantMessage max 25 words.
+- Select at most save_limit candidate IDs from candidate_jobs.
+"""
+
+
+def build_compact_job_candidate_selection_retry_request(request: ModelRequest) -> ModelRequest:
+    compact_messages: list[ModelMessage] = []
+    for message in request.messages:
+        if message.role == "system":
+            compact_messages.append(
+                ModelMessage(role="system", content=f"{message.content}{COMPACT_JOB_CANDIDATE_SELECTION_RETRY_INSTRUCTIONS}")
+            )
+        elif message.role == "user":
+            compact_messages.append(ModelMessage(role="user", content=compact_job_candidate_selection_payload(message.content)))
+        else:
+            compact_messages.append(message)
+    return replace(
+        request,
+        messages=compact_messages,
+        max_output_tokens=max(request.max_output_tokens, 16000),
+        metadata={**request.metadata, "compact_retry": True},
+    )
+
+
+def compact_job_candidate_selection_payload(raw_content: str) -> str:
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return raw_content
+    if not isinstance(payload, dict):
+        return raw_content
+    candidate_jobs = payload.get("candidate_jobs")
+    if isinstance(candidate_jobs, list):
+        payload["candidate_jobs"] = [
+            compact_candidate_for_selection_retry(candidate)
+            for candidate in candidate_jobs
+            if isinstance(candidate, dict)
+        ]
+    payload["current_saved_jobs"] = compact_saved_job_urls(payload.get("current_saved_jobs"))
+    payload["provider_diagnostics"] = compact_provider_diagnostics(payload.get("provider_diagnostics"))
+    payload["compact_retry"] = True
+    payload["output_constraints"] = {
+        "assistantMessageMaxWords": 25,
+        "fitSummaryMaxChars": 90,
+        "selectionReasonMaxChars": 70,
+        "skippedCandidateNotes": [],
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def compact_candidate_for_selection_retry(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidateId": candidate.get("candidateId"),
+        "roughScore": candidate.get("roughScore"),
+        "flags": candidate.get("flags"),
+        "providerName": candidate.get("providerName"),
+        "providerType": candidate.get("providerType"),
+        "title": candidate.get("title"),
+        "companyName": candidate.get("companyName"),
+        "location": candidate.get("location"),
+        "remoteWorkMode": candidate.get("remoteWorkMode"),
+        "employmentType": candidate.get("employmentType"),
+        "salaryText": candidate.get("salaryText"),
+        "postingDate": candidate.get("postingDate"),
+        "descriptionExcerpt": safe_log_preview(str(candidate.get("descriptionExcerpt") or ""), limit=180) or None,
+    }
+
+
+def compact_saved_job_urls(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for item in value[:50]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "title": item.get("title"),
+                "company_name": item.get("company_name"),
+                "normalized_url": item.get("normalized_url"),
+            }
+        )
+    return compact
+
+
+def compact_provider_diagnostics(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for item in value[:20]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "providerName": item.get("providerName"),
+                "providerType": item.get("providerType"),
+                "resultCount": item.get("resultCount"),
+                "rawResultCount": item.get("rawResultCount"),
+                "searchMode": item.get("searchMode"),
+            }
+        )
+    return compact
 
 
 def serialize_candidate_pool_entry(entry: CandidatePoolEntry) -> dict[str, Any]:

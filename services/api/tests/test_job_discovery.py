@@ -666,6 +666,151 @@ def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tm
         assert any(item["title"] == "AI Platform Engineer" for item in request_payload["candidate_jobs"])
 
 
+def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tmp_path: Path, caplog) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "AI Platform Engineer",
+                            "company": {"display_name": "Aligned AI"},
+                            "redirect_url": "https://jobs.example.test/ai-platform",
+                            "description": "RAG evaluation and AI workflow automation.",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    class BadJsonConnector:
+        def generate(self, request):
+            return ModelResponse(text="not json", provider="fake", model="fake-model", finish_reason="stop")
+
+    caplog.set_level(logging.WARNING, logger="jobops_api.job_discovery")
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=BadJsonConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 502
+        assert result.body["code"] == "job_candidate_selection_validation_failed"
+        assert "Job candidate selection model output validation failed:" in caplog.text
+        assert '"provider": "fake"' in caplog.text
+        assert '"responsePreview": "not json"' in caplog.text
+
+
+def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "AI Platform Engineer",
+                            "company": {"display_name": "Aligned AI"},
+                            "redirect_url": "https://jobs.example.test/ai-platform",
+                            "description": "RAG evaluation and AI workflow automation.",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    class TruncatingConnector:
+        def generate(self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                return ModelResponse(
+                    text='{"assistantMessage":"too long","selectedJobs":[{"candidateId":"J001"',
+                    provider="fake",
+                    model="fake-model",
+                    finish_reason="MAX_TOKENS",
+                )
+            payload = json.loads(request.messages[-1].content)
+            assert payload["compact_retry"] is True
+            assert "jobUrl" not in payload["candidate_jobs"][0]
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected one match.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": "J001",
+                                "fitSummary": "Strong AI platform fit.",
+                                "rank": 1,
+                                "selectionReason": "Matches RAG and platform work.",
+                                "concerns": [],
+                            }
+                        ],
+                        "skippedCandidateNotes": [],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+                finish_reason="stop",
+            )
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=TruncatingConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(calls) == 2
+        assert result.body["result"]["savedCount"] == 1
+        assert result.body["result"]["selectedCandidateIds"] == ["J001"]
+
+
 def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     settings = make_settings(
