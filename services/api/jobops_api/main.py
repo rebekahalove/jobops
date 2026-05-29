@@ -15,6 +15,7 @@ from .auth import AuthContext, require_auth_context
 from .company_discovery import router as companies_router
 from .command_center import router as command_center_router
 from .db.session import get_db_session
+from .job_discovery import router as jobs_router
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_review import router as profile_review_router
 from .profiles import (
@@ -60,6 +61,7 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(companies_router)
 app.include_router(command_center_router)
+app.include_router(jobs_router)
 app.include_router(profile_review_router)
 app.include_router(public_candidate_agent_router)
 app.include_router(public_jobops_router)

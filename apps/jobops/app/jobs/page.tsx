@@ -1,5 +1,6 @@
-import { PlaceholderPage } from "../../components/placeholder-page";
+import React from "react";
+import { JobsList } from "../../components/jobs-list";
 
 export default function JobsPage() {
-  return <PlaceholderPage workflowId="jobs" />;
+  return <JobsList />;
 }

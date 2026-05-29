@@ -23,6 +23,7 @@ const starterPrompts = [
   "I want to be an Applied AI Engineer.",
   "Update my profile with this project.",
   "Find companies in progressive politics hiring AI engineers.",
+  "Find me some jobs to apply to.",
   "Here's a job URL. Add it to my jobs list.",
   "Follow this company.",
   "Which jobs should I apply to today?",
@@ -258,6 +259,10 @@ export function AiCommandCenter({
       window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
     }
     if (nextActions.some((action) => action.type === "company_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    }
+    if (nextActions.some((action) => action.type === "job_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
   }
@@ -811,6 +816,7 @@ function safeMarkdownHref(rawHref: string) {
 function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {
   const modelRequest = getModelRequestDebugPayload(action.resultPayload);
   const modelResponse = getModelResponseDebugPayload(action.resultPayload);
+  const jobDiscoveryDiagnostics = getJobDiscoveryDiagnostics(action.resultPayload);
 
   return (
     <article className="agent-action-card">
@@ -823,6 +829,16 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
         <span>{action.type}</span>
         {action.targetWorkspace ? <span>{formatWorkspaceLabel(action.targetWorkspace)}</span> : null}
       </div>
+      {jobDiscoveryDiagnostics ? (
+        <dl className="agent-action-diagnostics" aria-label="Job discovery diagnostics">
+          {jobDiscoveryDiagnostics.map((item) => (
+            <div key={item.label}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {modelRequest ? (
         <details className="model-request-debug">
           <summary>Sent to model</summary>
@@ -846,6 +862,45 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
       )}
     </article>
   );
+}
+
+function getJobDiscoveryDiagnostics(resultPayload: unknown) {
+  if (!resultPayload || typeof resultPayload !== "object" || Array.isArray(resultPayload)) {
+    return null;
+  }
+  const payload = resultPayload as Record<string, unknown>;
+  if (!("jobDiscoveryMode" in payload || "providerResultCount" in payload || "skippedReasons" in payload)) {
+    return null;
+  }
+  const diagnostics = [
+    textDiagnostic("Mode", payload.jobDiscoveryMode),
+    textDiagnostic("Source", payload.sourceName ?? payload.providerName),
+    numberDiagnostic("Provider results", payload.providerResultCount),
+    numberDiagnostic("Verified URLs", payload.verifiedUrlCount ?? payload.verifiedCount),
+    numberDiagnostic("Saved", payload.savedJobCount ?? payload.savedCount),
+    numberDiagnostic("Duplicates", payload.duplicateCount),
+    skippedReasonsDiagnostic(payload.skippedReasons)
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  return diagnostics.length ? diagnostics : null;
+}
+
+function textDiagnostic(label: string, value: unknown) {
+  return typeof value === "string" && value ? { label, value } : null;
+}
+
+function numberDiagnostic(label: string, value: unknown) {
+  return typeof value === "number" ? { label, value: String(value) } : null;
+}
+
+function skippedReasonsDiagnostic(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const summary = Object.entries(value as Record<string, unknown>)
+    .filter(([, count]) => typeof count === "number")
+    .map(([reason, count]) => `${reason}: ${count}`)
+    .join("; ");
+  return summary ? { label: "Skipped", value: summary } : null;
 }
 
 function getModelRequestDebugPayload(resultPayload: unknown) {

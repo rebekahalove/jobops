@@ -1,0 +1,1573 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..auth import AuthContext, require_auth_context
+from ..company_discovery import (
+    build_candidate_target_context,
+    domain_from_url,
+    normalize_company_name,
+    serialize_current_saved_companies,
+)
+from ..db.models import CandidateProfile, CandidateSavedJob, JobPosting, TargetCompany
+from ..db.session import get_db_session
+from ..model_connector import ModelConnector
+from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
+from ..security import require_internal_api_key
+from ..settings import Settings, load_settings
+from .models import (
+    CandidatePoolBuildResult,
+    CandidatePoolEntry,
+    JobCandidateSelectionResult,
+    JobDiscoveryProvider,
+    JobDiscoveryRecord,
+    JobDiscoveryRequest,
+    JobDiscoverySaveResult,
+    JobDiscoveryServiceResult,
+    JobProviderConfigurationError,
+    JobProviderRuntimeError,
+    JobSearchRequest,
+    JobUrlVerificationResult,
+    LiveJobSourceResult,
+    ProviderDiagnostic,
+    ProviderSearchOutcome,
+    SavedJobResponse,
+    SkippedJobResult,
+    SkipReasonCode,
+)
+from .selection import (
+    apply_model_selection_to_source_result,
+    build_empty_job_candidate_selection_result,
+    select_job_candidates_with_model,
+    selected_selection_pairs,
+)
+from .provider_utils import (
+    clean_text_value,
+    compact_unique_strings,
+    normalize_exclusion_terms,
+    normalize_text_for_constraint_matching,
+    safe_log_preview,
+)
+from .url_verification import source_result_verification
+
+
+JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX = "J"
+
+
+router = APIRouter(prefix="/v1", tags=["jobs"], dependencies=[Depends(require_internal_api_key)])
+logger = logging.getLogger(__name__)
+
+
+
+@router.get("/jobs", response_model=list[SavedJobResponse])
+def list_jobs(
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> list[dict[str, Any]]:
+    statement = (
+        select(CandidateSavedJob)
+        .where(CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id)
+        .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
+    )
+    return [serialize_saved_job(link) for link in session.scalars(statement)]
+
+
+def run_job_discovery(
+    request: JobDiscoveryRequest,
+    *,
+    connector: ModelConnector | None = None,
+    db_session: Session,
+    settings: Settings | None = None,
+    candidate_profile: CandidateProfile | None = None,
+) -> JobDiscoveryServiceResult:
+    active_settings = settings or load_settings()
+    candidate_profile = candidate_profile or get_candidate_profile_by_slug(db_session, request.candidate_profile_slug)
+    if candidate_profile is None:
+        return JobDiscoveryServiceResult(
+            body={"ok": False, "error": "Candidate profile not found.", "code": "candidate_profile_not_found"},
+            status_code=404,
+        )
+
+    current_saved_jobs = serialize_current_saved_jobs(db_session, candidate_profile.id)
+    current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
+    target_context = build_candidate_target_context(db_session, candidate_profile)
+    private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
+    return run_live_source_job_discovery(
+        request,
+        connector=connector,
+        db_session=db_session,
+        settings=active_settings,
+        candidate_profile=candidate_profile,
+        current_saved_jobs=current_saved_jobs,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+
+def run_live_source_job_discovery(
+    request: JobDiscoveryRequest,
+    *,
+    connector: ModelConnector | None = None,
+    db_session: Session,
+    settings: Settings,
+    candidate_profile: CandidateProfile,
+    current_saved_jobs: list[dict[str, Any]],
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> JobDiscoveryServiceResult:
+    fresh_search_queries = build_provider_job_search_queries(
+        request,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    user_urls = extract_http_urls(request.latest_user_message)
+    provider_names = configured_job_provider_names(settings)
+    search_request = JobSearchRequest(
+        latest_user_message=request.latest_user_message,
+        search_queries=fresh_search_queries,
+        results_per_provider=settings.job_discovery_results_per_provider,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        user_constraints=infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
+    )
+    search_queries_used: list[str] = fresh_search_queries
+    provider_diagnostics: list[ProviderDiagnostic] = []
+    provider_errors: list[str] = []
+    save_result: JobDiscoverySaveResult | None = None
+
+    log_job_discovery_provider_plan(
+        settings,
+        provider_names=provider_names,
+        user_url_count=len(user_urls),
+        search_queries=fresh_search_queries,
+        saved_job_count=len(current_saved_jobs),
+        saved_company_count=len(current_saved_companies),
+    )
+
+    if user_urls:
+        source_results = build_user_url_source_results(user_urls)
+        provider_result_count = len(source_results)
+        job_discovery_mode = "live_provider"
+        provider_names = ("user_url",)
+        provider_diagnostics = [
+            ProviderDiagnostic(
+                provider_name="user_url",
+                provider_type="broad_search",
+                configured=True,
+                attempted=True,
+                result_count=len(source_results),
+                query="user-provided-url",
+            )
+        ]
+    elif not provider_names:
+        mode = "unavailable"
+        payload = {
+            "jobDiscoveryMode": mode,
+            "configuredProviders": [],
+            "searchQueryCount": len(fresh_search_queries),
+            "userUrlCount": 0,
+        }
+        logger.warning(
+            "Job discovery live providers are not configured: %s",
+            json.dumps(payload, sort_keys=True),
+        )
+        return live_job_discovery_unconfigured_response(
+            settings,
+            mode=mode,
+            provider_names=(),
+            search_queries=fresh_search_queries,
+        )
+    else:
+        try:
+            providers = resolve_job_discovery_providers(provider_names)
+        except JobProviderConfigurationError as error:
+            payload = {
+                "configuredProviders": list(provider_names),
+                "error": safe_log_preview(str(error), limit=240),
+            }
+            logger.warning(
+                "Job discovery provider configuration failed: %s",
+                json.dumps(payload, sort_keys=True),
+            )
+            return live_job_discovery_unconfigured_response(
+                settings,
+                mode="unavailable",
+                provider_names=provider_names,
+                search_queries=fresh_search_queries,
+                detail=str(error),
+            )
+        job_discovery_mode = "mock" if provider_names == ("mock",) else "live_provider"
+        search_outcome = run_configured_job_providers(providers, search_request, settings)
+        provider_diagnostics = search_outcome.diagnostics
+        provider_errors = search_outcome.errors
+        if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
+            log_job_discovery_provider_summary(
+                settings,
+                provider_names=provider_names,
+                diagnostics=provider_diagnostics,
+                provider_result_count=len(search_outcome.results),
+                candidate_count_after_dedupe=0,
+                saved_count=0,
+                skipped_count=0,
+                errors=provider_errors,
+                level=logging.WARNING,
+            )
+            return live_job_discovery_provider_error_response(
+                settings,
+                provider_names=provider_names,
+                search_queries=fresh_search_queries,
+                provider_diagnostics=provider_diagnostics,
+                errors=provider_errors,
+            )
+        provider_result_count = len(search_outcome.results)
+        source_results = search_outcome.results
+
+    selection_result: JobCandidateSelectionResult | None = None
+    candidate_pool = build_candidate_pool(
+        source_results,
+        current_saved_jobs=current_saved_jobs,
+        user_constraints=search_request.user_constraints,
+        save_limit=settings.job_discovery_save_limit,
+        candidate_pool_limit=settings.job_discovery_candidate_pool_limit,
+        company_cap=settings.job_discovery_company_candidate_cap,
+        relevance_terms=build_job_relevance_terms(
+            request.latest_user_message,
+            search_queries=fresh_search_queries,
+            target_context=target_context,
+            private_profile_context=private_profile_context,
+        ),
+    )
+    preselection_skipped = candidate_pool.skipped
+    source_results = [entry.result for entry in candidate_pool.entries]
+
+    if save_result is None and provider_names == ("user_url",):
+        save_result = save_live_job_source_results(
+            db_session,
+            candidate_profile=candidate_profile,
+            discovery_query=request.latest_user_message,
+            source_results=source_results,
+            search_queries_used=search_queries_used,
+            provider="user_url",
+            verify_urls=True,
+            user_constraints=search_request.user_constraints,
+        )
+    elif save_result is None:
+        if candidate_pool.entries:
+            selection_result_or_error = select_job_candidates_with_model(
+                request,
+                connector=connector,
+                settings=settings,
+                candidate_entries=candidate_pool.entries,
+                current_saved_jobs=current_saved_jobs,
+                current_saved_companies=current_saved_companies,
+                target_context=target_context,
+                private_profile_context=private_profile_context,
+                provider_diagnostics=provider_diagnostics,
+                user_constraints=search_request.user_constraints,
+                save_limit=settings.job_discovery_save_limit,
+            )
+            if isinstance(selection_result_or_error, JobDiscoveryServiceResult):
+                return selection_result_or_error
+            selection_result = selection_result_or_error
+            selected_results = [
+                apply_model_selection_to_source_result(entry.result, selection)
+                for entry, selection in selected_selection_pairs(selection_result)
+            ]
+        else:
+            selection_result = build_empty_job_candidate_selection_result(settings)
+            selected_results = []
+        save_result = save_live_job_source_results(
+            db_session,
+            candidate_profile=candidate_profile,
+            discovery_query=request.latest_user_message,
+            source_results=selected_results,
+            search_queries_used=search_queries_used,
+            provider=",".join(provider_names) if provider_names else job_discovery_mode,
+            verify_urls=True,
+            user_constraints=search_request.user_constraints,
+        )
+    db_session.commit()
+
+    saved_jobs = [serialize_saved_job(link) for link in save_result.saved_links]
+    updated_saved_jobs = [serialize_saved_job(link) for link in save_result.updated_existing_links]
+    all_skipped_results = [*preselection_skipped, *save_result.skipped]
+    skipped_jobs = [item.model_dump(by_alias=True) for item in all_skipped_results]
+    skipped_counts = skipped_reason_code_counts(all_skipped_results)
+    verified_count = sum(
+        1
+        for link in [*save_result.saved_links, *save_result.updated_existing_links]
+        if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
+    )
+    result_payload = {
+        "assistantMessage": build_selected_job_discovery_assistant_message(
+            selection_result,
+            save_result,
+            source_results,
+            all_skipped_results,
+        ),
+        "jobs": saved_jobs,
+        "updatedExistingJobs": updated_saved_jobs,
+        "discoveredCount": len(source_results),
+        "verifiedCount": verified_count,
+        "savedCount": len(saved_jobs),
+        "updatedExistingCount": len(updated_saved_jobs),
+        "createdGlobalJobCount": len(save_result.created_jobs),
+        "updatedGlobalJobCount": len(save_result.updated_jobs),
+        "duplicateCount": skipped_counts.get("duplicate_for_user", 0) + skipped_counts.get("duplicate_global_job", 0),
+        "skippedCount": len(skipped_jobs),
+        "skippedJobCount": len(skipped_jobs),
+        "skippedJobs": skipped_jobs,
+        "skippedReasons": skipped_counts,
+        "jobDiscoveryMode": job_discovery_mode,
+        "configuredProviders": list(provider_names),
+        "providerDiagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
+        "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+        "providerName": ",".join(provider_names) if provider_names else job_discovery_mode,
+        "sourceName": ",".join(provider_names) if provider_names else job_discovery_mode,
+        "searchQueriesUsed": search_queries_used,
+        "providerResultCount": provider_result_count,
+        "providerRawResultCount": provider_result_count,
+        "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
+        "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
+        "candidateCountAfterHardExclusionFilter": candidate_pool.count_after_hard_exclusion_filter,
+        "candidateCountAfterDiversityCap": candidate_pool.count_after_diversity_cap,
+        "candidateCountSentToModel": len(candidate_pool.entries) if selection_result is not None else 0,
+        "modelSelectedCount": len(selection_result.selected_entries) if selection_result is not None else len(saved_jobs),
+        "selectedCandidateIds": [entry.candidate_id for entry in selection_result.selected_entries] if selection_result is not None else [],
+        "invalidSelectedCandidateIds": selection_result.invalid_candidate_ids if selection_result is not None else [],
+        "savedJobIds": [job["id"] for job in saved_jobs],
+        "trimmedByCompanyCapCount": candidate_pool.trimmed_by_company_cap_count,
+        "trimmedByProviderCapCount": candidate_pool.trimmed_by_provider_cap_count,
+        "verifiedUrlCount": verified_count,
+        "savedJobCount": len(saved_jobs),
+        "currentSavedJobCount": len(current_saved_jobs),
+        "excludedJobUrlCount": len(current_saved_job_urls(current_saved_jobs)),
+        "currentSavedCompanyCount": len(current_saved_companies),
+    }
+    summary_level = logging.INFO
+    if provider_errors or (provider_names and provider_result_count == 0):
+        summary_level = logging.WARNING
+    log_job_discovery_provider_summary(
+        settings,
+        provider_names=provider_names,
+        diagnostics=provider_diagnostics,
+        provider_result_count=provider_result_count,
+        candidate_count_after_dedupe=len(source_results),
+        saved_count=len(saved_jobs),
+        skipped_count=len(skipped_jobs),
+        errors=provider_errors,
+        level=summary_level,
+    )
+    return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
+
+
+def live_job_discovery_unconfigured_response(
+    settings: Settings,
+    *,
+    mode: str,
+    provider_names: tuple[str, ...],
+    search_queries: list[str],
+    detail: str | None = None,
+) -> JobDiscoveryServiceResult:
+    provider_name = ",".join(provider_names) if provider_names else "none"
+    body = {
+        "ok": False,
+        "error": "Live job discovery is not configured. No jobs were saved.",
+        "code": "live_job_discovery_not_configured",
+        "jobDiscoveryMode": mode,
+        "configuredProviders": list(provider_names),
+        "providerDiagnostics": [],
+        "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+        "providerName": provider_name,
+        "sourceName": provider_name,
+        "searchQueriesUsed": search_queries,
+        "providerResultCount": 0,
+        "candidateCountAfterDedupe": 0,
+        "modelSelectedCount": 0,
+        "verifiedUrlCount": 0,
+        "savedJobCount": 0,
+        "skippedReasons": {},
+    }
+    if detail and settings.app_env.lower() not in {"prod", "production"}:
+        body["debugDetail"] = detail
+    return JobDiscoveryServiceResult(body=body, status_code=503)
+
+
+def live_job_discovery_provider_error_response(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    search_queries: list[str],
+    provider_diagnostics: list[ProviderDiagnostic],
+    errors: list[str],
+) -> JobDiscoveryServiceResult:
+    return JobDiscoveryServiceResult(
+        body={
+            "ok": False,
+            "error": "Live job discovery provider failed. No jobs were saved.",
+            "code": "live_job_discovery_provider_failed",
+            "jobDiscoveryMode": "live_provider",
+            "configuredProviders": list(provider_names),
+            "providerDiagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
+            "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
+            "providerName": ",".join(provider_names),
+            "sourceName": ",".join(provider_names),
+            "searchQueriesUsed": search_queries,
+            "providerResultCount": 0,
+            "candidateCountAfterDedupe": 0,
+            "modelSelectedCount": 0,
+            "verifiedUrlCount": 0,
+            "savedJobCount": 0,
+            "skippedReasons": {},
+            "providerErrors": errors if settings.app_env.lower() not in {"prod", "production"} else [],
+        },
+        status_code=502,
+    )
+
+
+def log_job_discovery_provider_plan(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    user_url_count: int,
+    search_queries: list[str],
+    saved_job_count: int,
+    saved_company_count: int,
+) -> None:
+    payload: dict[str, Any] = {
+        "configuredProviders": list(provider_names),
+        "userUrlCount": user_url_count,
+        "searchQueryCount": len(search_queries),
+        "savedJobCount": saved_job_count,
+        "savedCompanyCount": saved_company_count,
+    }
+    if should_log_job_discovery_debug(settings):
+        payload["searchQueryPreviews"] = [safe_log_preview(query, limit=160) for query in search_queries[:5]]
+    logger.info("Job discovery provider plan: %s", json.dumps(payload, sort_keys=True))
+
+
+def log_job_discovery_provider_summary(
+    settings: Settings,
+    *,
+    provider_names: tuple[str, ...],
+    diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_count_after_dedupe: int,
+    saved_count: int,
+    skipped_count: int,
+    errors: list[str],
+    level: int = logging.INFO,
+) -> None:
+    payload: dict[str, Any] = {
+        "configuredProviders": list(provider_names),
+        "providerResultCount": provider_result_count,
+        "candidateCountAfterDedupe": candidate_count_after_dedupe,
+        "savedCount": saved_count,
+        "skippedCount": skipped_count,
+        "providerDiagnostics": [
+            serialize_provider_diagnostic_for_log(settings, diagnostic) for diagnostic in diagnostics
+        ],
+    }
+    if errors:
+        if should_log_job_discovery_debug(settings):
+            payload["providerErrors"] = [safe_log_preview(error, limit=240) for error in errors[:8]]
+        else:
+            payload["providerErrorCount"] = len(errors)
+    logger.log(level, "Job discovery provider summary: %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: ProviderDiagnostic) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "providerName": diagnostic.provider_name,
+        "providerType": diagnostic.provider_type,
+        "configured": diagnostic.configured,
+        "attempted": diagnostic.attempted,
+        "resultCount": diagnostic.result_count,
+    }
+    if diagnostic.raw_result_count is not None:
+        payload["rawResultCount"] = diagnostic.raw_result_count
+    if diagnostic.search_mode:
+        payload["searchMode"] = diagnostic.search_mode
+    if diagnostic.board_token:
+        payload["boardToken"] = diagnostic.board_token
+    if diagnostic.query and should_log_job_discovery_debug(settings):
+        payload["queryPreview"] = safe_log_preview(diagnostic.query, limit=160)
+    if diagnostic.error:
+        payload["error"] = (
+            safe_log_preview(diagnostic.error, limit=240)
+            if should_log_job_discovery_debug(settings)
+            else "present"
+        )
+    return payload
+
+
+def should_log_job_discovery_debug(settings: Settings) -> bool:
+    return settings.app_env.lower() not in {"prod", "production"}
+
+
+def configured_job_provider_names(settings: Settings) -> tuple[str, ...]:
+    providers = tuple(compact_unique_strings(list(settings.job_discovery_providers), limit=20))
+    if providers:
+        return providers
+    source = settings.job_discovery_source.strip().lower()
+    if source and source not in {"none", "disabled"}:
+        return (source,)
+    return ("mock",) if settings.model_provider.strip().lower() == "mock" else ()
+
+
+def resolve_job_discovery_providers(provider_names: tuple[str, ...]) -> list[JobDiscoveryProvider]:
+    from .providers.registry import resolve_job_discovery_providers as resolve_from_registry
+
+    return resolve_from_registry(provider_names)
+
+
+def run_configured_job_providers(
+    providers: list[JobDiscoveryProvider],
+    request: JobSearchRequest,
+    settings: Settings,
+) -> ProviderSearchOutcome:
+    results: list[LiveJobSourceResult] = []
+    diagnostics: list[ProviderDiagnostic] = []
+    errors: list[str] = []
+    for provider in providers:
+        configured = provider.is_configured(settings)
+        if not configured:
+            message = f"Job discovery provider {provider.provider_name} is not configured."
+            logger.warning(
+                "Job discovery provider is not configured: %s",
+                json.dumps(
+                    {
+                        "providerName": provider.provider_name,
+                        "providerType": provider.provider_type,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=provider.provider_name,
+                    provider_type=provider.provider_type,
+                    configured=False,
+                    attempted=False,
+                    error=message,
+                )
+            )
+            errors.append(message)
+            continue
+        try:
+            outcome = provider.search(request, settings)
+        except JobProviderRuntimeError as error:
+            logger.warning(
+                "Job discovery provider request failed: %s",
+                json.dumps(
+                    {
+                        "providerName": provider.provider_name,
+                        "providerType": provider.provider_type,
+                        "error": safe_log_preview(str(error), limit=240),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=provider.provider_name,
+                    provider_type=provider.provider_type,
+                    configured=True,
+                    attempted=True,
+                    error=str(error),
+                    query=request.search_queries[0] if request.search_queries else None,
+                )
+            )
+            errors.append(str(error))
+            continue
+        logger.info(
+            "Job discovery provider completed: %s",
+            json.dumps(
+                {
+                    "providerName": provider.provider_name,
+                    "providerType": provider.provider_type,
+                    "resultCount": len(outcome.results),
+                    "diagnosticCount": len(outcome.diagnostics),
+                    "errorCount": len(outcome.errors),
+                },
+                sort_keys=True,
+            ),
+        )
+        results.extend(outcome.results)
+        diagnostics.extend(outcome.diagnostics)
+        errors.extend(outcome.errors)
+    return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+def build_candidate_pool(
+    source_results: list[LiveJobSourceResult],
+    *,
+    current_saved_jobs: list[dict[str, Any]],
+    user_constraints: list[str],
+    save_limit: int,
+    candidate_pool_limit: int,
+    company_cap: int,
+    relevance_terms: list[str],
+) -> CandidatePoolBuildResult:
+    normalized_results = [result for result in source_results if normalize_job_url(result.job_url)]
+    deduped_results = dedupe_provider_results(normalized_results)
+    saved_urls = {url.casefold() for url in current_saved_job_urls(current_saved_jobs)}
+    skipped: list[SkippedJobResult] = []
+    hard_filtered: list[LiveJobSourceResult] = []
+    for result in deduped_results:
+        normalized_url = normalize_job_url(result.job_url)
+        if normalized_url and normalized_url.casefold() in saved_urls:
+            skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
+            continue
+        excluded_term = result_matches_exclusion(result, user_constraints)
+        if excluded_term:
+            skipped.append(
+                skip_from_source_result(
+                    result,
+                    "excluded_by_user_constraints",
+                    f"Result matched excluded user constraint: {excluded_term}.",
+                )
+            )
+            continue
+        hard_filtered.append(result)
+
+    scored = sorted(
+        hard_filtered,
+        key=lambda result: rough_candidate_score(result, user_constraints, relevance_terms),
+        reverse=True,
+    )
+    diverse_results: list[LiveJobSourceResult] = []
+    company_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
+    trimmed_by_company = 0
+    trimmed_by_provider = 0
+    provider_cap = max(candidate_pool_limit // 2, save_limit * 2, 10)
+    for result in scored:
+        company_key = normalize_company_name(result.company_name) or result.company_name.casefold()
+        provider_key = result.source_provider.casefold()
+        if company_cap > 0 and company_counts.get(company_key, 0) >= company_cap:
+            trimmed_by_company += 1
+            continue
+        if provider_cap > 0 and provider_counts.get(provider_key, 0) >= provider_cap:
+            trimmed_by_provider += 1
+            continue
+        diverse_results.append(result)
+        company_counts[company_key] = company_counts.get(company_key, 0) + 1
+        provider_counts[provider_key] = provider_counts.get(provider_key, 0) + 1
+        if len(diverse_results) >= candidate_pool_limit:
+            break
+
+    entries = [
+        CandidatePoolEntry(
+            candidate_id=f"{JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX}{index:03d}",
+            result=result,
+            rough_score=rough_candidate_score(result, user_constraints, relevance_terms),
+            flags=tuple(candidate_flags(result, user_constraints)),
+        )
+        for index, result in enumerate(diverse_results, start=1)
+    ]
+    return CandidatePoolBuildResult(
+        entries=entries,
+        skipped=skipped,
+        count_after_provider_normalization=len(normalized_results),
+        count_after_dedupe=len(deduped_results),
+        count_after_hard_exclusion_filter=len(hard_filtered),
+        count_after_diversity_cap=len(entries),
+        trimmed_by_company_cap_count=trimmed_by_company,
+        trimmed_by_provider_cap_count=trimmed_by_provider,
+    )
+
+
+def rough_candidate_score(result: LiveJobSourceResult, user_constraints: list[str], relevance_terms: list[str]) -> int:
+    text = " ".join(
+        part
+        for part in [
+            result.title,
+            result.company_name,
+            result.description_excerpt or "",
+            result.location or "",
+        ]
+        if part
+    ).casefold()
+    title_text = result.title.casefold()
+    description_text = (result.description_excerpt or "").casefold()
+    score = 0
+    for term in relevance_terms[:20]:
+        normalized_term = term.casefold()
+        if not normalized_term:
+            continue
+        if normalized_term in title_text:
+            score += 8
+        elif normalized_term in description_text:
+            score += 3
+        term_tokens = meaningful_relevance_tokens(normalized_term)
+        if term_tokens:
+            title_matches = sum(1 for token in term_tokens if token in title_text)
+            text_matches = sum(1 for token in term_tokens if token in text)
+            score += min(title_matches * 3, 9)
+            score += min(text_matches, 6)
+    source_query_tokens = meaningful_relevance_tokens(result.source_query or "")
+    if source_query_tokens:
+        score += min(sum(1 for token in source_query_tokens if token in text), 6)
+    if result.remote_work_mode == "remote":
+        score += 2
+    if result.posting_date:
+        score += 1
+    if result_matches_exclusion(result, user_constraints):
+        score -= 100
+    return score
+
+
+def candidate_flags(result: LiveJobSourceResult, user_constraints: list[str]) -> list[str]:
+    flags: list[str] = []
+    if result_matches_exclusion(result, user_constraints):
+        flags.append("matches_user_exclusion")
+    if not result.posting_date:
+        flags.append("posting_date_unknown")
+    if result.provider_type == "ats_board":
+        flags.append("company_board")
+    return flags
+
+
+
+
+def dedupe_provider_results(results: list[LiveJobSourceResult]) -> list[LiveJobSourceResult]:
+    deduped: list[LiveJobSourceResult] = []
+    seen_urls: set[str] = set()
+    seen_provider_ids: set[tuple[str, str]] = set()
+    for result in results:
+        normalized_url = normalize_job_url(result.job_url)
+        provider_key = (result.source_provider, result.source_result_id or "")
+        if normalized_url and normalized_url in seen_urls:
+            continue
+        if provider_key[1] and provider_key in seen_provider_ids:
+            continue
+        if normalized_url:
+            seen_urls.add(normalized_url)
+        if provider_key[1]:
+            seen_provider_ids.add(provider_key)
+        deduped.append(result)
+    return deduped
+
+
+EXPLICIT_EXCLUSION_RE = re.compile(
+    r"\b(?:avoid|exclude|excluding|without|dont\s+want|do\s+not\s+want|don't\s+want|no)\b(?P<body>[^.?!\n]+)",
+    flags=re.IGNORECASE,
+)
+
+
+def infer_user_constraint_terms(latest_user_message: str, target_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[str]:
+    constraints: list[str] = []
+    constraints.extend(extract_explicit_exclusion_terms(latest_user_message))
+    constraints.extend(extract_structured_constraint_terms(target_context))
+    constraints.extend(extract_structured_constraint_terms(private_profile_context))
+    return compact_unique_strings(constraints, limit=30)
+
+
+def extract_explicit_exclusion_terms(value: object) -> list[str]:
+    text = clean_text_value(value)
+    if not text:
+        return []
+    terms: list[str] = []
+    for match in EXPLICIT_EXCLUSION_RE.finditer(text):
+        terms.extend(normalize_exclusion_terms(match.group("body")))
+    return terms
+
+
+def extract_structured_constraint_terms(value: object) -> list[str]:
+    terms: list[str] = []
+    for item in iter_structured_constraint_values(value):
+        if isinstance(item, str):
+            terms.extend(extract_explicit_exclusion_terms(item) or normalize_exclusion_terms(item))
+        elif isinstance(item, (list, tuple, set)):
+            for nested in item:
+                if isinstance(nested, str):
+                    terms.extend(extract_explicit_exclusion_terms(nested) or normalize_exclusion_terms(nested))
+                else:
+                    terms.extend(extract_structured_constraint_terms(nested))
+        elif isinstance(item, dict):
+            terms.extend(extract_structured_constraint_terms(item))
+    return terms
+
+
+def iter_structured_constraint_values(value: object) -> list[object]:
+    if not isinstance(value, dict):
+        return []
+    values: list[object] = []
+    for key, item in value.items():
+        key_text = str(key).casefold()
+        if any(marker in key_text for marker in ("avoid", "exclude", "constraint", "restriction", "dealbreaker", "red_flag")):
+            values.append(item)
+            continue
+        if isinstance(item, dict):
+            values.extend(iter_structured_constraint_values(item))
+        elif isinstance(item, list):
+            for nested in item:
+                values.extend(iter_structured_constraint_values(nested))
+    return values
+
+
+def result_matches_exclusion(result: LiveJobSourceResult, constraints: list[str]) -> str | None:
+    haystack = normalize_text_for_constraint_matching(
+        " ".join(
+            str(value or "")
+            for value in [result.title, result.company_name, result.description_excerpt, result.source_provider, result.salary_text]
+        )
+    )
+    for term in constraints:
+        normalized_term = normalize_text_for_constraint_matching(term)
+        if normalized_term and normalized_term in haystack:
+            return term
+    return None
+
+
+
+def build_provider_job_search_queries(
+    request: JobDiscoveryRequest,
+    *,
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    role_queries = infer_job_search_role_queries(
+        request.latest_user_message,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    queries: list[str] = []
+    queries.extend(role_queries[:5])
+
+    message = request.latest_user_message.casefold()
+    if "remote" in message:
+        queries.extend([f"Remote {role}" for role in role_queries[:3]])
+
+    # Broad job APIs expect role-like search terms, while company ATS providers use
+    # configured boards rather than site: queries. Saved companies remain in context
+    # for provider selection and fit summaries without polluting provider keywords.
+    _ = current_saved_companies
+
+    return compact_unique_strings(queries, limit=12)
+
+
+def build_fresh_job_search_queries(
+    request: JobDiscoveryRequest,
+    *,
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    role_queries = infer_job_search_role_queries(
+        request.latest_user_message,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    remote_term = " remote" if "remote" in request.latest_user_message.casefold() else ""
+    queries: list[str] = []
+    for role in role_queries[:4]:
+        queries.extend(
+            [
+                f'"{role}"{remote_term} current job posting apply',
+                f'"{role}"{remote_term} careers job opening',
+            ]
+        )
+
+    for company in current_saved_companies[:8]:
+        domain = domain_from_url(
+            company.get("job_listings_url")
+            or company.get("jobListingsUrl")
+            or company.get("careers_url")
+            or company.get("careersUrl")
+            or company.get("website_url")
+            or company.get("websiteUrl")
+        )
+        if not domain:
+            continue
+        role = role_queries[0] if role_queries else "jobs"
+        queries.append(f'site:{domain} "{role}" jobs careers apply')
+
+    return compact_unique_strings(queries, limit=12)
+
+
+def build_job_relevance_terms(
+    latest_user_message: str,
+    *,
+    search_queries: list[str],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    terms: list[str] = []
+    terms.extend(search_queries)
+    terms.extend(infer_job_search_role_queries(latest_user_message, target_context=target_context, private_profile_context=private_profile_context))
+    terms.extend(coerce_string_list(target_context.get("skills")))
+    terms.extend(coerce_string_list(target_context.get("keywords")))
+    basics = private_profile_context.get("profile_basics") if isinstance(private_profile_context, dict) else None
+    if isinstance(basics, dict):
+        terms.extend(coerce_string_list(basics.get("headline")))
+    for key in ("skills", "keywords", "interests", "preferences"):
+        terms.extend(coerce_string_list(private_profile_context.get(key)))
+    return compact_unique_strings(terms, limit=30)
+
+
+def infer_job_search_role_queries(
+    latest_user_message: str,
+    *,
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    roles: list[str] = []
+    roles.extend(extract_explicit_target_titles(target_context, private_profile_context))
+    roles.extend(extract_role_queries_from_message(latest_user_message))
+    roles.extend(extract_profile_headline_role(private_profile_context))
+    if not roles:
+        roles.extend(extract_generic_profile_role_queries(private_profile_context))
+    if not roles and latest_user_message.strip():
+        phrase = clean_role_query_phrase(latest_user_message)
+        if phrase and phrase.casefold() not in {"find jobs", "find me jobs", "please find jobs"}:
+            roles.append(title_case_role_query(phrase))
+    if not roles:
+        roles.append("jobs")
+    return compact_unique_strings(roles, limit=6)
+
+
+def extract_explicit_target_titles(
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    values.extend(coerce_string_list(target_context.get("target_role_titles")))
+    targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(targets, dict):
+        values.extend(coerce_string_list(targets.get("targetTitles")))
+        values.extend(coerce_string_list(targets.get("target_role_titles")))
+    for item_key in ("published_internal_items", "published_public_items"):
+        items = private_profile_context.get(item_key) if isinstance(private_profile_context, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("collection") != "targetRoleIntent":
+                continue
+            values.extend(coerce_string_list(item.get("targetTitles")))
+            values.extend(coerce_string_list(item.get("target_role_titles")))
+    return values
+
+
+def extract_role_queries_from_message(latest_user_message: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", latest_user_message).strip()
+    patterns = [
+        r"\bfind\s+(?:me\s+)?(?:some\s+)?(.+?)\s+(?:jobs|roles|positions)\b",
+        r"\bshow\s+(?:me\s+)?(.+?)\s+(?:jobs|roles|positions)\b",
+    ]
+    roles: list[str] = []
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            continue
+        phrase = clean_role_query_phrase(match.group(1))
+        if phrase:
+            roles.append(title_case_role_query(phrase))
+    return roles
+
+
+def extract_profile_headline_role(private_profile_context: dict[str, Any]) -> list[str]:
+    basics = private_profile_context.get("profile_basics") if isinstance(private_profile_context, dict) else None
+    headline = clean_text_value(basics.get("headline")) if isinstance(basics, dict) else None
+    if not headline:
+        return []
+    candidate = re.split(r"\s+[|•]\s+|\s+-\s+|\s+with\s+", headline, maxsplit=1, flags=re.IGNORECASE)[0]
+    candidate = clean_role_query_phrase(candidate)
+    if not candidate or profile_role_candidate_is_placeholder(candidate):
+        return []
+    return [candidate]
+
+
+def extract_generic_profile_role_queries(private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("desired_roles", "target_roles", "roles"):
+        values.extend(coerce_string_list(private_profile_context.get(key)))
+    return [value for value in values if not profile_role_candidate_is_placeholder(value)]
+
+
+def profile_role_candidate_is_placeholder(value: str) -> bool:
+    normalized = value.casefold()
+    return normalized in {"candidate", "profile", "candidate profile setup in progress"} or "setup in progress" in normalized
+
+
+def meaningful_relevance_tokens(value: str) -> list[str]:
+    stop_words = {
+        "and",
+        "apply",
+        "careers",
+        "current",
+        "find",
+        "for",
+        "job",
+        "jobs",
+        "me",
+        "more",
+        "new",
+        "open",
+        "opening",
+        "opportunities",
+        "opportunity",
+        "please",
+        "position",
+        "positions",
+        "remote",
+        "role",
+        "roles",
+        "some",
+        "the",
+        "to",
+    }
+    tokens: list[str] = []
+    for raw in re.findall(r"[a-z0-9]+", value.casefold()):
+        if len(raw) < 3 or raw in stop_words:
+            continue
+        tokens.append(raw)
+    return compact_unique_strings(tokens, limit=8)
+
+
+def clean_role_query_phrase(value: str) -> str | None:
+    cleaned = re.sub(r"\b(remote|hybrid|onsite|on-site|some|more|new|open|current|to apply to|for me)\b", " ", value, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(that fit my profile|like this|i should consider)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[\"'`]+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    if not cleaned or cleaned.casefold() in {"jobs", "roles", "positions"}:
+        return None
+    return cleaned
+
+
+def title_case_role_query(value: str) -> str:
+    small_words = {"ai", "ml", "llm", "rag", "api", "ux", "ui"}
+    words = []
+    for word in value.split():
+        lookup = re.sub(r"[^A-Za-z0-9]", "", word).casefold()
+        words.append(word.upper() if lookup in small_words else word[:1].upper() + word[1:])
+    return " ".join(words)
+
+
+def coerce_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.replace("\n", ";").split(";") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
+
+
+def current_saved_job_urls(current_saved_jobs: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for job in current_saved_jobs:
+        for key in ("job_url", "normalized_url"):
+            value = job.get(key)
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            if not cleaned:
+                continue
+            normalized = normalize_job_url(cleaned) or cleaned
+            lookup = normalized.casefold()
+            if lookup in seen:
+                continue
+            seen.add(lookup)
+            urls.append(normalized)
+    return urls
+
+
+
+def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) -> list[dict[str, Any]]:
+    links = list(
+        session.scalars(
+            select(CandidateSavedJob)
+            .where(CandidateSavedJob.candidate_profile_id == candidate_profile_id)
+            .order_by(CandidateSavedJob.added_at.desc())
+            .limit(50)
+        )
+    )
+    return [
+        {
+            "saved_job_id": link.id,
+            "job_id": link.job.id,
+            "title": link.job.title,
+            "company_name": link.job.company_name,
+            "job_url": link.job.job_url,
+            "normalized_url": link.job.normalized_url,
+            "status": link.status,
+            "added_at": link.added_at.isoformat() if link.added_at else None,
+        }
+        for link in links
+        if link.job is not None
+    ]
+
+
+def save_live_job_source_results(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    discovery_query: str,
+    source_results: list[LiveJobSourceResult],
+    search_queries_used: list[str],
+    provider: str,
+    verify_urls: bool,
+    user_constraints: list[str] | None = None,
+) -> JobDiscoverySaveResult:
+    existing_jobs = {
+        job.normalized_url: job
+        for job in session.scalars(select(JobPosting))
+        if job.normalized_url
+    }
+    existing_links = {
+        link.job_id: link
+        for link in session.scalars(
+            select(CandidateSavedJob).where(CandidateSavedJob.candidate_profile_id == candidate_profile.id)
+        )
+    }
+    saved_links: list[CandidateSavedJob] = []
+    updated_existing_links: list[CandidateSavedJob] = []
+    created_jobs: list[JobPosting] = []
+    updated_jobs: list[JobPosting] = []
+    added_companies: list[TargetCompany] = []
+    skipped: list[SkippedJobResult] = []
+    now = datetime.now(timezone.utc)
+    seen_in_output: set[str] = set()
+
+    for result in source_results:
+        excluded_term = result_matches_exclusion(result, user_constraints or [])
+        if excluded_term:
+            skipped.append(
+                skip_from_source_result(
+                    result,
+                    "excluded_by_user_constraints",
+                    f"Result matched excluded user constraint: {excluded_term}.",
+                )
+            )
+            continue
+        normalized_url = normalize_job_url(result.job_url)
+        if not normalized_url:
+            skipped.append(skip_from_source_result(result, "missing_required_url", "Missing reliable job URL."))
+            continue
+        if normalized_url in seen_in_output:
+            skipped.append(skip_from_source_result(result, "duplicate_global_job", "Duplicate result in provider response."))
+            continue
+        seen_in_output.add(normalized_url)
+
+        verification = source_result_verification(result, verify_url=verify_urls)
+        if verification.expired_or_closed:
+            skipped.append(skip_from_source_result(result, "expired_or_closed", verification.summary))
+            continue
+        if verification.status == "failed":
+            skipped.append(skip_from_source_result(result, "failed_url_verification", verification.summary))
+            continue
+        if result.provenance not in {"provider_result", "fetched_page", "user_url", "mock"}:
+            skipped.append(skip_from_source_result(result, "no_live_source_provenance", "Job result did not include live-source provenance."))
+            continue
+
+        existing_job = existing_jobs.get(normalized_url)
+        if existing_job is not None:
+            update_job_posting_from_source_result(existing_job, result, verification=verification, provider=provider, last_seen_at=now)
+            updated_jobs.append(existing_job)
+        else:
+            existing_job = JobPosting(
+                title=result.title.strip(),
+                company_name=result.company_name.strip(),
+                job_url=result.job_url,
+                canonical_url=verification.final_url or result.job_url,
+                apply_url=result.apply_url or result.job_url,
+                normalized_url=normalized_url,
+                source=result.source_provider,
+                source_provider=result.source_provider,
+                provider_type=result.provider_type,
+                source_result_id=result.source_result_id,
+                source_query=result.source_query,
+                source_url=result.source_url or result.job_url,
+                source_updated_at=result.source_updated_at,
+                provider_raw_metadata=result.raw_metadata or {},
+                company_website_url=result.company_website_url,
+                company_careers_url=result.company_careers_url,
+                ats_provider=result.ats_provider,
+                ats_board_token=result.ats_board_token,
+                provenance=result.provenance,
+                location=result.location,
+                remote_work_mode=result.remote_work_mode,
+                employment_type=result.employment_type,
+                salary_text=result.salary_text,
+                description_excerpt=verification.description_excerpt or result.description_excerpt,
+                discovered_by=provider,
+                url_verification_status=verification.status,
+                url_verification_checked_at=verification.checked_at,
+                url_verification_summary=verification.summary,
+                posting_date=result.posting_date or verification.posting_date,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            session.add(existing_job)
+            session.flush()
+            created_jobs.append(existing_job)
+            existing_jobs[normalized_url] = existing_job
+
+        if existing_job.id in existing_links:
+            link = existing_links[existing_job.id]
+            link.fit_summary = result.fit_summary or link.fit_summary
+            link.source_command = discovery_query
+            link.discovery_metadata = {
+                "discovery_query": discovery_query,
+                "search_queries_used": search_queries_used,
+                "provider": provider,
+                "provenance": result.provenance,
+                "source_result_id": result.source_result_id,
+                "provider_type": result.provider_type,
+                "url_verification_status": verification.status,
+            }
+            updated_existing_links.append(link)
+            skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
+            continue
+
+        job_record = source_result_to_job_record(result, verification)
+        added_company = ensure_candidate_company_for_job(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            job=job_record,
+            provider=provider,
+            discovery_query=discovery_query,
+        )
+        if added_company is not None:
+            added_companies.append(added_company)
+
+        link = CandidateSavedJob(
+            candidate_profile_id=candidate_profile.id,
+            job_id=existing_job.id,
+            status="saved",
+            fit_summary=result.fit_summary,
+            user_notes=None,
+            source_command=discovery_query,
+            discovery_metadata={
+                "discovery_query": discovery_query,
+                "search_queries_used": search_queries_used,
+                "provider": provider,
+                "provenance": result.provenance,
+                "source_result_id": result.source_result_id,
+                "provider_type": result.provider_type,
+                "url_verification_status": verification.status,
+            },
+            added_at=now,
+        )
+        session.add(link)
+        session.flush()
+        saved_links.append(link)
+        existing_links[existing_job.id] = link
+
+    return JobDiscoverySaveResult(
+        saved_links=saved_links,
+        updated_existing_links=updated_existing_links,
+        created_jobs=created_jobs,
+        updated_jobs=updated_jobs,
+        added_companies=added_companies,
+        skipped=skipped,
+    )
+
+
+
+def skip_from_source_result(result: LiveJobSourceResult, reason_code: SkipReasonCode, reason: str) -> SkippedJobResult:
+    return SkippedJobResult(title=result.title, companyName=result.company_name, jobUrl=result.job_url, reasonCode=reason_code, reason=reason)
+
+
+def source_result_to_job_record(result: LiveJobSourceResult, verification: JobUrlVerificationResult) -> JobDiscoveryRecord:
+    return JobDiscoveryRecord(
+        title=result.title,
+        companyName=result.company_name,
+        jobUrl=result.job_url,
+        companyWebsiteUrl=result.company_website_url,
+        companyCareersUrl=result.company_careers_url,
+        sourceUrls=[url for url in [result.source_url, result.job_url, *result.source_urls] if url],
+        source=result.source_provider,
+        location=result.location,
+        remoteWorkMode=result.remote_work_mode or "unknown",
+        employmentType=result.employment_type,
+        salaryText=result.salary_text,
+        descriptionExcerpt=verification.description_excerpt or result.description_excerpt,
+        fitSummary=result.fit_summary,
+        postingDate=result.posting_date or verification.posting_date,
+    )
+
+
+def update_job_posting_from_source_result(
+    job_posting: JobPosting,
+    result: LiveJobSourceResult,
+    *,
+    verification: JobUrlVerificationResult,
+    provider: str,
+    last_seen_at: datetime,
+) -> None:
+    job_posting.title = result.title.strip()
+    job_posting.company_name = result.company_name.strip()
+    job_posting.job_url = result.job_url
+    job_posting.canonical_url = verification.final_url or job_posting.canonical_url or result.job_url
+    job_posting.apply_url = job_posting.apply_url or result.job_url
+    job_posting.source = result.source_provider or job_posting.source or provider
+    job_posting.source_provider = result.source_provider
+    job_posting.provider_type = result.provider_type
+    job_posting.source_result_id = result.source_result_id or job_posting.source_result_id
+    job_posting.source_query = result.source_query or job_posting.source_query
+    job_posting.source_url = result.source_url or job_posting.source_url or result.job_url
+    job_posting.source_updated_at = result.source_updated_at or job_posting.source_updated_at
+    job_posting.provider_raw_metadata = result.raw_metadata or job_posting.provider_raw_metadata or {}
+    job_posting.company_website_url = result.company_website_url or job_posting.company_website_url
+    job_posting.company_careers_url = result.company_careers_url or job_posting.company_careers_url
+    job_posting.ats_provider = result.ats_provider or job_posting.ats_provider
+    job_posting.ats_board_token = result.ats_board_token or job_posting.ats_board_token
+    job_posting.provenance = result.provenance
+    job_posting.location = result.location or job_posting.location
+    job_posting.remote_work_mode = result.remote_work_mode or job_posting.remote_work_mode
+    job_posting.employment_type = result.employment_type or job_posting.employment_type
+    job_posting.salary_text = result.salary_text or job_posting.salary_text
+    job_posting.description_excerpt = verification.description_excerpt or result.description_excerpt or job_posting.description_excerpt
+    job_posting.discovered_by = provider
+    job_posting.url_verification_status = verification.status
+    job_posting.url_verification_checked_at = verification.checked_at
+    job_posting.url_verification_summary = verification.summary
+    job_posting.posting_date = result.posting_date or verification.posting_date or job_posting.posting_date
+    job_posting.last_seen_at = last_seen_at
+
+
+def count_verified_source_results(source_results: list[LiveJobSourceResult]) -> int:
+    return sum(1 for result in source_results if result.url_verification_status in {"verified", "mock_verified", "provider_unverified"})
+
+
+def skipped_reason_code_counts(skipped: list[SkippedJobResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in skipped:
+        counts[item.reason_code] = counts.get(item.reason_code, 0) + 1
+    return counts
+
+
+def build_live_job_discovery_assistant_message(save_result: JobDiscoverySaveResult, source_results: list[LiveJobSourceResult]) -> str:
+    saved_count = len(save_result.saved_links)
+    updated_count = len(save_result.updated_existing_links)
+    skipped_count = len(save_result.skipped)
+    if saved_count:
+        message = f"Saved {saved_count} verified job(s) from live source results."
+        if updated_count:
+            message += f" Refreshed {updated_count} already-saved job(s)."
+        if skipped_count:
+            message += f" Skipped {skipped_count} result(s): {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+        return message
+    if skipped_count:
+        reason_counts = skipped_reason_code_counts(save_result.skipped)
+        if reason_counts.get("duplicate_for_user") == skipped_count:
+            return f"I found {skipped_count} job(s) already in your Jobs list, so I did not add duplicates."
+        return f"No new jobs were saved. I skipped {skipped_count} result(s): {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+    if source_results:
+        return "No new jobs were saved from the live source results."
+    return "No live job results were found, so no jobs were saved."
+
+
+def build_selected_job_discovery_assistant_message(
+    selection_result: JobCandidateSelectionResult | None,
+    save_result: JobDiscoverySaveResult,
+    source_results: list[LiveJobSourceResult],
+    all_skipped_results: list[SkippedJobResult] | None = None,
+) -> str:
+    all_skipped_results = all_skipped_results or save_result.skipped
+    if selection_result is not None and selection_result.output.assistant_message:
+        selected_count = len(selection_result.selected_entries)
+        saved_count = len(save_result.saved_links)
+        if saved_count:
+            return selection_result.output.assistant_message
+        if selected_count and save_result.skipped:
+            return (
+                f"The model selected {selected_count} provider-backed job candidate(s), "
+                f"but none were newly saved: {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+            )
+        if source_results:
+            return "The model reviewed the provider-backed candidates, but did not select any new jobs to save."
+    if all_skipped_results:
+        reason_counts = skipped_reason_code_counts(all_skipped_results)
+        if reason_counts.get("duplicate_for_user") == len(all_skipped_results):
+            return f"I found {len(all_skipped_results)} job(s) already in your Jobs list, so I did not add duplicates."
+    return build_live_job_discovery_assistant_message(save_result, source_results)
+
+
+def format_reason_code_counts(counts: dict[str, int]) -> str:
+    return "; ".join(f"{count} {code}" for code, count in sorted(counts.items()))
+
+
+def extract_http_urls(text: str) -> list[str]:
+    return compact_unique_strings(re.findall(r"https?://[^\s<>)\"']+", text), limit=10)
+
+
+def build_user_url_source_results(urls: list[str]) -> list[LiveJobSourceResult]:
+    results: list[LiveJobSourceResult] = []
+    for url in urls:
+        domain = domain_from_url(url) or "Unknown company"
+        results.append(
+            LiveJobSourceResult(
+                title="User-provided job posting",
+                company_name=domain,
+                job_url=url,
+                source_provider="user_url",
+                provider_type="broad_search",
+                provenance="user_url",
+                source_url=url,
+                fit_summary="Saved from a user-provided job URL.",
+            )
+        )
+    return results
+
+
+
+def ensure_candidate_company_for_job(
+    session: Session,
+    *,
+    candidate_profile_id: str,
+    job: JobDiscoveryRecord,
+    provider: str,
+    discovery_query: str,
+) -> TargetCompany | None:
+    normalized_name = normalize_company_name(job.company_name)
+    company_urls = clean_company_source_urls(
+        [job.company_website_url, job.company_careers_url, job.company_job_listings_url, *job.company_source_urls]
+    )
+    source_urls = company_urls or clean_company_source_urls([job.job_url])
+    candidate_domains = {domain for domain in (domain_from_url(url) for url in source_urls) if domain}
+    existing = list(session.scalars(select(TargetCompany).where(TargetCompany.candidate_profile_id == candidate_profile_id)))
+    for company in existing:
+        existing_name = normalize_company_name(company.normalized_name or company.name)
+        existing_domains = {
+            domain
+            for domain in [
+                domain_from_url(company.website_url),
+                domain_from_url(company.careers_url),
+                domain_from_url(company.job_listings_url),
+                *(domain_from_url(url) for url in (company.source_urls or [])),
+            ]
+            if domain
+        }
+        if normalized_name and existing_name == normalized_name:
+            merge_company_source_fields(company, job, source_urls)
+            return None
+        if candidate_domains and existing_domains.intersection(candidate_domains):
+            merge_company_source_fields(company, job, source_urls)
+            return None
+
+    row = TargetCompany(
+        candidate_profile_id=candidate_profile_id,
+        name=job.company_name.strip(),
+        normalized_name=normalized_name or None,
+        website_url=job.company_website_url,
+        careers_url=job.company_careers_url,
+        job_listings_url=job.company_job_listings_url,
+        source_urls=source_urls[:12],
+        source_summary="Added from job discovery because a relevant posting was saved.",
+        discovery_query=discovery_query,
+        discovered_by=provider,
+        derivation_status="model_derived",
+        review_status="new",
+        fit_reason=job.fit_summary,
+        notes="",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def merge_company_source_fields(company: TargetCompany, job: JobDiscoveryRecord, source_urls: list[str]) -> None:
+    company.website_url = company.website_url or job.company_website_url
+    company.careers_url = company.careers_url or job.company_careers_url
+    company.job_listings_url = company.job_listings_url or job.company_job_listings_url
+    merged_urls = clean_company_source_urls([*(company.source_urls or []), *source_urls])
+    company.source_urls = merged_urls[:12]
+    company.fit_reason = company.fit_reason or job.fit_summary
+
+
+def clean_company_source_urls(values: list[str | None]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        stripped = value.strip()
+        key = stripped.casefold()
+        if stripped and key not in seen:
+            cleaned.append(stripped)
+            seen.add(key)
+    return cleaned
+
+
+
+def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
+    job = link.job
+    return {
+        "id": link.id,
+        "candidate_profile_id": link.candidate_profile_id,
+        "job_id": link.job_id,
+        "title": job.title,
+        "company_name": job.company_name,
+        "job_url": job.job_url,
+        "canonical_url": job.canonical_url,
+        "apply_url": job.apply_url,
+        "source": job.source,
+        "source_provider": job.source_provider,
+        "provider_type": job.provider_type,
+        "source_result_id": job.source_result_id,
+        "source_query": job.source_query,
+        "source_url": job.source_url,
+        "source_updated_at": job.source_updated_at.isoformat() if job.source_updated_at else None,
+        "company_website_url": job.company_website_url,
+        "company_careers_url": job.company_careers_url,
+        "ats_provider": job.ats_provider,
+        "ats_board_token": job.ats_board_token,
+        "provenance": job.provenance,
+        "url_verification_status": job.url_verification_status,
+        "url_verification_checked_at": job.url_verification_checked_at.isoformat() if job.url_verification_checked_at else None,
+        "url_verification_summary": job.url_verification_summary,
+        "location": job.location,
+        "remote_work_mode": job.remote_work_mode,
+        "employment_type": job.employment_type,
+        "salary_text": job.salary_text,
+        "description_excerpt": job.description_excerpt,
+        "fit_summary": link.fit_summary,
+        "user_notes": link.user_notes,
+        "status": link.status,
+        "added_at": link.added_at.isoformat() if link.added_at else None,
+        "archived_at": link.archived_at.isoformat() if link.archived_at else None,
+        "posting_date": job.posting_date.isoformat() if job.posting_date else None,
+        "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
+        "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
+        "created_at": link.created_at.isoformat() if link.created_at else None,
+        "updated_at": link.updated_at.isoformat() if link.updated_at else None,
+    }
+
+
+def normalize_job_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    query = [
+        (key, val)
+        for key, val in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid"}
+    ]
+    normalized = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=parsed.path.rstrip("/") or "/",
+        query=urlencode(query, doseq=True),
+        fragment="",
+    )
+    return urlunparse(normalized)

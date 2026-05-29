@@ -22,6 +22,7 @@ from .command_router import (
 )
 from .db.models import CandidateProfile, CommandInteractionLog
 from .db.session import get_db_session
+from .job_discovery import JobDiscoveryRequest, run_job_discovery
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
 from .profiles import get_candidate_profile_by_slug
@@ -33,6 +34,7 @@ CommandActionType = Literal[
     "add_job_from_url",
     "company_discovery",
     "company_update",
+    "job_discovery",
     "discussion_only",
     "career_discovery",
     "profile_guidance",
@@ -437,6 +439,18 @@ def dispatch_command_center_action(
             router_payload=router_payload,
         )
 
+    if interpreted_action == "job_discovery":
+        if candidate_slug is None:
+            return missing_candidate_slug_response("job_discovery", "jobs", "Discover jobs")
+        return execute_job_discovery_command(
+            request,
+            candidate_slug=candidate_slug,
+            candidate_profile=candidate_profile,
+            session=session,
+            settings=settings,
+            router_payload=router_payload,
+        )
+
     if interpreted_action == "company_update":
         if candidate_slug is None:
             return missing_candidate_slug_response("company_update", "companies", "Update company")
@@ -468,8 +482,8 @@ def dispatch_command_center_action(
     if interpreted_action != "profile_intake":
         return CommandCenterCommandResponse(
             assistant_message=(
-                "I can route profile intake and company discovery from the command center now. Job URL intake, "
-                "prioritization, materials, fit scoring, and applied-status updates are still planned tools."
+                "I can route profile intake, company discovery, and job discovery from the command center now. "
+                "Job URL intake, prioritization, materials, fit scoring, and applied-status updates are still planned tools."
             ),
             actions=[
                 CommandCenterActionResult(
@@ -675,6 +689,79 @@ def execute_company_discovery_command(
     )
 
 
+def execute_job_discovery_command(
+    request: CommandCenterCommandRequest,
+    *,
+    candidate_slug: str,
+    candidate_profile,
+    session: Session,
+    settings,
+    router_payload: dict[str, Any] | None = None,
+) -> CommandCenterCommandResponse:
+    discovery_result = run_job_discovery(
+        JobDiscoveryRequest(
+            latest_user_message=request.command,
+            candidate_profile_slug=candidate_slug,
+            active_workspace=request.active_workspace,
+            client_context=request.client_context,
+        ),
+        db_session=session,
+        settings=settings,
+        candidate_profile=candidate_profile,
+    )
+
+    if discovery_result.status_code != 200 or not discovery_result.body.get("ok"):
+        error_message = discovery_result.body.get("error", "Job discovery failed. No jobs were saved.")
+        return CommandCenterCommandResponse(
+            assistant_message=error_message,
+            actions=[
+                CommandCenterActionResult(
+                    type="job_discovery",
+                    status="failed",
+                    targetWorkspace="jobs",
+                    title="Discover jobs",
+                    summary=error_message,
+                    resultPayload={**discovery_result.body, **router_debug_payload(router_payload)},
+                )
+            ],
+            target_workspace="jobs",
+            result_payload={**discovery_result.body, **router_debug_payload(router_payload)},
+        )
+
+    result_payload = {**discovery_result.body["result"], **router_debug_payload(router_payload)}
+    saved_count = len(result_payload.get("jobs") or [])
+    updated_count = len(result_payload.get("updatedExistingJobs") or [])
+    skipped_count = len(result_payload.get("skippedJobs") or [])
+    assistant_message = result_payload.get("assistantMessage") or (
+        f"Saved {saved_count} job(s) and refreshed {updated_count} existing saved job(s)."
+    )
+
+    return CommandCenterCommandResponse(
+        assistant_message=assistant_message,
+        actions=[
+            CommandCenterActionResult(
+                type="job_discovery",
+                status="completed",
+                targetWorkspace="jobs",
+                title="Discover jobs",
+                summary=build_job_discovery_action_summary(saved_count, updated_count, skipped_count),
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace="jobs",
+        result_payload=result_payload,
+        statusUpdates=[
+            CommandCenterStatusUpdate(
+                stage="job_discovery",
+                message="Status update: searched for relevant jobs and reconciled matching postings with your Jobs list.",
+                actionType="job_discovery",
+                confidence=None,
+                targetWorkspace="jobs",
+            )
+        ],
+    )
+
+
 def execute_company_update_command(
     router_decision: CommandRouterOutput,
     *,
@@ -759,6 +846,7 @@ def save_command_interaction_log(
         return
     actions = response.actions if response is not None else []
     first_action = actions[0] if actions else None
+    action_metrics = [safe_action_log_metrics(action) for action in actions]
     session.add(
         CommandInteractionLog(
             user_id=auth.user_id,
@@ -771,6 +859,7 @@ def save_command_interaction_log(
             validation_result={
                 "routerOk": bool(router_payload and router_payload.get("ok")),
                 "actionStatuses": [action.status for action in actions],
+                "actionMetrics": action_metrics,
             },
             action_applied=any(
                 action.status == "completed" and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
@@ -780,6 +869,49 @@ def save_command_interaction_log(
             latency_ms=latency_ms,
         )
     )
+
+
+def safe_action_log_metrics(action: CommandCenterActionResult) -> dict[str, Any]:
+    payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+    metric_keys = [
+        "savedCount",
+        "updatedExistingCount",
+        "skippedJobCount",
+        "createdGlobalJobCount",
+        "updatedGlobalJobCount",
+        "addedCompanyCount",
+        "modelJobCount",
+        "modelSkippedJobCount",
+        "currentSavedJobCount",
+        "excludedJobUrlCount",
+        "currentSavedCompanyCount",
+        "discoveredCount",
+        "verifiedCount",
+        "duplicateCount",
+        "skippedCount",
+        "providerResultCount",
+        "modelSelectedCount",
+        "verifiedUrlCount",
+        "savedJobCount",
+    ]
+    metrics = {key: payload.get(key) for key in metric_keys if isinstance(payload.get(key), int)}
+    skipped_reason_counts = payload.get("skippedReasonCounts") or payload.get("skippedReasons")
+    if isinstance(skipped_reason_counts, dict):
+        metrics["skippedReasons"] = {
+            str(reason)[:160]: count
+            for reason, count in skipped_reason_counts.items()
+            if isinstance(count, int)
+        }
+    for key in ("jobDiscoveryMode", "providerName", "sourceName"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            metrics[key] = value[:120]
+    return {
+        "type": action.type,
+        "status": action.status,
+        "targetWorkspace": action.target_workspace,
+        **metrics,
+    }
 
 
 @router.get("/profile-draft/{slug}")
@@ -798,6 +930,8 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "company_update"
     if is_company_discovery_command(normalized, active_workspace):
         return "company_discovery"
+    if is_job_discovery_command(normalized, active_workspace):
+        return "job_discovery"
     if is_profile_discussion_command(normalized):
         return "profile_guidance"
     if is_profile_intake_command(normalized, active_workspace):
@@ -953,6 +1087,37 @@ def is_job_url_intake_command(normalized_command: str) -> bool:
     )
 
 
+def is_job_discovery_command(normalized_command: str, active_workspace: str | None) -> bool:
+    direct_signals = [
+        "find me some jobs",
+        "find me jobs",
+        "find some jobs",
+        "find jobs",
+        "discover jobs",
+        "job discovery",
+        "jobs to apply to",
+        "jobs that fit my profile",
+        "jobs that fit",
+        "roles i should consider",
+        "show me roles",
+        "show me jobs",
+        "find remote",
+        "find me applied ai",
+        "find applied ai",
+        "find ai platform",
+        "find jobs like this",
+    ]
+    if any(signal in normalized_command for signal in direct_signals):
+        return True
+    role_terms = ["role", "roles", "job", "jobs", "posting", "postings", "opening", "openings"]
+    find_terms = ["find", "discover", "search", "show me", "recommend"]
+    return (
+        active_workspace == "jobs"
+        and any(signal in normalized_command for signal in find_terms)
+        and any(signal in normalized_command for signal in role_terms)
+    )
+
+
 def command_contains_url(command: str) -> bool:
     normalized = command.casefold()
     return "http://" in normalized or "https://" in normalized
@@ -962,6 +1127,11 @@ def looks_like_future_tool_command(normalized_command: str) -> bool:
     future_tool_signals = [
         "job url",
         "add it to my jobs",
+        "find jobs",
+        "discover jobs",
+        "jobs to apply to",
+        "roles i should consider",
+        "show me roles",
         "follow company",
         "follow companies",
         "companies to follow",
@@ -1118,6 +1288,20 @@ def build_company_discovery_action_summary(added_count: int) -> str:
     if added_count == 1:
         return "Saved 1 model-derived company with new review status and verification links."
     return f"Saved {added_count} model-derived companies with new review status and verification links."
+
+
+def build_job_discovery_action_summary(saved_count: int, updated_count: int, skipped_count: int = 0) -> str:
+    if saved_count == 1 and updated_count == 0:
+        return "Saved 1 job with a reliable external posting link."
+    if saved_count == 0 and updated_count:
+        return f"Found {updated_count} existing saved job(s) again and refreshed useful fields."
+    if updated_count:
+        return f"Saved {saved_count} job(s) and refreshed {updated_count} existing saved job(s)."
+    if saved_count == 0 and skipped_count:
+        return f"No new jobs were saved; skipped {skipped_count} result(s) without reliable new links."
+    if saved_count == 0:
+        return "No new jobs were saved."
+    return f"Saved {saved_count} job(s) with reliable external posting links."
 
 
 def build_routing_status_update(
@@ -1299,6 +1483,8 @@ def router_debug_payload(router_payload: dict[str, Any] | None) -> dict[str, Any
 def normalize_dispatch_action(action_type: CommandActionType | RouterActionType) -> CommandActionType:
     if action_type == "company_discovery":
         return "company_discovery"
+    if action_type == "job_discovery":
+        return "job_discovery"
     return action_type
 
 
@@ -1307,7 +1493,7 @@ def should_use_deterministic_fallback(settings, action_type: CommandActionType) 
         return True
     if settings.model_provider.strip().lower() == "mock":
         return True
-    return action_type not in {"company_discovery", "follow_company", "company_update"}
+    return action_type not in {"company_discovery", "follow_company", "company_update", "job_discovery"}
 
 
 def meaningful_text(value: str | None) -> str | None:
@@ -1322,6 +1508,7 @@ def target_workspace_for_action(action_type: CommandActionType) -> str | None:
         "add_job_from_url": "jobs",
         "company_discovery": "companies",
         "company_update": "companies",
+        "job_discovery": "jobs",
         "discussion_only": None,
         "career_discovery": "profile",
         "profile_guidance": "profile",
@@ -1342,6 +1529,7 @@ def title_for_action(action_type: CommandActionType) -> str:
         "add_job_from_url": "Add job from URL",
         "company_discovery": "Discover companies",
         "company_update": "Update company",
+        "job_discovery": "Discover jobs",
         "discussion_only": "Discuss",
         "career_discovery": "Explore career direction",
         "profile_guidance": "Profile guidance",

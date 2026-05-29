@@ -6,6 +6,7 @@ export const commandCenterActionTypes = [
   "add_job_from_url",
   "company_discovery",
   "company_update",
+  "job_discovery",
   "follow_company",
   "prioritize_jobs",
   "generate_materials",
@@ -76,6 +77,12 @@ const actionDetails: Record<CommandCenterActionType, ClassifiedCommand> = {
     targetWorkspace: "companies",
     title: "Update company",
     ctaLabel: "Open Companies"
+  },
+  job_discovery: {
+    type: "job_discovery",
+    targetWorkspace: "jobs",
+    title: "Discover jobs",
+    ctaLabel: "Open Jobs"
   },
   prioritize_jobs: {
     type: "prioritize_jobs",
@@ -184,6 +191,10 @@ export function classifyCommand(command: string): ClassifiedCommand {
     return actionDetails.add_job_from_url;
   }
 
+  if (looksLikeJobDiscovery(normalized)) {
+    return actionDetails.job_discovery;
+  }
+
   return actionDetails.unknown;
 }
 
@@ -236,6 +247,27 @@ function looksLikeResumeText(command: string) {
   const signalCount = signals.filter((signal) => normalized.includes(signal)).length;
 
   return signalCount >= 2 || (command.length >= 1500 && signalCount >= 1);
+}
+
+function looksLikeJobDiscovery(normalized: string) {
+  return (
+    normalized.includes("find me some jobs") ||
+    normalized.includes("find me jobs") ||
+    normalized.includes("find some jobs") ||
+    normalized.includes("find jobs") ||
+    normalized.includes("discover jobs") ||
+    normalized.includes("job discovery") ||
+    normalized.includes("jobs to apply to") ||
+    normalized.includes("jobs that fit my profile") ||
+    normalized.includes("roles i should consider") ||
+    normalized.includes("show me roles") ||
+    normalized.includes("show me jobs") ||
+    normalized.includes("find me applied ai") ||
+    normalized.includes("find applied ai") ||
+    normalized.includes("find remote") ||
+    normalized.includes("find ai platform") ||
+    normalized.includes("find jobs like this")
+  );
 }
 
 export function formatWorkspaceLabel(workspace: WorkspaceTab): string {

@@ -665,6 +665,37 @@ textarea {
   padding: 4px 8px;
 }
 
+.agent-action-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.agent-action-diagnostics div {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px;
+}
+
+.agent-action-diagnostics dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-action-diagnostics dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .model-request-debug {
   display: grid;
   gap: 8px;
@@ -2445,7 +2476,8 @@ input:disabled {
 }
 
 .application-workspace,
-.company-workspace {
+.company-workspace,
+.job-workspace {
   display: grid;
   gap: 18px;
 }
@@ -2458,7 +2490,8 @@ input:disabled {
 
 .application-form,
 .application-list,
-.company-list {
+.company-list,
+.job-list {
   display: grid;
   align-content: start;
   gap: 18px;
@@ -2576,12 +2609,14 @@ input:disabled {
   gap: 8px;
 }
 
-.company-card-grid {
+.company-card-grid,
+.job-card-grid {
   display: grid;
   gap: 14px;
 }
 
-.company-card {
+.company-card,
+.job-card {
   display: grid;
   gap: 14px;
   border: 1px solid var(--line);
@@ -2590,21 +2625,27 @@ input:disabled {
   padding: 18px;
 }
 
-.company-card-header {
+.company-card-header,
+.job-card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
   align-items: start;
 }
 
-.company-card-header h2 {
+.company-card-header h2,
+.job-card-header h2 {
   margin-bottom: 6px;
   font-size: 1.16rem;
 }
 
 .company-card-header p,
+.job-card-header p,
 .company-fit,
-.company-source-summary {
+.company-source-summary,
+.job-description,
+.job-fit,
+.job-verification {
   margin-bottom: 0;
 }
 
@@ -2640,14 +2681,16 @@ input:disabled {
   color: var(--focus);
 }
 
-.company-details {
+.company-details,
+.job-details {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
 }
 
-.company-details div {
+.company-details div,
+.job-details div {
   display: grid;
   gap: 3px;
   border: 1px solid var(--line);
@@ -2656,14 +2699,16 @@ input:disabled {
   padding: 9px;
 }
 
-.company-details dt {
+.company-details dt,
+.job-details dt {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 800;
   text-transform: uppercase;
 }
 
-.company-details dd {
+.company-details dd,
+.job-details dd {
   margin: 0;
   color: var(--ink);
   overflow-wrap: anywhere;
