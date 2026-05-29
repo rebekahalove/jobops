@@ -30,7 +30,7 @@ from .model_connector import (
     read_model_connector_config_from_settings,
     route_model_request,
 )
-from .profiles import get_candidate_profile_by_slug
+from .profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
 from .security import require_internal_api_key
 from .settings import Settings, load_settings
 
@@ -348,10 +348,12 @@ def run_company_discovery(
 
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
+    profile_context = build_company_discovery_profile_context(candidate_profile)
     model_request = build_company_discovery_model_request(
         request,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
+        profile_context=profile_context,
         search_grounding_enabled=active_settings.company_discovery_search_grounding_enabled,
     )
     routed_request = route_model_request(model_request, connector_config.routing)
@@ -443,6 +445,7 @@ def build_company_discovery_model_request(
     *,
     current_saved_companies: list[dict[str, Any]],
     target_context: dict[str, Any],
+    profile_context: dict[str, Any] | None = None,
     search_grounding_enabled: bool,
 ) -> ModelRequest:
     return ModelRequest(
@@ -455,6 +458,7 @@ def build_company_discovery_model_request(
             "feature": "company_discovery",
             "current_saved_company_count": len(current_saved_companies),
             "candidate_target_context_included": bool(target_context),
+            "candidate_profile_context_included": bool(profile_context),
             "search_grounding_enabled": search_grounding_enabled,
         },
         messages=[
@@ -465,6 +469,7 @@ def build_company_discovery_model_request(
                     request,
                     current_saved_companies=current_saved_companies,
                     target_context=target_context,
+                    profile_context=profile_context or {},
                 ),
             ),
         ],
@@ -476,8 +481,10 @@ COMPANY_DISCOVERY_SYSTEM_PROMPT = """You are the JobOps Company Discovery Agent.
 Use provider-native search grounding when available to identify companies matching the user's request and target context.
 
 Rules:
-- Prefer companies relevant to progressive politics, civic tech, political data, advocacy, campaigns, democracy tech, public-interest technology, legal/policy tech, or adjacent mission spaces when requested.
-- Prefer companies that plausibly hire AI engineers, applied AI engineers, senior software engineers, ML/data engineers, platform/backend engineers, or similar roles.
+- Use the user's latest message, candidate_profile_context, and candidate_target_context as the only source of role, industry, geography, mission, and company preferences.
+- Do not default to any specific role, industry, mission, geography, or previous candidate's preferences unless it is present in the user's message or candidate context.
+- When the candidate context points to a non-technical or creative field, recommend companies aligned to that field rather than technical employers.
+- If the request and candidate context are too sparse to infer useful company categories, ask concise clarifying questions instead of inventing preferences.
 - Avoid companies already present in current_saved_companies.
 - Return JSON only.
 - Do not invent precise locations, hiring details, job listings, or remote policies if sources do not support them.
@@ -507,8 +514,8 @@ Return exactly this JSON shape:
       "operatingCountries": ["United States"],
       "hiringLocations": ["Remote US", "Washington, DC"],
       "remotePolicy": "remote",
-      "roleFitTags": ["Applied AI", "Senior Software Engineering"],
-      "missionFitTags": ["Progressive politics", "Civic tech"],
+      "roleFitTags": ["Relevant role or craft area"],
+      "missionFitTags": ["Relevant field, audience, or mission"],
       "fitReason": "Why this company should be followed.",
       "sourceUrls": ["https://..."],
       "sourceSummary": "What the sources support.",
@@ -531,21 +538,24 @@ def build_company_discovery_user_prompt(
     *,
     current_saved_companies: list[dict[str, Any]],
     target_context: dict[str, Any],
+    profile_context: dict[str, Any],
 ) -> str:
     return json.dumps(
         {
             "task": "company_discovery",
             "instruction": (
-                "Use search grounding to find companies worth following for future AI/software roles. "
-                "Return only strict JSON matching the system schema."
+                "Use search grounding to find companies worth following based on the user's request, "
+                "candidate_profile_context, and candidate_target_context. Return only strict JSON matching the system schema."
             ),
             "latest_user_message": request.latest_user_message,
+            "candidate_profile_context": profile_context,
             "candidate_target_context": target_context,
             "current_saved_companies": current_saved_companies,
             "context_rules": {
                 "use_current_saved_companies_for_duplicate_avoidance": True,
                 "do_not_use_current_jobs_or_applications": True,
-                "do_not_send_or_require_full_private_profile": True,
+                "authenticated_profile_context_may_be_used_for_personalized_company_matching": True,
+                "do_not_infer_unstated_domains_from_product_defaults": True,
             },
         },
         indent=2,
@@ -609,6 +619,65 @@ def build_candidate_target_context(session: Session, candidate_profile: Candidat
         "domains_or_industries": constraints.get("domainsOrIndustries"),
         "constraints": constraints.get("constraints"),
     }
+
+
+def build_company_discovery_profile_context(candidate_profile: CandidateProfile) -> dict[str, Any]:
+    private_context = candidate_profile_to_private_context_dict(candidate_profile)
+    basics = private_context.get("profile_basics") if isinstance(private_context.get("profile_basics"), dict) else {}
+    return {
+        "profile_basics": {
+            key: value
+            for key, value in {
+                "headline": basics.get("headline"),
+                "summary": basics.get("summary"),
+                "profile_status": basics.get("profileStatus"),
+            }.items()
+            if value
+        },
+        "targets": compact_target_role_intent(private_context.get("targets") or {}),
+        "published_items": compact_profile_context_items(
+            [
+                *(private_context.get("published_public_items") or []),
+                *(private_context.get("published_internal_items") or []),
+            ],
+            limit=30,
+        ),
+        "draft_items": compact_profile_context_items(private_context.get("draft_items") or [], limit=30),
+    }
+
+
+def compact_profile_context_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        compacted_item = {
+            key: item.get(key)
+            for key in (
+                "collection",
+                "type",
+                "claim",
+                "category",
+                "skill",
+                "title",
+                "organization",
+                "description",
+                "targetTitles",
+                "roleFamilies",
+                "preferredLocations",
+                "workModes",
+                "domainsOrIndustries",
+                "constraints",
+                "state",
+                "visibility",
+            )
+            if item.get(key)
+        }
+        if compacted_item:
+            compacted.append(compacted_item)
+        if len(compacted) >= limit:
+            break
+    return compacted
 
 
 def compact_target_role_intent(target_role_intent: dict[str, Any]) -> dict[str, Any]:
@@ -1001,47 +1070,47 @@ def split_compact_list(value: object, *, semicolon_first: bool = False) -> list[
 def build_mock_company_discovery_response(request: ModelRequest) -> str:
     return json.dumps(
         {
-            "assistantMessage": "Found model-derived companies to review from source links.",
+            "assistantMessage": "Found model-derived companies to review from source links. These mock results are placeholders for local testing.",
             "companies": [
                 {
-                    "name": "CivicActions",
-                    "normalizedName": "civicactions",
-                    "websiteUrl": "https://civicactions.com",
-                    "careersUrl": "https://civicactions.com/careers",
-                    "jobListingsUrl": "https://civicactions.com/careers",
-                    "description": "Digital services firm focused on public-interest and civic technology.",
-                    "headquartersCity": None,
-                    "headquartersCountry": "United States",
-                    "operatingCountries": ["United States"],
-                    "hiringLocations": ["Remote US"],
-                    "remotePolicy": "remote",
-                    "roleFitTags": ["Senior Software Engineering", "Applied AI"],
-                    "missionFitTags": ["Civic tech", "Public-interest technology"],
-                    "fitReason": "Mission-aligned technology organization that may hire senior software talent.",
-                    "sourceUrls": ["https://civicactions.com", "https://civicactions.com/careers"],
-                    "sourceSummary": "Company and careers pages support civic-tech focus and hiring verification.",
-                    "dataConfidence": "medium",
-                    "notes": "Verify current AI-specific openings from the careers link.",
-                },
-                {
-                    "name": "Higher Ground Labs",
-                    "normalizedName": "higher ground labs",
-                    "websiteUrl": "https://highergroundlabs.com",
-                    "careersUrl": None,
-                    "jobListingsUrl": None,
-                    "description": "Organization investing in and supporting technology for progressive politics.",
+                    "name": "Profile-Aligned Example Co",
+                    "normalizedName": "profile-aligned example co",
+                    "websiteUrl": "https://profile-aligned.example",
+                    "careersUrl": "https://profile-aligned.example/careers",
+                    "jobListingsUrl": "https://profile-aligned.example/careers",
+                    "description": "Mock company for local company-discovery testing.",
                     "headquartersCity": None,
                     "headquartersCountry": "United States",
                     "operatingCountries": ["United States"],
                     "hiringLocations": [],
                     "remotePolicy": "unknown",
-                    "roleFitTags": ["Software Engineering", "AI Engineering"],
-                    "missionFitTags": ["Progressive politics", "Political technology"],
-                    "fitReason": "Useful company and ecosystem node to follow for progressive technology roles.",
-                    "sourceUrls": ["https://highergroundlabs.com"],
-                    "sourceSummary": "Source supports progressive political technology focus.",
-                    "dataConfidence": "medium",
-                    "notes": "May be more useful as an ecosystem lead than a direct employer.",
+                    "roleFitTags": ["Profile context match"],
+                    "missionFitTags": ["User-requested follow list"],
+                    "fitReason": "Mock result intended to be evaluated against the authenticated profile context.",
+                    "sourceUrls": ["https://profile-aligned.example", "https://profile-aligned.example/careers"],
+                    "sourceSummary": "Mock source URLs for local testing.",
+                    "dataConfidence": "low",
+                    "notes": "Use a live provider for real company recommendations.",
+                },
+                {
+                    "name": "Second Example Employer",
+                    "normalizedName": "second example employer",
+                    "websiteUrl": "https://second-employer.example",
+                    "careersUrl": None,
+                    "jobListingsUrl": None,
+                    "description": "Second mock company for local company-discovery testing.",
+                    "headquartersCity": None,
+                    "headquartersCountry": "United States",
+                    "operatingCountries": ["United States"],
+                    "hiringLocations": [],
+                    "remotePolicy": "unknown",
+                    "roleFitTags": ["Profile context match"],
+                    "missionFitTags": ["User-requested follow list"],
+                    "fitReason": "Mock result intended to exercise persistence and rendering without implying a specific domain.",
+                    "sourceUrls": ["https://second-employer.example"],
+                    "sourceSummary": "Mock source URL for local testing.",
+                    "dataConfidence": "low",
+                    "notes": "Use a live provider for real company recommendations.",
                 },
             ],
             "skippedExistingCompanies": [],

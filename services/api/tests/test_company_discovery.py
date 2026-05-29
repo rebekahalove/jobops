@@ -15,6 +15,7 @@ from jobops_api.company_discovery import (
     CompanyDiscoveryRecord,
     CompanyDiscoveryRequest,
     build_candidate_target_context,
+    build_company_discovery_profile_context,
     build_company_discovery_model_request,
     build_assistant_message,
     company_discovery_validation_failure,
@@ -24,7 +25,7 @@ from jobops_api.company_discovery import (
     validate_company_discovery_output,
 )
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Base, CandidateCompany, Company, RoleTarget
+from jobops_api.db.models import Base, CandidateCompany, Company, ProfileFactDraft, RoleTarget
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.settings import Settings
 
@@ -84,13 +85,13 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     assert "CivicActions" in user_prompt
     assert "candidate_target_context" in user_prompt
     assert "Applied AI Engineer" in user_prompt
-    assert response.result_payload["companies"][0]["name"] == "Higher Ground Labs"
+    assert response.result_payload["companies"][0]["name"] == "Profile-Aligned Example Co"
     assert response.result_payload["companies"][0]["derivation_status"] == "model_derived"
     assert response.result_payload["companies"][0]["review_status"] == "new"
 
     with Session(engine) as session:
         saved = list(session.scalars(select(CandidateCompany).join(Company).order_by(Company.name.asc())))
-        assert [link.company.name for link in saved] == ["CivicActions", "Higher Ground Labs"]
+        assert [link.company.name for link in saved] == ["CivicActions", "Profile-Aligned Example Co", "Second Example Employer"]
 
 
 def test_candidate_target_context_uses_only_published_internal_or_public_targets() -> None:
@@ -134,6 +135,32 @@ def test_candidate_target_context_uses_only_published_internal_or_public_targets
     assert "Draft-only target" not in json.dumps(context)
 
 
+def test_company_discovery_profile_context_includes_authenticated_profile_drafts() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        profile.headline = "Painter and installation artist"
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=profile.id,
+                claim="Creates large-scale textile installations for galleries.",
+                fact_type="experience",
+                structured_value={},
+                source="model",
+                confidence="medium",
+                suggested_visibility="private",
+                review_status="needs_review",
+            )
+        )
+        session.commit()
+
+        context = build_company_discovery_profile_context(profile)
+
+    assert context["profile_basics"]["headline"] == "Painter and installation artist"
+    assert context["draft_items"][0]["claim"] == "Creates large-scale textile installations for galleries."
+
+
 def test_company_discovery_request_uses_search_grounding_and_context() -> None:
     request = build_company_discovery_model_request(
         CompanyDiscoveryRequest(
@@ -142,6 +169,7 @@ def test_company_discovery_request_uses_search_grounding_and_context() -> None:
         ),
         current_saved_companies=[{"name": "Existing", "normalized_name": "existing"}],
         target_context={"target_role_titles": ["Applied AI Engineer"]},
+        profile_context={"profile_basics": {"headline": "Studio artist"}},
         search_grounding_enabled=True,
     )
 
@@ -151,6 +179,26 @@ def test_company_discovery_request_uses_search_grounding_and_context() -> None:
     assert request.metadata["current_saved_company_count"] == 1
     assert "Existing" in request.messages[1].content
     assert "Applied AI Engineer" in request.messages[1].content
+    assert "Studio artist" in request.messages[1].content
+
+
+def test_company_discovery_prompt_has_no_hard_coded_ai_or_civic_defaults() -> None:
+    request = build_company_discovery_model_request(
+        CompanyDiscoveryRequest(
+            latest_user_message="Please find some companies to follow.",
+            candidate_profile_slug="artist-profile",
+        ),
+        current_saved_companies=[],
+        target_context={},
+        profile_context={"profile_basics": {"headline": "Painter and installation artist"}},
+        search_grounding_enabled=True,
+    )
+
+    combined_prompt = "\n".join(message.content for message in request.messages)
+    assert "Painter and installation artist" in combined_prompt
+    assert "Do not default to any specific role, industry, mission, geography" in combined_prompt
+    assert "future AI/software roles" not in combined_prompt
+    assert "Prefer companies relevant to progressive politics" not in combined_prompt
 
 
 def test_parse_and_validate_company_discovery_output() -> None:
@@ -227,6 +275,7 @@ def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
         ),
         current_saved_companies=[],
         target_context={},
+        profile_context={},
         search_grounding_enabled=True,
     )
 
@@ -285,6 +334,7 @@ def test_company_discovery_validation_failure_logs_preview(tmp_path: Path, caplo
         ),
         current_saved_companies=[],
         target_context={},
+        profile_context={},
         search_grounding_enabled=True,
     )
 
@@ -440,7 +490,7 @@ def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> Non
     assert result.body["ok"] is True
     assert len(result.body["result"]["companies"]) == 2
     assert result.body["result"]["modelResponse"]["provider"] == "mock"
-    assert json.loads(result.body["result"]["modelResponse"]["text"])["companies"][0]["name"] == "CivicActions"
+    assert json.loads(result.body["result"]["modelResponse"]["text"])["companies"][0]["name"] == "Profile-Aligned Example Co"
 
 
 def create_seeded_engine():
