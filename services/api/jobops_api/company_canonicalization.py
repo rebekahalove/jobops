@@ -12,6 +12,16 @@ from .db.models import CandidateCompany, Company
 
 
 CANONICAL_COMPANY_URL_FIELDS = {"website_url", "careers_url", "job_listings_url", "source_urls"}
+NON_COMPANY_MATCH_DOMAINS = {
+    "adzuna.com",
+    "boards.greenhouse.io",
+    "job-boards.greenhouse.io",
+    "jobs.ashbyhq.com",
+    "jobs.lever.co",
+    "apply.workable.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+}
 
 
 @dataclass(frozen=True)
@@ -36,9 +46,18 @@ def domain_from_url(value: str | None) -> str | None:
 def normalized_domain_from_company_urls(*values: str | None, source_urls: list[str] | None = None) -> str | None:
     for value in [*values, *(source_urls or [])]:
         domain = domain_from_url(value)
-        if domain:
+        if domain and not is_non_company_match_domain(domain):
             return domain
     return None
+
+
+def is_non_company_match_domain(domain: str | None) -> bool:
+    if not domain:
+        return False
+    normalized = domain.casefold().removeprefix("www.")
+    return normalized in NON_COMPANY_MATCH_DOMAINS or any(
+        normalized.endswith(f".{blocked}") for blocked in NON_COMPANY_MATCH_DOMAINS
+    )
 
 
 def clean_company_source_urls(values: list[str | None]) -> list[str]:

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -41,6 +42,82 @@ DerivationStatus = Literal["model_derived", "user_entered", "imported"]
 ReviewStatus = Literal["new", "reviewed", "needs_verification", "archived"]
 RemotePolicy = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 DataConfidence = Literal["low", "medium", "high"]
+ACTIONABLE_TARGET_KEYS = {
+    "target_role_titles",
+    "targetRoleTitles",
+    "targetTitles",
+    "target_role_families",
+    "targetRoleFamilies",
+    "roleFamilies",
+    "domains_or_industries",
+    "domainsOrIndustries",
+    "industries",
+    "industry",
+    "skills",
+    "skill",
+    "keywords",
+}
+BROAD_DISCOVERY_PHRASES = (
+    "broad",
+    "untargeted",
+    "general options",
+    "general search",
+    "exploratory",
+    "explore options",
+    "open ended",
+    "open-ended",
+    "open to anything",
+    "undecided",
+    "not sure what",
+    "without targets",
+    "no specific target",
+    "no specific targets",
+)
+GENERIC_DISCOVERY_TOKENS = {
+    "a",
+    "add",
+    "again",
+    "an",
+    "another",
+    "any",
+    "apply",
+    "can",
+    "companies",
+    "company",
+    "could",
+    "discover",
+    "few",
+    "find",
+    "fit",
+    "fits",
+    "follow",
+    "for",
+    "good",
+    "i",
+    "job",
+    "jobs",
+    "list",
+    "me",
+    "more",
+    "my",
+    "new",
+    "openings",
+    "opportunities",
+    "please",
+    "profile",
+    "relevant",
+    "save",
+    "search",
+    "should",
+    "some",
+    "suited",
+    "that",
+    "the",
+    "to",
+    "track",
+    "watch",
+    "you",
+}
 COMPANY_DISCOVERY_RECORD_KEYS = {
     "name",
     "normalized_name",
@@ -309,6 +386,15 @@ class CompanyDiscoverySaveResult:
     skipped: list[SkippedExistingCompany]
 
 
+@dataclass(frozen=True)
+class CompanyDiscoveryAttempt:
+    model_request: ModelRequest
+    response: Any
+    output: CompanyDiscoveryOutput
+    validation_warnings: list[str]
+    save_result: CompanyDiscoverySaveResult
+
+
 @router.get("/companies", response_model=list[CompanyResponse])
 def list_companies(
     candidate_profile_id: str | None = None,
@@ -348,7 +434,16 @@ def run_company_discovery(
 
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
+    private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
     profile_context = build_company_discovery_profile_context(candidate_profile)
+    if should_prompt_for_discovery_targets(
+        request.latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        private_profile_context=private_profile_context,
+    ):
+        return build_company_discovery_target_prompt_result()
+
     model_request = build_company_discovery_model_request(
         request,
         current_saved_companies=current_saved_companies,
@@ -379,7 +474,15 @@ def run_company_discovery(
         )
 
     try:
-        response = active_connector.generate(routed_request)
+        attempts = [
+            run_company_discovery_attempt(
+                active_connector,
+                db_session=db_session,
+                candidate_profile=candidate_profile,
+                discovery_query=request.latest_user_message,
+                model_request=routed_request,
+            )
+        ]
     except ModelProviderError as error:
         return CompanyDiscoveryServiceResult(
             body={
@@ -390,21 +493,41 @@ def run_company_discovery(
             },
             status_code=502,
         )
-
-    try:
-        output, validation_warnings = validate_company_discovery_output(response.text)
     except CompanyDiscoveryValidationFailure as error:
+        response = getattr(error, "response", None)
         return company_discovery_validation_failure(active_settings, routed_request, response, error.issues)
 
-    save_result = save_model_derived_companies(
-        db_session,
-        candidate_profile=candidate_profile,
-        discovery_query=request.latest_user_message,
-        output=output,
-        provider=response.provider,
-        grounding_metadata=response.metadata.get("groundingMetadata") if isinstance(response.metadata, dict) else None,
-        web_search_queries=response.metadata.get("webSearchQueries") if isinstance(response.metadata, dict) else None,
-    )
+    retry_limit = 2
+    while not attempts[-1].save_result.added and len(attempts) <= retry_limit:
+        retry_request = build_company_discovery_retry_model_request(
+            attempts[-1].model_request,
+            previous_output=attempts[-1].output,
+            previous_skipped=attempts[-1].save_result.skipped,
+            attempt_number=len(attempts) + 1,
+        )
+        try:
+            attempts.append(
+                run_company_discovery_attempt(
+                    active_connector,
+                    db_session=db_session,
+                    candidate_profile=candidate_profile,
+                    discovery_query=request.latest_user_message,
+                    model_request=retry_request,
+                )
+            )
+        except (ModelProviderError, CompanyDiscoveryValidationFailure) as error:
+            logger.warning(
+                "Company discovery retry failed after zero new companies.",
+                extra={"attempt": len(attempts) + 1, "error_type": type(error).__name__},
+            )
+            break
+
+    final_attempt = next((attempt for attempt in reversed(attempts) if attempt.save_result.added), attempts[-1])
+    validation_warnings = [warning for attempt in attempts for warning in attempt.validation_warnings]
+    save_result = final_attempt.save_result
+    output = final_attempt.output
+    response = final_attempt.response
+    final_model_request = final_attempt.model_request
     db_session.commit()
     if validation_warnings:
         logger.warning(
@@ -419,15 +542,17 @@ def run_company_discovery(
         )
 
     added_companies = [serialize_company(company) for company in save_result.added]
-    skipped = [item.model_dump() for item in [*output.skipped_existing_companies, *save_result.skipped]]
+    skipped = [item.model_dump() for item in save_result.skipped]
     assistant_message = build_assistant_message(output, save_result.added, save_result.skipped)
     result_payload = {
         "assistantMessage": assistant_message,
         "companies": added_companies,
         "skippedExistingCompanies": skipped,
         "clarifyingQuestions": output.clarifying_questions,
+        "companyDiscoveryAttemptCount": len(attempts),
+        "zeroSaveRetryUsed": len(attempts) > 1,
         **({"validationWarnings": validation_warnings} if validation_warnings else {}),
-        **model_request_debug_fields(active_settings, routed_request),
+        **model_request_debug_fields(active_settings, final_model_request),
         **model_response_debug_fields(active_settings, response),
     }
 
@@ -476,6 +601,69 @@ def build_company_discovery_model_request(
     )
 
 
+def run_company_discovery_attempt(
+    connector: ModelConnector,
+    *,
+    db_session: Session,
+    candidate_profile: CandidateProfile,
+    discovery_query: str,
+    model_request: ModelRequest,
+) -> CompanyDiscoveryAttempt:
+    response = connector.generate(model_request)
+    try:
+        output, validation_warnings = validate_company_discovery_output(response.text)
+    except CompanyDiscoveryValidationFailure as error:
+        setattr(error, "response", response)
+        raise
+    save_result = save_model_derived_companies(
+        db_session,
+        candidate_profile=candidate_profile,
+        discovery_query=discovery_query,
+        output=output,
+        provider=response.provider,
+        grounding_metadata=response.metadata.get("groundingMetadata") if isinstance(response.metadata, dict) else None,
+        web_search_queries=response.metadata.get("webSearchQueries") if isinstance(response.metadata, dict) else None,
+    )
+    return CompanyDiscoveryAttempt(
+        model_request=model_request,
+        response=response,
+        output=output,
+        validation_warnings=validation_warnings,
+        save_result=save_result,
+    )
+
+
+def build_company_discovery_retry_model_request(
+    model_request: ModelRequest,
+    *,
+    previous_output: CompanyDiscoveryOutput,
+    previous_skipped: list[SkippedExistingCompany],
+    attempt_number: int,
+) -> ModelRequest:
+    rejected_names = [company.name for company in previous_output.companies]
+    skipped_names = [item.name for item in previous_skipped]
+    retry_instruction = json.dumps(
+        {
+            "retry_reason": "The previous company-discovery attempt saved zero new followed companies.",
+            "instruction": (
+                "Return 6 to 12 different companies that fit the same candidate profile and request. "
+                "Do not return companies already present in current_saved_companies, and avoid the previous candidates below."
+            ),
+            "previous_candidate_names_to_avoid": compact_unique_strings([*rejected_names, *skipped_names], limit=24),
+            "attempt_number": attempt_number,
+        },
+        indent=2,
+    )
+    return replace(
+        model_request,
+        messages=[
+            *model_request.messages,
+            ModelMessage(role="user", content=retry_instruction),
+        ],
+        metadata={**model_request.metadata, "zero_save_retry_attempt": attempt_number},
+    )
+
+
 COMPANY_DISCOVERY_SYSTEM_PROMPT = """You are the JobOps Company Discovery Agent.
 
 Use provider-native search grounding when available to identify companies matching the user's request and target context.
@@ -483,7 +671,9 @@ Use provider-native search grounding when available to identify companies matchi
 Rules:
 - Use the user's latest message, candidate_profile_context, and candidate_target_context as the only source of role, industry, geography, mission, and company preferences.
 - Do not default to any specific role, industry, mission, geography, or previous candidate's preferences unless it is present in the user's message or candidate context.
-- When the candidate context points to a non-technical or creative field, recommend companies aligned to that field rather than technical employers.
+- When no location preference is present, do not prefer any city, region, country, remote mode, or headquarters location; location fields should reflect source-supported company facts only.
+- Do not use a company's headquarters, office location, or market geography as a fit reason unless the user or profile explicitly asks for that geography.
+- Recommend companies aligned to the candidate's stated targets and profile context; do not substitute any default field, industry, or employer type.
 - If the request and candidate context are too sparse to infer useful company categories, ask concise clarifying questions instead of inventing preferences.
 - Avoid companies already present in current_saved_companies.
 - Return JSON only.
@@ -509,12 +699,12 @@ Return exactly this JSON shape:
       "careersUrl": "https://...",
       "jobListingsUrl": "https://...",
       "description": "Concise description.",
-      "headquartersCity": "City or null",
-      "headquartersCountry": "Country or null",
-      "operatingCountries": ["United States"],
-      "hiringLocations": ["Remote US", "Washington, DC"],
-      "remotePolicy": "remote",
-      "roleFitTags": ["Relevant role or craft area"],
+      "headquartersCity": null,
+      "headquartersCountry": null,
+      "operatingCountries": [],
+      "hiringLocations": [],
+      "remotePolicy": "unknown",
+      "roleFitTags": ["Relevant role or work area"],
       "missionFitTags": ["Relevant field, audience, or mission"],
       "fitReason": "Why this company should be followed.",
       "sourceUrls": ["https://..."],
@@ -559,6 +749,149 @@ def build_company_discovery_user_prompt(
             },
         },
         indent=2,
+    )
+
+
+def should_prompt_for_discovery_targets(
+    latest_user_message: str,
+    *,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any] | None = None,
+    private_profile_context: dict[str, Any] | None = None,
+) -> bool:
+    if discovery_request_allows_broad_results(latest_user_message):
+        return False
+    if has_actionable_discovery_target(
+        latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        private_profile_context=private_profile_context,
+    ):
+        return False
+    return True
+
+
+def discovery_request_allows_broad_results(latest_user_message: str) -> bool:
+    normalized = " ".join(latest_user_message.casefold().split())
+    return any(phrase in normalized for phrase in BROAD_DISCOVERY_PHRASES)
+
+
+def has_actionable_discovery_target(
+    latest_user_message: str,
+    *,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any] | None = None,
+    private_profile_context: dict[str, Any] | None = None,
+) -> bool:
+    contexts = [target_context, profile_context or {}, private_profile_context or {}]
+    for context in contexts:
+        if context_has_actionable_target(context):
+            return True
+    return command_has_specific_discovery_target(latest_user_message)
+
+
+def context_has_actionable_target(value: object) -> bool:
+    if isinstance(value, dict):
+        if profile_context_item_has_actionable_search_term(value):
+            return True
+        for key, item in value.items():
+            if key in ACTIONABLE_TARGET_KEYS and compact_actionable_context_values(item):
+                return True
+            if key == "headline" and compact_actionable_context_values(item):
+                return True
+            if key in {"targets", "targetRoleIntent", "candidate_target_context"} and context_has_actionable_target(item):
+                return True
+            if isinstance(item, (dict, list)) and context_has_actionable_target(item):
+                return True
+    if isinstance(value, list):
+        return any(context_has_actionable_target(item) for item in value)
+    return False
+
+
+def profile_context_item_has_actionable_search_term(value: dict[str, Any]) -> bool:
+    basics = value.get("profile_basics")
+    if isinstance(basics, dict) and compact_actionable_context_values(basics.get("headline")):
+        return True
+
+    item_type = str(value.get("type") or value.get("itemType") or "").casefold()
+    collection = str(value.get("collection") or "").casefold()
+    if (item_type == "skill" or collection == "skillclaims") and compact_actionable_context_values(value.get("skill")):
+        return True
+    if (item_type == "experience" or collection == "experienceandprojects") and compact_actionable_context_values(value.get("title")):
+        return True
+    return False
+
+
+def compact_actionable_context_values(value: object) -> list[str]:
+    return [item for item in compact_context_values(value) if not profile_search_term_is_placeholder(item)]
+
+
+def compact_context_values(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(compact_context_values(item))
+        return values
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def compact_unique_strings(values: list[str], *, limit: int) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        compacted.append(cleaned)
+        if len(compacted) >= limit:
+            break
+    return compacted
+
+
+def profile_search_term_is_placeholder(value: str) -> bool:
+    normalized = value.casefold().strip()
+    return normalized in {"candidate", "profile", "candidate profile setup in progress"} or "setup in progress" in normalized
+
+
+def command_has_specific_discovery_target(latest_user_message: str) -> bool:
+    tokens = re.findall(r"[a-z0-9][a-z0-9+#.-]*", latest_user_message.casefold())
+    meaningful_tokens = [
+        token.strip(".,!?;:")
+        for token in tokens
+        if token.strip(".,!?;:") not in GENERIC_DISCOVERY_TOKENS and len(token.strip(".,!?;:")) >= 3
+    ]
+    return bool(meaningful_tokens)
+
+
+def build_company_discovery_target_prompt_result() -> CompanyDiscoveryServiceResult:
+    message = (
+        "Before I recommend companies, please complete your target details first: target role, "
+        "industries/domains, work mode, and any location preferences. If you are undecided, ask for a "
+        "broad exploratory company search and I can return untargeted options with that caveat."
+    )
+    return CompanyDiscoveryServiceResult(
+        body={
+            "ok": True,
+            "result": {
+                "assistantMessage": message,
+                "companies": [],
+                "skippedExistingCompanies": [],
+                "clarifyingQuestions": [
+                    "What target role, industry, or kind of organization should I use for company discovery?"
+                ],
+                "profileTargetsRequired": True,
+                "broadDiscoveryAllowed": True,
+            },
+        },
+        status_code=200,
     )
 
 
@@ -712,12 +1045,12 @@ def save_model_derived_companies(
             .where(CandidateCompany.candidate_profile_id == candidate_profile.id)
         )
     )
-    existing_normalized_names = {
+    profile_normalized_names = {
         normalize_company_name(link.company.normalized_name or link.company.name)
         for link in existing
         if link.company is not None and normalize_company_name(link.company.normalized_name or link.company.name)
     }
-    existing_domains = {
+    profile_domains = {
         domain
         for link in existing
         if link.company is not None
@@ -732,6 +1065,9 @@ def save_model_derived_companies(
     }
     added: list[CandidateCompany] = []
     skipped: list[SkippedExistingCompany] = []
+    skipped_keys: set[str] = set()
+    seen_output_names: set[str] = set()
+    seen_output_domains: set[str] = set()
     search_queries = [query for query in web_search_queries if isinstance(query, str)] if isinstance(web_search_queries, list) else []
     safe_grounding_metadata = grounding_metadata if isinstance(grounding_metadata, dict) else {}
 
@@ -747,11 +1083,22 @@ def save_model_derived_companies(
             ]
             if domain
         }
-        if normalized_name and normalized_name in existing_normalized_names:
-            skipped.append(SkippedExistingCompany(name=company.name, reason="Already tracked by normalized name."))
+        if normalized_name and normalized_name in profile_normalized_names:
+            skip_key = f"name:{normalized_name}"
+            if skip_key not in skipped_keys:
+                skipped.append(SkippedExistingCompany(name=company.name, reason="Already followed by this profile."))
+                skipped_keys.add(skip_key)
             continue
-        if candidate_domains and existing_domains.intersection(candidate_domains):
-            skipped.append(SkippedExistingCompany(name=company.name, reason="Already tracked by website domain."))
+        matched_profile_domain = next((domain for domain in sorted(candidate_domains) if domain in profile_domains), None)
+        if matched_profile_domain:
+            skip_key = f"domain:{matched_profile_domain}"
+            if skip_key not in skipped_keys:
+                skipped.append(SkippedExistingCompany(name=company.name, reason="Already followed by this profile."))
+                skipped_keys.add(skip_key)
+            continue
+        if normalized_name and normalized_name in seen_output_names:
+            continue
+        if candidate_domains and seen_output_domains.intersection(candidate_domains):
             continue
 
         canonical = upsert_canonical_company(
@@ -789,10 +1136,13 @@ def save_model_derived_companies(
         if link_result.created_link:
             added.append(link_result.link)
         else:
-            skipped.append(SkippedExistingCompany(name=company.name, reason="Already followed by this profile."))
+            skip_key = f"company:{canonical.id}"
+            if skip_key not in skipped_keys:
+                skipped.append(SkippedExistingCompany(name=company.name, reason="Already followed by this profile."))
+                skipped_keys.add(skip_key)
         if normalized_name:
-            existing_normalized_names.add(normalized_name)
-        existing_domains.update(candidate_domains)
+            seen_output_names.add(normalized_name)
+        seen_output_domains.update(candidate_domains)
 
     return CompanyDiscoverySaveResult(added=added, skipped=skipped)
 
@@ -803,14 +1153,25 @@ def build_assistant_message(
     skipped: list[SkippedExistingCompany],
 ) -> str:
     model_message = output.assistant_message.strip()
-    skipped_note = f" Skipped {len(skipped)} obvious duplicate(s)." if skipped else ""
-    if model_message and added:
+    if model_message and output.clarifying_questions:
         return model_message
-    if model_message and (output.clarifying_questions or skipped):
-        return f"{model_message}{skipped_note}"
-    if model_message:
+    if added:
+        names = ", ".join(link.company.name for link in added if link.company is not None)
+        company_word = "company" if len(added) == 1 else "companies"
+        message = f"Saved {len(added)} new {company_word} to your Companies list"
+        if names:
+            message += f": {names}"
+        message += "."
+        if skipped:
+            message += f" Skipped {len(skipped)} already-followed company candidate(s)."
+        elif len(added) < len(output.companies):
+            message += " Other model candidates were not added because they did not produce new followed-company links."
+        return message
+    if skipped:
+        return f"No new companies were added. Skipped {len(skipped)} already-followed company candidate(s)."
+    if model_message and not output.companies:
         return model_message
-    return f"No new companies were saved. Please verify existing companies from their links.{skipped_note}"
+    return "No new companies were added. Please try a more specific company category, role, industry, or location preference."
 
 
 def parse_company_discovery_json(raw_text: str) -> Any:
@@ -1080,8 +1441,8 @@ def build_mock_company_discovery_response(request: ModelRequest) -> str:
                     "jobListingsUrl": "https://profile-aligned.example/careers",
                     "description": "Mock company for local company-discovery testing.",
                     "headquartersCity": None,
-                    "headquartersCountry": "United States",
-                    "operatingCountries": ["United States"],
+                    "headquartersCountry": None,
+                    "operatingCountries": [],
                     "hiringLocations": [],
                     "remotePolicy": "unknown",
                     "roleFitTags": ["Profile context match"],
@@ -1100,8 +1461,8 @@ def build_mock_company_discovery_response(request: ModelRequest) -> str:
                     "jobListingsUrl": None,
                     "description": "Second mock company for local company-discovery testing.",
                     "headquartersCity": None,
-                    "headquartersCountry": "United States",
-                    "operatingCountries": ["United States"],
+                    "headquartersCountry": None,
+                    "operatingCountries": [],
                     "hiringLocations": [],
                     "remotePolicy": "unknown",
                     "roleFitTags": ["Profile context match"],

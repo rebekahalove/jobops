@@ -35,7 +35,10 @@ def source_result_verification(result: LiveJobSourceResult, *, verify_url: bool)
         return JobUrlVerificationResult(
             status="provider_unverified",
             checked_at=verification.checked_at,
-            summary=f"Provider-backed URL could not be fully fetched/verified: {verification.summary}",
+            summary=(
+                result.url_verification_summary
+                or "Provider-backed job result; direct server-side URL fetch was blocked, so JobOps kept the provider result without independent page verification."
+            ),
             final_url=verification.final_url or result.job_url,
             posting_date=result.posting_date,
         )

@@ -56,7 +56,8 @@ describe("Companies list", () => {
     expect(html).toContain("New");
     expect(html).toContain("Model derived");
     expect(html).toContain("Remote US, Washington, DC");
-    expect(html).toContain("Added May 18, 2026");
+    expect(html).toContain("Added");
+    expect(html).toContain("May 18, 2026");
     expect(html).toContain("Applied AI");
     expect(html).toContain("Public-interest technology");
     expect(html).toContain('href="https://civicactions.com/careers"');

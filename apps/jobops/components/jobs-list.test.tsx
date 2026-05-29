@@ -35,7 +35,10 @@ describe("Jobs list", () => {
             location: "Remote US",
             remote_work_mode: "remote",
             employment_type: "Full-time",
-            salary_text: "$150k-$180k",
+            salary_min: 150000,
+            salary_max: 180000,
+            salary_currency: "USD",
+            salary_text: "USD 150,000-180,000",
             description_excerpt: "Build applied AI workflows for civic data products.",
             fit_summary: "Matches applied AI and platform engineering goals.",
             user_notes: null,
@@ -56,7 +59,7 @@ describe("Jobs list", () => {
     expect(html).toContain("Example Civic");
     expect(html).toContain("Remote US");
     expect(html).toContain("Full-time");
-    expect(html).toContain("$150k-$180k");
+    expect(html).toContain("$150,000-$180,000");
     expect(html).toContain("May 28, 2026");
     expect(html).toContain("05/20/2026");
     expect(html).toContain("URL check");
@@ -104,6 +107,48 @@ describe("Jobs list", () => {
 
     expect(html).toContain("AI Platform Engineer");
     expect(html).toContain("Unknown");
+  });
+
+  it("does not show noisy provider-unverified fetch summaries", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          {
+            id: "saved-job-1",
+            candidate_profile_id: "profile-1",
+            job_id: "job-1",
+            title: "Studio Assistant",
+            company_name: "Example Studio",
+            job_url: "https://provider.example/jobs/studio",
+            canonical_url: null,
+            apply_url: null,
+            source: "Adzuna",
+            provenance: "provider_result",
+            url_verification_status: "provider_unverified",
+            url_verification_checked_at: "2026-05-28T12:00:00Z",
+            url_verification_summary: "Provider-backed URL could not be fully fetched/verified: Job URL returned HTTP 429.",
+            location: null,
+            remote_work_mode: "unknown",
+            employment_type: null,
+            salary_text: null,
+            description_excerpt: null,
+            fit_summary: null,
+            user_notes: null,
+            status: "saved",
+            added_at: "2026-05-28T12:00:00Z",
+            archived_at: null,
+            posting_date: null,
+            first_seen_at: "2026-05-28T12:00:00Z",
+            last_seen_at: null,
+            created_at: "2026-05-28T12:00:00Z",
+            updated_at: "2026-05-28T12:00:00Z"
+          }
+        ]}
+      />
+    );
+
+    expect(html).not.toContain("Provider unverified");
+    expect(html).not.toContain("HTTP 429");
   });
 
   it("refreshes when command-center job discovery completes", async () => {

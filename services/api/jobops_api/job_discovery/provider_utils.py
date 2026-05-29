@@ -4,10 +4,35 @@ import json
 import re
 import urllib.request
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from urllib.parse import urlencode
 
 from .models import LiveJobSourceResult
+
+
+ADZUNA_COUNTRY_CURRENCY_CODES = {
+    "at": "EUR",
+    "au": "AUD",
+    "be": "EUR",
+    "br": "BRL",
+    "ca": "CAD",
+    "ch": "CHF",
+    "de": "EUR",
+    "es": "EUR",
+    "fr": "EUR",
+    "gb": "GBP",
+    "ie": "EUR",
+    "in": "INR",
+    "it": "EUR",
+    "mx": "MXN",
+    "nl": "EUR",
+    "nz": "NZD",
+    "pl": "PLN",
+    "sg": "SGD",
+    "us": "USD",
+    "za": "ZAR",
+}
 
 
 def fetch_json(url: str, *, params: dict[str, object] | None = None) -> Any:
@@ -335,12 +360,37 @@ def parse_datetime_value(value: object) -> datetime | None:
             return None
 
 
-def format_salary_text(salary_min: object, salary_max: object) -> str | None:
-    if salary_min is None and salary_max is None:
+def infer_adzuna_currency_code(country: str | None) -> str | None:
+    if not country:
         return None
-    if salary_min is not None and salary_max is not None:
-        return f"{salary_min}-{salary_max}"
-    return str(salary_min or salary_max)
+    return ADZUNA_COUNTRY_CURRENCY_CODES.get(country.strip().lower())
+
+
+def parse_whole_currency_amount(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if amount < 0:
+        return None
+    return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def format_salary_text(salary_min: object, salary_max: object, *, currency_code: str | None = None) -> str | None:
+    parsed_min = parse_whole_currency_amount(salary_min)
+    parsed_max = parse_whole_currency_amount(salary_max)
+    if parsed_min is None and parsed_max is None:
+        return None
+    prefix = f"{currency_code.upper()} " if currency_code else ""
+    if parsed_min is not None and parsed_max is not None:
+        if parsed_min == parsed_max:
+            return f"{prefix}{parsed_min:,}"
+        return f"{prefix}{parsed_min:,}-{parsed_max:,}"
+    return f"{prefix}{(parsed_min if parsed_min is not None else parsed_max):,}"
 
 
 def nested_get(value: object, *keys: str) -> object:
