@@ -1,4 +1,5 @@
 export const JOBOPS_SESSION_COOKIE_NAME = "jobops_session";
+const BACKEND_SESSION_VALIDATION_TIMEOUT_MS = 2500;
 
 const PROTECTED_API_PROXY_PATHS = [
   "/api/command-center",
@@ -86,22 +87,6 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
   }
 
   if (sessionCookieValue && isProtectedUiPath) {
-    const backendSession = await validateBackendSession(request.headers.get("cookie"));
-    if (backendSession.ok) {
-      return undefined;
-    }
-
-    const loginUrl = buildLoginRedirectUrl(request.url, loginPath, requestUrl);
-    return new Response(null, {
-      headers: {
-        Location: loginUrl.toString(),
-        "Set-Cookie": clearSessionCookieHeader(env.isProduction)
-      },
-      status: 307
-    });
-  }
-
-  if (sessionCookieValue) {
     return undefined;
   }
 
@@ -280,14 +265,21 @@ async function validateBackendSession(cookieHeader: string | null) {
   }
 
   try {
-    const response = await fetch(`${apiBaseUrl}/v1/auth/me`, {
-      cache: "no-store",
-      headers: {
-        Cookie: cookieHeader || "",
-        "X-JobOps-Internal-Key": internalApiKey
-      }
-    });
-    return { ok: response.ok };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), BACKEND_SESSION_VALIDATION_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/auth/me`, {
+        cache: "no-store",
+        headers: {
+          Cookie: cookieHeader || "",
+          "X-JobOps-Internal-Key": internalApiKey
+        },
+        signal: controller.signal
+      });
+      return { ok: response.ok };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch {
     return { ok: false };
   }

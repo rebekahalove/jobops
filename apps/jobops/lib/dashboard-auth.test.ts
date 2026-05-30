@@ -157,7 +157,7 @@ describe("dashboard auth gate", () => {
     expect(apiResponse).toBeUndefined();
   });
 
-  it("lets requests with a backend session reach protected dashboard paths", async () => {
+  it("lets dashboard page refreshes with a session cookie through without backend validation", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
@@ -176,16 +176,10 @@ describe("dashboard auth gate", () => {
     );
 
     expect(response).toBeUndefined();
-    expect(globalThis.fetch).toHaveBeenCalledWith("http://api.test/v1/auth/me", {
-      cache: "no-store",
-      headers: {
-        Cookie: `${JOBOPS_SESSION_COOKIE_NAME}=test-session-token`,
-        "X-JobOps-Internal-Key": "test-internal-key"
-      }
-    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("redirects protected dashboard paths when a stale backend session cookie is present", async () => {
+  it("lets dashboard page refreshes with a stale session cookie reach the page shell", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ detail: "JobOps authentication is required." }), { status: 401 }));
@@ -203,12 +197,37 @@ describe("dashboard auth gate", () => {
       }
     );
 
-    if (!response) {
-      throw new Error("Expected dashboard gate response.");
-    }
-    expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("http://next.test/jobops/login?returnTo=%2Fjobops%2Fapplications");
-    expect(response.headers.get("set-cookie")).toContain(`${JOBOPS_SESSION_COOKIE_NAME}=; Max-Age=0`);
+    expect(response).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("validates protected API proxy paths with a backend timeout guard", async () => {
+    process.env.JOBOPS_API_BASE_URL = "http://api.test";
+    process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    const response = await gateDashboardRequest(
+      new NextRequest("http://next.test/jobops/api/profile-draft", {
+        headers: {
+          cookie: `${JOBOPS_SESSION_COOKIE_NAME}=test-session-token`
+        }
+      }),
+      {
+        dashboardBasePath: "/jobops",
+        env: configuredEnv,
+        loginPath: "/jobops/login"
+      }
+    );
+
+    expect(response).toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://api.test/v1/auth/me", {
+      cache: "no-store",
+      headers: {
+        Cookie: `${JOBOPS_SESSION_COOKIE_NAME}=test-session-token`,
+        "X-JobOps-Internal-Key": "test-internal-key"
+      },
+      signal: expect.any(AbortSignal)
+    });
   });
 
   it("leaves public portfolio paths unaffected", async () => {

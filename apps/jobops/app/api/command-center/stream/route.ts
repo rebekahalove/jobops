@@ -67,7 +67,8 @@ export async function POST(request: Request) {
         command: validation.value.command,
         active_workspace: validation.value.activeWorkspace,
         client_context: validation.value.clientContext ?? {}
-      })
+      }),
+      signal: request.signal
     });
     console.info("Command-center stream proxy response.", {
       contentType: apiResponse.headers.get("content-type") || null,
