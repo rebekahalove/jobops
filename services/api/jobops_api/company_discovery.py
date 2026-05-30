@@ -325,6 +325,18 @@ class CompanyDiscoveryOutput(ApiModel):
         serialization_alias="skippedExistingCompanies",
         max_length=25,
     )
+    search_queries_used: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("search_queries_used", "searchQueriesUsed"),
+        serialization_alias="searchQueriesUsed",
+        max_length=16,
+    )
+    discovery_angles: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("discovery_angles", "discoveryAngles"),
+        serialization_alias="discoveryAngles",
+        max_length=16,
+    )
     clarifying_questions: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("clarifying_questions", "clarifyingQuestions"),
@@ -395,6 +407,27 @@ class CompanyDiscoveryAttempt:
     save_result: CompanyDiscoverySaveResult
 
 
+@dataclass(frozen=True)
+class CompanyDiscoveryContextSignals:
+    detected_user_search_terms: list[str]
+    detected_target_titles: list[str]
+    detected_role_families: list[str]
+    detected_headline: str | None
+    detected_skills_count: int
+    detected_experience_signals_count: int
+
+    @property
+    def has_actionable_context(self) -> bool:
+        return bool(
+            self.detected_user_search_terms
+            or self.detected_target_titles
+            or self.detected_role_families
+            or self.detected_headline
+            or self.detected_skills_count
+            or self.detected_experience_signals_count
+        )
+
+
 @router.get("/companies", response_model=list[CompanyResponse])
 def list_companies(
     candidate_profile_id: str | None = None,
@@ -436,19 +469,32 @@ def run_company_discovery(
     target_context = build_candidate_target_context(db_session, candidate_profile)
     private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
     profile_context = build_company_discovery_profile_context(candidate_profile)
-    if should_prompt_for_discovery_targets(
+    discovery_context = build_company_discovery_context(
+        db_session,
+        candidate_profile_id=candidate_profile.id,
+        latest_user_message=request.latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        private_profile_context=private_profile_context,
+        current_saved_companies=current_saved_companies,
+    )
+    preflight_signals = analyze_company_discovery_context_signals(
         request.latest_user_message,
         target_context=target_context,
         profile_context=profile_context,
         private_profile_context=private_profile_context,
-    ):
-        return build_company_discovery_target_prompt_result()
+    )
+    if should_prompt_for_discovery_targets(request.latest_user_message, target_context=target_context, signals=preflight_signals):
+        return build_company_discovery_target_prompt_result(
+            diagnostics=build_target_preflight_diagnostics(preflight_signals, reason="no_actionable_company_discovery_context")
+        )
 
     model_request = build_company_discovery_model_request(
         request,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         profile_context=profile_context,
+        discovery_context=discovery_context,
         search_grounding_enabled=active_settings.company_discovery_search_grounding_enabled,
     )
     routed_request = route_model_request(model_request, connector_config.routing)
@@ -467,6 +513,7 @@ def run_company_discovery(
                     "or configure JOBOPS_LLM_PROVIDER=gemini with GEMINI_API_KEY."
                 ),
                 "code": error.code,
+                "zeroResultReason": "provider/searchUnavailable",
                 **safe_error_detail_fields(active_settings, error),
                 **model_request_debug_fields(active_settings, routed_request),
             },
@@ -489,6 +536,7 @@ def run_company_discovery(
                 "ok": False,
                 "error": "Company discovery model call failed. No companies were saved.",
                 "code": error.code,
+                "zeroResultReason": "provider/searchUnavailable",
                 **model_request_debug_fields(active_settings, routed_request),
             },
             status_code=502,
@@ -551,6 +599,12 @@ def run_company_discovery(
         "clarifyingQuestions": output.clarifying_questions,
         "companyDiscoveryAttemptCount": len(attempts),
         "zeroSaveRetryUsed": len(attempts) > 1,
+        **build_company_discovery_result_diagnostics(
+            attempts=attempts,
+            final_attempt=final_attempt,
+            recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
+            search_queries_used=search_queries_used_from_attempts(attempts),
+        ),
         **({"validationWarnings": validation_warnings} if validation_warnings else {}),
         **model_request_debug_fields(active_settings, final_model_request),
         **model_response_debug_fields(active_settings, response),
@@ -571,8 +625,19 @@ def build_company_discovery_model_request(
     current_saved_companies: list[dict[str, Any]],
     target_context: dict[str, Any],
     profile_context: dict[str, Any] | None = None,
+    discovery_context: dict[str, Any] | None = None,
     search_grounding_enabled: bool,
 ) -> ModelRequest:
+    discovery_context = discovery_context or {
+        "precedence": build_company_discovery_context_precedence(
+            latest_user_message=request.latest_user_message,
+            target_context=target_context,
+            profile_context=profile_context or {},
+            private_profile_context={},
+            current_saved_companies=current_saved_companies,
+            recent_discovery_context={},
+        )
+    }
     return ModelRequest(
         task="company_discovery",
         temperature=0,
@@ -584,6 +649,7 @@ def build_company_discovery_model_request(
             "current_saved_company_count": len(current_saved_companies),
             "candidate_target_context_included": bool(target_context),
             "candidate_profile_context_included": bool(profile_context),
+            "company_discovery_context_included": bool(discovery_context),
             "search_grounding_enabled": search_grounding_enabled,
         },
         messages=[
@@ -595,10 +661,110 @@ def build_company_discovery_model_request(
                     current_saved_companies=current_saved_companies,
                     target_context=target_context,
                     profile_context=profile_context or {},
+                    discovery_context=discovery_context,
                 ),
             ),
         ],
     )
+
+
+def build_company_discovery_context(
+    session: Session,
+    *,
+    candidate_profile_id: str,
+    latest_user_message: str,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+    current_saved_companies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    recent_discovery_context = build_recent_company_discovery_context(session, candidate_profile_id)
+    return {
+        "precedence": build_company_discovery_context_precedence(
+            latest_user_message=latest_user_message,
+            target_context=target_context,
+            profile_context=profile_context,
+            private_profile_context=private_profile_context,
+            current_saved_companies=current_saved_companies,
+            recent_discovery_context=recent_discovery_context,
+        ),
+        "recent_discovery": recent_discovery_context,
+        "novelty_rules": {
+            "do_not_return_saved_companies": True,
+            "avoid_recent_search_angles_unless_user_explicitly_asks": True,
+            "use_fresh_search_angle_when_prior_searches_produced_duplicates": True,
+            "prefer_companies_with_careers_job_listings_or_source_urls": True,
+        },
+    }
+
+
+def build_company_discovery_context_precedence(
+    *,
+    latest_user_message: str,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+    current_saved_companies: list[dict[str, Any]],
+    recent_discovery_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    signals = analyze_company_discovery_context_signals(
+        latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        private_profile_context=private_profile_context,
+    )
+    return [
+        {"order": 1, "name": "current_user_search_request", "values": [latest_user_message] if latest_user_message.strip() else []},
+        {"order": 2, "name": "target_role_titles", "values": signals.detected_target_titles},
+        {"order": 3, "name": "target_role_families_or_role_areas", "values": signals.detected_role_families},
+        {"order": 4, "name": "headline", "values": [signals.detected_headline] if signals.detected_headline else []},
+        {"order": 5, "name": "previous_job_titles", "values": extract_company_discovery_previous_titles(private_profile_context)},
+        {"order": 6, "name": "skills", "values": extract_company_discovery_skills(profile_context, private_profile_context)},
+        {"order": 7, "name": "experience_project_domain_signals", "values": extract_company_discovery_experience_signals(profile_context, private_profile_context)},
+        {"order": 8, "name": "saved_companies", "values": [company.get("name") for company in current_saved_companies if company.get("name")]},
+        {"order": 9, "name": "recent_company_discovery_queries", "values": recent_discovery_context.get("recent_discovery_queries", [])},
+        {"order": 10, "name": "recent_duplicates_or_skipped_companies", "values": recent_discovery_context.get("recent_duplicate_company_names", [])},
+    ]
+
+
+def build_recent_company_discovery_context(session: Session, candidate_profile_id: str) -> dict[str, Any]:
+    links = list(
+        session.scalars(
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile_id)
+            .order_by(CandidateCompany.added_at.desc(), CandidateCompany.created_at.desc())
+            .limit(30)
+        )
+    )
+    discovery_queries = compact_unique_strings([link.discovery_query or "" for link in links], limit=12)
+    search_queries_used = compact_unique_strings(
+        [query for link in links for query in (link.search_queries_used or []) if isinstance(query, str)],
+        limit=20,
+    )
+    saved_names = compact_unique_strings([link.company.name for link in links if link.company is not None], limit=30)
+    saved_domains = compact_unique_strings(
+        [
+            domain
+            for link in links
+            if link.company is not None
+            for domain in [
+                link.company.normalized_domain,
+                domain_from_url(link.company.website_url),
+                domain_from_url(link.company.careers_url),
+                domain_from_url(link.company.job_listings_url),
+            ]
+            if domain
+        ],
+        limit=30,
+    )
+    return {
+        "recent_discovery_queries": discovery_queries,
+        "recent_search_queries_used": search_queries_used,
+        "recent_duplicate_company_names": [],
+        "saved_company_names": saved_names,
+        "saved_company_domains": saved_domains,
+    }
 
 
 def run_company_discovery_attempt(
@@ -691,6 +857,8 @@ Rules:
 Return exactly this JSON shape:
 {
   "assistantMessage": "Concise markdown answer for the chat window.",
+  "searchQueriesUsed": ["Search query or grounded search angle actually used."],
+  "discoveryAngles": ["Fresh angle used to discover this batch."],
   "companies": [
     {
       "name": "Company Name",
@@ -729,15 +897,19 @@ def build_company_discovery_user_prompt(
     current_saved_companies: list[dict[str, Any]],
     target_context: dict[str, Any],
     profile_context: dict[str, Any],
+    discovery_context: dict[str, Any],
 ) -> str:
     return json.dumps(
         {
             "task": "company_discovery",
             "instruction": (
                 "Use search grounding to find companies worth following based on the user's request, "
-                "candidate_profile_context, and candidate_target_context. Return only strict JSON matching the system schema."
+                "candidate_profile_context, candidate_target_context, and company_discovery_context. "
+                "First choose fresh discoveryAngles/searchQueriesUsed, then return companies. "
+                "Return only strict JSON matching the system schema."
             ),
             "latest_user_message": request.latest_user_message,
+            "company_discovery_context": discovery_context,
             "candidate_profile_context": profile_context,
             "candidate_target_context": target_context,
             "current_saved_companies": current_saved_companies,
@@ -746,6 +918,9 @@ def build_company_discovery_user_prompt(
                 "do_not_use_current_jobs_or_applications": True,
                 "authenticated_profile_context_may_be_used_for_personalized_company_matching": True,
                 "do_not_infer_unstated_domains_from_product_defaults": True,
+                "avoid_repeating_recent_discovery_queries": True,
+                "avoid_returning_saved_company_names_or_domains": True,
+                "prefer_companies_with_careers_job_listings_or_source_urls": True,
             },
         },
         indent=2,
@@ -758,15 +933,17 @@ def should_prompt_for_discovery_targets(
     target_context: dict[str, Any],
     profile_context: dict[str, Any] | None = None,
     private_profile_context: dict[str, Any] | None = None,
+    signals: CompanyDiscoveryContextSignals | None = None,
 ) -> bool:
     if discovery_request_allows_broad_results(latest_user_message):
         return False
-    if has_actionable_discovery_target(
+    signals = signals or analyze_company_discovery_context_signals(
         latest_user_message,
         target_context=target_context,
         profile_context=profile_context,
         private_profile_context=private_profile_context,
-    ):
+    )
+    if signals.has_actionable_context:
         return False
     return True
 
@@ -783,11 +960,175 @@ def has_actionable_discovery_target(
     profile_context: dict[str, Any] | None = None,
     private_profile_context: dict[str, Any] | None = None,
 ) -> bool:
-    contexts = [target_context, profile_context or {}, private_profile_context or {}]
-    for context in contexts:
-        if context_has_actionable_target(context):
-            return True
-    return command_has_specific_discovery_target(latest_user_message)
+    return analyze_company_discovery_context_signals(
+        latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        private_profile_context=private_profile_context,
+    ).has_actionable_context
+
+
+def analyze_company_discovery_context_signals(
+    latest_user_message: str,
+    *,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any] | None = None,
+    private_profile_context: dict[str, Any] | None = None,
+) -> CompanyDiscoveryContextSignals:
+    profile_context = profile_context or {}
+    private_profile_context = private_profile_context or {}
+    headline = extract_company_discovery_headline(profile_context, private_profile_context)
+    skills = extract_company_discovery_skills(profile_context, private_profile_context)
+    experience_signals = extract_company_discovery_experience_signals(profile_context, private_profile_context)
+    return CompanyDiscoveryContextSignals(
+        detected_user_search_terms=extract_user_company_search_terms(latest_user_message),
+        detected_target_titles=extract_company_discovery_target_titles(target_context, profile_context, private_profile_context),
+        detected_role_families=extract_company_discovery_role_families(target_context, profile_context, private_profile_context),
+        detected_headline=headline,
+        detected_skills_count=len(skills),
+        detected_experience_signals_count=len(experience_signals),
+    )
+
+
+def build_target_preflight_diagnostics(signals: CompanyDiscoveryContextSignals, *, reason: str) -> dict[str, Any]:
+    return {
+        "blockedByTargetPreflight": True,
+        "reason": reason,
+        "detectedUserSearchTerms": signals.detected_user_search_terms,
+        "detectedTargetTitles": signals.detected_target_titles,
+        "detectedRoleFamilies": signals.detected_role_families,
+        "detectedHeadline": signals.detected_headline,
+        "detectedSkillsCount": signals.detected_skills_count,
+        "detectedExperienceSignalsCount": signals.detected_experience_signals_count,
+        "targetPreflightBlocked": True,
+        "zeroResultReason": "targetPreflightBlocked",
+    }
+
+
+def extract_user_company_search_terms(latest_user_message: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9][a-z0-9+#.-]*", latest_user_message.casefold())
+    return compact_unique_strings(
+        [
+            token.strip(".,!?;:")
+            for token in tokens
+            if token.strip(".,!?;:") not in GENERIC_DISCOVERY_TOKENS and len(token.strip(".,!?;:")) >= 3
+        ],
+        limit=12,
+    )
+
+
+def extract_company_discovery_target_titles(
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    values.extend(compact_actionable_context_values(target_context.get("target_role_titles")))
+    targets = profile_context.get("targets") if isinstance(profile_context, dict) else None
+    if isinstance(targets, dict):
+        values.extend(compact_actionable_context_values(targets.get("target_role_titles")))
+        values.extend(compact_actionable_context_values(targets.get("targetTitles")))
+    private_targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(private_targets, dict):
+        values.extend(compact_actionable_context_values(private_targets.get("targetTitles")))
+        values.extend(compact_actionable_context_values(private_targets.get("target_role_titles")))
+    for item in iter_company_discovery_profile_items(profile_context, private_profile_context):
+        if str(item.get("collection") or "").casefold() != "targetroleintent":
+            continue
+        values.extend(compact_actionable_context_values(item.get("targetTitles")))
+        values.extend(compact_actionable_context_values(item.get("target_role_titles")))
+    return compact_unique_strings(values, limit=12)
+
+
+def extract_company_discovery_role_families(
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    for key in ("target_role_families", "role_families", "domains_or_industries", "domainsOrIndustries", "industries", "industry"):
+        values.extend(split_context_search_terms(target_context.get(key)))
+    targets = profile_context.get("targets") if isinstance(profile_context, dict) else None
+    if isinstance(targets, dict):
+        for key in ("target_role_families", "targetRoleFamilies", "roleFamilies", "domains_or_industries", "domainsOrIndustries"):
+            values.extend(split_context_search_terms(targets.get(key)))
+    private_targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(private_targets, dict):
+        for key in ("targetRoleFamilies", "target_role_families", "roleFamilies", "domainsOrIndustries", "domains_or_industries"):
+            values.extend(split_context_search_terms(private_targets.get(key)))
+    for item in iter_company_discovery_profile_items(profile_context, private_profile_context):
+        if str(item.get("collection") or "").casefold() != "targetroleintent":
+            continue
+        for key in ("targetRoleFamilies", "target_role_families", "roleFamilies", "domainsOrIndustries", "domains_or_industries"):
+            values.extend(split_context_search_terms(item.get(key)))
+    return compact_unique_strings(values, limit=16)
+
+
+def extract_company_discovery_headline(profile_context: dict[str, Any], private_profile_context: dict[str, Any]) -> str | None:
+    for context in (profile_context, private_profile_context):
+        basics = context.get("profile_basics") if isinstance(context, dict) else None
+        if isinstance(basics, dict):
+            values = compact_actionable_context_values(basics.get("headline"))
+            if values:
+                return values[0]
+    return None
+
+
+def extract_company_discovery_skills(profile_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for context in (profile_context, private_profile_context):
+        if isinstance(context, dict):
+            values.extend(split_context_search_terms(context.get("skills")))
+    for item in iter_company_discovery_profile_items(profile_context, private_profile_context):
+        item_type = str(item.get("type") or item.get("itemType") or "").casefold()
+        collection = str(item.get("collection") or "").casefold()
+        if item_type == "skill" or collection == "skillclaims":
+            values.extend(split_context_search_terms(item.get("skill")))
+            values.extend(split_context_search_terms(item.get("skill_name")))
+            values.extend(split_context_search_terms(item.get("claim")))
+    return compact_unique_strings(values, limit=30)
+
+
+def extract_company_discovery_previous_titles(private_profile_context: dict[str, Any]) -> list[str]:
+    titles: list[str] = []
+    for item in iter_company_discovery_profile_items({}, private_profile_context):
+        item_type = str(item.get("type") or item.get("itemType") or "").casefold()
+        collection = str(item.get("collection") or "").casefold()
+        if item_type == "experience" or collection == "experienceandprojects":
+            titles.extend(compact_actionable_context_values(item.get("title")))
+    return compact_unique_strings(titles, limit=16)
+
+
+def extract_company_discovery_experience_signals(profile_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for item in iter_company_discovery_profile_items(profile_context, private_profile_context):
+        item_type = str(item.get("type") or item.get("itemType") or "").casefold()
+        collection = str(item.get("collection") or "").casefold()
+        if item_type == "experience" or collection == "experienceandprojects":
+            values.extend(compact_actionable_context_values(item.get("title")))
+            values.extend(split_context_search_terms(item.get("claim")))
+            values.extend(split_context_search_terms(item.get("description")))
+            values.extend(split_context_search_terms(item.get("category")))
+    return compact_unique_strings(values, limit=30)
+
+
+def iter_company_discovery_profile_items(profile_context: dict[str, Any], private_profile_context: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for context in (profile_context, private_profile_context):
+        if not isinstance(context, dict):
+            continue
+        for key in ("published_items", "draft_items", "published_public_items", "published_internal_items"):
+            raw_items = context.get(key)
+            if isinstance(raw_items, list):
+                items.extend(item for item in raw_items if isinstance(item, dict))
+    return items
+
+
+def split_context_search_terms(value: object) -> list[str]:
+    values: list[str] = []
+    for item in compact_actionable_context_values(value):
+        values.extend(part.strip() for part in re.split(r"[;\n,|]+", item) if part.strip())
+    return [item for item in values if not profile_search_term_is_placeholder(item)]
 
 
 def context_has_actionable_target(value: object) -> bool:
@@ -871,7 +1212,7 @@ def command_has_specific_discovery_target(latest_user_message: str) -> bool:
     return bool(meaningful_tokens)
 
 
-def build_company_discovery_target_prompt_result() -> CompanyDiscoveryServiceResult:
+def build_company_discovery_target_prompt_result(*, diagnostics: dict[str, Any] | None = None) -> CompanyDiscoveryServiceResult:
     message = (
         "Before I recommend companies, please complete your target details first: target role, "
         "industries/domains, work mode, and any location preferences. If you are undecided, ask for a "
@@ -889,6 +1230,7 @@ def build_company_discovery_target_prompt_result() -> CompanyDiscoveryServiceRes
                 ],
                 "profileTargetsRequired": True,
                 "broadDiscoveryAllowed": True,
+                **(diagnostics or {}),
             },
         },
         status_code=200,
@@ -1068,7 +1410,8 @@ def save_model_derived_companies(
     skipped_keys: set[str] = set()
     seen_output_names: set[str] = set()
     seen_output_domains: set[str] = set()
-    search_queries = [query for query in web_search_queries if isinstance(query, str)] if isinstance(web_search_queries, list) else []
+    metadata_search_queries = [query for query in web_search_queries if isinstance(query, str)] if isinstance(web_search_queries, list) else []
+    search_queries = compact_unique_strings([*output.search_queries_used, *output.discovery_angles, *metadata_search_queries], limit=24)
     safe_grounding_metadata = grounding_metadata if isinstance(grounding_metadata, dict) else {}
 
     for company in output.companies:
@@ -1174,6 +1517,53 @@ def build_assistant_message(
     return "No new companies were added. Please try a more specific company category, role, industry, or location preference."
 
 
+def search_queries_used_from_attempts(attempts: list[CompanyDiscoveryAttempt]) -> list[str]:
+    values: list[str] = []
+    for attempt in attempts:
+        values.extend(attempt.output.search_queries_used)
+        values.extend(attempt.output.discovery_angles)
+        metadata = attempt.response.metadata if isinstance(attempt.response.metadata, dict) else {}
+        web_queries = metadata.get("webSearchQueries")
+        if isinstance(web_queries, list):
+            values.extend(query for query in web_queries if isinstance(query, str))
+    return compact_unique_strings(values, limit=30)
+
+
+def build_company_discovery_result_diagnostics(
+    *,
+    attempts: list[CompanyDiscoveryAttempt],
+    final_attempt: CompanyDiscoveryAttempt,
+    recent_search_query_count: int,
+    search_queries_used: list[str],
+) -> dict[str, Any]:
+    duplicate_count = sum(len(attempt.save_result.skipped) for attempt in attempts)
+    model_company_count = sum(len(attempt.output.companies) for attempt in attempts)
+    saved_company_count = len(final_attempt.save_result.added)
+    skipped_company_count = sum(len(attempt.save_result.skipped) for attempt in attempts)
+    zero_result_reason = None
+    if saved_company_count == 0:
+        if model_company_count == 0:
+            zero_result_reason = "modelReturnedZero"
+        elif duplicate_count == model_company_count:
+            zero_result_reason = "allReturnedCompaniesAlreadySaved"
+        else:
+            zero_result_reason = "allReturnedCompaniesInvalid"
+    return {
+        "blockedByTargetPreflight": False,
+        "zeroResultReason": zero_result_reason,
+        "modelCompanyCount": model_company_count,
+        "savedCompanyCount": saved_company_count,
+        "duplicateCompanyCount": duplicate_count,
+        "skippedCompanyCount": skipped_company_count,
+        "recentSearchQueryCount": recent_search_query_count,
+        "searchQueriesUsed": search_queries_used,
+        "discoveryAngles": compact_unique_strings(
+            [angle for attempt in attempts for angle in attempt.output.discovery_angles],
+            limit=24,
+        ),
+    }
+
+
 def parse_company_discovery_json(raw_text: str) -> Any:
     stripped = raw_text.strip()
     candidates = [stripped]
@@ -1243,6 +1633,16 @@ def salvage_company_discovery_output(parsed: dict[str, Any], error: ValidationEr
         assistantMessage=assistant_message,
         companies=companies,
         skippedExistingCompanies=skipped,
+        searchQueriesUsed=[
+            query.strip()
+            for query in parsed.get("searchQueriesUsed", parsed.get("search_queries_used", []))
+            if isinstance(query, str) and query.strip()
+        ][:16],
+        discoveryAngles=[
+            angle.strip()
+            for angle in parsed.get("discoveryAngles", parsed.get("discovery_angles", []))
+            if isinstance(angle, str) and angle.strip()
+        ][:16],
         clarifyingQuestions=clarifying_questions,
     )
     return output, warnings
@@ -1276,14 +1676,15 @@ class CompanyDiscoveryValidationFailure(Exception):
 
 
 def company_discovery_validation_failure(settings: Settings, request: ModelRequest, response, issues: list[str]) -> CompanyDiscoveryServiceResult:
-    issues = add_truncation_hint(issues, response.finish_reason)
+    finish_reason = getattr(response, "finish_reason", None)
+    issues = add_truncation_hint(issues, finish_reason)
     logger.disabled = False
     logger.warning(
         "Company discovery model output validation failed.",
         extra={
-            "finish_reason": response.finish_reason,
-            "provider": response.provider,
-            "response_preview": preview_model_response(response.text),
+            "finish_reason": finish_reason,
+            "provider": getattr(response, "provider", None),
+            "response_preview": preview_model_response(getattr(response, "text", "")),
             "validation_issue_count": len(issues),
             "validation_issues": issues[:8],
         },
@@ -1298,6 +1699,13 @@ def company_discovery_validation_failure(settings: Settings, request: ModelReque
             ),
             "code": "model_response_truncated" if validation_issues_indicate_truncation(issues) else "model_output_invalid",
             "issues": issues,
+            "zeroResultReason": "validationFailed",
+            "modelCompanyCount": 0,
+            "savedCompanyCount": 0,
+            "duplicateCompanyCount": 0,
+            "skippedCompanyCount": 0,
+            "recentSearchQueryCount": 0,
+            "searchQueriesUsed": [],
             **model_request_debug_fields(settings, request),
             **model_response_debug_fields(settings, response),
         },

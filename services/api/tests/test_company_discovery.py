@@ -182,6 +182,7 @@ def test_company_discovery_request_uses_search_grounding_and_context() -> None:
     assert "Existing" in request.messages[1].content
     assert "Applied AI Engineer" in request.messages[1].content
     assert "Studio artist" in request.messages[1].content
+    assert "company_discovery_context" in request.messages[1].content
 
 
 def test_company_discovery_prompt_has_no_hard_coded_ai_or_civic_defaults() -> None:
@@ -360,6 +361,8 @@ def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
     assert "assistantMessage as the chat answer" in system_prompt
     assert "concise markdown" in system_prompt
     assert "Do not make it a generic save-count receipt" in system_prompt
+    assert "searchQueriesUsed" in system_prompt
+    assert "discoveryAngles" in system_prompt
 
 
 def test_company_discovery_salvages_valid_records_from_partly_invalid_output() -> None:
@@ -678,7 +681,33 @@ def test_company_discovery_prompts_for_targets_on_generic_request(tmp_path: Path
     assert result.body["ok"] is True
     assert result.body["result"]["companies"] == []
     assert result.body["result"]["profileTargetsRequired"] is True
+    assert result.body["result"]["blockedByTargetPreflight"] is True
+    assert result.body["result"]["reason"] == "no_actionable_company_discovery_context"
+    assert result.body["result"]["detectedUserSearchTerms"] == []
+    assert result.body["result"]["detectedTargetTitles"] == []
+    assert result.body["result"]["detectedRoleFamilies"] == []
+    assert result.body["result"]["detectedHeadline"] is None
+    assert result.body["result"]["detectedSkillsCount"] == 0
+    assert result.body["result"]["detectedExperienceSignalsCount"] == 0
     assert "complete your target details" in result.body["result"]["assistantMessage"]
+
+
+def test_company_discovery_runs_when_current_request_has_useful_search_terms(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"].get("blockedByTargetPreflight") is False
+    assert len(result.body["result"]["companies"]) == 2
 
 
 def test_company_discovery_allows_generic_request_when_profile_has_target_role(tmp_path: Path) -> None:
@@ -747,6 +776,49 @@ def test_company_discovery_allows_generic_request_when_profile_has_skills(tmp_pa
     assert result.body["ok"] is True
     assert result.body["result"].get("profileTargetsRequired") is not True
     assert len(result.body["result"]["companies"]) == 2
+
+
+def test_company_discovery_includes_recent_queries_and_saved_companies_in_context(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["Museum Educator"],
+                role_families=["Arts Education"],
+                preferred_locations=[],
+                work_modes=[],
+                constraints={},
+                source="model",
+                review_status="reviewed",
+                visibility="private",
+                publication_status="published",
+                is_active=True,
+            )
+        )
+        link = add_candidate_company(session, profile.id, "Existing Studio", website_url="https://existing-studio.example")
+        link.discovery_query = "find ceramic studios"
+        link.search_queries_used = ["ceramic studio hiring"]
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find more companies to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    prompt = result.body["result"]["modelRequest"]["messages"][1]["content"]
+    assert "company_discovery_context" in prompt
+    assert "find ceramic studios" in prompt
+    assert "ceramic studio hiring" in prompt
+    assert "Existing Studio" in prompt
+    assert "avoid_repeating_recent_discovery_queries" in prompt
 
 
 def test_company_discovery_allows_explicit_direction_without_saved_targets(tmp_path: Path) -> None:
@@ -855,6 +927,50 @@ def test_company_discovery_retries_when_first_pass_only_matches_followed_compani
     assert "Existing Studio" in connector.requests[1].messages[-1].content
 
 
+def test_company_discovery_duplicate_only_result_reports_clear_no_new_reason(tmp_path: Path) -> None:
+    duplicate_payload = company_discovery_response(
+        "Found an existing company.",
+        [
+            {
+                "name": "Existing Studio",
+                "normalizedName": "existing studio",
+                "websiteUrl": "https://existing-studio.example",
+                "sourceUrls": ["https://existing-studio.example"],
+            }
+        ],
+        search_queries=["ceramic studio hiring"],
+        discovery_angles=["ceramic studios"],
+    )
+    connector = SequentialCompanyDiscoveryConnector([duplicate_payload, duplicate_payload, duplicate_payload])
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        add_candidate_company(session, profile.id, "Existing Studio", website_url="https://existing-studio.example")
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            connector=connector,
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"]["companies"] == []
+    assert result.body["result"]["zeroResultReason"] == "allReturnedCompaniesAlreadySaved"
+    assert result.body["result"]["modelCompanyCount"] == 3
+    assert result.body["result"]["savedCompanyCount"] == 0
+    assert result.body["result"]["duplicateCompanyCount"] == 3
+    assert result.body["result"]["skippedCompanyCount"] == 3
+    assert result.body["result"]["searchQueriesUsed"] == ["ceramic studio hiring", "ceramic studios"]
+    assert "No new companies were added" in result.body["result"]["assistantMessage"]
+
+
 def create_seeded_engine():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -891,10 +1007,18 @@ class SequentialCompanyDiscoveryConnector:
         return ModelResponse(text=text, provider="mock", model="mock", finish_reason="stop", metadata={})
 
 
-def company_discovery_response(message: str, companies: list[dict[str, object]]) -> str:
+def company_discovery_response(
+    message: str,
+    companies: list[dict[str, object]],
+    *,
+    search_queries: list[str] | None = None,
+    discovery_angles: list[str] | None = None,
+) -> str:
     return json.dumps(
         {
             "assistantMessage": message,
+            "searchQueriesUsed": search_queries or [],
+            "discoveryAngles": discovery_angles or [],
             "companies": companies,
             "skippedExistingCompanies": [],
             "clarifyingQuestions": [],
