@@ -4,8 +4,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from jobops_api.company_update import CompanyUpdateRequest, run_company_update
-from jobops_api.db.models import Base, TargetCompany
+from jobops_api.db.models import Base, CandidateCompany, Company
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.profiles import get_candidate_profile_by_slug
 
@@ -16,6 +17,7 @@ def test_company_url_updates_persist_to_db() -> None:
         profile = get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
         company = add_company(session, profile.id, "CivicActions")
+        link_id = company.id
 
         result = run_company_update(
             CompanyUpdateRequest(
@@ -29,10 +31,10 @@ def test_company_url_updates_persist_to_db() -> None:
         )
 
     with Session(engine) as session:
-        saved = session.get(TargetCompany, company.id)
+        saved = session.get(CandidateCompany, link_id)
         assert result.status == "completed"
         assert saved is not None
-        assert saved.website_url == "https://civicactions.com"
+        assert saved.company.website_url == "https://civicactions.com"
         assert saved.derivation_status == "model_derived"
         assert saved.review_status == "new"
 
@@ -43,6 +45,7 @@ def test_careers_and_job_listings_updates_persist_to_db() -> None:
         profile = get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
         company = add_company(session, profile.id, "CivicActions")
+        link_id = company.id
 
         careers = run_company_update(
             CompanyUpdateRequest(
@@ -66,12 +69,12 @@ def test_careers_and_job_listings_updates_persist_to_db() -> None:
         )
 
     with Session(engine) as session:
-        saved = session.get(TargetCompany, company.id)
+        saved = session.get(CandidateCompany, link_id)
         assert careers.status == "completed"
         assert listings.status == "completed"
         assert saved is not None
-        assert saved.careers_url == "https://civicactions.com/careers"
-        assert saved.job_listings_url == "https://civicactions.com/jobs"
+        assert saved.company.careers_url == "https://civicactions.com/careers"
+        assert saved.company.job_listings_url == "https://civicactions.com/jobs"
 
 
 def test_source_url_appends_without_duplicates() -> None:
@@ -80,6 +83,7 @@ def test_source_url_appends_without_duplicates() -> None:
         profile = get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
         company = add_company(session, profile.id, "CivicActions", source_urls=["https://civicactions.com"])
+        link_id = company.id
 
         first = run_company_update(
             CompanyUpdateRequest(
@@ -103,11 +107,11 @@ def test_source_url_appends_without_duplicates() -> None:
         )
 
     with Session(engine) as session:
-        saved = session.get(TargetCompany, company.id)
+        saved = session.get(CandidateCompany, link_id)
         assert first.body["result"]["appended"] is True
         assert second.body["result"]["appended"] is False
         assert saved is not None
-        assert saved.source_urls == ["https://civicactions.com", "https://example.com/source"]
+        assert saved.company.source_urls == ["https://civicactions.com", "https://example.com/source"]
 
 
 def test_unknown_company_returns_clarification_without_creating_company() -> None:
@@ -126,7 +130,7 @@ def test_unknown_company_returns_clarification_without_creating_company() -> Non
             candidate_profile=profile,
             db_session=session,
         )
-        count = len(list(session.scalars(select(TargetCompany))))
+        count = len(list(session.scalars(select(CandidateCompany))))
 
     assert result.status == "needs_confirmation"
     assert result.body["code"] == "company_not_found"
@@ -138,8 +142,8 @@ def test_ambiguous_company_match_returns_clarification() -> None:
     with Session(engine) as session:
         profile = get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        add_company(session, profile.id, "Example", normalized_name="example")
-        add_company(session, profile.id, "EXAMPLE", normalized_name="example")
+        add_company(session, profile.id, "Example", normalized_name="example", source_urls=["https://example-one.com"])
+        add_company(session, profile.id, "EXAMPLE", normalized_name="example", source_urls=["https://example-two.com"])
 
         result = run_company_update(
             CompanyUpdateRequest(
@@ -168,7 +172,7 @@ def test_unsupported_field_is_rejected() -> None:
             CompanyUpdateRequest(
                 company_id=None,
                 company_name="CivicActions",
-                field="review_status",
+                field="unsupported_field",
                 url="https://civicactions.com",
             ),
             candidate_profile=profile,
@@ -209,16 +213,20 @@ def add_company(
     *,
     normalized_name: str | None = None,
     source_urls: list[str] | None = None,
-) -> TargetCompany:
-    company = TargetCompany(
-        candidate_profile_id=candidate_profile_id,
+) -> CandidateCompany:
+    company = upsert_canonical_company(
+        session,
         name=name,
         normalized_name=normalized_name or name.casefold(),
         source_urls=source_urls or [],
+    )
+    link = ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=company,
         derivation_status="model_derived",
         review_status="new",
     )
-    session.add(company)
     session.commit()
-    session.refresh(company)
-    return company
+    session.refresh(link.link)
+    return link.link

@@ -17,6 +17,7 @@ from jobops_api.db.models import (
     AlphaInvitation,
     Application,
     ApplicationEvent,
+    CandidateCompany,
     CandidateProfile,
     CommandInteractionLog,
     Domain,
@@ -33,7 +34,6 @@ from jobops_api.db.models import (
     ResumeArtifact,
     RoleTarget,
     SkillClaim,
-    TargetCompany,
     Tenant,
     UsageEvent,
     User,
@@ -714,7 +714,7 @@ def delete_authenticated_account(
             ResumeArtifact,
             RoleTarget,
             SkillClaim,
-            TargetCompany,
+            CandidateCompany,
         ):
             session.execute(delete(model).where(model.candidate_profile_id == profile_id))
         session.execute(delete(ProfileIntakeSession).where(ProfileIntakeSession.candidate_profile_id == profile_id))

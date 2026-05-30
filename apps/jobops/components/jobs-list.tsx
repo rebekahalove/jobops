@@ -23,6 +23,9 @@ export type SavedJob = {
   location: string | null;
   remote_work_mode: string | null;
   employment_type: string | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
   salary_text: string | null;
   description_excerpt: string | null;
   fit_summary: string | null;
@@ -103,63 +106,81 @@ export function JobsList({
           <div className="job-card-grid">
             {sortedJobs.map((job) => (
               <article className="job-card" key={job.id}>
-                <div className="job-card-header">
-                  <div>
+                <div className="job-card-main">
+                  <div className="job-card-header">
                     <h2>{job.title}</h2>
                     <p>{job.company_name}</p>
                   </div>
-                  <div className="company-badges" aria-label={`${job.title} status`}>
-                    <span>{formatStatus(job.status)}</span>
-                    {job.source ? <span>{job.source}</span> : null}
-                    {job.provenance ? <span>{formatStatus(job.provenance)}</span> : null}
-                  </div>
+
+                  <FoldedText className="job-description" value={job.description_excerpt} />
+                  <FoldedText className="job-fit" value={job.fit_summary} />
+                  {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
                 </div>
 
-                {job.description_excerpt ? <p className="job-description">{job.description_excerpt}</p> : null}
-                {job.fit_summary ? <p className="job-fit">{job.fit_summary}</p> : null}
+                <aside className="job-card-rail" aria-label={`${job.title} details`}>
+                  <div className="record-rail-section">
+                    <dl className="job-details record-detail-grid">
+                      <div>
+                        <dt>Location</dt>
+                        <dd>{job.location || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Work mode</dt>
+                        <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
+                      </div>
+                      <div>
+                        <dt>Employment</dt>
+                        <dd>{job.employment_type || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Compensation</dt>
+                        <dd>{formatCompensation(job)}</dd>
+                      </div>
+                      <div>
+                        <dt>Posted</dt>
+                        <dd>{formatDateOnly(job.posting_date)}</dd>
+                      </div>
+                    </dl>
+                  </div>
 
-                <dl className="job-details">
-                  <div>
-                    <dt>Location</dt>
-                    <dd>{job.location || "Unknown"}</dd>
+                  <div className="record-rail-section">
+                    <dl className="job-details record-detail-grid">
+                      <div>
+                        <dt>Saved</dt>
+                        <dd>{formatDateTime(job.added_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{formatStatus(job.status)}</dd>
+                      </div>
+                      <div>
+                        <dt>Source</dt>
+                        <dd>{job.source || job.source_provider || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Provenance</dt>
+                        <dd>{job.provenance ? formatStatus(job.provenance) : "Unknown"}</dd>
+                      </div>
+                      {isVerifiedJobUrl(job) ? (
+                        <div>
+                          <dt>URL check</dt>
+                          <dd>Verified</dd>
+                        </div>
+                      ) : null}
+                    </dl>
                   </div>
-                  <div>
-                    <dt>Work mode</dt>
-                    <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
-                  </div>
-                  <div>
-                    <dt>Employment</dt>
-                    <dd>{job.employment_type || "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Compensation</dt>
-                    <dd>{job.salary_text || "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Added</dt>
-                    <dd>{formatDateTime(job.added_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Posted</dt>
-                    <dd>{formatDateOnly(job.posting_date)}</dd>
-                  </div>
-                  <div>
-                    <dt>URL check</dt>
-                    <dd>{formatOptionalStatus(job.url_verification_status ?? null)}</dd>
-                  </div>
-                </dl>
-                {job.url_verification_summary ? <p className="job-verification">{job.url_verification_summary}</p> : null}
 
-                <div className="company-links" aria-label={`${job.title} links`}>
-                  <a href={job.job_url} rel="noopener noreferrer" target="_blank">
-                    Job posting
-                  </a>
-                  {job.apply_url && job.apply_url !== job.job_url ? (
-                    <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
-                      Apply link
+                  <div className="company-links" aria-label={`${job.title} links`}>
+                    <a href={job.job_url} rel="noopener noreferrer" target="_blank">
+                      Job posting
                     </a>
-                  ) : null}
-                </div>
+                    {job.apply_url && job.apply_url !== job.job_url ? (
+                      <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
+                        Apply link
+                      </a>
+                    ) : null}
+                  </div>
+                </aside>
               </article>
             ))}
           </div>
@@ -183,6 +204,67 @@ function formatOptionalStatus(value: string | null) {
     return "Unknown";
   }
   return formatStatus(value);
+}
+
+function shouldShowVerificationSummary(job: SavedJob) {
+  return Boolean(job.url_verification_summary && isVerifiedJobUrl(job));
+}
+
+function isVerifiedJobUrl(job: SavedJob) {
+  return job.url_verification_status === "verified" || job.url_verification_status === "mock_verified";
+}
+
+function FoldedText({ value, className }: { value?: string | null; className: string }) {
+  if (!value) {
+    return null;
+  }
+  const preview = previewText(value);
+  if (preview === value) {
+    return <p className={className}>{value}</p>;
+  }
+  return (
+    <details className={`folded-text ${className}`}>
+      <summary>{preview}</summary>
+      <p>{value}</p>
+    </details>
+  );
+}
+
+function previewText(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 145) {
+    return compact;
+  }
+  return `${compact.slice(0, 145).trimEnd()}...`;
+}
+
+function formatCompensation(job: SavedJob) {
+  const formatted = formatSalaryRange(job.salary_min ?? null, job.salary_max ?? null, job.salary_currency ?? null);
+  return formatted || job.salary_text || "Unknown";
+}
+
+function formatSalaryRange(salaryMin: number | null, salaryMax: number | null, currencyCode: string | null) {
+  if (salaryMin === null && salaryMax === null) {
+    return null;
+  }
+  const formatter = buildCurrencyFormatter(currencyCode);
+  if (salaryMin !== null && salaryMax !== null) {
+    if (salaryMin === salaryMax) {
+      return formatter(salaryMin);
+    }
+    return `${formatter(salaryMin)}-${formatter(salaryMax)}`;
+  }
+  return formatter(salaryMin ?? salaryMax ?? 0);
+}
+
+function buildCurrencyFormatter(currencyCode: string | null) {
+  const normalizedCurrency = currencyCode && /^[A-Z]{3}$/.test(currencyCode) ? currencyCode : null;
+  const formatter = new Intl.NumberFormat(undefined, {
+    ...(normalizedCurrency ? { style: "currency", currency: normalizedCurrency, currencyDisplay: "narrowSymbol" } : {}),
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0
+  });
+  return (value: number) => formatter.format(Math.round(value));
 }
 
 function formatDateOnly(value: string | null) {

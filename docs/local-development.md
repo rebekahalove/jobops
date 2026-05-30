@@ -233,12 +233,13 @@ Application tracker persistence flow:
 
 ```text
 Applications UI -> Next thin proxy -> FastAPI /v1/applications
-  -> target_companies + job_roles + applications + application_events
+  -> companies + candidate_companies + job_roles + applications + application_events
 ```
 
 Tables added for the manual Application Tracker MVP:
 
-- `target_companies`
+- `companies`
+- `candidate_companies`
 - `job_roles`
 - `applications`
 - `application_events`

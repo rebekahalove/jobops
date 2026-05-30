@@ -14,7 +14,9 @@ from jobops_api.company_discovery import (
     CompanyDiscoveryOutput,
     CompanyDiscoveryRecord,
     CompanyDiscoveryRequest,
+    SkippedExistingCompany,
     build_candidate_target_context,
+    build_company_discovery_profile_context,
     build_company_discovery_model_request,
     build_assistant_message,
     company_discovery_validation_failure,
@@ -23,8 +25,10 @@ from jobops_api.company_discovery import (
     save_model_derived_companies,
     validate_company_discovery_output,
 )
-from jobops_api.db.models import Base, RoleTarget, TargetCompany
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from jobops_api.db.models import Base, CandidateCompany, Company, ProfileFactDraft, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
+from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
 
 
@@ -50,15 +54,13 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
                 is_active=True,
             )
         )
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="CivicActions",
-                normalized_name="civicactions",
-                website_url="https://civicactions.com",
-                derivation_status="user_entered",
-                review_status="reviewed",
-            )
+        add_candidate_company(
+            session,
+            profile.id,
+            "CivicActions",
+            website_url="https://civicactions.com",
+            derivation_status="user_entered",
+            review_status="reviewed",
         )
         session.commit()
 
@@ -85,13 +87,13 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     assert "CivicActions" in user_prompt
     assert "candidate_target_context" in user_prompt
     assert "Applied AI Engineer" in user_prompt
-    assert response.result_payload["companies"][0]["name"] == "Higher Ground Labs"
+    assert response.result_payload["companies"][0]["name"] == "Profile-Aligned Example Co"
     assert response.result_payload["companies"][0]["derivation_status"] == "model_derived"
     assert response.result_payload["companies"][0]["review_status"] == "new"
 
     with Session(engine) as session:
-        saved = list(session.scalars(select(TargetCompany).order_by(TargetCompany.name.asc())))
-        assert [company.name for company in saved] == ["CivicActions", "Higher Ground Labs"]
+        saved = list(session.scalars(select(CandidateCompany).join(Company).order_by(Company.name.asc())))
+        assert [link.company.name for link in saved] == ["CivicActions", "Profile-Aligned Example Co", "Second Example Employer"]
 
 
 def test_candidate_target_context_uses_only_published_internal_or_public_targets() -> None:
@@ -135,6 +137,32 @@ def test_candidate_target_context_uses_only_published_internal_or_public_targets
     assert "Draft-only target" not in json.dumps(context)
 
 
+def test_company_discovery_profile_context_includes_authenticated_profile_drafts() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        profile.headline = "Painter and installation artist"
+        session.add(
+            ProfileFactDraft(
+                candidate_profile_id=profile.id,
+                claim="Creates large-scale textile installations for galleries.",
+                fact_type="experience",
+                structured_value={},
+                source="model",
+                confidence="medium",
+                suggested_visibility="private",
+                review_status="needs_review",
+            )
+        )
+        session.commit()
+
+        context = build_company_discovery_profile_context(profile)
+
+    assert context["profile_basics"]["headline"] == "Painter and installation artist"
+    assert context["draft_items"][0]["claim"] == "Creates large-scale textile installations for galleries."
+
+
 def test_company_discovery_request_uses_search_grounding_and_context() -> None:
     request = build_company_discovery_model_request(
         CompanyDiscoveryRequest(
@@ -143,6 +171,7 @@ def test_company_discovery_request_uses_search_grounding_and_context() -> None:
         ),
         current_saved_companies=[{"name": "Existing", "normalized_name": "existing"}],
         target_context={"target_role_titles": ["Applied AI Engineer"]},
+        profile_context={"profile_basics": {"headline": "Studio artist"}},
         search_grounding_enabled=True,
     )
 
@@ -152,6 +181,31 @@ def test_company_discovery_request_uses_search_grounding_and_context() -> None:
     assert request.metadata["current_saved_company_count"] == 1
     assert "Existing" in request.messages[1].content
     assert "Applied AI Engineer" in request.messages[1].content
+    assert "Studio artist" in request.messages[1].content
+    assert "company_discovery_context" in request.messages[1].content
+
+
+def test_company_discovery_prompt_has_no_hard_coded_ai_or_civic_defaults() -> None:
+    request = build_company_discovery_model_request(
+        CompanyDiscoveryRequest(
+            latest_user_message="Please find some companies to follow.",
+            candidate_profile_slug="artist-profile",
+        ),
+        current_saved_companies=[],
+        target_context={},
+        profile_context={"profile_basics": {"headline": "Painter and installation artist"}},
+        search_grounding_enabled=True,
+    )
+
+    combined_prompt = "\n".join(message.content for message in request.messages)
+    assert "Painter and installation artist" in combined_prompt
+    assert "Do not default to any specific role, industry, mission, geography" in combined_prompt
+    assert "future AI/software roles" not in combined_prompt
+    assert "Prefer companies relevant to progressive politics" not in combined_prompt
+    assert "Remote US" not in combined_prompt
+    assert "Washington, DC" not in combined_prompt
+    assert "United States" not in combined_prompt
+    assert "San Francisco" not in combined_prompt
 
 
 def test_parse_and_validate_company_discovery_output() -> None:
@@ -193,7 +247,7 @@ def test_parse_and_validate_company_discovery_output() -> None:
     assert output.companies[0].source_urls == ["https://example.org"]
 
 
-def test_company_discovery_preserves_model_assistant_message_for_chat() -> None:
+def test_company_discovery_assistant_message_reports_actual_saved_count() -> None:
     output = CompanyDiscoveryOutput(
         assistantMessage=(
             "**Best pattern:** civic-tech and democracy infrastructure companies looked strongest.\n\n"
@@ -211,16 +265,84 @@ def test_company_discovery_preserves_model_assistant_message_for_chat() -> None:
         skippedExistingCompanies=[],
         clarifyingQuestions=[],
     )
-    added = [
-        TargetCompany(
-            candidate_profile_id="profile-1",
-            name="Example Civic",
-            normalized_name="example civic",
-            website_url="https://example.org",
-        )
-    ]
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        added = [add_candidate_company(session, profile.id, "Example Civic", website_url="https://example.org")]
+        message = build_assistant_message(output, added, [])
 
-    assert build_assistant_message(output, added, []) == output.assistant_message
+    assert message == "Saved 1 new company to your Companies list: Example Civic."
+
+
+def test_company_discovery_assistant_message_reports_partial_additions() -> None:
+    output = CompanyDiscoveryOutput(
+        assistantMessage="I've identified several companies that align with your skills.",
+        companies=[
+            CompanyDiscoveryRecord(
+                name="Example Civic",
+                normalizedName="example civic",
+                websiteUrl="https://example.org",
+                sourceUrls=["https://example.org"],
+            ),
+            CompanyDiscoveryRecord(
+                name="Duplicate Civic",
+                normalizedName="duplicate civic",
+                websiteUrl="https://example.org/careers",
+                sourceUrls=["https://example.org/careers"],
+            ),
+        ],
+        skippedExistingCompanies=[],
+        clarifyingQuestions=[],
+    )
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        added = [add_candidate_company(session, profile.id, "Example Civic", website_url="https://example.org")]
+        message = build_assistant_message(output, added, [])
+
+    assert message == (
+        "Saved 1 new company to your Companies list: Example Civic. "
+        "Other model candidates were not added because they did not produce new followed-company links."
+    )
+    assert "identified several" not in message
+
+
+def test_company_discovery_assistant_message_reports_no_additions_before_model_claims() -> None:
+    output = CompanyDiscoveryOutput(
+        assistantMessage="I've identified several companies that align with your skills.",
+        companies=[
+            CompanyDiscoveryRecord(
+                name="Already Followed Studio",
+                normalizedName="already followed studio",
+                websiteUrl="https://already-followed.example",
+                sourceUrls=["https://already-followed.example"],
+            )
+        ],
+        skippedExistingCompanies=[],
+        clarifyingQuestions=[],
+    )
+
+    message = build_assistant_message(
+        output,
+        added=[],
+        skipped=[SkippedExistingCompany(name="Already Followed Studio", reason="Already followed by this profile.")],
+    )
+
+    assert message == "No new companies were added. Skipped 1 already-followed company candidate(s)."
+    assert "identified several" not in message
+
+
+def test_company_discovery_assistant_message_keeps_clarifying_question_response() -> None:
+    output = CompanyDiscoveryOutput(
+        assistantMessage="Which kind of studios should I prioritize?",
+        companies=[],
+        skippedExistingCompanies=[],
+        clarifyingQuestions=["Which kind of studios should I prioritize?"],
+    )
+
+    assert build_assistant_message(output, added=[], skipped=[]) == "Which kind of studios should I prioritize?"
 
 
 def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
@@ -231,6 +353,7 @@ def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
         ),
         current_saved_companies=[],
         target_context={},
+        profile_context={},
         search_grounding_enabled=True,
     )
 
@@ -238,6 +361,8 @@ def test_company_discovery_prompt_tells_model_to_write_chat_answer() -> None:
     assert "assistantMessage as the chat answer" in system_prompt
     assert "concise markdown" in system_prompt
     assert "Do not make it a generic save-count receipt" in system_prompt
+    assert "searchQueriesUsed" in system_prompt
+    assert "discoveryAngles" in system_prompt
 
 
 def test_company_discovery_salvages_valid_records_from_partly_invalid_output() -> None:
@@ -272,6 +397,33 @@ def test_company_discovery_salvages_valid_records_from_partly_invalid_output() -
     assert warnings
 
 
+def test_company_discovery_salvage_trims_overlong_skipped_companies() -> None:
+    output, warnings = validate_company_discovery_output(
+        json.dumps(
+            {
+                "assistantMessage": "Found options, with a noisy duplicate list.",
+                "companies": [
+                    {
+                        "name": "Valid Studio",
+                        "normalizedName": "valid studio",
+                        "websiteUrl": "https://valid-studio.example",
+                        "sourceUrls": ["https://valid-studio.example"],
+                    }
+                ],
+                "skippedExistingCompanies": [
+                    {"name": f"Existing Company {index}", "reason": "Already followed."}
+                    for index in range(30)
+                ],
+                "clarifyingQuestions": [],
+            }
+        )
+    )
+
+    assert [company.name for company in output.companies] == ["Valid Studio"]
+    assert len(output.skipped_existing_companies) == 25
+    assert any("skippedExistingCompanies: trimmed" in warning for warning in warnings)
+
+
 def test_company_discovery_validation_failure_logs_preview(tmp_path: Path, caplog) -> None:
     caplog.set_level(logging.WARNING, logger="jobops_api.company_discovery")
     response = SimpleNamespace(
@@ -289,6 +441,7 @@ def test_company_discovery_validation_failure_logs_preview(tmp_path: Path, caplo
         ),
         current_saved_companies=[],
         target_context={},
+        profile_context={},
         search_grounding_enabled=True,
     )
 
@@ -316,13 +469,12 @@ def test_save_model_derived_companies_skips_normalized_name_and_domain_duplicate
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="Existing Civic",
-                normalized_name="existing civic",
-                website_url="https://existing.example",
-            )
+        add_candidate_company(
+            session,
+            profile.id,
+            "Existing Civic",
+            normalized_name="existing civic",
+            website_url="https://existing.example",
         )
         session.commit()
 
@@ -362,13 +514,163 @@ def test_save_model_derived_companies_skips_normalized_name_and_domain_duplicate
         )
         session.commit()
 
-        assert [company.name for company in result.added] == ["New Civic"]
+        assert [link.company.name for link in result.added] == ["New Civic"]
         assert len(result.skipped) == 2
-        saved = session.scalar(select(TargetCompany).where(TargetCompany.name == "New Civic"))
+        saved = session.scalar(select(CandidateCompany).join(Company).where(Company.name == "New Civic"))
         assert saved is not None
         assert saved.derivation_status == "model_derived"
         assert saved.review_status == "new"
         assert saved.search_queries_used == ["civic tech hiring"]
+
+
+def test_save_model_derived_companies_reuses_canonical_company_across_profiles() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        first_profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert first_profile is not None
+        second_profile = seed_public_profile(
+            session,
+            {
+                "slug": "second-candidate",
+                "displayName": "Second Candidate",
+                "headline": "Candidate profile setup in progress",
+                "summary": "",
+                "profileStatus": "draft",
+            },
+            hostname="second.example",
+        )
+        output = CompanyDiscoveryOutput(
+            assistantMessage="Added companies.",
+            companies=[
+                CompanyDiscoveryRecord(
+                    name="Shared Civic",
+                    normalizedName="shared civic",
+                    websiteUrl="https://shared.example",
+                    sourceUrls=["https://shared.example"],
+                    fitReason="Profile-specific fit.",
+                )
+            ],
+            skippedExistingCompanies=[],
+            clarifyingQuestions=[],
+        )
+
+        first = save_model_derived_companies(
+            session,
+            candidate_profile=first_profile,
+            discovery_query="Find companies",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        second = save_model_derived_companies(
+            session,
+            candidate_profile=second_profile,
+            discovery_query="Find companies",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        session.commit()
+
+        assert len(first.added) == 1
+        assert len(second.added) == 1
+        assert len(session.scalars(select(Company)).all()) == 1
+        assert len(session.scalars(select(CandidateCompany)).all()) == 2
+        assert first.added[0].company_id == second.added[0].company_id
+
+
+def test_save_model_derived_companies_does_not_report_global_canonical_matches_as_skips() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        first_profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert first_profile is not None
+        second_profile = seed_public_profile(
+            session,
+            {
+                "slug": "second-candidate",
+                "displayName": "Second Candidate",
+                "headline": "Candidate profile setup in progress",
+                "summary": "",
+                "profileStatus": "draft",
+            },
+            hostname="second.example",
+        )
+        add_candidate_company(session, first_profile.id, "Shared Studio", website_url="https://shared-studio.example")
+        session.commit()
+
+        output = CompanyDiscoveryOutput(
+            assistantMessage="Found companies.",
+            companies=[
+                CompanyDiscoveryRecord(
+                    name="Shared Studio",
+                    normalizedName="shared studio",
+                    websiteUrl="https://shared-studio.example",
+                    sourceUrls=["https://shared-studio.example"],
+                )
+            ],
+            skippedExistingCompanies=[
+                SkippedExistingCompany(name="Model Reported Global Skip", reason="Already exists somewhere.")
+            ],
+            clarifyingQuestions=[],
+        )
+
+        result = save_model_derived_companies(
+            session,
+            candidate_profile=second_profile,
+            discovery_query="Find studios",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        session.commit()
+
+        assert [link.company.name for link in result.added] == ["Shared Studio"]
+        assert result.skipped == []
+        assert len(session.scalars(select(Company)).all()) == 1
+        assert len(session.scalars(select(CandidateCompany)).all()) == 2
+
+
+def test_save_model_derived_companies_silently_dedupes_repeated_model_candidates() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        output = CompanyDiscoveryOutput(
+            assistantMessage="Found companies.",
+            companies=[
+                CompanyDiscoveryRecord(
+                    name="Repeated Studio",
+                    normalizedName="repeated studio",
+                    websiteUrl="https://repeated-studio.example",
+                    sourceUrls=["https://repeated-studio.example"],
+                ),
+                CompanyDiscoveryRecord(
+                    name="Repeated Studio Careers",
+                    normalizedName="repeated studio careers",
+                    websiteUrl="https://repeated-studio.example/careers",
+                    sourceUrls=["https://repeated-studio.example/careers"],
+                ),
+            ],
+            skippedExistingCompanies=[],
+            clarifyingQuestions=[],
+        )
+
+        result = save_model_derived_companies(
+            session,
+            candidate_profile=profile,
+            discovery_query="Find studios",
+            output=output,
+            provider="mock",
+            grounding_metadata={},
+            web_search_queries=[],
+        )
+        session.commit()
+
+        assert [link.company.name for link in result.added] == ["Repeated Studio"]
+        assert result.skipped == []
 
 
 def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> None:
@@ -376,7 +678,7 @@ def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> Non
     with Session(engine) as session:
         result = run_company_discovery(
             CompanyDiscoveryRequest(
-                latest_user_message="Find progressive politics companies to follow.",
+                latest_user_message="Find broad exploratory companies to follow.",
                 candidate_profile_slug="rebekah-love",
             ),
             db_session=session,
@@ -387,7 +689,336 @@ def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> Non
     assert result.body["ok"] is True
     assert len(result.body["result"]["companies"]) == 2
     assert result.body["result"]["modelResponse"]["provider"] == "mock"
-    assert json.loads(result.body["result"]["modelResponse"]["text"])["companies"][0]["name"] == "CivicActions"
+    assert json.loads(result.body["result"]["modelResponse"]["text"])["companies"][0]["name"] == "Profile-Aligned Example Co"
+
+
+def test_company_discovery_prompts_for_targets_on_generic_request(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find some more companies for me to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"]["companies"] == []
+    assert result.body["result"]["profileTargetsRequired"] is True
+    assert result.body["result"]["blockedByTargetPreflight"] is True
+    assert result.body["result"]["preflightReason"] == "no_actionable_company_discovery_context"
+    assert result.body["result"]["reason"] == "no_actionable_company_discovery_context"
+    assert result.body["result"]["contextSignals"] == {
+        "detectedUserSearchTerms": [],
+        "detectedTargetTitles": [],
+        "detectedRoleFamilies": [],
+        "detectedHeadline": None,
+        "detectedSkillsCount": 0,
+        "detectedExperienceSignalsCount": 0,
+    }
+    assert result.body["result"]["detectedUserSearchTerms"] == []
+    assert result.body["result"]["detectedTargetTitles"] == []
+    assert result.body["result"]["detectedRoleFamilies"] == []
+    assert result.body["result"]["detectedHeadline"] is None
+    assert result.body["result"]["detectedSkillsCount"] == 0
+    assert result.body["result"]["detectedExperienceSignalsCount"] == 0
+    assert result.body["result"]["recentSearchQueries"] == []
+    assert result.body["result"]["searchQueriesUsed"] == []
+    assert result.body["result"]["discoveryAngles"] == []
+    assert result.body["result"]["modelCompanyCount"] == 0
+    assert result.body["result"]["duplicateCompanyCount"] == 0
+    assert result.body["result"]["invalidCompanyCount"] == 0
+    assert result.body["result"]["savedCompanyCount"] == 0
+    assert result.body["result"]["zeroNewCompanyReason"] == "targetPreflightBlocked"
+    assert "complete your target details" in result.body["result"]["assistantMessage"]
+
+
+def test_company_discovery_runs_when_current_request_has_useful_search_terms(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"].get("blockedByTargetPreflight") is False
+    assert result.body["result"]["preflightReason"] is None
+    assert result.body["result"]["contextSignals"]["detectedUserSearchTerms"] == ["ceramic", "arts", "studios"]
+    assert len(result.body["result"]["companies"]) == 2
+
+
+def test_company_discovery_allows_generic_request_when_profile_has_target_role(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["Museum Educator"],
+                role_families=[],
+                preferred_locations=[],
+                work_modes=[],
+                constraints={},
+                source="model",
+                review_status="reviewed",
+                visibility="private",
+                publication_status="published",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find some more companies for me to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"].get("profileTargetsRequired") is not True
+    assert len(result.body["result"]["companies"]) == 2
+
+
+def test_company_discovery_allows_generic_request_when_profile_has_skills(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add(
+            SkillClaim(
+                candidate_profile_id=profile.id,
+                skill_name="Ceramic sculpture",
+                skill_category="Creative practice",
+                verification_status="reviewed",
+                publication_status="not_published",
+            )
+        )
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find some more companies for me to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"].get("profileTargetsRequired") is not True
+    assert len(result.body["result"]["companies"]) == 2
+
+
+def test_company_discovery_includes_recent_queries_and_saved_companies_in_context(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["Museum Educator"],
+                role_families=["Arts Education"],
+                preferred_locations=[],
+                work_modes=[],
+                constraints={},
+                source="model",
+                review_status="reviewed",
+                visibility="private",
+                publication_status="published",
+                is_active=True,
+            )
+        )
+        link = add_candidate_company(session, profile.id, "Existing Studio", website_url="https://existing-studio.example")
+        link.discovery_query = "find ceramic studios"
+        link.search_queries_used = ["ceramic studio hiring"]
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find more companies to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    prompt = result.body["result"]["modelRequest"]["messages"][1]["content"]
+    assert "company_discovery_context" in prompt
+    assert "find ceramic studios" in prompt
+    assert "ceramic studio hiring" in prompt
+    assert "Existing Studio" in prompt
+    assert "avoid_repeating_recent_discovery_queries" in prompt
+    assert result.body["result"]["recentSearchQueries"] == ["find ceramic studios", "ceramic studio hiring"]
+
+
+def test_company_discovery_allows_explicit_direction_without_saved_targets(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert len(result.body["result"]["companies"]) == 2
+
+
+def test_company_discovery_retries_when_model_returns_zero_companies(tmp_path: Path) -> None:
+    connector = SequentialCompanyDiscoveryConnector(
+        [
+            company_discovery_response("No companies found.", []),
+            company_discovery_response(
+                "Found a backup company.",
+                [
+                    {
+                        "name": "Backup Studio",
+                        "normalizedName": "backup studio",
+                        "websiteUrl": "https://backup-studio.example",
+                        "sourceUrls": ["https://backup-studio.example"],
+                    }
+                ],
+            ),
+        ]
+    )
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            connector=connector,
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"]["companyDiscoveryAttemptCount"] == 2
+    assert result.body["result"]["zeroSaveRetryUsed"] is True
+    assert [company["name"] for company in result.body["result"]["companies"]] == ["Backup Studio"]
+    assert "Saved 1 new company" in result.body["result"]["assistantMessage"]
+    assert "previous company-discovery attempt saved zero" in connector.requests[1].messages[-1].content
+
+
+def test_company_discovery_retries_when_first_pass_only_matches_followed_companies(tmp_path: Path) -> None:
+    connector = SequentialCompanyDiscoveryConnector(
+        [
+            company_discovery_response(
+                "Found an existing company.",
+                [
+                    {
+                        "name": "Existing Studio",
+                        "normalizedName": "existing studio",
+                        "websiteUrl": "https://existing-studio.example",
+                        "sourceUrls": ["https://existing-studio.example"],
+                    }
+                ],
+            ),
+            company_discovery_response(
+                "Found a distinct company.",
+                [
+                    {
+                        "name": "Fresh Studio",
+                        "normalizedName": "fresh studio",
+                        "websiteUrl": "https://fresh-studio.example",
+                        "sourceUrls": ["https://fresh-studio.example"],
+                    }
+                ],
+            ),
+        ]
+    )
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        add_candidate_company(session, profile.id, "Existing Studio", website_url="https://existing-studio.example")
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            connector=connector,
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"]["companyDiscoveryAttemptCount"] == 2
+    assert [company["name"] for company in result.body["result"]["companies"]] == ["Fresh Studio"]
+    assert "Existing Studio" in connector.requests[1].messages[-1].content
+
+
+def test_company_discovery_duplicate_only_result_reports_clear_no_new_reason(tmp_path: Path) -> None:
+    duplicate_payload = company_discovery_response(
+        "Found an existing company.",
+        [
+            {
+                "name": "Existing Studio",
+                "normalizedName": "existing studio",
+                "websiteUrl": "https://existing-studio.example",
+                "sourceUrls": ["https://existing-studio.example"],
+            }
+        ],
+        search_queries=["ceramic studio hiring"],
+        discovery_angles=["ceramic studios"],
+    )
+    connector = SequentialCompanyDiscoveryConnector([duplicate_payload, duplicate_payload, duplicate_payload])
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        add_candidate_company(session, profile.id, "Existing Studio", website_url="https://existing-studio.example")
+        session.commit()
+
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find ceramic arts studios to follow.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            connector=connector,
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["ok"] is True
+    assert result.body["result"]["companies"] == []
+    assert result.body["result"]["zeroResultReason"] == "allReturnedCompaniesAlreadySaved"
+    assert result.body["result"]["zeroNewCompanyReason"] == "allReturnedCompaniesAlreadySaved"
+    assert result.body["result"]["modelCompanyCount"] == 3
+    assert result.body["result"]["savedCompanyCount"] == 0
+    assert result.body["result"]["duplicateCompanyCount"] == 3
+    assert result.body["result"]["invalidCompanyCount"] == 0
+    assert result.body["result"]["skippedCompanyCount"] == 3
+    assert result.body["result"]["searchQueriesUsed"] == ["ceramic studio hiring", "ceramic studios"]
+    assert result.body["result"]["discoveryAngles"] == ["ceramic studios"]
+    assert "No new companies were added" in result.body["result"]["assistantMessage"]
 
 
 def create_seeded_engine():
@@ -413,6 +1044,62 @@ def create_seeded_engine():
         session.commit()
 
     return engine
+
+
+class SequentialCompanyDiscoveryConnector:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        text = self.responses.pop(0)
+        return ModelResponse(text=text, provider="mock", model="mock", finish_reason="stop", metadata={})
+
+
+def company_discovery_response(
+    message: str,
+    companies: list[dict[str, object]],
+    *,
+    search_queries: list[str] | None = None,
+    discovery_angles: list[str] | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "assistantMessage": message,
+            "searchQueriesUsed": search_queries or [],
+            "discoveryAngles": discovery_angles or [],
+            "companies": companies,
+            "skippedExistingCompanies": [],
+            "clarifyingQuestions": [],
+        }
+    )
+
+
+def add_candidate_company(
+    session: Session,
+    candidate_profile_id: str,
+    name: str,
+    *,
+    normalized_name: str | None = None,
+    website_url: str | None = None,
+    derivation_status: str = "model_derived",
+    review_status: str = "new",
+) -> CandidateCompany:
+    company = upsert_canonical_company(
+        session,
+        name=name,
+        normalized_name=normalized_name or name.casefold(),
+        website_url=website_url,
+    )
+    result = ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=company,
+        derivation_status=derivation_status,
+        review_status=review_status,
+    )
+    return result.link
 
 
 def make_settings(repo_root: Path) -> Settings:

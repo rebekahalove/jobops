@@ -22,8 +22,9 @@ Application statuses:
 
 ## Database Tables
 
-- `target_companies`: normalized company records tied to a candidate profile.
-- `job_roles`: manually entered or future-ingested roles tied to a candidate profile and optionally a target company.
+- `companies`: canonical company records shared across profiles.
+- `candidate_companies`: profile-specific followed-company links with private notes/status.
+- `job_roles`: manually entered or future-ingested roles tied to a candidate profile and optionally a canonical company.
 - `applications`: the application tracking record, including denormalized company/job text for quick list rendering.
 - `application_events`: timeline entries for follow-ups, interviews, notes, and status-related activity.
 

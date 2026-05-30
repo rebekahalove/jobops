@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 
 export type TrackedCompany = {
   id: string;
+  company_id?: string;
   name: string;
   normalized_name: string | null;
   website_url: string | null;
@@ -26,6 +27,7 @@ export type TrackedCompany = {
   derivation_status: string;
   review_status: string;
   notes: string;
+  added_at?: string;
   created_at: string;
   updated_at: string;
   last_checked_at: string | null;
@@ -70,7 +72,7 @@ export function CompaniesList({
   }, [apiBasePath]);
 
   const sortedCompanies = useMemo(
-    () => [...companies].sort((left, right) => right.created_at.localeCompare(left.created_at)),
+    () => [...companies].sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
     [companies]
   );
 
@@ -97,47 +99,64 @@ export function CompaniesList({
           <div className="company-card-grid">
             {sortedCompanies.map((company) => (
               <article className="company-card" key={company.id}>
-                <div className="company-card-header">
-                  <div>
+                <div className="company-card-main">
+                  <div className="company-card-header">
                     <h2>{company.name}</h2>
-                    <p>{company.description || company.fit_reason || "No description saved yet."}</p>
+                    <FoldedText className="company-description" value={company.description || company.fit_reason || "No description saved yet."} />
                   </div>
-                  <div className="company-badges" aria-label={`${company.name} status`}>
-                    <span>{formatStatus(company.review_status)}</span>
-                    <span>{formatStatus(company.derivation_status)}</span>
-                  </div>
+
+                  {company.fit_reason && company.description ? <FoldedText className="company-fit" value={company.fit_reason} /> : null}
+                  <FoldedText className="company-source-summary" value={company.source_summary} />
                 </div>
 
-                {company.fit_reason && company.description ? <p className="company-fit">{company.fit_reason}</p> : null}
-
-                <dl className="company-details">
-                  <div>
-                    <dt>Headquarters</dt>
-                    <dd>{formatHeadquarters(company)}</dd>
+                <aside className="company-card-rail" aria-label={`${company.name} details`}>
+                  <div className="record-rail-section">
+                    <dl className="company-details record-detail-grid">
+                      <div>
+                        <dt>Headquarters</dt>
+                        <dd>{formatHeadquarters(company)}</dd>
+                      </div>
+                      <div>
+                        <dt>Hiring locations</dt>
+                        <dd>{formatList(company.hiring_locations)}</dd>
+                      </div>
+                      <div>
+                        <dt>Remote policy</dt>
+                        <dd>{formatStatus(company.remote_policy)}</dd>
+                      </div>
+                    </dl>
+                    <TagRow label="Role fit" values={company.role_fit_tags} />
+                    <TagRow label="Mission fit" values={company.mission_fit_tags} />
                   </div>
-                  <div>
-                    <dt>Hiring locations</dt>
-                    <dd>{formatList(company.hiring_locations)}</dd>
+
+                  <div className="record-rail-section">
+                    <dl className="company-details record-detail-grid">
+                      <div>
+                        <dt>Added</dt>
+                        <dd>{formatDate(company.added_at || company.created_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{formatStatus(company.review_status)}</dd>
+                      </div>
+                      <div>
+                        <dt>Derived</dt>
+                        <dd>{formatStatus(company.derivation_status)}</dd>
+                      </div>
+                      <div>
+                        <dt>Discovered by</dt>
+                        <dd>{company.discovered_by || "Unknown"}</dd>
+                      </div>
+                    </dl>
                   </div>
-                  <div>
-                    <dt>Remote policy</dt>
-                    <dd>{formatStatus(company.remote_policy)}</dd>
+
+                  <div className="company-links" aria-label={`${company.name} links`}>
+                    <ExternalLink href={company.website_url} label="Website" />
+                    <ExternalLink href={company.careers_url} label="Careers" />
+                    <ExternalLink href={company.job_listings_url} label="Jobs" />
+                    <SourceLinks urls={company.source_urls} />
                   </div>
-                </dl>
-
-                <TagRow values={company.role_fit_tags} />
-                <TagRow values={company.mission_fit_tags} />
-
-                <div className="company-links" aria-label={`${company.name} links`}>
-                  <ExternalLink href={company.website_url} label="Website" />
-                  <ExternalLink href={company.careers_url} label="Careers" />
-                  <ExternalLink href={company.job_listings_url} label="Jobs" />
-                  {company.source_urls.map((url, index) => (
-                    <ExternalLink href={url} key={`${url}-${index}`} label={`Source ${index + 1}`} />
-                  ))}
-                </div>
-
-                {company.source_summary ? <p className="company-source-summary">{company.source_summary}</p> : null}
+                </aside>
               </article>
             ))}
           </div>
@@ -149,6 +168,23 @@ export function CompaniesList({
         )}
       </section>
     </main>
+  );
+}
+
+function SourceLinks({ urls }: { urls: string[] }) {
+  if (urls.length === 0) {
+    return null;
+  }
+
+  return (
+    <details className="company-source-links">
+      <summary>Sources ({urls.length})</summary>
+      <div>
+        {urls.map((url, index) => (
+          <ExternalLink href={url} key={`${url}-${index}`} label={`Source ${index + 1}`} />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -164,18 +200,43 @@ function ExternalLink({ href, label }: { href: string | null; label: string }) {
   );
 }
 
-function TagRow({ values }: { values: string[] }) {
+function TagRow({ label, values }: { label: string; values: string[] }) {
   if (values.length === 0) {
     return null;
   }
 
   return (
-    <div className="company-tag-row">
+    <div className="company-tag-row" aria-label={label}>
+      <span className="company-tag-label">{label}</span>
       {values.map((value) => (
         <span key={value}>{value}</span>
       ))}
     </div>
   );
+}
+
+function FoldedText({ value, className }: { value?: string | null; className: string }) {
+  if (!value) {
+    return null;
+  }
+  const preview = previewText(value);
+  if (preview === value) {
+    return <p className={className}>{value}</p>;
+  }
+  return (
+    <details className={`folded-text ${className}`}>
+      <summary>{preview}</summary>
+      <p>{value}</p>
+    </details>
+  );
+}
+
+function previewText(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 145) {
+    return compact;
+  }
+  return `${compact.slice(0, 145).trimEnd()}...`;
 }
 
 function formatHeadquarters(company: TrackedCompany) {
@@ -189,4 +250,8 @@ function formatList(values: string[]) {
 
 function formatStatus(value: string) {
   return value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }

@@ -13,7 +13,8 @@ from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
-from jobops_api.db.models import Base, ExperienceProjectDraft, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim, TargetCompany
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from jobops_api.db.models import Base, CandidateCompany, ExperienceProjectDraft, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -54,7 +55,7 @@ def test_company_following_advice_executes_company_discovery(tmp_path: Path, mon
             ),
             session=session,
         )
-        saved = list(session.scalars(select(TargetCompany).order_by(TargetCompany.name.asc())))
+        saved = list(session.scalars(select(CandidateCompany)))
 
     assert response.actions[0].type == "company_discovery"
     assert response.actions[0].status == "completed"
@@ -688,14 +689,7 @@ def test_command_center_routes_company_url_update_to_company_update(tmp_path: Pa
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        company = TargetCompany(
-            candidate_profile_id=profile.id,
-            name="CivicActions",
-            normalized_name="civicactions",
-            derivation_status="model_derived",
-            review_status="new",
-        )
-        session.add(company)
+        company = add_candidate_company(session, profile.id, "CivicActions")
         session.commit()
         company_id = company.id
 
@@ -708,7 +702,7 @@ def test_command_center_routes_company_url_update_to_company_update(tmp_path: Pa
         )
 
     with Session(engine) as session:
-        saved = session.get(TargetCompany, company_id)
+        saved = session.get(CandidateCompany, company_id)
         assert response.actions[0].type == "company_update"
         assert response.actions[0].status == "completed"
         assert response.target_workspace == "companies"
@@ -717,7 +711,7 @@ def test_command_center_routes_company_url_update_to_company_update(tmp_path: Pa
         assert response.result_payload["routerModelRequest"]["task"] == "command_router"
         assert response.result_payload["routerModelRequest"]["searchGrounding"] is False
         assert saved is not None
-        assert saved.job_listings_url == "https://civicactions.com/careers"
+        assert saved.company.job_listings_url == "https://civicactions.com/careers"
 
 
 def test_command_with_url_is_not_automatically_add_job_from_url(tmp_path: Path, monkeypatch) -> None:
@@ -727,15 +721,7 @@ def test_command_with_url_is_not_automatically_add_job_from_url(tmp_path: Path, 
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        session.add(
-            TargetCompany(
-                candidate_profile_id=profile.id,
-                name="Higher Ground Labs",
-                normalized_name="higher ground labs",
-                derivation_status="model_derived",
-                review_status="new",
-            )
-        )
+        add_candidate_company(session, profile.id, "Higher Ground Labs")
         session.commit()
         response = command_center_module.execute_command_center_command(
             command_center_module.CommandCenterCommandRequest(
@@ -756,14 +742,7 @@ def test_command_center_routes_generic_company_url_update_to_company_update(tmp_
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        company = TargetCompany(
-            candidate_profile_id=profile.id,
-            name="CivicActions",
-            normalized_name="civicactions",
-            derivation_status="model_derived",
-            review_status="new",
-        )
-        session.add(company)
+        company = add_candidate_company(session, profile.id, "CivicActions")
         session.commit()
         company_id = company.id
 
@@ -776,11 +755,11 @@ def test_command_center_routes_generic_company_url_update_to_company_update(tmp_
         )
 
     with Session(engine) as session:
-        saved = session.get(TargetCompany, company_id)
+        saved = session.get(CandidateCompany, company_id)
         assert response.actions[0].type == "company_update"
         assert response.actions[0].status == "completed"
         assert saved is not None
-        assert saved.website_url == "https://civicactions.com"
+        assert saved.company.website_url == "https://civicactions.com"
 
 
 def test_command_center_add_job_url_remains_planned_tool(tmp_path: Path, monkeypatch) -> None:
@@ -998,6 +977,18 @@ def create_seeded_engine():
         session.commit()
 
     return engine
+
+
+def add_candidate_company(session: Session, candidate_profile_id: str, name: str) -> CandidateCompany:
+    company = upsert_canonical_company(session, name=name, normalized_name=name.casefold())
+    result = ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=company,
+        derivation_status="model_derived",
+        review_status="new",
+    )
+    return result.link
 
 
 def create_auth_session_token(engine) -> str:

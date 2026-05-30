@@ -14,11 +14,19 @@ from sqlalchemy.orm import Session
 from ..auth import AuthContext, require_auth_context
 from ..company_discovery import (
     build_candidate_target_context,
-    domain_from_url,
+    discovery_request_allows_broad_results,
     normalize_company_name,
     serialize_current_saved_companies,
+    should_prompt_for_discovery_targets,
 )
-from ..db.models import CandidateProfile, CandidateSavedJob, JobPosting, TargetCompany
+from ..company_canonicalization import (
+    CompanyProfileLinkResult,
+    clean_company_source_urls,
+    domain_from_url,
+    ensure_candidate_company_link,
+    upsert_canonical_company,
+)
+from ..db.models import CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting
 from ..db.session import get_db_session
 from ..model_connector import ModelConnector
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
@@ -101,6 +109,13 @@ def run_job_discovery(
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
     private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
+    if should_prompt_for_discovery_targets(
+        request.latest_user_message,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    ):
+        return build_job_discovery_target_prompt_result(current_saved_jobs=current_saved_jobs, current_saved_companies=current_saved_companies)
+
     return run_live_source_job_discovery(
         request,
         connector=connector,
@@ -403,6 +418,54 @@ def live_job_discovery_unconfigured_response(
     if detail and settings.app_env.lower() not in {"prod", "production"}:
         body["debugDetail"] = detail
     return JobDiscoveryServiceResult(body=body, status_code=503)
+
+
+def build_job_discovery_target_prompt_result(
+    *,
+    current_saved_jobs: list[dict[str, Any]],
+    current_saved_companies: list[dict[str, Any]],
+) -> JobDiscoveryServiceResult:
+    message = (
+        "Before I search for jobs, please complete your target details first: target role, "
+        "industries/domains, work mode, and any location preferences. If you are undecided, ask for a "
+        "broad exploratory job search and I can return untargeted options with that caveat."
+    )
+    return JobDiscoveryServiceResult(
+        body={
+            "ok": True,
+            "result": {
+                "assistantMessage": message,
+                "jobs": [],
+                "updatedExistingJobs": [],
+                "skippedJobs": [],
+                "clarifyingQuestions": [
+                    "What target role, industry, or kind of organization should I use for job discovery?"
+                ],
+                "profileTargetsRequired": True,
+                "broadDiscoveryAllowed": True,
+                "savedCount": 0,
+                "updatedExistingCount": 0,
+                "duplicateCount": 0,
+                "providerResultCount": 0,
+                "providerRawResultCount": 0,
+                "candidatePoolCount": 0,
+                "candidatePoolAfterDedupeCount": 0,
+                "candidatePoolAfterFilterCount": 0,
+                "candidatePoolAfterDiversityCount": 0,
+                "modelSelectedCount": 0,
+                "createdGlobalJobCount": 0,
+                "updatedGlobalJobCount": 0,
+                "addedCompanyCount": 0,
+                "currentSavedJobCount": len(current_saved_jobs),
+                "currentSavedCompanyCount": len(current_saved_companies),
+                "excludedJobUrlCount": 0,
+                "jobDiscoveryMode": "target_required",
+                "providerDiagnostics": [],
+                "providerErrorCount": 0,
+            },
+        },
+        status_code=200,
+    )
 
 
 def live_job_discovery_provider_error_response(
@@ -927,11 +990,17 @@ def infer_job_search_role_queries(
     private_profile_context: dict[str, Any],
 ) -> list[str]:
     roles: list[str] = []
-    roles.extend(extract_explicit_target_titles(target_context, private_profile_context))
     roles.extend(extract_role_queries_from_message(latest_user_message))
+    roles.extend(extract_explicit_target_titles(target_context, private_profile_context))
+    roles.extend(extract_target_role_families(target_context, private_profile_context))
     roles.extend(extract_profile_headline_role(private_profile_context))
+    roles.extend(extract_target_domains_or_industries(target_context, private_profile_context))
+    roles.extend(extract_previous_profile_titles(private_profile_context))
+    roles.extend(extract_profile_skills(private_profile_context))
     if not roles:
         roles.extend(extract_generic_profile_role_queries(private_profile_context))
+    if not roles and discovery_request_allows_broad_results(latest_user_message):
+        roles.append("jobs")
     if not roles and latest_user_message.strip():
         phrase = clean_role_query_phrase(latest_user_message)
         if phrase and phrase.casefold() not in {"find jobs", "find me jobs", "please find jobs"}:
@@ -963,6 +1032,46 @@ def extract_explicit_target_titles(
     return values
 
 
+def extract_target_role_families(
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    values.extend(coerce_search_term_list(target_context.get("target_role_families")))
+    values.extend(coerce_search_term_list(target_context.get("role_families")))
+    targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(targets, dict):
+        values.extend(coerce_search_term_list(targets.get("targetRoleFamilies")))
+        values.extend(coerce_search_term_list(targets.get("target_role_families")))
+        values.extend(coerce_search_term_list(targets.get("roleFamilies")))
+    for item in iter_private_profile_items(private_profile_context):
+        if not isinstance(item, dict) or item.get("collection") != "targetRoleIntent":
+            continue
+        values.extend(coerce_search_term_list(item.get("targetRoleFamilies")))
+        values.extend(coerce_search_term_list(item.get("target_role_families")))
+        values.extend(coerce_search_term_list(item.get("roleFamilies")))
+    return values
+
+
+def extract_target_domains_or_industries(
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    values: list[str] = []
+    values.extend(coerce_search_term_list(target_context.get("domains_or_industries")))
+    values.extend(coerce_search_term_list(target_context.get("domainsOrIndustries")))
+    targets = private_profile_context.get("targets") if isinstance(private_profile_context, dict) else None
+    if isinstance(targets, dict):
+        values.extend(coerce_search_term_list(targets.get("domainsOrIndustries")))
+        values.extend(coerce_search_term_list(targets.get("domains_or_industries")))
+    for item in iter_private_profile_items(private_profile_context):
+        if not isinstance(item, dict) or item.get("collection") != "targetRoleIntent":
+            continue
+        values.extend(coerce_search_term_list(item.get("domainsOrIndustries")))
+        values.extend(coerce_search_term_list(item.get("domains_or_industries")))
+    return values
+
+
 def extract_role_queries_from_message(latest_user_message: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", latest_user_message).strip()
     patterns = [
@@ -978,6 +1087,47 @@ def extract_role_queries_from_message(latest_user_message: str) -> list[str]:
         if phrase:
             roles.append(title_case_role_query(phrase))
     return roles
+
+
+def extract_previous_profile_titles(private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for item in iter_private_profile_items(private_profile_context):
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or item.get("itemType") or "").casefold()
+        collection = str(item.get("collection") or "").casefold()
+        if item_type != "experience" and collection != "experienceandprojects":
+            continue
+        title = clean_role_query_phrase(str(item.get("title") or ""))
+        if title and not profile_role_candidate_is_placeholder(title):
+            values.append(title)
+    return values
+
+
+def extract_profile_skills(private_profile_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    values.extend(coerce_search_term_list(private_profile_context.get("skills")))
+    for item in iter_private_profile_items(private_profile_context):
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").casefold()
+        collection = str(item.get("collection") or "").casefold()
+        if item_type != "skill" and collection != "skillclaims":
+            continue
+        values.extend(coerce_search_term_list(item.get("skill")))
+    return values
+
+
+def iter_private_profile_items(private_profile_context: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(private_profile_context, dict):
+        return []
+    items: list[dict[str, Any]] = []
+    for key in ("published_internal_items", "published_public_items", "draft_items"):
+        raw_items = private_profile_context.get(key)
+        if not isinstance(raw_items, list):
+            continue
+        items.extend(item for item in raw_items if isinstance(item, dict))
+    return items
 
 
 def extract_profile_headline_role(private_profile_context: dict[str, Any]) -> list[str]:
@@ -1068,6 +1218,13 @@ def coerce_string_list(value: object) -> list[str]:
     return []
 
 
+def coerce_search_term_list(value: object) -> list[str]:
+    terms: list[str] = []
+    for item in coerce_string_list(value):
+        terms.extend(part.strip() for part in re.split(r"[;\n,|]+", item) if part.strip())
+    return compact_unique_strings(terms, limit=12)
+
+
 def current_saved_job_urls(current_saved_jobs: list[dict[str, Any]]) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
@@ -1140,7 +1297,7 @@ def save_live_job_source_results(
     updated_existing_links: list[CandidateSavedJob] = []
     created_jobs: list[JobPosting] = []
     updated_jobs: list[JobPosting] = []
-    added_companies: list[TargetCompany] = []
+    added_companies: list[CandidateCompany] = []
     skipped: list[SkippedJobResult] = []
     now = datetime.now(timezone.utc)
     seen_in_output: set[str] = set()
@@ -1204,6 +1361,9 @@ def save_live_job_source_results(
                 location=result.location,
                 remote_work_mode=result.remote_work_mode,
                 employment_type=result.employment_type,
+                salary_min=result.salary_min,
+                salary_max=result.salary_max,
+                salary_currency=result.salary_currency,
                 salary_text=result.salary_text,
                 description_excerpt=verification.description_excerpt or result.description_excerpt,
                 discovered_by=provider,
@@ -1218,6 +1378,20 @@ def save_live_job_source_results(
             session.flush()
             created_jobs.append(existing_job)
             existing_jobs[normalized_url] = existing_job
+
+        job_record = source_result_to_job_record(result, verification)
+        company_link_result = ensure_candidate_company_for_job(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            job=job_record,
+            provider=provider,
+            discovery_query=discovery_query,
+            ats_provider=result.ats_provider,
+            ats_board_token=result.ats_board_token,
+        )
+        existing_job.company_id = company_link_result.company.id
+        if company_link_result.created_link:
+            added_companies.append(company_link_result.link)
 
         if existing_job.id in existing_links:
             link = existing_links[existing_job.id]
@@ -1235,17 +1409,6 @@ def save_live_job_source_results(
             updated_existing_links.append(link)
             skipped.append(skip_from_source_result(result, "duplicate_for_user", "Job is already saved for this profile."))
             continue
-
-        job_record = source_result_to_job_record(result, verification)
-        added_company = ensure_candidate_company_for_job(
-            session,
-            candidate_profile_id=candidate_profile.id,
-            job=job_record,
-            provider=provider,
-            discovery_query=discovery_query,
-        )
-        if added_company is not None:
-            added_companies.append(added_company)
 
         link = CandidateSavedJob(
             candidate_profile_id=candidate_profile.id,
@@ -1297,6 +1460,9 @@ def source_result_to_job_record(result: LiveJobSourceResult, verification: JobUr
         location=result.location,
         remoteWorkMode=result.remote_work_mode or "unknown",
         employmentType=result.employment_type,
+        salaryMin=result.salary_min,
+        salaryMax=result.salary_max,
+        salaryCurrency=result.salary_currency,
         salaryText=result.salary_text,
         descriptionExcerpt=verification.description_excerpt or result.description_excerpt,
         fitSummary=result.fit_summary,
@@ -1333,6 +1499,9 @@ def update_job_posting_from_source_result(
     job_posting.location = result.location or job_posting.location
     job_posting.remote_work_mode = result.remote_work_mode or job_posting.remote_work_mode
     job_posting.employment_type = result.employment_type or job_posting.employment_type
+    job_posting.salary_min = result.salary_min if result.salary_min is not None else job_posting.salary_min
+    job_posting.salary_max = result.salary_max if result.salary_max is not None else job_posting.salary_max
+    job_posting.salary_currency = result.salary_currency or job_posting.salary_currency
     job_posting.salary_text = result.salary_text or job_posting.salary_text
     job_posting.description_excerpt = verification.description_excerpt or result.description_excerpt or job_posting.description_excerpt
     job_posting.discovered_by = provider
@@ -1436,75 +1605,39 @@ def ensure_candidate_company_for_job(
     job: JobDiscoveryRecord,
     provider: str,
     discovery_query: str,
-) -> TargetCompany | None:
+    ats_provider: str | None = None,
+    ats_board_token: str | None = None,
+) -> CompanyProfileLinkResult:
     normalized_name = normalize_company_name(job.company_name)
     company_urls = clean_company_source_urls(
         [job.company_website_url, job.company_careers_url, job.company_job_listings_url, *job.company_source_urls]
     )
-    source_urls = company_urls or clean_company_source_urls([job.job_url])
-    candidate_domains = {domain for domain in (domain_from_url(url) for url in source_urls) if domain}
-    existing = list(session.scalars(select(TargetCompany).where(TargetCompany.candidate_profile_id == candidate_profile_id)))
-    for company in existing:
-        existing_name = normalize_company_name(company.normalized_name or company.name)
-        existing_domains = {
-            domain
-            for domain in [
-                domain_from_url(company.website_url),
-                domain_from_url(company.careers_url),
-                domain_from_url(company.job_listings_url),
-                *(domain_from_url(url) for url in (company.source_urls or [])),
-            ]
-            if domain
-        }
-        if normalized_name and existing_name == normalized_name:
-            merge_company_source_fields(company, job, source_urls)
-            return None
-        if candidate_domains and existing_domains.intersection(candidate_domains):
-            merge_company_source_fields(company, job, source_urls)
-            return None
-
-    row = TargetCompany(
-        candidate_profile_id=candidate_profile_id,
+    canonical = upsert_canonical_company(
+        session,
         name=job.company_name.strip(),
         normalized_name=normalized_name or None,
         website_url=job.company_website_url,
         careers_url=job.company_careers_url,
         job_listings_url=job.company_job_listings_url,
-        source_urls=source_urls[:12],
-        source_summary="Added from job discovery because a relevant posting was saved.",
+        source_urls=company_urls[:12],
+        source_summary=(
+            "Company URL supplied by job discovery provider."
+            if company_urls
+            else "Company inferred from a provider-backed saved job; no canonical company URL was supplied."
+        ),
+        greenhouse_board_token=ats_board_token if ats_provider == "greenhouse" else None,
+    )
+    return ensure_candidate_company_link(
+        session,
+        candidate_profile_id=candidate_profile_id,
+        company=canonical,
+        review_status="new",
+        derivation_status="model_derived",
+        fit_reason=job.fit_summary,
         discovery_query=discovery_query,
         discovered_by=provider,
-        derivation_status="model_derived",
-        review_status="new",
-        fit_reason=job.fit_summary,
-        notes="",
+        personal_source_urls=clean_company_source_urls([job.job_url]),
     )
-    session.add(row)
-    session.flush()
-    return row
-
-
-def merge_company_source_fields(company: TargetCompany, job: JobDiscoveryRecord, source_urls: list[str]) -> None:
-    company.website_url = company.website_url or job.company_website_url
-    company.careers_url = company.careers_url or job.company_careers_url
-    company.job_listings_url = company.job_listings_url or job.company_job_listings_url
-    merged_urls = clean_company_source_urls([*(company.source_urls or []), *source_urls])
-    company.source_urls = merged_urls[:12]
-    company.fit_reason = company.fit_reason or job.fit_summary
-
-
-def clean_company_source_urls(values: list[str | None]) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not value:
-            continue
-        stripped = value.strip()
-        key = stripped.casefold()
-        if stripped and key not in seen:
-            cleaned.append(stripped)
-            seen.add(key)
-    return cleaned
 
 
 
@@ -1537,6 +1670,9 @@ def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
         "location": job.location,
         "remote_work_mode": job.remote_work_mode,
         "employment_type": job.employment_type,
+        "salary_min": job.salary_min,
+        "salary_max": job.salary_max,
+        "salary_currency": job.salary_currency,
         "salary_text": job.salary_text,
         "description_excerpt": job.description_excerpt,
         "fit_summary": link.fit_summary,

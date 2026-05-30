@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from jobops_api.auth import USER_TYPE_ADMIN, USER_TYPE_USER, create_alpha_invite, normalize_email, normalize_user_type, seed_initial_user
-from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, CommandInteractionLog, JobRole, TargetCompany, Tenant, User, UserSession, WorkspaceMembership
+from jobops_api.db.models import Application, ApplicationEvent, CandidateCompany, CandidateProfile, CommandInteractionLog, JobRole, Tenant, User, UserSession, WorkspaceMembership
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
 from jobops_api.profile_seed import load_public_seed_profile
@@ -212,7 +212,7 @@ def reset_test_workspace_command(*, workspace_slug: str) -> None:
                 session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id.in_(application_ids)))
             session.execute(delete(Application).where(Application.candidate_profile_id == profile_id))
             session.execute(delete(JobRole).where(JobRole.candidate_profile_id == profile_id))
-            session.execute(delete(TargetCompany).where(TargetCompany.candidate_profile_id == profile_id))
+            session.execute(delete(CandidateCompany).where(CandidateCompany.candidate_profile_id == profile_id))
         session.execute(delete(CommandInteractionLog).where(CommandInteractionLog.tenant_id == tenant.id))
         session.execute(delete(UserSession).where(UserSession.tenant_id == tenant.id))
         session.commit()

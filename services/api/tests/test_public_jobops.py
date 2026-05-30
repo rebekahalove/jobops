@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from jobops_api.auth import seed_initial_user
+from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from jobops_api.db.models import (
     AlphaAccessRequest,
     Application,
@@ -17,7 +18,6 @@ from jobops_api.db.models import (
     JobRole,
     ProfileFact,
     ProfileFactDraft,
-    TargetCompany,
     Tenant,
     User,
 )
@@ -110,11 +110,12 @@ def seed_metrics_records(engine) -> None:
             password_reset_required=False,
         )
         request = AlphaAccessRequest(name="Alpha One", email="alpha@example.com", note="private note")
-        company = TargetCompany(candidate_profile_id=auth.candidate_profile.id, name="Private Co")
-        job = JobRole(candidate_profile_id=auth.candidate_profile.id, target_company=company, title="Private Role")
+        company = upsert_canonical_company(session, name="Private Co", normalized_name="private co")
+        link = ensure_candidate_company_link(session, candidate_profile_id=auth.candidate_profile.id, company=company)
+        job = JobRole(candidate_profile_id=auth.candidate_profile.id, company=company, title="Private Role")
         application = Application(
             candidate_profile_id=auth.candidate_profile.id,
-            target_company=company,
+            company=company,
             job_role=job,
             company_name="Private Co",
             job_title="Private Role",
@@ -142,7 +143,7 @@ def seed_metrics_records(engine) -> None:
             action_applied=True,
             final_response="private response",
         )
-        session.add_all([request, company, job, application, draft, published_fact, action])
+        session.add_all([request, link.link, job, application, draft, published_fact, action])
         session.commit()
 
 

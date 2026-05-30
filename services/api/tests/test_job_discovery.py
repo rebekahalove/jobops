@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
-from jobops_api.db.models import Base, CandidateSavedJob, JobPosting, TargetCompany
+from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
@@ -36,10 +36,42 @@ from jobops_api.job_discovery.service import (
     infer_job_search_role_queries,
     save_live_job_source_results,
 )
+from jobops_api.job_discovery.url_verification import source_result_verification
 from jobops_api.settings import Settings
 
 
 def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Find applied AI engineer jobs to apply to.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+        assert result.status_code == 200
+        assert result.body["ok"] is True
+        assert result.body["result"]["savedCount"] == 2
+        assert result.body["result"]["createdGlobalJobCount"] == 2
+        assert len(session.scalars(select(JobPosting)).all()) == 2
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 2
+        assert len(session.scalars(select(Company)).all()) == 2
+        assert len(session.scalars(select(CandidateCompany)).all()) == 2
+        assert all(job.company_id is not None for job in session.scalars(select(JobPosting)).all())
+
+        saved_link = session.scalars(select(CandidateSavedJob).order_by(CandidateSavedJob.added_at.asc())).first()
+        assert saved_link is not None
+        assert saved_link.added_at is not None
+        assert saved_link.status == "saved"
+        assert saved_link.fit_summary
+        assert any(job.posting_date is not None for job in session.scalars(select(JobPosting)).all())
+
+
+def test_job_discovery_prompts_for_targets_on_generic_request(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
     with Session(engine) as session:
@@ -54,18 +86,29 @@ def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> 
 
         assert result.status_code == 200
         assert result.body["ok"] is True
-        assert result.body["result"]["savedCount"] == 2
-        assert result.body["result"]["createdGlobalJobCount"] == 2
-        assert len(session.scalars(select(JobPosting)).all()) == 2
-        assert len(session.scalars(select(CandidateSavedJob)).all()) == 2
-        assert len(session.scalars(select(TargetCompany)).all()) == 2
+        assert result.body["result"]["jobs"] == []
+        assert result.body["result"]["profileTargetsRequired"] is True
+        assert result.body["result"]["jobDiscoveryMode"] == "target_required"
+        assert "complete your target details" in result.body["result"]["assistantMessage"]
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
 
-        saved_link = session.scalars(select(CandidateSavedJob).order_by(CandidateSavedJob.added_at.asc())).first()
-        assert saved_link is not None
-        assert saved_link.added_at is not None
-        assert saved_link.status == "saved"
-        assert saved_link.fit_summary
-        assert any(job.posting_date is not None for job in session.scalars(select(JobPosting)).all())
+
+def test_job_discovery_allows_explicit_broad_request_without_saved_targets(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Run a broad exploratory job search.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+        assert result.status_code == 200
+        assert result.body["ok"] is True
+        assert result.body["result"]["savedCount"] == 2
 
 
 def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_path: Path) -> None:
@@ -208,9 +251,9 @@ def test_job_discovery_requires_reliable_url_and_allows_null_posting_date() -> N
         assert result.skipped[0].reason_code == "missing_required_url"
 
 
-def test_provider_queries_use_explicit_targets_before_profile_inference() -> None:
+def test_provider_queries_use_command_role_before_saved_targets() -> None:
     queries = infer_job_search_role_queries(
-        "Find me jobs to apply to.",
+        "Find museum registrar jobs to apply to.",
         target_context={"target_role_titles": ["AI Product Engineer", "Developer Tools Engineer"]},
         private_profile_context={
             "profile_basics": {
@@ -220,7 +263,7 @@ def test_provider_queries_use_explicit_targets_before_profile_inference() -> Non
         },
     )
 
-    assert queries[:2] == ["AI Product Engineer", "Developer Tools Engineer"]
+    assert queries[:3] == ["Museum Registrar", "AI Product Engineer", "Developer Tools Engineer"]
     assert "Applied AI Engineer" not in queries
 
 
@@ -241,6 +284,75 @@ def test_provider_queries_do_not_rewrite_profile_applied_ai_phrase_to_target_tit
 
     assert queries[0] == "Applied AI Systems Engineer"
     assert "Applied AI Engineer" not in queries
+
+
+def test_provider_queries_for_broad_exploratory_request_do_not_use_meta_command() -> None:
+    request = JobDiscoveryRequest(latest_user_message="let's do a broad exploratory job search", candidate_profile_slug="rebekah-love")
+    queries = build_provider_job_search_queries(
+        request,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={
+            "profile_basics": {
+                "headline": "Candidate profile setup in progress",
+                "summary": "Profile setup in progress.",
+            },
+            "targets": {},
+        },
+    )
+
+    assert queries == ["jobs"]
+    assert "Lets Do A Broad Exploratory Job Search" not in queries
+
+
+def test_provider_queries_for_broad_request_use_profile_skills_before_generic_jobs() -> None:
+    request = JobDiscoveryRequest(latest_user_message="let's do a broad exploratory job search", candidate_profile_slug="rebekah-love")
+    queries = build_provider_job_search_queries(
+        request,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={
+            "profile_basics": {
+                "headline": "Candidate profile setup in progress",
+                "summary": "Profile setup in progress.",
+            },
+            "targets": {},
+            "draft_items": [
+                {"type": "skill", "skill": "Ceramic sculpture"},
+                {"type": "skill", "skill": "Metal fabrication"},
+            ],
+        },
+    )
+
+    assert queries[:2] == ["Ceramic sculpture", "Metal fabrication"]
+    assert "jobs" not in queries
+
+
+def test_provider_query_precedence_uses_command_before_profile_fallbacks() -> None:
+    queries = infer_job_search_role_queries(
+        "find conservation technician jobs",
+        target_context={
+            "target_role_titles": ["Gallery Operations Manager"],
+            "target_role_families": ["Arts Administration"],
+            "domains_or_industries": "Museums",
+        },
+        private_profile_context={
+            "profile_basics": {"headline": "Ceramic Artist | Installation and fabrication"},
+            "draft_items": [
+                {"type": "experience", "title": "Studio Assistant"},
+                {"type": "skill", "skill": "Ceramic sculpture"},
+            ],
+        },
+    )
+
+    assert queries[:6] == [
+        "Conservation Technician",
+        "Gallery Operations Manager",
+        "Arts Administration",
+        "Ceramic Artist",
+        "Museums",
+        "Studio Assistant",
+    ]
 
 
 def test_provider_queries_support_non_technical_profile_roles() -> None:
@@ -385,8 +497,43 @@ def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) ->
     assert result.source_provider == "adzuna"
     assert result.provider_type == "broad_search"
     assert result.job_url == "https://www.adzuna.com/land/ad/1"
+    assert result.salary_min == 150000
+    assert result.salary_max == 180000
+    assert result.salary_currency == "USD"
+    assert result.salary_text == "USD 150,000-180,000"
     assert result.posting_date is not None
     assert result.source_updated_at is not None
+
+
+def test_adzuna_salary_values_are_rounded_and_currency_coded(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        model_provider="mock",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+        adzuna_country="us",
+    )
+    result = normalize_adzuna_result(
+        {
+            "id": "adz-1",
+            "title": "Studio Manager",
+            "company": {"display_name": "Provider Co"},
+            "redirect_url": "https://www.adzuna.com/land/ad/1",
+            "description": "Run the studio.",
+            "salary_min": 38469.71,
+            "salary_max": 50210.44,
+        },
+        query="Studio Manager",
+        settings=settings,
+    )
+
+    assert result is not None
+    assert result.salary_min == 38470
+    assert result.salary_max == 50210
+    assert result.salary_currency == "USD"
+    assert result.salary_text == "USD 38,470-50,210"
 
 
 def test_job_discovery_constraint_terms_are_not_limited_to_fixed_industries() -> None:
@@ -1007,6 +1154,30 @@ def test_404_job_url_is_skipped(monkeypatch) -> None:
         assert len(session.scalars(select(JobPosting)).all()) == 0
 
 
+def test_provider_url_429_keeps_provider_unverified_without_noisy_summary(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", hdrs=None, fp=None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    verification = source_result_verification(
+        LiveJobSourceResult(
+            title="Studio Assistant",
+            company_name="Example Studio",
+            job_url="https://provider.example/jobs/studio",
+            source_provider="adzuna",
+            provenance="provider_result",
+            url_verification_summary="Adzuna provider result; URL may redirect through Adzuna.",
+        ),
+        verify_url=True,
+    )
+
+    assert verification.status == "provider_unverified"
+    assert verification.expired_or_closed is False
+    assert verification.summary == "Adzuna provider result; URL may redirect through Adzuna."
+    assert "429" not in verification.summary
+
+
 def test_provider_result_can_be_saved_with_provenance_without_fetch() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -1042,6 +1213,52 @@ def test_provider_result_can_be_saved_with_provenance_without_fetch() -> None:
         assert job.source_result_id == "job-123"
         assert job.url_verification_status == "provider_unverified"
         assert job.posting_date is None
+
+
+def test_provider_job_url_does_not_canonicalize_company_by_aggregator_domain() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        poisoned = Company(
+            name="PwC",
+            normalized_name="pwc",
+            domain="adzuna.com",
+            normalized_domain="adzuna.com",
+            source_urls=["https://www.adzuna.com/land/ad/old-pwc"],
+            source_summary="Legacy provider URL should not be treated as a company domain.",
+        )
+        session.add(poisoned)
+        session.commit()
+
+        result = save_live_job_source_results(
+            session,
+            candidate_profile=profile,
+            discovery_query="broad exploratory job search",
+            source_results=[
+                LiveJobSourceResult(
+                    title="Adjunct Faculty - Visual & Performing Arts",
+                    company_name="Graceland University",
+                    job_url="https://www.adzuna.com/details/5702208850?utm_medium=api",
+                    source_provider="adzuna",
+                    source_query="Wheel-throwing",
+                    provenance="provider_result",
+                    fit_summary="Adjunct professor role specifically for ceramics.",
+                )
+            ],
+            search_queries_used=["Wheel-throwing"],
+            provider="adzuna",
+            verify_urls=False,
+        )
+        session.commit()
+
+        assert len(result.added_companies) == 1
+        added_company = result.added_companies[0].company
+        assert added_company.name == "Graceland University"
+        assert added_company.normalized_domain is None
+        assert added_company.source_urls == []
+        assert result.added_companies[0].personal_source_urls == ["https://www.adzuna.com/details/5702208850?utm_medium=api"]
+        assert session.scalar(select(Company).where(Company.name == "PwC")).id == poisoned.id
 
 
 def test_user_provided_valid_job_url_can_be_saved_when_fetched(monkeypatch, tmp_path: Path) -> None:
@@ -1089,7 +1306,7 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
     with Session(engine) as session:
         response = command_center_module.execute_command_center_command(
             command_center_module.CommandCenterCommandRequest(
-                command="Find me some jobs to apply to.",
+                command="Find applied AI engineer jobs to apply to.",
                 active_workspace="jobs",
             ),
             session=session,
@@ -1115,7 +1332,7 @@ def test_job_discovery_returns_clear_error_when_live_source_not_configured(tmp_p
 
     with Session(engine) as session:
         result = run_job_discovery(
-            JobDiscoveryRequest(latest_user_message="Find some jobs for me to apply to.", candidate_profile_slug="rebekah-love"),
+            JobDiscoveryRequest(latest_user_message="Find applied AI engineer jobs for me to apply to.", candidate_profile_slug="rebekah-love"),
             db_session=session,
             settings=settings,
         )

@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from ..db.models import CandidateSavedJob, JobPosting, TargetCompany
+from ..db.models import CandidateCompany, CandidateSavedJob, JobPosting
 from ..model_connector import ModelRequest
 
 
@@ -89,6 +89,23 @@ class JobDiscoveryRecord(ApiModel):
         serialization_alias="employmentType",
         max_length=120,
     )
+    salary_min: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("salary_min", "salaryMin", "compensation_min", "compensationMin"),
+        serialization_alias="salaryMin",
+    )
+    salary_max: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("salary_max", "salaryMax", "compensation_max", "compensationMax"),
+        serialization_alias="salaryMax",
+    )
+    salary_currency: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("salary_currency", "salaryCurrency", "currency"),
+        serialization_alias="salaryCurrency",
+        min_length=3,
+        max_length=3,
+    )
     salary_text: str | None = Field(
         default=None,
         validation_alias=AliasChoices("salary_text", "salaryText", "compensation_text", "compensationText"),
@@ -130,6 +147,7 @@ class JobDiscoveryRecord(ApiModel):
         "url_verification_summary",
         "location",
         "employment_type",
+        "salary_currency",
         "salary_text",
         "description_excerpt",
         "fit_summary",
@@ -141,6 +159,11 @@ class JobDiscoveryRecord(ApiModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("salary_currency", mode="after")
+    @classmethod
+    def normalize_salary_currency(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
 
     @field_validator("remote_work_mode", mode="before")
     @classmethod
@@ -262,6 +285,9 @@ class SavedJobResponse(BaseModel):
     location: str | None
     remote_work_mode: str | None
     employment_type: str | None
+    salary_min: int | None
+    salary_max: int | None
+    salary_currency: str | None
     salary_text: str | None
     description_excerpt: str | None
     fit_summary: str | None
@@ -296,7 +322,7 @@ class JobDiscoverySaveResult:
     updated_existing_links: list[CandidateSavedJob]
     created_jobs: list[JobPosting]
     updated_jobs: list[JobPosting]
-    added_companies: list[TargetCompany]
+    added_companies: list[CandidateCompany]
     skipped: list[SkippedJobResult]
 
 
@@ -332,6 +358,9 @@ class LiveJobSourceResult:
     location: str | None = None
     remote_work_mode: str | None = None
     employment_type: str | None = None
+    salary_min: int | None = None
+    salary_max: int | None = None
+    salary_currency: str | None = None
     salary_text: str | None = None
     description_excerpt: str | None = None
     posting_date: date | None = None

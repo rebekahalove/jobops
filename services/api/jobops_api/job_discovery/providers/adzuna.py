@@ -13,10 +13,12 @@ from ..provider_utils import (
     fetch_json,
     format_salary_text,
     html_to_text,
+    infer_adzuna_currency_code,
     infer_location_query,
     infer_remote_mode,
     nested_get,
     parse_datetime_value,
+    parse_whole_currency_amount,
     safe_provider_raw_metadata,
 )
 
@@ -95,7 +97,10 @@ def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> L
     job_url = clean_text_value(raw.get("redirect_url"))
     if not title or not company_name or not job_url:
         return None
-    salary_text = format_salary_text(raw.get("salary_min"), raw.get("salary_max"))
+    salary_currency = infer_adzuna_currency_code(settings.adzuna_country)
+    salary_min = parse_whole_currency_amount(raw.get("salary_min"))
+    salary_max = parse_whole_currency_amount(raw.get("salary_max"))
+    salary_text = format_salary_text(raw.get("salary_min"), raw.get("salary_max"), currency_code=salary_currency)
     created = parse_datetime_value(raw.get("created"))
     return LiveJobSourceResult(
         title=title,
@@ -111,6 +116,9 @@ def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> L
         location=clean_text_value(nested_get(raw, "location", "display_name")),
         remote_work_mode=infer_remote_mode(" ".join(str(raw.get(key) or "") for key in ("title", "description"))),
         employment_type=clean_text_value(raw.get("contract_time") or raw.get("contract_type")),
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_currency=salary_currency,
         salary_text=salary_text,
         description_excerpt=html_to_text(str(raw.get("description") or ""))[:600] or None,
         posting_date=created.date() if created else None,

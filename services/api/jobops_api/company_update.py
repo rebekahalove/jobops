@@ -5,17 +5,27 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from .company_discovery import normalize_company_name, serialize_company
-from .db.models import CandidateProfile, TargetCompany
+from .company_canonicalization import normalize_company_name
+from .company_discovery import serialize_company
+from .db.models import CandidateCompany, CandidateProfile, Company
 
 
-CompanyUpdateField = Literal["website_url", "careers_url", "job_listings_url", "source_urls", "notes"]
+CompanyUpdateField = Literal["website_url", "careers_url", "job_listings_url", "source_urls", "notes", "review_status", "fit_reason"]
 CompanyUpdateStatus = Literal["completed", "needs_confirmation", "failed"]
 
-ALLOWED_COMPANY_UPDATE_FIELDS: set[str] = {"website_url", "careers_url", "job_listings_url", "source_urls", "notes"}
+ALLOWED_COMPANY_UPDATE_FIELDS: set[str] = {
+    "website_url",
+    "careers_url",
+    "job_listings_url",
+    "source_urls",
+    "notes",
+    "review_status",
+    "fit_reason",
+}
 URL_COMPANY_UPDATE_FIELDS: set[str] = {"website_url", "careers_url", "job_listings_url", "source_urls"}
+LINK_COMPANY_UPDATE_FIELDS: set[str] = {"notes", "review_status", "fit_reason"}
 
 
 @dataclass(frozen=True)
@@ -57,8 +67,8 @@ def run_company_update(
     if company_match.status != "completed":
         return company_match
 
-    company = company_match.body["companyRow"]
-    assert isinstance(company, TargetCompany)
+    link = company_match.body["companyLink"]
+    assert isinstance(link, CandidateCompany)
 
     if field in URL_COMPANY_UPDATE_FIELDS:
         url = normalize_http_url(request.url)
@@ -68,37 +78,38 @@ def run_company_update(
                 "company_update_url_required",
                 {"field": field},
             )
-        result = apply_url_update(company, field, url)
+        result = apply_url_update(link.company, field, url)
     else:
         note_text = clean_text(request.raw_text)
         if note_text is None:
             return failed_result(
                 "A note value is required for that company update.",
-                "company_update_note_required",
+                "company_update_value_required",
                 {"field": field},
             )
-        previous = company.notes or ""
-        company.notes = note_text
+        previous = getattr(link, field) or ""
+        setattr(link, field, note_text)
         result = {
             "updatedField": field,
             "previousValue": previous,
-            "newValue": company.notes,
-            "changed": previous != company.notes,
+            "newValue": getattr(link, field),
+            "changed": previous != getattr(link, field),
         }
 
-    db_session.add(company)
+    db_session.add(link.company)
+    db_session.add(link)
     db_session.commit()
-    db_session.refresh(company)
+    db_session.refresh(link)
 
     field_label = field.replace("_", " ")
     return CompanyUpdateResult(
         status="completed",
-        assistant_message=f"Updated {company.name}'s {field_label}.",
+        assistant_message=f"Updated {link.company.name}'s {field_label}.",
         body={
             "ok": True,
             "result": {
-                "assistantMessage": f"Updated {company.name}'s {field_label}.",
-                "company": serialize_company(company),
+                "assistantMessage": f"Updated {link.company.name}'s {field_label}.",
+                "company": serialize_company(link),
                 **result,
             },
         },
@@ -113,14 +124,28 @@ def resolve_company_for_update(
     company_name: str | None,
 ) -> CompanyUpdateResult:
     if company_id:
-        company = session.get(TargetCompany, company_id)
-        if company is None or company.candidate_profile_id != candidate_profile.id:
-            return clarification_result(
-                "I do not see that company in your tracked companies yet. Do you want me to add it as a new company to follow, or did you mean a different tracked company?",
-                "company_not_found",
-                {"companyId": company_id},
+        link = session.get(CandidateCompany, company_id)
+        if link is not None and link.candidate_profile_id == candidate_profile.id:
+            return matched_company_result(link)
+
+        company = session.get(Company, company_id)
+        if company is not None:
+            link = session.scalar(
+                select(CandidateCompany)
+                .options(selectinload(CandidateCompany.company))
+                .where(
+                    CandidateCompany.candidate_profile_id == candidate_profile.id,
+                    CandidateCompany.company_id == company.id,
+                )
             )
-        return matched_company_result(company)
+            if link is not None:
+                return matched_company_result(link)
+
+        return clarification_result(
+            "I do not see that company in your tracked companies yet. Do you want me to add it as a new company to follow, or did you mean a different tracked company?",
+            "company_not_found",
+            {"companyId": company_id},
+        )
 
     normalized_name = normalize_company_name(company_name)
     if not normalized_name:
@@ -130,23 +155,19 @@ def resolve_company_for_update(
             {},
         )
 
-    matches = list(
+    all_links = list(
         session.scalars(
-            select(TargetCompany).where(
-                TargetCompany.candidate_profile_id == candidate_profile.id,
-                TargetCompany.normalized_name == normalized_name,
-            )
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile.id)
         )
     )
-    if not matches:
-        matches = [
-            company
-            for company in session.scalars(
-                select(TargetCompany).where(TargetCompany.candidate_profile_id == candidate_profile.id)
-            )
-            if normalize_company_name(company.name) == normalized_name
-        ]
-
+    matches = [
+        link
+        for link in all_links
+        if link.company is not None
+        and normalize_company_name(link.company.normalized_name or link.company.name) == normalized_name
+    ]
     if not matches:
         return clarification_result(
             "I do not see that company in your tracked companies yet. Do you want me to add it as a new company to follow, or did you mean a different tracked company?",
@@ -157,12 +178,12 @@ def resolve_company_for_update(
         return clarification_result(
             "I found multiple tracked companies with that name. Which one should I update?",
             "company_update_ambiguous_target",
-            {"companyName": company_name, "matches": [serialize_company(company) for company in matches]},
+            {"companyName": company_name, "matches": [serialize_company(link) for link in matches]},
         )
     return matched_company_result(matches[0])
 
 
-def apply_url_update(company: TargetCompany, field: str, url: str) -> dict[str, Any]:
+def apply_url_update(company: Company, field: str, url: str) -> dict[str, Any]:
     if field == "source_urls":
         previous = company.source_urls or []
         seen = {item.casefold() for item in previous}
@@ -183,6 +204,11 @@ def apply_url_update(company: TargetCompany, field: str, url: str) -> dict[str, 
 
     previous = getattr(company, field)
     setattr(company, field, url)
+    if field in {"website_url", "careers_url", "job_listings_url"} and not company.normalized_domain:
+        parsed_domain = domain_from_update_url(url)
+        if parsed_domain:
+            company.domain = company.domain or parsed_domain
+            company.normalized_domain = parsed_domain
     return {
         "updatedField": field,
         "previousValue": previous,
@@ -202,6 +228,11 @@ def normalize_http_url(value: str | None) -> str | None:
     return stripped
 
 
+def domain_from_update_url(value: str) -> str | None:
+    parsed = urlparse(value)
+    return (parsed.hostname or "").casefold().removeprefix("www.") or None
+
+
 def clean_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -209,11 +240,11 @@ def clean_text(value: str | None) -> str | None:
     return stripped or None
 
 
-def matched_company_result(company: TargetCompany) -> CompanyUpdateResult:
+def matched_company_result(link: CandidateCompany) -> CompanyUpdateResult:
     return CompanyUpdateResult(
         status="completed",
         assistant_message="Company matched.",
-        body={"ok": True, "companyRow": company},
+        body={"ok": True, "companyLink": link},
     )
 
 

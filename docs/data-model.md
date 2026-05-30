@@ -83,11 +83,18 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 - Includes hostname, purpose, verification status, canonical flag, and timestamps.
 - Examples: `rebekahalove.dev`, `jobops.rebekahalove.dev`, future custom domains.
 
-`target_companies`
+`companies`
 
-- Private companies a tenant is tracking.
-- Not visible to public profile visitors.
-- Implemented for the manual Application Tracker MVP as candidate-profile-scoped company records.
+- Global canonical company records shared across candidate profiles.
+- Stores shared facts such as normalized name/domain, website, careers and job-listing URLs, description, headquarters, operating countries, source URLs, confidence, first seen, and last seen.
+- Stores ATS/provider metadata that is company-level, such as Greenhouse board token, Ashby board URL, and Lever slug.
+- Must not store user-specific notes, review status, or fit rationale.
+
+`candidate_companies`
+
+- Profile-specific links between a candidate profile and a canonical company.
+- Stores private relationship state such as review status, derivation status, fit reason, role and mission fit tags, notes, discovery query, search queries, discovered-by provider, added date, archive date, and last checked date.
+- Different profiles can follow the same canonical company with separate notes, statuses, and fit reasons.
 
 `job_roles`
 
