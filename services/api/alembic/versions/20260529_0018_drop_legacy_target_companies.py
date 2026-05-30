@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import sqlalchemy as sa
 from alembic import op
+from alembic import context
 
 
 revision: str = "20260529_0018"
@@ -21,6 +22,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if context.is_offline_mode():
+        op.execute("-- Skipping legacy target_companies compatibility cleanup in offline SQL generation.")
+        return
+
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     tables = set(inspector.get_table_names())

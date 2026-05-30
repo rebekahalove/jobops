@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import sqlalchemy as sa
 from alembic import op
+from alembic import context
 
 
 revision: str = "20260529_0017"
@@ -87,8 +88,11 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("company_id", sa.String(length=36), nullable=True))
         batch_op.create_foreign_key("fk_applications_company_id_companies", "companies", ["company_id"], ["id"], ondelete="SET NULL")
 
-    target_company_map = _backfill_target_companies()
-    _backfill_company_references(target_company_map)
+    if context.is_offline_mode():
+        op.execute("-- Skipping canonical company data backfill in offline SQL generation; run this migration online to preserve existing target_companies rows.")
+    else:
+        target_company_map = _backfill_target_companies()
+        _backfill_company_references(target_company_map)
 
     op.drop_index("ix_job_roles_company_title", table_name="job_roles")
     op.create_index("ix_job_roles_company_title", "job_roles", ["company_id", "title"])
@@ -105,7 +109,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     _recreate_target_companies()
-    _backfill_legacy_target_companies()
+    if context.is_offline_mode():
+        op.execute("-- Skipping legacy target_companies data backfill in offline SQL generation; run this migration online to preserve existing candidate_companies rows.")
+    else:
+        _backfill_legacy_target_companies()
     with op.batch_alter_table("job_roles") as batch_op:
         batch_op.add_column(sa.Column("target_company_id", sa.String(length=36), nullable=True))
         batch_op.create_foreign_key(
@@ -124,7 +131,8 @@ def downgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
-    _backfill_legacy_company_references()
+    if not context.is_offline_mode():
+        _backfill_legacy_company_references()
     op.drop_index("ix_job_roles_company_title", table_name="job_roles")
     op.create_index("ix_job_roles_company_title", "job_roles", ["target_company_id", "title"])
     with op.batch_alter_table("applications") as batch_op:

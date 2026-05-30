@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import sqlalchemy as sa
 from alembic import op
+from alembic import context
 
 
 revision: str = "20260529_0019"
@@ -22,6 +23,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if context.is_offline_mode():
+        with op.batch_alter_table("job_postings") as batch_op:
+            batch_op.add_column(sa.Column("salary_min", sa.Integer(), nullable=True))
+            batch_op.add_column(sa.Column("salary_max", sa.Integer(), nullable=True))
+            batch_op.add_column(sa.Column("salary_currency", sa.String(length=3), nullable=True))
+        op.execute("-- Skipping salary_text backfill in offline SQL generation; run this migration online to backfill salary amounts.")
+        return
+
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     existing_columns = {column["name"] for column in inspector.get_columns("job_postings")}
@@ -56,6 +65,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if context.is_offline_mode():
+        with op.batch_alter_table("job_postings") as batch_op:
+            batch_op.drop_column("salary_currency")
+            batch_op.drop_column("salary_max")
+            batch_op.drop_column("salary_min")
+        return
+
     existing_columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("job_postings")}
     with op.batch_alter_table("job_postings") as batch_op:
         if "salary_currency" in existing_columns:
