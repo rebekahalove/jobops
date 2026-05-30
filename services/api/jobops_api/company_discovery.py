@@ -42,6 +42,11 @@ DerivationStatus = Literal["model_derived", "user_entered", "imported"]
 ReviewStatus = Literal["new", "reviewed", "needs_verification", "archived"]
 RemotePolicy = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 DataConfidence = Literal["low", "medium", "high"]
+MAX_DISCOVERY_COMPANIES = 25
+MAX_DISCOVERY_SKIPPED_COMPANIES = 25
+MAX_DISCOVERY_SEARCH_QUERIES = 16
+MAX_DISCOVERY_ANGLES = 16
+MAX_DISCOVERY_CLARIFYING_QUESTIONS = 5
 ACTIONABLE_TARGET_KEYS = {
     "target_role_titles",
     "targetRoleTitles",
@@ -318,30 +323,30 @@ class CompanyDiscoveryOutput(ApiModel):
         min_length=1,
         max_length=1200,
     )
-    companies: list[CompanyDiscoveryRecord] = Field(default_factory=list, max_length=25)
+    companies: list[CompanyDiscoveryRecord] = Field(default_factory=list, max_length=MAX_DISCOVERY_COMPANIES)
     skipped_existing_companies: list[SkippedExistingCompany] = Field(
         default_factory=list,
         validation_alias=AliasChoices("skipped_existing_companies", "skippedExistingCompanies"),
         serialization_alias="skippedExistingCompanies",
-        max_length=25,
+        max_length=MAX_DISCOVERY_SKIPPED_COMPANIES,
     )
     search_queries_used: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("search_queries_used", "searchQueriesUsed"),
         serialization_alias="searchQueriesUsed",
-        max_length=16,
+        max_length=MAX_DISCOVERY_SEARCH_QUERIES,
     )
     discovery_angles: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("discovery_angles", "discoveryAngles"),
         serialization_alias="discoveryAngles",
-        max_length=16,
+        max_length=MAX_DISCOVERY_ANGLES,
     )
     clarifying_questions: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("clarifying_questions", "clarifyingQuestions"),
         serialization_alias="clarifyingQuestions",
-        max_length=5,
+        max_length=MAX_DISCOVERY_CLARIFYING_QUESTIONS,
     )
 
 
@@ -1612,6 +1617,11 @@ def salvage_company_discovery_output(parsed: dict[str, Any], error: ValidationEr
                 companies.append(CompanyDiscoveryRecord.model_validate(sanitize_company_discovery_record(raw_company)))
             except ValidationError as record_error:
                 warnings.extend(f"companies.{index}.{issue}" for issue in format_validation_issues(record_error))
+    if len(companies) > MAX_DISCOVERY_COMPANIES:
+        warnings.append(
+            f"companies: trimmed salvaged model output from {len(companies)} to {MAX_DISCOVERY_COMPANIES} records."
+        )
+        companies = companies[:MAX_DISCOVERY_COMPANIES]
 
     skipped: list[SkippedExistingCompany] = []
     raw_skipped = parsed.get("skippedExistingCompanies") or parsed.get("skipped_existing_companies")
@@ -1622,12 +1632,18 @@ def salvage_company_discovery_output(parsed: dict[str, Any], error: ValidationEr
                     skipped.append(SkippedExistingCompany.model_validate(item))
                 except ValidationError:
                     continue
+    if len(skipped) > MAX_DISCOVERY_SKIPPED_COMPANIES:
+        warnings.append(
+            "skippedExistingCompanies: trimmed salvaged model output from "
+            f"{len(skipped)} to {MAX_DISCOVERY_SKIPPED_COMPANIES} records."
+        )
+        skipped = skipped[:MAX_DISCOVERY_SKIPPED_COMPANIES]
 
     clarifying_questions = [
         question.strip()
         for question in parsed.get("clarifyingQuestions", parsed.get("clarifying_questions", []))
         if isinstance(question, str) and question.strip()
-    ][:5]
+    ][:MAX_DISCOVERY_CLARIFYING_QUESTIONS]
 
     output = CompanyDiscoveryOutput(
         assistantMessage=assistant_message,
@@ -1637,12 +1653,12 @@ def salvage_company_discovery_output(parsed: dict[str, Any], error: ValidationEr
             query.strip()
             for query in parsed.get("searchQueriesUsed", parsed.get("search_queries_used", []))
             if isinstance(query, str) and query.strip()
-        ][:16],
+        ][:MAX_DISCOVERY_SEARCH_QUERIES],
         discoveryAngles=[
             angle.strip()
             for angle in parsed.get("discoveryAngles", parsed.get("discovery_angles", []))
             if isinstance(angle, str) and angle.strip()
-        ][:16],
+        ][:MAX_DISCOVERY_ANGLES],
         clarifyingQuestions=clarifying_questions,
     )
     return output, warnings

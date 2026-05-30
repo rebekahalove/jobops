@@ -397,6 +397,33 @@ def test_company_discovery_salvages_valid_records_from_partly_invalid_output() -
     assert warnings
 
 
+def test_company_discovery_salvage_trims_overlong_skipped_companies() -> None:
+    output, warnings = validate_company_discovery_output(
+        json.dumps(
+            {
+                "assistantMessage": "Found options, with a noisy duplicate list.",
+                "companies": [
+                    {
+                        "name": "Valid Studio",
+                        "normalizedName": "valid studio",
+                        "websiteUrl": "https://valid-studio.example",
+                        "sourceUrls": ["https://valid-studio.example"],
+                    }
+                ],
+                "skippedExistingCompanies": [
+                    {"name": f"Existing Company {index}", "reason": "Already followed."}
+                    for index in range(30)
+                ],
+                "clarifyingQuestions": [],
+            }
+        )
+    )
+
+    assert [company.name for company in output.companies] == ["Valid Studio"]
+    assert len(output.skipped_existing_companies) == 25
+    assert any("skippedExistingCompanies: trimmed" in warning for warning in warnings)
+
+
 def test_company_discovery_validation_failure_logs_preview(tmp_path: Path, caplog) -> None:
     caplog.set_level(logging.WARNING, logger="jobops_api.company_discovery")
     response = SimpleNamespace(
