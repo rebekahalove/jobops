@@ -63,7 +63,7 @@ describe("dashboard auth gate", () => {
     });
   });
 
-  it("returns JSON 401 for protected API proxy paths with a stale session instead of redirecting to login HTML", async () => {
+  it("lets protected API proxy paths with a session cookie reach FastAPI auth", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -83,16 +83,8 @@ describe("dashboard auth gate", () => {
       }
     );
 
-    if (!response) {
-      throw new Error("Expected dashboard gate response.");
-    }
-    expect(response.status).toBe(401);
-    expect(response.headers.get("location")).toBeNull();
-    expect(response.headers.get("set-cookie")).toContain(`${JOBOPS_SESSION_COOKIE_NAME}=; Max-Age=0`);
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "JobOps authentication is required."
-    });
+    expect(response).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("redirects an unauthenticated dashboard landing path to the public about page", async () => {
@@ -201,7 +193,7 @@ describe("dashboard auth gate", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("validates protected API proxy paths with a backend timeout guard", async () => {
+  it("does not perform backend validation in middleware for protected API proxy paths", async () => {
     process.env.JOBOPS_API_BASE_URL = "http://api.test";
     process.env.JOBOPS_INTERNAL_API_KEY = "test-internal-key";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
@@ -220,14 +212,7 @@ describe("dashboard auth gate", () => {
     );
 
     expect(response).toBeUndefined();
-    expect(globalThis.fetch).toHaveBeenCalledWith("http://api.test/v1/auth/me", {
-      cache: "no-store",
-      headers: {
-        Cookie: `${JOBOPS_SESSION_COOKIE_NAME}=test-session-token`,
-        "X-JobOps-Internal-Key": "test-internal-key"
-      },
-      signal: expect.any(AbortSignal)
-    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("leaves public portfolio paths unaffected", async () => {

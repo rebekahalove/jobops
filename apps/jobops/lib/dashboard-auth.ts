@@ -1,5 +1,4 @@
 export const JOBOPS_SESSION_COOKIE_NAME = "jobops_session";
-const BACKEND_SESSION_VALIDATION_TIMEOUT_MS = 2500;
 
 const PROTECTED_API_PROXY_PATHS = [
   "/api/command-center",
@@ -75,12 +74,7 @@ export async function gateDashboardRequest(request: Request, options: DashboardG
   const sessionCookieValue = readCookie(request.headers.get("cookie"), JOBOPS_SESSION_COOKIE_NAME);
   if (isProtectedApiPath) {
     if (sessionCookieValue) {
-      const backendSession = await validateBackendSession(request.headers.get("cookie"));
-      if (backendSession.ok) {
-        return undefined;
-      }
-
-      return authRequiredJsonResponse(env);
+      return undefined;
     }
 
     return authRequiredJsonResponse(env);
@@ -254,35 +248,6 @@ function buildPublicInfoUrl(requestUrl: string, dashboardBasePath: "" | "/jobops
   publicInfoUrl.pathname = `${dashboardBasePath}/about` || "/about";
   publicInfoUrl.search = "";
   return publicInfoUrl;
-}
-
-async function validateBackendSession(cookieHeader: string | null) {
-  const apiBaseUrl = process.env.JOBOPS_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
-  const internalApiKey = process.env.JOBOPS_INTERNAL_API_KEY?.trim() || "";
-
-  if (!internalApiKey) {
-    return { ok: false };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), BACKEND_SESSION_VALIDATION_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${apiBaseUrl}/v1/auth/me`, {
-        cache: "no-store",
-        headers: {
-          Cookie: cookieHeader || "",
-          "X-JobOps-Internal-Key": internalApiKey
-        },
-        signal: controller.signal
-      });
-      return { ok: response.ok };
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  } catch {
-    return { ok: false };
-  }
 }
 
 function clearSessionCookieHeader(isProduction: boolean) {
