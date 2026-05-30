@@ -709,13 +709,30 @@ def test_company_discovery_prompts_for_targets_on_generic_request(tmp_path: Path
     assert result.body["result"]["companies"] == []
     assert result.body["result"]["profileTargetsRequired"] is True
     assert result.body["result"]["blockedByTargetPreflight"] is True
+    assert result.body["result"]["preflightReason"] == "no_actionable_company_discovery_context"
     assert result.body["result"]["reason"] == "no_actionable_company_discovery_context"
+    assert result.body["result"]["contextSignals"] == {
+        "detectedUserSearchTerms": [],
+        "detectedTargetTitles": [],
+        "detectedRoleFamilies": [],
+        "detectedHeadline": None,
+        "detectedSkillsCount": 0,
+        "detectedExperienceSignalsCount": 0,
+    }
     assert result.body["result"]["detectedUserSearchTerms"] == []
     assert result.body["result"]["detectedTargetTitles"] == []
     assert result.body["result"]["detectedRoleFamilies"] == []
     assert result.body["result"]["detectedHeadline"] is None
     assert result.body["result"]["detectedSkillsCount"] == 0
     assert result.body["result"]["detectedExperienceSignalsCount"] == 0
+    assert result.body["result"]["recentSearchQueries"] == []
+    assert result.body["result"]["searchQueriesUsed"] == []
+    assert result.body["result"]["discoveryAngles"] == []
+    assert result.body["result"]["modelCompanyCount"] == 0
+    assert result.body["result"]["duplicateCompanyCount"] == 0
+    assert result.body["result"]["invalidCompanyCount"] == 0
+    assert result.body["result"]["savedCompanyCount"] == 0
+    assert result.body["result"]["zeroNewCompanyReason"] == "targetPreflightBlocked"
     assert "complete your target details" in result.body["result"]["assistantMessage"]
 
 
@@ -734,6 +751,8 @@ def test_company_discovery_runs_when_current_request_has_useful_search_terms(tmp
     assert result.status_code == 200
     assert result.body["ok"] is True
     assert result.body["result"].get("blockedByTargetPreflight") is False
+    assert result.body["result"]["preflightReason"] is None
+    assert result.body["result"]["contextSignals"]["detectedUserSearchTerms"] == ["ceramic", "arts", "studios"]
     assert len(result.body["result"]["companies"]) == 2
 
 
@@ -846,6 +865,7 @@ def test_company_discovery_includes_recent_queries_and_saved_companies_in_contex
     assert "ceramic studio hiring" in prompt
     assert "Existing Studio" in prompt
     assert "avoid_repeating_recent_discovery_queries" in prompt
+    assert result.body["result"]["recentSearchQueries"] == ["find ceramic studios", "ceramic studio hiring"]
 
 
 def test_company_discovery_allows_explicit_direction_without_saved_targets(tmp_path: Path) -> None:
@@ -990,11 +1010,14 @@ def test_company_discovery_duplicate_only_result_reports_clear_no_new_reason(tmp
     assert result.body["ok"] is True
     assert result.body["result"]["companies"] == []
     assert result.body["result"]["zeroResultReason"] == "allReturnedCompaniesAlreadySaved"
+    assert result.body["result"]["zeroNewCompanyReason"] == "allReturnedCompaniesAlreadySaved"
     assert result.body["result"]["modelCompanyCount"] == 3
     assert result.body["result"]["savedCompanyCount"] == 0
     assert result.body["result"]["duplicateCompanyCount"] == 3
+    assert result.body["result"]["invalidCompanyCount"] == 0
     assert result.body["result"]["skippedCompanyCount"] == 3
     assert result.body["result"]["searchQueriesUsed"] == ["ceramic studio hiring", "ceramic studios"]
+    assert result.body["result"]["discoveryAngles"] == ["ceramic studios"]
     assert "No new companies were added" in result.body["result"]["assistantMessage"]
 
 

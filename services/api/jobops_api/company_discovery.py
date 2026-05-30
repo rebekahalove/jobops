@@ -491,7 +491,11 @@ def run_company_discovery(
     )
     if should_prompt_for_discovery_targets(request.latest_user_message, target_context=target_context, signals=preflight_signals):
         return build_company_discovery_target_prompt_result(
-            diagnostics=build_target_preflight_diagnostics(preflight_signals, reason="no_actionable_company_discovery_context")
+            diagnostics=build_target_preflight_diagnostics(
+                preflight_signals,
+                reason="no_actionable_company_discovery_context",
+                recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+            )
         )
 
     model_request = build_company_discovery_model_request(
@@ -519,6 +523,11 @@ def run_company_discovery(
                 ),
                 "code": error.code,
                 "zeroResultReason": "provider/searchUnavailable",
+                **build_company_discovery_failure_diagnostics(
+                    preflight_signals,
+                    recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+                    zero_new_company_reason="provider/searchUnavailable",
+                ),
                 **safe_error_detail_fields(active_settings, error),
                 **model_request_debug_fields(active_settings, routed_request),
             },
@@ -542,13 +551,28 @@ def run_company_discovery(
                 "error": "Company discovery model call failed. No companies were saved.",
                 "code": error.code,
                 "zeroResultReason": "provider/searchUnavailable",
+                **build_company_discovery_failure_diagnostics(
+                    preflight_signals,
+                    recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+                    zero_new_company_reason="provider/searchUnavailable",
+                ),
                 **model_request_debug_fields(active_settings, routed_request),
             },
             status_code=502,
         )
     except CompanyDiscoveryValidationFailure as error:
         response = getattr(error, "response", None)
-        return company_discovery_validation_failure(active_settings, routed_request, response, error.issues)
+        return company_discovery_validation_failure(
+            active_settings,
+            routed_request,
+            response,
+            error.issues,
+            diagnostics=build_company_discovery_failure_diagnostics(
+                preflight_signals,
+                recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+                zero_new_company_reason="validationFailed",
+            ),
+        )
 
     retry_limit = 2
     while not attempts[-1].save_result.added and len(attempts) <= retry_limit:
@@ -608,7 +632,9 @@ def run_company_discovery(
             attempts=attempts,
             final_attempt=final_attempt,
             recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
+            recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
             search_queries_used=search_queries_used_from_attempts(attempts),
+            context_signals=preflight_signals,
         ),
         **({"validationWarnings": validation_warnings} if validation_warnings else {}),
         **model_request_debug_fields(active_settings, final_model_request),
@@ -995,18 +1021,79 @@ def analyze_company_discovery_context_signals(
     )
 
 
-def build_target_preflight_diagnostics(signals: CompanyDiscoveryContextSignals, *, reason: str) -> dict[str, Any]:
+def build_context_signals_payload(signals: CompanyDiscoveryContextSignals) -> dict[str, Any]:
     return {
-        "blockedByTargetPreflight": True,
-        "reason": reason,
         "detectedUserSearchTerms": signals.detected_user_search_terms,
         "detectedTargetTitles": signals.detected_target_titles,
         "detectedRoleFamilies": signals.detected_role_families,
         "detectedHeadline": signals.detected_headline,
         "detectedSkillsCount": signals.detected_skills_count,
         "detectedExperienceSignalsCount": signals.detected_experience_signals_count,
+    }
+
+
+def recent_search_queries_from_discovery_context(discovery_context: dict[str, Any]) -> list[str]:
+    recent_discovery = discovery_context.get("recent_discovery") if isinstance(discovery_context, dict) else {}
+    if not isinstance(recent_discovery, dict):
+        return []
+    return compact_unique_strings(
+        [
+            *[query for query in (recent_discovery.get("recent_discovery_queries") or []) if isinstance(query, str)],
+            *[query for query in (recent_discovery.get("recent_search_queries_used") or []) if isinstance(query, str)],
+        ],
+        limit=30,
+    )
+
+
+def build_company_discovery_failure_diagnostics(
+    signals: CompanyDiscoveryContextSignals,
+    *,
+    recent_search_queries: list[str],
+    zero_new_company_reason: str,
+) -> dict[str, Any]:
+    return {
+        "blockedByTargetPreflight": False,
+        "preflightReason": None,
+        "contextSignals": build_context_signals_payload(signals),
+        "recentSearchQueries": recent_search_queries,
+        "searchQueriesUsed": [],
+        "discoveryAngles": [],
+        "modelCompanyCount": 0,
+        "duplicateCompanyCount": 0,
+        "invalidCompanyCount": 0,
+        "savedCompanyCount": 0,
+        "zeroNewCompanyReason": zero_new_company_reason,
+    }
+
+
+def build_target_preflight_diagnostics(
+    signals: CompanyDiscoveryContextSignals,
+    *,
+    reason: str,
+    recent_search_queries: list[str],
+) -> dict[str, Any]:
+    context_signals = build_context_signals_payload(signals)
+    return {
+        "blockedByTargetPreflight": True,
+        "preflightReason": reason,
+        "reason": reason,
+        "contextSignals": context_signals,
+        "detectedUserSearchTerms": context_signals["detectedUserSearchTerms"],
+        "detectedTargetTitles": context_signals["detectedTargetTitles"],
+        "detectedRoleFamilies": context_signals["detectedRoleFamilies"],
+        "detectedHeadline": context_signals["detectedHeadline"],
+        "detectedSkillsCount": context_signals["detectedSkillsCount"],
+        "detectedExperienceSignalsCount": context_signals["detectedExperienceSignalsCount"],
+        "recentSearchQueries": recent_search_queries,
+        "searchQueriesUsed": [],
+        "discoveryAngles": [],
+        "modelCompanyCount": 0,
+        "duplicateCompanyCount": 0,
+        "invalidCompanyCount": 0,
+        "savedCompanyCount": 0,
         "targetPreflightBlocked": True,
         "zeroResultReason": "targetPreflightBlocked",
+        "zeroNewCompanyReason": "targetPreflightBlocked",
     }
 
 
@@ -1539,12 +1626,15 @@ def build_company_discovery_result_diagnostics(
     attempts: list[CompanyDiscoveryAttempt],
     final_attempt: CompanyDiscoveryAttempt,
     recent_search_query_count: int,
+    recent_search_queries: list[str],
     search_queries_used: list[str],
+    context_signals: CompanyDiscoveryContextSignals,
 ) -> dict[str, Any]:
     duplicate_count = sum(len(attempt.save_result.skipped) for attempt in attempts)
     model_company_count = sum(len(attempt.output.companies) for attempt in attempts)
     saved_company_count = len(final_attempt.save_result.added)
     skipped_company_count = sum(len(attempt.save_result.skipped) for attempt in attempts)
+    invalid_company_count = max(0, model_company_count - duplicate_count - saved_company_count)
     zero_result_reason = None
     if saved_company_count == 0:
         if model_company_count == 0:
@@ -1555,10 +1645,15 @@ def build_company_discovery_result_diagnostics(
             zero_result_reason = "allReturnedCompaniesInvalid"
     return {
         "blockedByTargetPreflight": False,
+        "preflightReason": None,
+        "contextSignals": build_context_signals_payload(context_signals),
+        "recentSearchQueries": recent_search_queries,
         "zeroResultReason": zero_result_reason,
+        "zeroNewCompanyReason": zero_result_reason,
         "modelCompanyCount": model_company_count,
         "savedCompanyCount": saved_company_count,
         "duplicateCompanyCount": duplicate_count,
+        "invalidCompanyCount": invalid_company_count,
         "skippedCompanyCount": skipped_company_count,
         "recentSearchQueryCount": recent_search_query_count,
         "searchQueriesUsed": search_queries_used,
@@ -1691,7 +1786,14 @@ class CompanyDiscoveryValidationFailure(Exception):
         self.issues = issues
 
 
-def company_discovery_validation_failure(settings: Settings, request: ModelRequest, response, issues: list[str]) -> CompanyDiscoveryServiceResult:
+def company_discovery_validation_failure(
+    settings: Settings,
+    request: ModelRequest,
+    response,
+    issues: list[str],
+    *,
+    diagnostics: dict[str, Any] | None = None,
+) -> CompanyDiscoveryServiceResult:
     finish_reason = getattr(response, "finish_reason", None)
     issues = add_truncation_hint(issues, finish_reason)
     logger.disabled = False
@@ -1716,12 +1818,15 @@ def company_discovery_validation_failure(settings: Settings, request: ModelReque
             "code": "model_response_truncated" if validation_issues_indicate_truncation(issues) else "model_output_invalid",
             "issues": issues,
             "zeroResultReason": "validationFailed",
+            "zeroNewCompanyReason": "validationFailed",
             "modelCompanyCount": 0,
             "savedCompanyCount": 0,
             "duplicateCompanyCount": 0,
+            "invalidCompanyCount": 0,
             "skippedCompanyCount": 0,
             "recentSearchQueryCount": 0,
             "searchQueriesUsed": [],
+            **(diagnostics or {}),
             **model_request_debug_fields(settings, request),
             **model_response_debug_fields(settings, response),
         },
