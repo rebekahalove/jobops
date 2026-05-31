@@ -296,11 +296,32 @@ class SavedJobResponse(BaseModel):
     status: str
     added_at: datetime
     archived_at: datetime | None
+    archived_reason: str | None
+    archived_by_action: str | None
+    has_application: bool = False
+    application_id: str | None = None
+    application_status: str | None = None
+    application_archived_at: datetime | None = None
     posting_date: date | None
     first_seen_at: datetime
     last_seen_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class SavedJobActionResponse(BaseModel):
+    ok: bool = True
+    job_id: str
+    saved_job_id: str
+    job_archived: bool = False
+    job_restored: bool = False
+    application_id: str | None = None
+    application_archived: bool = False
+    application_restored: bool = False
+    application_restore_skipped: bool = False
+    application_archived_by_action: str | None = None
+    message: str
+    job: SavedJobResponse
 
 
 @dataclass(frozen=True)

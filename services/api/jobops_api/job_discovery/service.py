@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+from ..applications import archive_application, restore_application
 from ..auth import AuthContext, require_auth_context
 from ..company_discovery import (
     build_candidate_target_context,
@@ -26,7 +27,7 @@ from ..company_canonicalization import (
     ensure_candidate_company_link,
     upsert_canonical_company,
 )
-from ..db.models import CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting
+from ..db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting
 from ..db.session import get_db_session
 from ..model_connector import ModelConnector
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
@@ -48,6 +49,7 @@ from .models import (
     LiveJobSourceResult,
     ProviderDiagnostic,
     ProviderSearchOutcome,
+    SavedJobActionResponse,
     SavedJobResponse,
     SkippedJobResult,
     SkipReasonCode,
@@ -83,10 +85,103 @@ def list_jobs(
 ) -> list[dict[str, Any]]:
     statement = (
         select(CandidateSavedJob)
+        .options(selectinload(CandidateSavedJob.job))
         .where(CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id)
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
     )
-    return [serialize_saved_job(link) for link in session.scalars(statement)]
+    links = list(session.scalars(statement))
+    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, auth.candidate_profile.id)
+    return [serialize_saved_job(link, application=application_by_job_id.get(link.job_id)) for link in links]
+
+
+@router.post("/jobs/{saved_job_id}/archive", response_model=SavedJobActionResponse)
+def archive_job(
+    saved_job_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    saved_job = get_owned_saved_job_or_404(session, saved_job_id, auth.candidate_profile.id)
+    application = get_application_for_saved_job(session, saved_job, auth.candidate_profile.id)
+    now = datetime.now(timezone.utc)
+    job_archived = saved_job.archived_at is None
+    if job_archived:
+        saved_job.archived_at = now
+        saved_job.archived_reason = "Saved job archived by user."
+        saved_job.archived_by_action = "user_archived_job"
+
+    application_archived = False
+    if application is not None and application.archived_at is None:
+        application_archived = archive_application(
+            application,
+            reason="Application archived with linked saved job.",
+            action="user_archived_job",
+            archived_at=now,
+        )
+
+    session.commit()
+    session.refresh(saved_job)
+    if application is not None:
+        session.refresh(application)
+
+    message = (
+        "Job and linked application archived. Saved materials and history were preserved."
+        if application_archived
+        else "Job archived. Saved materials and history were preserved."
+    )
+    if not job_archived and not application_archived:
+        message = "Job was already archived. Saved materials and history are preserved."
+    return saved_job_action_response(
+        saved_job,
+        application=application,
+        job_archived=job_archived,
+        application_archived=application_archived,
+        message=message,
+    )
+
+
+@router.post("/jobs/{saved_job_id}/restore", response_model=SavedJobActionResponse)
+def restore_job(
+    saved_job_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    saved_job = get_owned_saved_job_or_404(session, saved_job_id, auth.candidate_profile.id)
+    application = get_application_for_saved_job(session, saved_job, auth.candidate_profile.id)
+    job_restored = saved_job.archived_at is not None
+    if job_restored:
+        saved_job.archived_at = None
+        saved_job.archived_reason = None
+        saved_job.archived_by_action = None
+
+    application_restored = False
+    application_restore_skipped = False
+    if application is not None and application.archived_at is not None:
+        if application.archived_by_action == "user_archived_job":
+            application_restored = restore_application(application)
+        else:
+            application_restore_skipped = True
+
+    session.commit()
+    session.refresh(saved_job)
+    if application is not None:
+        session.refresh(application)
+
+    if application_restored:
+        message = "Job and linked application restored. Saved materials and history were preserved."
+    elif application_restore_skipped:
+        message = "Job restored. The linked application stayed archived because it was archived separately."
+    elif job_restored:
+        message = "Job restored."
+    else:
+        message = "Job was already active."
+    return saved_job_action_response(
+        saved_job,
+        application=application,
+        job_restored=job_restored,
+        application_restored=application_restored,
+        application_restore_skipped=application_restore_skipped,
+        message=message,
+    )
 
 
 def run_job_discovery(
@@ -1643,7 +1738,85 @@ def ensure_candidate_company_for_job(
 
 
 
-def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
+def get_owned_saved_job_or_404(session: Session, saved_job_id: str, candidate_profile_id: str) -> CandidateSavedJob:
+    saved_job = session.scalar(
+        select(CandidateSavedJob)
+        .options(selectinload(CandidateSavedJob.job))
+        .where(
+            CandidateSavedJob.id == saved_job_id,
+            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+        )
+    )
+    if saved_job is None:
+        raise HTTPException(status_code=404, detail="Saved job not found.")
+    return saved_job
+
+
+def load_application_lookup_for_saved_jobs(
+    session: Session,
+    links: list[CandidateSavedJob],
+    candidate_profile_id: str,
+) -> dict[str, Application]:
+    job_ids = [link.job_id for link in links if link.job_id]
+    if not job_ids:
+        return {}
+    applications = list(
+        session.scalars(
+            select(Application)
+            .where(
+                Application.candidate_profile_id == candidate_profile_id,
+                Application.job_id.in_(job_ids),
+            )
+            .order_by(Application.created_at.desc())
+        )
+    )
+    lookup: dict[str, Application] = {}
+    for application in applications:
+        if application.job_id and application.job_id not in lookup:
+            lookup[application.job_id] = application
+    return lookup
+
+
+def get_application_for_saved_job(session: Session, saved_job: CandidateSavedJob, candidate_profile_id: str) -> Application | None:
+    return session.scalar(
+        select(Application)
+        .where(
+            Application.candidate_profile_id == candidate_profile_id,
+            Application.job_id == saved_job.job_id,
+        )
+        .order_by(Application.created_at.desc())
+        .limit(1)
+    )
+
+
+def saved_job_action_response(
+    saved_job: CandidateSavedJob,
+    *,
+    application: Application | None,
+    message: str,
+    job_archived: bool = False,
+    job_restored: bool = False,
+    application_archived: bool = False,
+    application_restored: bool = False,
+    application_restore_skipped: bool = False,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "job_id": saved_job.job_id,
+        "saved_job_id": saved_job.id,
+        "job_archived": job_archived,
+        "job_restored": job_restored,
+        "application_id": application.id if application is not None else None,
+        "application_archived": application_archived,
+        "application_restored": application_restored,
+        "application_restore_skipped": application_restore_skipped,
+        "application_archived_by_action": application.archived_by_action if application is not None else None,
+        "message": message,
+        "job": serialize_saved_job(saved_job, application=application),
+    }
+
+
+def serialize_saved_job(link: CandidateSavedJob, *, application: Application | None = None) -> dict[str, Any]:
     job = link.job
     return {
         "id": link.id,
@@ -1683,6 +1856,12 @@ def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
         "status": link.status,
         "added_at": link.added_at.isoformat() if link.added_at else None,
         "archived_at": link.archived_at.isoformat() if link.archived_at else None,
+        "archived_reason": link.archived_reason,
+        "archived_by_action": link.archived_by_action,
+        "has_application": application is not None,
+        "application_id": application.id if application is not None else None,
+        "application_status": application.status if application is not None else None,
+        "application_archived_at": application.archived_at.isoformat() if application is not None and application.archived_at else None,
         "posting_date": job.posting_date.isoformat() if job.posting_date else None,
         "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
         "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,

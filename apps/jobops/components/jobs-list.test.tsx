@@ -54,6 +54,10 @@ describe("Jobs list", () => {
             status: "saved",
             added_at: "2026-05-28T12:00:00Z",
             archived_at: null,
+            has_application: true,
+            application_id: "app-1",
+            application_status: "in_process",
+            application_archived_at: null,
             posting_date: "2026-05-20",
             first_seen_at: "2026-05-28T12:00:00Z",
             last_seen_at: "2026-05-28T12:00:00Z",
@@ -75,7 +79,9 @@ describe("Jobs list", () => {
     expect(html).toContain("Verified");
     expect(html).toContain("Fetched page confirmed the job title and company.");
     expect(html).toContain("Matches applied AI and platform engineering goals.");
-    expect(html).toContain("Apply");
+    expect(html).toContain("In process");
+    expect(html).toContain("Open application");
+    expect(html).toContain("Archive");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
@@ -176,9 +182,53 @@ describe("Jobs list", () => {
 
     expect(source).toContain('body: JSON.stringify({');
     expect(source).toContain("saved_job_id: job.id");
-    expect(source).toContain('status: "in_progress"');
+    expect(source).toContain('status: "in_process"');
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:applications-updated"))');
     expect(source).toContain("navigateToApplication(payload.id)");
+    expect(source).toContain("job.application_id");
     expect(source).toContain("applicationId=");
+  });
+
+  it("renders archived jobs with restore action and archived application badge", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          {
+            id: "saved-job-1",
+            candidate_profile_id: "profile-1",
+            job_id: "job-1",
+            title: "AI Platform Engineer",
+            company_name: "Example Civic",
+            job_url: "https://jobs.example.test/example-civic/platform",
+            canonical_url: null,
+            apply_url: null,
+            source: null,
+            location: null,
+            remote_work_mode: "unknown",
+            employment_type: null,
+            salary_text: null,
+            description_excerpt: null,
+            fit_summary: null,
+            user_notes: null,
+            status: "saved",
+            added_at: "2026-05-28T12:00:00Z",
+            archived_at: "2026-05-29T12:00:00Z",
+            has_application: true,
+            application_id: "app-1",
+            application_status: "rejected",
+            application_archived_at: "2026-05-29T12:00:00Z",
+            posting_date: null,
+            first_seen_at: "2026-05-28T12:00:00Z",
+            last_seen_at: null,
+            created_at: "2026-05-28T12:00:00Z",
+            updated_at: "2026-05-28T12:00:00Z"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Archived");
+    expect(html).toContain("Application archived");
+    expect(html).toContain("Restore");
   });
 });

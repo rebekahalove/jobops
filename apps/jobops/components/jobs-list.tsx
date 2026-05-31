@@ -33,6 +33,12 @@ export type SavedJob = {
   status: string;
   added_at: string;
   archived_at: string | null;
+  archived_reason?: string | null;
+  archived_by_action?: string | null;
+  has_application?: boolean;
+  application_id?: string | null;
+  application_status?: string | null;
+  application_archived_at?: string | null;
   posting_date: string | null;
   first_seen_at: string;
   last_seen_at: string | null;
@@ -50,6 +56,7 @@ export function JobsList({
   const [jobs, setJobs] = useState(initialJobs);
   const [message, setMessage] = useState("");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
+  const [pendingArchiveJobId, setPendingArchiveJobId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -95,6 +102,12 @@ export function JobsList({
   );
 
   async function applyToJob(job: SavedJob) {
+    if (job.application_id) {
+      setMessage(applicationAlreadyExistsMessage(job));
+      navigateToApplication(job.application_id);
+      return;
+    }
+
     setPendingApplyJobId(job.id);
     setMessage("");
 
@@ -106,7 +119,7 @@ export function JobsList({
         },
         body: JSON.stringify({
           saved_job_id: job.id,
-          status: "in_progress"
+          status: "in_process"
         })
       });
       const payload = await response.json();
@@ -120,6 +133,33 @@ export function JobsList({
       setMessage(error instanceof Error ? error.message : "Could not start application.");
     } finally {
       setPendingApplyJobId(null);
+    }
+  }
+
+  async function setJobArchiveState(job: SavedJob, action: "archive" | "restore") {
+    setPendingArchiveJobId(job.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/jobs/${job.id}/${action}`, { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("job" in payload)) {
+        throw new Error("Saved jobs API returned an unexpected response.");
+      }
+
+      setJobs((current) => current.map((item) => (item.id === job.id ? (payload.job as SavedJob) : item)));
+      setMessage(actionResultMessage(payload, action === "archive" ? "Job archived." : "Job restored."));
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+      if ("application_id" in payload && payload.application_id) {
+        window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : `Could not ${action} job.`);
+    } finally {
+      setPendingArchiveJobId(null);
     }
   }
 
@@ -148,8 +188,18 @@ export function JobsList({
               <article className="job-card" key={job.id}>
                 <div className="job-card-main">
                   <div className="job-card-header">
-                    <h2>{job.title}</h2>
-                    <p>{job.company_name}</p>
+                    <div>
+                      <h2>{job.title}</h2>
+                      <p>{job.company_name}</p>
+                    </div>
+                    <div className="job-card-badges">
+                      {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
+                      {job.has_application ? (
+                        <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
+                          {applicationBadgeLabel(job)}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
 
                   <FoldedText className="job-description" value={job.description_excerpt} />
@@ -213,12 +263,21 @@ export function JobsList({
                   <div className="company-links" aria-label={`${job.title} links`}>
                     <button
                       className="secondary-action compact-action"
-                      disabled={pendingApplyJobId === job.id}
+                      disabled={pendingApplyJobId === job.id || Boolean(job.archived_at)}
                       suppressHydrationWarning
                       type="button"
                       onClick={() => applyToJob(job)}
                     >
-                      {pendingApplyJobId === job.id ? "Starting..." : "Apply"}
+                      {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "Open application" : "Apply"}
+                    </button>
+                    <button
+                      className="secondary-action compact-action"
+                      disabled={pendingArchiveJobId === job.id}
+                      suppressHydrationWarning
+                      type="button"
+                      onClick={() => setJobArchiveState(job, job.archived_at ? "restore" : "archive")}
+                    >
+                      {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
                     </button>
                     <a href={job.job_url} rel="noopener noreferrer" target="_blank">
                       Job posting
@@ -306,6 +365,54 @@ function shouldShowVerificationSummary(job: SavedJob) {
 
 function isVerifiedJobUrl(job: SavedJob) {
   return job.url_verification_status === "verified" || job.url_verification_status === "mock_verified";
+}
+
+function applicationBadgeLabel(job: SavedJob) {
+  if (job.application_archived_at) {
+    return "Application archived";
+  }
+  if (job.application_status) {
+    return applicationDisplayLabel(job.application_status);
+  }
+  return "Application started";
+}
+
+function applicationBadgeClass(job: SavedJob) {
+  if (job.application_archived_at) {
+    return "archived";
+  }
+  if (job.application_status === "in_process" || job.application_status === "in_progress") {
+    return "in-process";
+  }
+  if (job.application_status === "started" || job.application_status === "saved") {
+    return "started";
+  }
+  return "applied";
+}
+
+function applicationAlreadyExistsMessage(job: SavedJob) {
+  const label = job.application_archived_at ? "An archived application" : "An application";
+  return `${label} already exists for this job. Saved materials and history are preserved.`;
+}
+
+function applicationDisplayLabel(status: string) {
+  if (status === "started" || status === "saved") {
+    return "Application started";
+  }
+  if (status === "in_process" || status === "in_progress") {
+    return "In process";
+  }
+  if (status === "applied") {
+    return "Applied";
+  }
+  return formatStatus(status);
+}
+
+function actionResultMessage(payload: unknown, fallback: string) {
+  if (payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string") {
+    return payload.message;
+  }
+  return fallback;
 }
 
 function navigateToApplication(applicationId: string) {

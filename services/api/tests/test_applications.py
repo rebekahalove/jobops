@@ -213,7 +213,7 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         )
         assert create_response.status_code == 201
         created = create_response.json()
-        assert created["status"] == "in_progress"
+        assert created["status"] == "in_process"
         assert created["job_id"] == job_id
         assert created["saved_job_id"] == saved_job_id
         assert created["company_name"] == "Example Civic"
@@ -238,6 +238,358 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         assert duplicate_response.json()["id"] == created["id"]
         with Session(engine) as session:
             assert len(session.scalars(select(Application).where(Application.job_id == job_id)).all()) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_archiving_job_without_application_preserves_job_and_unrelated_applications(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        unrelated = Application(
+            candidate_profile_id=profile.id,
+            company_name="Manual Co",
+            job_title="Manual Application",
+            status="applied",
+        )
+        session.add(unrelated)
+        session.commit()
+        saved_job_id = saved_job.id
+        unrelated_application_id = unrelated.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/jobs/{saved_job_id}/archive",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["job_archived"] is True
+        assert payload["application_archived"] is False
+        with Session(engine) as session:
+            saved_job = session.get(CandidateSavedJob, saved_job_id)
+            assert saved_job is not None
+            assert saved_job.archived_at is not None
+            assert saved_job.archived_by_action == "user_archived_job"
+            assert saved_job.job is not None
+            unrelated = session.get(Application, unrelated_application_id)
+            assert unrelated is not None
+            assert unrelated.archived_at is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_archiving_and_restoring_job_cascades_only_job_archived_application(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            status="in_process",
+            notes="Preserve me.",
+        )
+        session.add(application)
+        session.flush()
+        bundle = ApplicationMaterialBundle(
+            application_id=application.id,
+            candidate_profile_id=profile.id,
+            status="generated",
+            source_context_snapshot={"safe": True},
+        )
+        session.add(bundle)
+        session.flush()
+        session.add(
+            ApplicationMaterialItem(
+                bundle_id=bundle.id,
+                material_type="cover_letter",
+                title="Cover Letter",
+                content="Preserved material.",
+                sort_order=0,
+            )
+        )
+        session.add(ApplicationEvent(application_id=application.id, event_type="note", event_date=date.today(), notes="Preserved event."))
+        session.commit()
+        saved_job_id = saved_job.id
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        archive_response = client.post(
+            f"/v1/jobs/{saved_job_id}/archive",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert archive_response.status_code == 200
+        assert archive_response.json()["application_archived"] is True
+        assert "linked application archived" in archive_response.json()["message"].lower()
+
+        with Session(engine) as session:
+            application = session.get(Application, application_id)
+            assert application is not None
+            assert application.archived_at is not None
+            assert application.archived_by_action == "user_archived_job"
+            assert application.status == "in_process"
+            assert session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id)) is not None
+            assert session.scalar(select(ApplicationEvent).where(ApplicationEvent.application_id == application_id)) is not None
+
+        restore_response = client.post(
+            f"/v1/jobs/{saved_job_id}/restore",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert restore_response.status_code == 200
+        assert restore_response.json()["job_restored"] is True
+        assert restore_response.json()["application_restored"] is True
+
+        with Session(engine) as session:
+            saved_job = session.get(CandidateSavedJob, saved_job_id)
+            application = session.get(Application, application_id)
+            assert saved_job is not None
+            assert application is not None
+            assert saved_job.archived_at is None
+            assert application.archived_at is None
+            assert application.status == "in_process"
+            assert session.scalar(select(ApplicationMaterialItem)) is not None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restoring_job_does_not_restore_separately_archived_application(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            status="in_process",
+        )
+        session.add(application)
+        session.commit()
+        saved_job_id = saved_job.id
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        archive_app = client.post(
+            f"/v1/applications/{application_id}/archive",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert archive_app.status_code == 200
+        archive_job = client.post(
+            f"/v1/jobs/{saved_job_id}/archive",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert archive_job.status_code == 200
+
+        restore_job = client.post(
+            f"/v1/jobs/{saved_job_id}/restore",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert restore_job.status_code == 200
+        payload = restore_job.json()
+        assert payload["job_restored"] is True
+        assert payload["application_restored"] is False
+        assert payload["application_restore_skipped"] is True
+        assert payload["application_archived_by_action"] == "user_archived_application"
+
+        with Session(engine) as session:
+            saved_job = session.get(CandidateSavedJob, saved_job_id)
+            application = session.get(Application, application_id)
+            assert saved_job is not None
+            assert application is not None
+            assert saved_job.archived_at is None
+            assert application.archived_at is not None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_rejected_and_withdrawn_auto_archive_and_restore_preserves_status(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        rejected = Application(candidate_profile_id=profile.id, company_name="Reject Co", job_title="Role", status="in_process")
+        withdrawn = Application(candidate_profile_id=profile.id, company_name="Withdraw Co", job_title="Role", status="in_process")
+        session.add_all([rejected, withdrawn])
+        session.commit()
+        rejected_id = rejected.id
+        withdrawn_id = withdrawn.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        rejected_response = client.post(
+            f"/v1/applications/{rejected_id}/reject",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        withdrawn_response = client.post(
+            f"/v1/applications/{withdrawn_id}/withdraw",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert rejected_response.status_code == 200
+        assert withdrawn_response.status_code == 200
+        assert rejected_response.json()["application_archived"] is True
+        assert withdrawn_response.json()["application_archived"] is True
+
+        restore_response = client.post(
+            f"/v1/applications/{rejected_id}/restore",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert restore_response.status_code == 200
+        assert restore_response.json()["application_restored"] is True
+        assert restore_response.json()["application"]["status"] == "rejected"
+        assert restore_response.json()["application"]["archived_at"] is None
+
+        with Session(engine) as session:
+            rejected = session.get(Application, rejected_id)
+            withdrawn = session.get(Application, withdrawn_id)
+            assert rejected is not None
+            assert withdrawn is not None
+            assert rejected.status == "rejected"
+            assert rejected.archived_at is None
+            assert withdrawn.status == "withdrawn"
+            assert withdrawn.archived_at is not None
+            assert withdrawn.archived_by_action == "status_withdrawn"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_job_and_application_list_responses_include_archive_and_linked_application_shape(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            status="in_process",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        jobs_response = client.get(
+            "/v1/jobs",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert jobs_response.status_code == 200
+        job_payload = jobs_response.json()[0]
+        assert job_payload["has_application"] is True
+        assert job_payload["application_id"] == application_id
+        assert job_payload["application_status"] == "in_process"
+        assert "archived_reason" in job_payload
+        assert "archived_by_action" in job_payload
+
+        applications_response = client.get(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert applications_response.status_code == 200
+        application_payload = applications_response.json()[0]
+        assert application_payload["status"] == "in_process"
+        assert application_payload["archived_at"] is None
+        assert "archived_reason" in application_payload
+        assert application_payload["job_id"] == job_payload["job_id"]
+        assert application_payload["job_title"] == "Applied AI Engineer"
+        assert application_payload["company_name"] == "Example Civic"
     finally:
         app.dependency_overrides.clear()
 
