@@ -1,5 +1,7 @@
-import { PlaceholderPage } from "../../../../jobops/components/placeholder-page";
+import React from "react";
 
-export default function JobOpscompaniesPage() {
-  return <PlaceholderPage basePath="/jobops" workflowId="companies" />;
+import { CompaniesList } from "../../../../jobops/components/companies-list";
+
+export default function JobOpsCompaniesPage() {
+  return <CompaniesList apiBasePath="/jobops/api" />;
 }

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import CompaniesPage from "../app/companies/page";
 import { CompaniesList } from "./companies-list";
+import MountedCompaniesPage from "../../portfolio/app/jobops/companies/page";
 
 describe("Companies list", () => {
   it("renders the companies workspace", () => {
@@ -12,6 +13,14 @@ describe("Companies list", () => {
     expect(html).toContain("Company watchlist");
     expect(html).toContain("Saved companies");
     expect(html).toContain("No companies yet");
+  });
+
+  it("renders the real companies workspace in the mounted portfolio app", () => {
+    const html = renderToStaticMarkup(<MountedCompaniesPage />);
+
+    expect(html).toContain("Company watchlist");
+    expect(html).toContain("Saved companies");
+    expect(html).not.toContain("Coming soon");
   });
 
   it("renders model-derived companies with badges and external verification links", () => {

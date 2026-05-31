@@ -49,11 +49,21 @@ export function CompaniesList({
     async function loadCompanies() {
       try {
         const response = await fetch(`${apiBasePath}/companies`, { cache: "no-store" });
+        const payload = await response.json().catch(() => null);
         if (!response.ok) {
+          if (active) {
+            setMessage(apiErrorMessage(payload, response.status));
+          }
           return;
         }
-        const payload = (await response.json()) as TrackedCompany[];
+        if (!Array.isArray(payload)) {
+          if (active) {
+            setMessage("Company API returned an unexpected response.");
+          }
+          return;
+        }
         if (active) {
+          setMessage("");
           setCompanies(payload);
         }
       } catch {
@@ -169,6 +179,16 @@ export function CompaniesList({
       </section>
     </main>
   );
+}
+
+function apiErrorMessage(payload: unknown, status: number) {
+  if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") {
+    return payload.error;
+  }
+  if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
+    return payload.detail;
+  }
+  return `Company API request failed with HTTP ${status}.`;
 }
 
 function SourceLinks({ urls }: { urls: string[] }) {
