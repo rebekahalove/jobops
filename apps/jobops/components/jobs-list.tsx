@@ -56,11 +56,21 @@ export function JobsList({
     async function loadJobs() {
       try {
         const response = await fetch(`${apiBasePath}/jobs`, { cache: "no-store" });
+        const payload = await response.json().catch(() => null);
         if (!response.ok) {
+          if (active) {
+            setMessage(apiErrorMessage(payload, response.status));
+          }
           return;
         }
-        const payload = (await response.json()) as SavedJob[];
+        if (!Array.isArray(payload)) {
+          if (active) {
+            setMessage("Saved jobs API returned an unexpected response.");
+          }
+          return;
+        }
         if (active) {
+          setMessage("");
           setJobs(payload);
         }
       } catch {
@@ -193,6 +203,16 @@ export function JobsList({
       </section>
     </main>
   );
+}
+
+function apiErrorMessage(payload: unknown, status: number) {
+  if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") {
+    return payload.error;
+  }
+  if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
+    return payload.detail;
+  }
+  return `Saved jobs API request failed with HTTP ${status}.`;
 }
 
 function formatStatus(value: string) {

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import JobsPage from "../app/jobs/page";
 import { JobsList } from "./jobs-list";
+import MountedJobsPage from "../../portfolio/app/jobops/jobs/page";
 
 describe("Jobs list", () => {
   it("renders the jobs workspace empty state", () => {
@@ -12,6 +13,14 @@ describe("Jobs list", () => {
     expect(html).toContain("Saved job search");
     expect(html).toContain("Saved jobs");
     expect(html).toContain("No saved jobs yet");
+  });
+
+  it("renders the real jobs workspace in the mounted portfolio app", () => {
+    const html = renderToStaticMarkup(<MountedJobsPage />);
+
+    expect(html).toContain("Saved job search");
+    expect(html).toContain("Saved jobs");
+    expect(html).not.toContain("Coming soon");
   });
 
   it("renders saved jobs through the profile link with safe external links and dates", () => {
