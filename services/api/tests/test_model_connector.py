@@ -29,6 +29,7 @@ def test_model_routing_selects_default_and_cheap_models() -> None:
     assert select_model_for_task("profile_extract", routing) == "default-model"
     assert select_model_for_task("company_discovery", routing) == "default-model"
     assert select_model_for_task("intake_followup", routing) == "default-model"
+    assert select_model_for_task("application_materials_generation", routing) == "default-model"
     assert select_model_for_task("role_fit", routing) == "default-model"
     assert select_model_for_task("judge_or_second_pass", routing) == "default-model"
     assert select_model_for_task("command_router", routing) == "cheap-model"

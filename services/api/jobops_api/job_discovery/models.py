@@ -289,6 +289,7 @@ class SavedJobResponse(BaseModel):
     salary_max: int | None
     salary_currency: str | None
     salary_text: str | None
+    full_description: str | None
     description_excerpt: str | None
     fit_summary: str | None
     user_notes: str | None
@@ -362,6 +363,7 @@ class LiveJobSourceResult:
     salary_max: int | None = None
     salary_currency: str | None = None
     salary_text: str | None = None
+    full_description: str | None = None
     description_excerpt: str | None = None
     posting_date: date | None = None
     source_updated_at: datetime | None = None

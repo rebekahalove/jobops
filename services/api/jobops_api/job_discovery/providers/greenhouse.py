@@ -107,7 +107,8 @@ def normalize_greenhouse_result(raw: object, *, board_token: str, request: JobSe
     company_name = company_name_for_greenhouse_board(board_token, request.current_saved_companies)
     if not title or not company_name or not job_url:
         return None
-    content = html_to_text(str(raw.get("content") or ""))[:600] or None
+    full_description = html_to_text(str(raw.get("content") or "")) or None
+    content = full_description[:600] if full_description else None
     updated_at = parse_datetime_value(raw.get("updated_at"))
     return LiveJobSourceResult(
         title=title,
@@ -122,6 +123,7 @@ def normalize_greenhouse_result(raw: object, *, board_token: str, request: JobSe
         provenance="provider_result",
         location=clean_text_value(nested_get(raw, "location", "name")),
         remote_work_mode=infer_remote_mode(f"{title} {content or ''}"),
+        full_description=full_description,
         description_excerpt=content,
         posting_date=None,
         source_updated_at=updated_at,

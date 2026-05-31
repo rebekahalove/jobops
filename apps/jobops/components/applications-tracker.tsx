@@ -6,6 +6,30 @@ export const applicationStatuses = ["saved", "in_progress", "applied", "intervie
 
 export type ApplicationStatus = (typeof applicationStatuses)[number];
 
+export type ApplicationMaterialItem = {
+  id: string;
+  bundle_id: string;
+  material_type: string;
+  title: string;
+  content: string;
+  content_format: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ApplicationMaterialBundle = {
+  id: string;
+  application_id: string;
+  candidate_profile_id: string;
+  status: string;
+  model_provider: string | null;
+  model_name: string | null;
+  created_at: string;
+  updated_at: string;
+  items: ApplicationMaterialItem[];
+};
+
 export type TrackedApplication = {
   id: string;
   candidate_profile_id?: string;
@@ -29,6 +53,7 @@ export type TrackedApplication = {
   next_follow_up_date: string | null;
   created_at: string;
   updated_at: string;
+  latest_material_bundle?: ApplicationMaterialBundle | null;
 };
 
 export function ApplicationsTracker({
@@ -41,6 +66,7 @@ export function ApplicationsTracker({
   const [applications, setApplications] = useState(initialApplications);
   const [message, setMessage] = useState("");
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
+  const [pendingMaterialsApplicationId, setPendingMaterialsApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -136,6 +162,36 @@ export function ApplicationsTracker({
       setMessage(error instanceof Error ? error.message : "Could not mark application as applied.");
     } finally {
       setPendingApplicationId(null);
+    }
+  }
+
+  async function generateMaterials(application: TrackedApplication) {
+    setPendingMaterialsApplicationId(application.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/applications/${application.id}/materials/generate`, {
+        method: "POST"
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("bundle" in payload)) {
+        throw new Error("Materials API returned an unexpected response.");
+      }
+
+      const bundle = payload.bundle as ApplicationMaterialBundle;
+      setApplications((current) =>
+        current.map((item) => (item.id === application.id ? { ...item, latest_material_bundle: bundle, updated_at: bundle.updated_at } : item))
+      );
+      setHighlightedApplicationId(application.id);
+      setMessage("Application materials generated.");
+      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not generate application materials.");
+    } finally {
+      setPendingMaterialsApplicationId(null);
     }
   }
 
@@ -239,8 +295,22 @@ export function ApplicationsTracker({
                         {pendingApplicationId === application.id ? "Saving..." : "Mark applied"}
                       </button>
                     ) : null}
+                    <button
+                      className="secondary-action compact-action"
+                      disabled={pendingMaterialsApplicationId === application.id}
+                      suppressHydrationWarning
+                      type="button"
+                      onClick={() => generateMaterials(application)}
+                    >
+                      {pendingMaterialsApplicationId === application.id
+                        ? "Generating..."
+                        : application.latest_material_bundle
+                          ? "Regenerate materials"
+                          : "Generate materials"}
+                    </button>
                   </div>
                 </aside>
+                {application.latest_material_bundle ? <ApplicationMaterials bundle={application.latest_material_bundle} /> : null}
               </article>
             ))}
           </div>
@@ -253,6 +323,30 @@ export function ApplicationsTracker({
       </section>
     </main>
   );
+}
+
+function ApplicationMaterials({ bundle }: { bundle: ApplicationMaterialBundle }) {
+  const sortedItems = [...(bundle.items || [])].sort((left, right) => left.sort_order - right.sort_order);
+  return (
+    <details className="application-materials">
+      <summary>
+        <span>Application Materials</span>
+        <time dateTime={bundle.created_at}>{formatDateTime(bundle.created_at)}</time>
+      </summary>
+      <div className="application-materials-body">
+        {sortedItems.map((item) => (
+          <section className="application-material-section" key={item.id}>
+            <h3>{item.title}</h3>
+            <MarkdownText value={item.content} />
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function MarkdownText({ value }: { value: string }) {
+  return <pre className="application-material-content">{value}</pre>;
 }
 
 function apiErrorMessage(payload: unknown, status: number) {

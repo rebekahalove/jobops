@@ -1365,6 +1365,7 @@ def save_live_job_source_results(
                 salary_max=result.salary_max,
                 salary_currency=result.salary_currency,
                 salary_text=result.salary_text,
+                full_description=result.full_description,
                 description_excerpt=verification.description_excerpt or result.description_excerpt,
                 discovered_by=provider,
                 url_verification_status=verification.status,
@@ -1503,6 +1504,7 @@ def update_job_posting_from_source_result(
     job_posting.salary_max = result.salary_max if result.salary_max is not None else job_posting.salary_max
     job_posting.salary_currency = result.salary_currency or job_posting.salary_currency
     job_posting.salary_text = result.salary_text or job_posting.salary_text
+    job_posting.full_description = result.full_description or job_posting.full_description
     job_posting.description_excerpt = verification.description_excerpt or result.description_excerpt or job_posting.description_excerpt
     job_posting.discovered_by = provider
     job_posting.url_verification_status = verification.status
@@ -1674,6 +1676,7 @@ def serialize_saved_job(link: CandidateSavedJob) -> dict[str, Any]:
         "salary_max": job.salary_max,
         "salary_currency": job.salary_currency,
         "salary_text": job.salary_text,
+        "full_description": job.full_description,
         "description_excerpt": job.description_excerpt,
         "fit_summary": link.fit_summary,
         "user_notes": link.user_notes,
