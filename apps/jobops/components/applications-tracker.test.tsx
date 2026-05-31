@@ -60,8 +60,146 @@ describe("Applications tracker", () => {
     expect(html).toContain("Recruiter screen scheduled.");
     expect(html).toContain("Strong platform fit.");
     expect(html).toContain("Mark applied");
+    expect(html).toContain("Inspect application page");
     expect(html).toContain("Generate materials");
     expect(html).not.toContain("Edit status");
+  });
+
+  it("renders extracted application requirements collapsed by default", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationsTracker
+        initialApplications={[
+          {
+            id: "app-1",
+            company_name: "Acme AI",
+            job_title: "Applied AI Engineer",
+            job_url: "https://example.com/jobs/applied-ai",
+            location: "Remote",
+            source: "manual",
+            source_provider: "greenhouse",
+            posting_date: "2026-05-10",
+            fit_summary: "Strong platform fit.",
+            salary_text: "USD 150,000-180,000",
+            remote_work_mode: "remote",
+            employment_type: "Full-time",
+            date_applied: null,
+            status: "in_progress",
+            notes: "Recruiter screen scheduled.",
+            next_follow_up_date: "2026-05-20",
+            created_at: "2026-05-13T00:00:00Z",
+            updated_at: "2026-05-13T00:00:00Z",
+            latest_job_page_extraction: {
+              id: "extract-1",
+              job_id: "job-1",
+              extraction_status: "succeeded",
+              platform: "generic",
+              confidence: "high",
+              fetched_at: "2026-05-14T00:00:00Z",
+              source_url: "https://example.com/jobs/applied-ai",
+              final_url: "https://example.com/jobs/applied-ai",
+              required_materials: [{ type: "resume", label: "Resume", required: true, evidence: "Resume required" }],
+              optional_materials: [{ type: "cover_letter", label: "Cover Letter", required: false, evidence: "Optional" }],
+              application_fields: [
+                {
+                  fieldType: "textarea",
+                  label: "Why this role?",
+                  required: true,
+                  normalizedKey: "why_this_role",
+                  minLength: 20,
+                  maxLength: 500,
+                  limitSource: "html_attribute",
+                  options: [],
+                  acceptedFileTypes: [],
+                  multiple: false,
+                  evidence: "Why this role?"
+                },
+                {
+                  fieldType: "select",
+                  label: "Work authorization",
+                  required: true,
+                  normalizedKey: "work_authorization",
+                  options: ["Yes", "No"],
+                  acceptedFileTypes: [],
+                  multiple: false,
+                  evidence: "Work authorization"
+                }
+              ],
+              screening_questions: [
+                {
+                  question: "Are you authorized to work in the United States?",
+                  required: true,
+                  answerType: "yes_no",
+                  category: "work_authorization",
+                  options: ["Yes", "No"],
+                  evidence: "Are you authorized?"
+                }
+              ],
+              detected_requirements: { resumeRequired: true },
+              extraction_summary: "Detected application requirements.",
+              warnings: [],
+              error_message: null
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Application Requirements");
+    expect(html).toContain("Resume · required");
+    expect(html).toContain("Why this role? · required · max 500 · min 20");
+    expect(html).toContain("options: Yes, No");
+    expect(html).toContain("<details class=\"application-requirements\">");
+    expect(html).not.toContain("<details class=\"application-requirements\" open=\"\"");
+  });
+
+  it("renders blocked extraction as a compact warning", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationsTracker
+        initialApplications={[
+          {
+            id: "app-1",
+            company_name: "Acme AI",
+            job_title: "Applied AI Engineer",
+            job_url: "https://example.com/jobs/applied-ai",
+            location: "Remote",
+            source: "manual",
+            source_provider: "greenhouse",
+            posting_date: "2026-05-10",
+            fit_summary: null,
+            salary_text: null,
+            remote_work_mode: "remote",
+            employment_type: "Full-time",
+            date_applied: null,
+            status: "in_progress",
+            notes: "",
+            next_follow_up_date: null,
+            created_at: "2026-05-13T00:00:00Z",
+            updated_at: "2026-05-13T00:00:00Z",
+            latest_job_page_extraction: {
+              id: "extract-1",
+              job_id: "job-1",
+              extraction_status: "blocked",
+              platform: "generic",
+              confidence: "low",
+              fetched_at: "2026-05-14T00:00:00Z",
+              source_url: "https://example.com/jobs/applied-ai",
+              final_url: null,
+              required_materials: [],
+              optional_materials: [],
+              application_fields: [],
+              screening_questions: [],
+              detected_requirements: {},
+              extraction_summary: null,
+              warnings: ["Blocked by bot protection."],
+              error_message: null
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Could not inspect this page automatically.");
+    expect(html).toContain("Blocked by bot protection.");
   });
 
   it("renders generated materials under a collapsed application-card section", () => {
@@ -144,7 +282,10 @@ describe("Applications tracker", () => {
     expect(source).toContain('body: JSON.stringify({ status: "applied" })');
     expect(source).toContain("generateMaterials(application)");
     expect(source).toContain('${apiBasePath}/applications/${application.id}/materials/generate');
+    expect(source).toContain("inspectApplicationPage(application)");
+    expect(source).toContain('${apiBasePath}/applications/${application.id}/requirements/extract');
     expect(source).toContain("pendingMaterialsApplicationId");
+    expect(source).toContain("pendingRequirementsApplicationId");
   });
 
   it("does not repurpose the separate Materials page", async () => {

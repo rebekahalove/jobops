@@ -2857,12 +2857,14 @@ p.job-verification {
   align-items: center;
 }
 
+.application-requirements,
 .application-materials {
   grid-column: 1 / -1;
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
 
+.application-requirements > summary,
 .application-materials > summary {
   display: flex;
   min-height: 28px;
@@ -2875,16 +2877,60 @@ p.job-verification {
   font-weight: 900;
 }
 
+.application-requirements > summary span:last-child {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 .application-materials > summary time {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 700;
 }
 
+.application-requirements-body,
 .application-materials-body {
   display: grid;
   gap: 8px;
   margin-top: 8px;
+}
+
+.application-requirements-body p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.application-requirements-section {
+  display: grid;
+  gap: 4px;
+}
+
+.application-requirements-section h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.application-requirements-section ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.application-requirements-section li {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.application-requirements-warning {
+  color: var(--danger, #a33a22);
 }
 
 .application-material-section {

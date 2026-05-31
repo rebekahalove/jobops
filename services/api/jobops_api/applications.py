@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session, selectinload
 from jobops_api.application_materials import generate_application_material_bundle
 from jobops_api.auth import AuthContext, require_auth_context
 from jobops_api.company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
-from jobops_api.db.models import Application, ApplicationEvent, ApplicationMaterialBundle, CandidateProfile, CandidateSavedJob, Company, JobPosting, JobRole
+from jobops_api.db.models import Application, ApplicationEvent, ApplicationMaterialBundle, CandidateProfile, CandidateSavedJob, Company, JobPageExtraction, JobPosting, JobRole
 from jobops_api.db.session import get_db_session
+from jobops_api.job_page_extraction import JobPageExtractionError, extract_job_page_requirements, get_latest_job_page_extraction_for_application
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
 
@@ -87,6 +88,29 @@ class ApplicationMaterialsGenerateResponse(BaseModel):
     contextManifest: dict[str, Any] | None = None
 
 
+class JobPageExtractionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    job_id: str
+    extraction_status: str
+    platform: str
+    confidence: str
+    fetched_at: datetime
+    source_url: str
+    final_url: str | None
+    http_status: int | None = None
+    page_title: str | None = None
+    required_materials: list[dict[str, Any]] = Field(default_factory=list)
+    optional_materials: list[dict[str, Any]] = Field(default_factory=list)
+    application_fields: list[dict[str, Any]] = Field(default_factory=list)
+    screening_questions: list[dict[str, Any]] = Field(default_factory=list)
+    detected_requirements: dict[str, Any] = Field(default_factory=dict)
+    extraction_summary: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error_message: str | None = None
+
+
 class ApplicationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -113,6 +137,7 @@ class ApplicationResponse(BaseModel):
     remote_work_mode: str | None = None
     employment_type: str | None = None
     latest_material_bundle: ApplicationMaterialBundleResponse | None = None
+    latest_job_page_extraction: JobPageExtractionResponse | None = None
 
 
 class ApplicationEventResponse(BaseModel):
@@ -188,6 +213,7 @@ def list_applications(
         select(Application)
         .options(
             selectinload(Application.job),
+            selectinload(Application.job).selectinload(JobPosting.page_extractions),
             selectinload(Application.saved_job),
             selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
         )
@@ -227,6 +253,36 @@ def generate_application_materials(
     if result.bundle is None:
         return JSONResponse(content=result.body, status_code=result.status_code)
     return result.body
+
+
+@router.get("/applications/{application_id}/requirements", response_model=JobPageExtractionResponse | None)
+def get_application_requirements(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> JobPageExtraction | None:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    return get_latest_job_page_extraction_for_application(session, application)
+
+
+@router.post("/applications/{application_id}/requirements/extract", response_model=JobPageExtractionResponse, status_code=201)
+def extract_application_requirements(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> JobPageExtraction | JSONResponse:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    try:
+        return extract_job_page_requirements(session=session, application=application)
+    except JobPageExtractionError as error:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": str(error),
+                "code": "job_page_extraction_unavailable",
+            },
+        )
 
 
 @router.patch("/applications/{application_id}/status", response_model=ApplicationResponse)
@@ -310,6 +366,7 @@ def get_owned_application_or_404(session: Session, application_id: str, candidat
         select(Application)
         .options(
             selectinload(Application.job),
+            selectinload(Application.job).selectinload(JobPosting.page_extractions),
             selectinload(Application.saved_job),
             selectinload(Application.candidate_profile),
             selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),

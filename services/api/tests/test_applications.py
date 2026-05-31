@@ -17,10 +17,12 @@ from jobops_api.db.models import (
     Base,
     CandidateProfile,
     CandidateSavedJob,
+    JobPageExtraction,
     JobPosting,
 )
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
+from jobops_api.job_page_extraction import FetchResult
 from jobops_api.main import app
 from jobops_api.security import INTERNAL_API_KEY_HEADER
 
@@ -309,6 +311,38 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
             full_description="Full stored job description with platform AI workflows, RAG evaluation, and production ownership.",
             description_excerpt="Short excerpt only.",
         )
+        extraction = JobPageExtraction(
+            job_id=saved_job.job_id,
+            source_url="https://jobs.example.test/example-civic/apply",
+            final_url="https://jobs.example.test/example-civic/apply",
+            platform="generic",
+            extraction_status="succeeded",
+            required_materials=[{"type": "resume", "label": "Resume", "required": True, "evidence": "Resume required"}],
+            optional_materials=[{"type": "cover_letter", "label": "Cover Letter", "required": False, "evidence": "Optional cover letter"}],
+            application_fields=[
+                {
+                    "fieldType": "textarea",
+                    "label": "Why are you interested?",
+                    "required": True,
+                    "normalizedKey": "why_interested",
+                    "minLength": None,
+                    "maxLength": 500,
+                    "limitSource": "html_attribute",
+                    "options": [],
+                    "acceptedFileTypes": [],
+                    "multiple": False,
+                    "evidence": "Why are you interested?",
+                }
+            ],
+            screening_questions=[],
+            detected_requirements={"resumeRequired": True, "coverLetterOptional": True},
+            extraction_summary="Detected application requirements.",
+            confidence="high",
+            warnings=[],
+        )
+        session.add(extraction)
+        session.flush()
+        extraction_id = extraction.id
         application = Application(
             candidate_profile_id=profile.id,
             job_id=saved_job.job_id,
@@ -348,6 +382,8 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
             assert bundle is not None
             assert bundle.model_provider == "mock"
             assert bundle.source_context_snapshot["manifest"]["jobDescriptionSource"] == "full_stored"
+            assert bundle.source_context_snapshot["manifest"]["jobPageExtractionId"] == extraction_id
+            assert bundle.source_context_snapshot["context"]["jobPageExtraction"]["requiredMaterials"][0]["type"] == "resume"
             assert "Full stored job description" in bundle.source_context_snapshot["context"]["jobPosting"]["jobDescription"]
             assert session.scalar(select(ApplicationMaterialItem).where(ApplicationMaterialItem.bundle_id == bundle.id)) is not None
 
@@ -367,6 +403,444 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
         )
         assert materials_response.status_code == 200
         assert materials_response.json()[0]["id"] == payload["bundle"]["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_application_requirements_creates_global_job_extraction(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    html = """
+    <html><head><title>Applied AI Engineer</title></head><body>
+      <script type="application/json">{"fields":{"portfolio_url":{"minLength":10,"maxLength":200}}}</script>
+      <form>
+        <label for="resume">Resume</label><input id="resume" name="resume" type="file" accept=".pdf,.docx" required>
+        <label for="cover">Cover Letter</label><input id="cover" name="cover_letter" type="file">
+        <label for="linkedin">LinkedIn Profile</label><input id="linkedin" name="linkedin_url" type="url">
+        <label for="github">GitHub</label><input id="github" name="github_url" type="url">
+        <label for="portfolio">Portfolio Website</label><input id="portfolio" name="portfolio_url" type="url">
+        <label for="salary">Salary expectations</label><input id="salary" name="salary" type="text" maxlength="120">
+        <label for="auth">Are you authorized to work in the United States?</label>
+        <select id="auth" name="work_auth" required><option>Yes</option><option>No</option></select>
+        <label for="why">Why this role?</label><textarea id="why" name="why" minlength="20" maxlength="500" required></textarea>
+      </form>
+    </body></html>
+    """
+    monkeypatch.setattr(
+        "jobops_api.job_page_extraction.fetch_job_page",
+        lambda url: FetchResult(source_url=url, final_url=url, http_status=200, content_type="text/html", text=html),
+    )
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            job_url="https://jobs.example.test/example-civic/applied-ai",
+            status="in_progress",
+            notes="",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+        job_id = saved_job.job_id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/requirements/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["job_id"] == job_id
+        assert payload["extraction_status"] == "succeeded"
+        assert payload["platform"] == "generic"
+        assert payload["required_materials"][0]["type"] == "resume"
+        assert any(field["normalizedKey"] == "linkedin_url" for field in payload["application_fields"])
+        assert any(field["normalizedKey"] == "github_url" for field in payload["application_fields"])
+        salary_field = next(field for field in payload["application_fields"] if field["normalizedKey"] == "salary_expectation")
+        assert salary_field["maxLength"] == 120
+        assert salary_field["limitSource"] == "html_attribute"
+        portfolio_field = next(field for field in payload["application_fields"] if field["normalizedKey"] == "portfolio_url")
+        assert portfolio_field["minLength"] == 10
+        assert portfolio_field["maxLength"] == 200
+        assert portfolio_field["limitSource"] == "embedded_json"
+        assert any(question["category"] == "work_authorization" and question["options"] == ["Yes", "No"] for question in payload["screening_questions"])
+
+        with Session(engine) as session:
+            extraction = session.scalar(select(JobPageExtraction).where(JobPageExtraction.job_id == job_id))
+            assert extraction is not None
+            assert extraction.required_materials[0]["type"] == "resume"
+            assert extraction.raw_text_excerpt is not None
+            assert extraction.raw_text_excerpt != html
+
+        listed = client.get(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert listed.status_code == 200
+        assert listed.json()[0]["latest_job_page_extraction"]["id"] == payload["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_application_requirements_follows_public_apply_links(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    pages = {
+        "https://adzuna.example.test/job/123/apply": """
+        <html><body><a class="apply-now" href="/redirect/123">Apply now</a></body></html>
+        """,
+        "https://adzuna.example.test/redirect/123": """
+        <html><body><a rel="nofollow" href="https://ats.example.test/apply/abc">Continue to apply</a></body></html>
+        """,
+        "https://ats.example.test/apply/abc": """
+        <html><body><form>
+          <label for="resume">Resume</label><input id="resume" name="resume" type="file" required accept=".pdf">
+          <label for="auth">Are you authorized to work in the United States?</label>
+          <select id="auth" name="work_auth" required><option>Yes</option><option>No</option></select>
+        </form></body></html>
+        """,
+    }
+
+    def fake_fetch(url: str) -> FetchResult:
+        text = pages[url]
+        return FetchResult(source_url=url, final_url=url, http_status=200, content_type="text/html", text=text)
+
+    monkeypatch.setattr("jobops_api.job_page_extraction.fetch_job_page", fake_fetch)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        job = session.get(JobPosting, saved_job.job_id)
+        assert job is not None
+        job.apply_url = "https://adzuna.example.test/job/123/apply"
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            job_url=job.job_url,
+            status="in_progress",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/requirements/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["extraction_status"] == "succeeded"
+        assert payload["final_url"] == "https://ats.example.test/apply/abc"
+        assert payload["required_materials"][0]["type"] == "resume"
+        assert any(question["category"] == "work_authorization" for question in payload["screening_questions"])
+        assert any("Followed public apply link" in warning for warning in payload["warnings"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_application_requirements_falls_back_from_blocked_apply_url_to_job_url(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    def fake_fetch(url: str) -> FetchResult:
+        if url == "https://blocked.example.test/apply":
+            return FetchResult(source_url=url, final_url=url, http_status=403, content_type="text/html", text="<html>blocked</html>")
+        if url == "https://jobs.example.test/example-civic/applied-ai":
+            return FetchResult(
+                source_url=url,
+                final_url=url,
+                http_status=200,
+                content_type="text/html",
+                text='<html><body><a href="https://ats.example.test/apply/abc">Apply for this job</a></body></html>',
+            )
+        return FetchResult(
+            source_url=url,
+            final_url=url,
+            http_status=200,
+            content_type="text/html",
+            text='<html><body><form><label for="resume">Resume</label><input id="resume" name="resume" type="file" required></form></body></html>',
+        )
+
+    monkeypatch.setattr("jobops_api.job_page_extraction.fetch_job_page", fake_fetch)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        job = session.get(JobPosting, saved_job.job_id)
+        assert job is not None
+        job.apply_url = "https://blocked.example.test/apply"
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            job_url=job.job_url,
+            status="in_progress",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/requirements/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["extraction_status"] == "succeeded"
+        assert payload["source_url"] == "https://jobs.example.test/example-civic/applied-ai"
+        assert payload["final_url"] == "https://ats.example.test/apply/abc"
+        assert payload["required_materials"][0]["type"] == "resume"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_application_requirements_is_private_to_application_owner(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    rebekah_token = create_auth_session_token(engine)
+    create_auth_session_token(
+        engine,
+        username="other-user",
+        email="other-user@jobops.local",
+        display_name="Other User",
+        password="other user alpha password",
+    )
+    with Session(engine) as session:
+        other_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "other-user"))
+        assert other_profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=other_profile.id, title="Private Role")
+        application = Application(
+            candidate_profile_id=other_profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Private Co",
+            job_title="Private Role",
+            status="in_progress",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/requirements/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: rebekah_token},
+        )
+        assert response.status_code == 404
+        with Session(engine) as session:
+            assert session.scalar(select(JobPageExtraction)) is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_second_user_application_reuses_global_job_extraction(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    create_auth_session_token(engine)
+    other_token = create_auth_session_token(
+        engine,
+        username="other-user",
+        email="other-user@jobops.local",
+        display_name="Other User",
+        password="other user alpha password",
+    )
+    with Session(engine) as session:
+        rebekah = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        other = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "other-user"))
+        assert rebekah is not None and other is not None
+        saved_job = create_saved_job(session, candidate_profile_id=rebekah.id)
+        session.add(CandidateSavedJob(candidate_profile_id=other.id, job_id=saved_job.job_id, fit_summary="Also relevant."))
+        session.add_all(
+            [
+                Application(
+                    candidate_profile_id=rebekah.id,
+                    job_id=saved_job.job_id,
+                    saved_job_id=saved_job.id,
+                    company_name="Example Civic",
+                    job_title="Applied AI Engineer",
+                    status="in_progress",
+                ),
+                Application(
+                    candidate_profile_id=other.id,
+                    job_id=saved_job.job_id,
+                    company_name="Example Civic",
+                    job_title="Applied AI Engineer",
+                    status="in_progress",
+                ),
+                JobPageExtraction(
+                    job_id=saved_job.job_id,
+                    source_url="https://jobs.example.test/example-civic/apply",
+                    platform="generic",
+                    extraction_status="succeeded",
+                    required_materials=[{"type": "resume", "label": "Resume", "required": True, "evidence": "Resume"}],
+                    optional_materials=[],
+                    application_fields=[],
+                    screening_questions=[],
+                    detected_requirements={"resumeRequired": True},
+                    confidence="medium",
+                    warnings=[],
+                ),
+            ]
+        )
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: other_token},
+        )
+        assert response.status_code == 200
+        listed = response.json()
+        assert len(listed) == 1
+        assert listed[0]["latest_job_page_extraction"]["detected_requirements"]["resumeRequired"] is True
+        assert "notes" in listed[0]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_application_requirements_persists_fetch_failure(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "jobops_api.job_page_extraction.fetch_job_page",
+        lambda url: FetchResult(source_url=url, final_url=None, http_status=None, content_type=None, text=None, error_message="DNS failed"),
+    )
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            status="in_progress",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/requirements/extract",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["extraction_status"] == "fetch_failed"
+        assert payload["error_message"] == "DNS failed"
+        assert any("Fetched step 1" in warning for warning in payload["warnings"])
+        assert any("Fetch failed at step 1" in warning for warning in payload["warnings"])
     finally:
         app.dependency_overrides.clear()
 

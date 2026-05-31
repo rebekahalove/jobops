@@ -121,4 +121,35 @@ describe("applications API proxy", () => {
       })
     );
   });
+
+  it("forwards requirements extraction requests with cookies and the internal key", async () => {
+    const { POST } = await import("./[applicationId]/requirements/extract/route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ id: "extract-1", extraction_status: "succeeded" }, { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://next.test/api/applications/app-1/requirements/extract", {
+        method: "POST",
+        headers: { cookie: "jobops_session=test-token" }
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) }
+    );
+
+    const firstCall = fetchMock.mock.calls[0];
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications/app-1/requirements/extract");
+    expect(firstCall?.[1]).toEqual(
+      expect.objectContaining({
+        cache: "no-store",
+        method: "POST",
+        headers: expect.objectContaining({
+          "X-JobOps-Internal-Key": "test-secret",
+          Cookie: "jobops_session=test-token"
+        })
+      })
+    );
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ id: "extract-1", extraction_status: "succeeded" });
+  });
 });

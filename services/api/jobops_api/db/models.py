@@ -395,6 +395,50 @@ class JobPosting(Base, TimestampMixin):
     company: Mapped[Company | None] = relationship(back_populates="job_postings")
     saved_links: Mapped[list[CandidateSavedJob]] = relationship(back_populates="job", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="job")
+    page_extractions: Mapped[list[JobPageExtraction]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="JobPageExtraction.fetched_at.desc()",
+    )
+
+    @property
+    def latest_usable_page_extraction(self) -> JobPageExtraction | None:
+        usable_statuses = {"succeeded", "partial", "no_application_fields_found"}
+        for extraction in self.page_extractions:
+            if extraction.extraction_status in usable_statuses:
+                return extraction
+        return self.page_extractions[0] if self.page_extractions else None
+
+
+class JobPageExtraction(Base, TimestampMixin):
+    __tablename__ = "job_page_extractions"
+    __table_args__ = (
+        Index("ix_job_page_extractions_job_fetched", "job_id", "fetched_at"),
+        Index("ix_job_page_extractions_job_status", "job_id", "extraction_status", "fetched_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
+    source_url: Mapped[str] = mapped_column(Text)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    platform: Mapped[str] = mapped_column(String(40), default="unknown")
+    extraction_status: Mapped[str] = mapped_column(String(60), default="fetch_failed")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    stale_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    page_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_materials: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    optional_materials: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    application_fields: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    screening_questions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    detected_requirements: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    extraction_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[str] = mapped_column(String(20), default="low")
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    raw_text_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    job: Mapped[JobPosting] = relationship(back_populates="page_extractions")
 
 
 class CandidateSavedJob(Base, TimestampMixin):
@@ -505,6 +549,10 @@ class Application(Base, TimestampMixin):
     @property
     def latest_material_bundle(self) -> ApplicationMaterialBundle | None:
         return self.material_bundles[0] if self.material_bundles else None
+
+    @property
+    def latest_job_page_extraction(self) -> JobPageExtraction | None:
+        return self.job.latest_usable_page_extraction if self.job is not None else None
 
 
 class ApplicationEvent(Base):

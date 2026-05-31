@@ -14,6 +14,7 @@ ModelTask = Literal[
     "profile_draft_update",
     "intake_followup",
     "application_materials_generation",
+    "job_page_requirements_extraction",
     "public_candidate_qa",
     "role_fit",
     "bulk_triage",

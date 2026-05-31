@@ -30,6 +30,62 @@ export type ApplicationMaterialBundle = {
   items: ApplicationMaterialItem[];
 };
 
+export type JobPageExtraction = {
+  id: string;
+  job_id: string;
+  extraction_status: string;
+  platform: string;
+  confidence: string;
+  fetched_at: string;
+  source_url: string;
+  final_url: string | null;
+  http_status?: number | null;
+  page_title?: string | null;
+  required_materials: ExtractedMaterial[];
+  optional_materials: ExtractedMaterial[];
+  application_fields: ExtractedApplicationField[];
+  screening_questions: ExtractedScreeningQuestion[];
+  detected_requirements: Record<string, unknown>;
+  extraction_summary: string | null;
+  warnings: string[];
+  error_message: string | null;
+};
+
+export type ExtractedMaterial = {
+  type?: string;
+  label?: string;
+  required?: boolean;
+  evidence?: string;
+};
+
+export type ExtractedApplicationField = {
+  fieldType?: string;
+  label?: string;
+  required?: boolean;
+  normalizedKey?: string | null;
+  minLength?: number | null;
+  maxLength?: number | null;
+  limitSource?: string | null;
+  placeholder?: string | null;
+  pattern?: string | null;
+  options?: string[];
+  acceptedFileTypes?: string[];
+  multiple?: boolean;
+  evidence?: string;
+};
+
+export type ExtractedScreeningQuestion = {
+  question?: string;
+  required?: boolean;
+  answerType?: string;
+  category?: string;
+  minLength?: number | null;
+  maxLength?: number | null;
+  limitSource?: string | null;
+  options?: string[];
+  evidence?: string;
+};
+
 export type TrackedApplication = {
   id: string;
   candidate_profile_id?: string;
@@ -54,6 +110,7 @@ export type TrackedApplication = {
   created_at: string;
   updated_at: string;
   latest_material_bundle?: ApplicationMaterialBundle | null;
+  latest_job_page_extraction?: JobPageExtraction | null;
 };
 
 export function ApplicationsTracker({
@@ -67,6 +124,7 @@ export function ApplicationsTracker({
   const [message, setMessage] = useState("");
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
   const [pendingMaterialsApplicationId, setPendingMaterialsApplicationId] = useState<string | null>(null);
+  const [pendingRequirementsApplicationId, setPendingRequirementsApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -195,6 +253,38 @@ export function ApplicationsTracker({
     }
   }
 
+  async function inspectApplicationPage(application: TrackedApplication) {
+    setPendingRequirementsApplicationId(application.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/applications/${application.id}/requirements/extract`, {
+        method: "POST"
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("extraction_status" in payload)) {
+        throw new Error("Requirements API returned an unexpected response.");
+      }
+
+      const extraction = payload as JobPageExtraction;
+      setApplications((current) =>
+        current.map((item) =>
+          item.id === application.id ? { ...item, latest_job_page_extraction: extraction, updated_at: extraction.fetched_at } : item
+        )
+      );
+      setHighlightedApplicationId(application.id);
+      setMessage("Application requirements updated.");
+      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not inspect the application page.");
+    } finally {
+      setPendingRequirementsApplicationId(null);
+    }
+  }
+
   return (
     <main className="dashboard-main application-workspace">
       <section className="page-heading">
@@ -297,6 +387,15 @@ export function ApplicationsTracker({
                     ) : null}
                     <button
                       className="secondary-action compact-action"
+                      disabled={pendingRequirementsApplicationId === application.id}
+                      suppressHydrationWarning
+                      type="button"
+                      onClick={() => inspectApplicationPage(application)}
+                    >
+                      {pendingRequirementsApplicationId === application.id ? "Inspecting..." : "Inspect application page"}
+                    </button>
+                    <button
+                      className="secondary-action compact-action"
                       disabled={pendingMaterialsApplicationId === application.id}
                       suppressHydrationWarning
                       type="button"
@@ -310,6 +409,7 @@ export function ApplicationsTracker({
                     </button>
                   </div>
                 </aside>
+                {application.latest_job_page_extraction ? <ApplicationRequirements extraction={application.latest_job_page_extraction} /> : null}
                 {application.latest_material_bundle ? <ApplicationMaterials bundle={application.latest_material_bundle} /> : null}
               </article>
             ))}
@@ -322,6 +422,52 @@ export function ApplicationsTracker({
         )}
       </section>
     </main>
+  );
+}
+
+function ApplicationRequirements({ extraction }: { extraction: JobPageExtraction }) {
+  const blocked = ["blocked", "requires_login", "js_required", "unsupported_platform", "fetch_failed", "expired_or_closed"].includes(
+    extraction.extraction_status
+  );
+  return (
+    <details className="application-requirements">
+      <summary>
+        <span>Application Requirements</span>
+        <span>
+          {formatStatus(extraction.extraction_status)} · {formatStatus(extraction.confidence)}
+        </span>
+      </summary>
+      <div className="application-requirements-body">
+        {blocked ? (
+          <p className="application-requirements-warning">
+            Could not inspect this page automatically. It may require login, JavaScript, or bot protection.
+          </p>
+        ) : null}
+        {extraction.extraction_summary ? <p>{extraction.extraction_summary}</p> : null}
+        <RequirementList title="Requested Materials" items={[...extraction.required_materials, ...extraction.optional_materials].map(formatMaterial)} />
+        <RequirementList title="Fields" items={extraction.application_fields.map(formatApplicationField)} />
+        <RequirementList title="Screening Questions" items={extraction.screening_questions.map(formatScreeningQuestion)} />
+        {extraction.warnings.length > 0 ? <RequirementList title="Warnings" items={extraction.warnings} /> : null}
+        {extraction.error_message ? <p className="application-requirements-warning">{extraction.error_message}</p> : null}
+      </div>
+    </details>
+  );
+}
+
+function RequirementList({ title, items }: { title: string; items: string[] }) {
+  const visibleItems = items.filter(Boolean).slice(0, 8);
+  if (visibleItems.length === 0) {
+    return null;
+  }
+  return (
+    <section className="application-requirements-section">
+      <h3>{title}</h3>
+      <ul>
+        {visibleItems.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -343,6 +489,45 @@ function ApplicationMaterials({ bundle }: { bundle: ApplicationMaterialBundle })
       </div>
     </details>
   );
+}
+
+function formatMaterial(material: ExtractedMaterial) {
+  const label = material.label || formatStatus(material.type || "material");
+  return `${label}${material.required ? " · required" : " · optional"}`;
+}
+
+function formatApplicationField(field: ExtractedApplicationField) {
+  const parts = [field.label || formatStatus(field.normalizedKey || field.fieldType || "field")];
+  if (field.required) {
+    parts.push("required");
+  }
+  if (field.maxLength) {
+    parts.push(`max ${field.maxLength}`);
+  }
+  if (field.minLength) {
+    parts.push(`min ${field.minLength}`);
+  }
+  if (field.options?.length) {
+    parts.push(`options: ${field.options.slice(0, 4).join(", ")}`);
+  }
+  if (field.acceptedFileTypes?.length) {
+    parts.push(`files: ${field.acceptedFileTypes.join(", ")}`);
+  }
+  return parts.join(" · ");
+}
+
+function formatScreeningQuestion(question: ExtractedScreeningQuestion) {
+  const parts = [question.question || "Question"];
+  if (question.required) {
+    parts.push("required");
+  }
+  if (question.maxLength) {
+    parts.push(`max ${question.maxLength}`);
+  }
+  if (question.options?.length) {
+    parts.push(`options: ${question.options.slice(0, 4).join(", ")}`);
+  }
+  return parts.join(" · ");
 }
 
 function MarkdownText({ value }: { value: string }) {
