@@ -4,13 +4,15 @@ from datetime import date, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+from jobops_api.application_materials import generate_application_material_bundle
 from jobops_api.auth import AuthContext, require_auth_context
 from jobops_api.company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
-from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, CandidateSavedJob, Company, JobPosting, JobRole
+from jobops_api.db.models import Application, ApplicationEvent, ApplicationMaterialBundle, CandidateProfile, CandidateSavedJob, Company, JobPosting, JobRole
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
@@ -49,7 +51,45 @@ class ApplicationEventCreateRequest(BaseModel):
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApplicationMaterialItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    bundle_id: str
+    material_type: str
+    title: str
+    content: str
+    content_format: str
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationMaterialBundleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    application_id: str
+    candidate_profile_id: str
+    status: str
+    model_provider: str | None
+    model_name: str | None
+    created_at: datetime
+    updated_at: datetime
+    items: list[ApplicationMaterialItemResponse] = Field(default_factory=list)
+
+
+class ApplicationMaterialsGenerateResponse(BaseModel):
+    ok: bool
+    assistantMessage: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    bundle: ApplicationMaterialBundleResponse
+    contextManifest: dict[str, Any] | None = None
+
+
 class ApplicationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     candidate_profile_id: str
     job_id: str | None
@@ -72,6 +112,7 @@ class ApplicationResponse(BaseModel):
     salary_text: str | None = None
     remote_work_mode: str | None = None
     employment_type: str | None = None
+    latest_material_bundle: ApplicationMaterialBundleResponse | None = None
 
 
 class ApplicationEventResponse(BaseModel):
@@ -145,6 +186,11 @@ def list_applications(
 ) -> list[Application]:
     statement = (
         select(Application)
+        .options(
+            selectinload(Application.job),
+            selectinload(Application.saved_job),
+            selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
+        )
         .where(Application.candidate_profile_id == auth.candidate_profile.id)
         .order_by(Application.created_at.desc())
     )
@@ -152,6 +198,35 @@ def list_applications(
         statement = statement.where(Application.status == status)
 
     return list(session.scalars(statement))
+
+
+@router.get("/applications/{application_id}/materials", response_model=list[ApplicationMaterialBundleResponse])
+def list_application_materials(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> list[ApplicationMaterialBundle]:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    statement = (
+        select(ApplicationMaterialBundle)
+        .options(selectinload(ApplicationMaterialBundle.items))
+        .where(ApplicationMaterialBundle.application_id == application.id)
+        .order_by(ApplicationMaterialBundle.created_at.desc())
+    )
+    return list(session.scalars(statement))
+
+
+@router.post("/applications/{application_id}/materials/generate", response_model=ApplicationMaterialsGenerateResponse, status_code=201)
+def generate_application_materials(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> Any:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    result = generate_application_material_bundle(session=session, application=application)
+    if result.bundle is None:
+        return JSONResponse(content=result.body, status_code=result.status_code)
+    return result.body
 
 
 @router.patch("/applications/{application_id}/status", response_model=ApplicationResponse)
@@ -228,6 +303,22 @@ def resolve_candidate_profile(
     if candidate_profile is None:
         raise HTTPException(status_code=400, detail="candidate_profile_id or candidate_profile_slug is required.")
     return candidate_profile
+
+
+def get_owned_application_or_404(session: Session, application_id: str, candidate_profile_id: str) -> Application:
+    application = session.scalar(
+        select(Application)
+        .options(
+            selectinload(Application.job),
+            selectinload(Application.saved_job),
+            selectinload(Application.candidate_profile),
+            selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
+        )
+        .where(Application.id == application_id)
+    )
+    if application is None or application.candidate_profile_id != candidate_profile_id:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    return application
 
 
 def resolve_optional_candidate_profile(

@@ -69,4 +69,56 @@ describe("applications API proxy", () => {
       error: "missing key"
     });
   });
+
+  it("forwards materials generation requests with cookies and the internal key", async () => {
+    const { POST } = await import("./[applicationId]/materials/generate/route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ ok: true, bundle: { id: "bundle-1" } }, { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://next.test/api/applications/app-1/materials/generate", {
+        method: "POST",
+        headers: { cookie: "jobops_session=test-token" }
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) }
+    );
+
+    const firstCall = fetchMock.mock.calls[0];
+    expect(String(firstCall?.[0])).toBe("http://fastapi.test/v1/applications/app-1/materials/generate");
+    expect(firstCall?.[1]).toEqual(
+      expect.objectContaining({
+        cache: "no-store",
+        method: "POST",
+        headers: expect.objectContaining({
+          "X-JobOps-Internal-Key": "test-secret",
+          Cookie: "jobops_session=test-token"
+        })
+      })
+    );
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ ok: true, bundle: { id: "bundle-1" } });
+  });
+
+  it("returns structured JSON when a materials upstream response is not JSON", async () => {
+    const { GET } = await import("./[applicationId]/materials/route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("<html>bad gateway</html>", { status: 502, headers: { "Content-Type": "text/html" } })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET(new Request("http://next.test/api/applications/app-1/materials"), {
+      params: Promise.resolve({ applicationId: "app-1" })
+    });
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        error: "JobOps API request failed with HTTP 502.",
+        upstreamBodyPreview: "<html>bad gateway</html>"
+      })
+    );
+  });
 });

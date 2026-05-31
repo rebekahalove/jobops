@@ -9,7 +9,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
-from jobops_api.db.models import Application, ApplicationEvent, Base, CandidateProfile, CandidateSavedJob, JobPosting
+from jobops_api.db.models import (
+    Application,
+    ApplicationEvent,
+    ApplicationMaterialBundle,
+    ApplicationMaterialItem,
+    Base,
+    CandidateProfile,
+    CandidateSavedJob,
+    JobPosting,
+)
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -279,6 +288,256 @@ def test_create_application_from_another_users_saved_job_is_forbidden(monkeypatc
         app.dependency_overrides.clear()
 
 
+def test_generate_application_materials_creates_bundle_items_and_uses_full_description(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(
+            session,
+            candidate_profile_id=profile.id,
+            full_description="Full stored job description with platform AI workflows, RAG evaluation, and production ownership.",
+            description_excerpt="Short excerpt only.",
+        )
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            job_url="https://jobs.example.test/example-civic/applied-ai",
+            status="in_progress",
+            notes="Emphasize evaluation systems.",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["ok"] is True
+        assert payload["bundle"]["application_id"] == application_id
+        assert len(payload["bundle"]["items"]) >= 3
+        assert payload["contextManifest"]["fullJobDescriptionIncluded"] is True
+        assert payload["contextManifest"]["jobDescriptionSource"] == "full_stored"
+
+        with Session(engine) as session:
+            bundle = session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id))
+            assert bundle is not None
+            assert bundle.model_provider == "mock"
+            assert bundle.source_context_snapshot["manifest"]["jobDescriptionSource"] == "full_stored"
+            assert "Full stored job description" in bundle.source_context_snapshot["context"]["jobPosting"]["jobDescription"]
+            assert session.scalar(select(ApplicationMaterialItem).where(ApplicationMaterialItem.bundle_id == bundle.id)) is not None
+
+        list_response = client.get(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert list_response.status_code == 200
+        listed = list_response.json()[0]
+        assert listed["latest_material_bundle"]["id"] == payload["bundle"]["id"]
+
+        materials_response = client.get(
+            f"/v1/applications/{application_id}/materials",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert materials_response.status_code == 200
+        assert materials_response.json()[0]["id"] == payload["bundle"]["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_generate_application_materials_creates_new_bundle_version(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        application = Application(
+            candidate_profile_id=profile.id,
+            company_name="Manual Co",
+            job_title="AI Workflow Engineer",
+            status="in_progress",
+            notes="Manual application without a linked job.",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        first = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        second = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert first.json()["bundle"]["id"] != second.json()["bundle"]["id"]
+        with Session(engine) as session:
+            bundles = session.scalars(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id)).all()
+            assert len(bundles) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_generate_application_materials_falls_back_to_description_excerpt(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(
+            session,
+            candidate_profile_id=profile.id,
+            full_description=None,
+            description_excerpt="Excerpt fallback about AI workflow automation.",
+        )
+        application = Application(
+            candidate_profile_id=profile.id,
+            job_id=saved_job.job_id,
+            saved_job_id=saved_job.id,
+            company_name="Example Civic",
+            job_title="Applied AI Engineer",
+            status="in_progress",
+            notes="",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        assert response.json()["contextManifest"]["fullJobDescriptionIncluded"] is False
+        assert response.json()["contextManifest"]["jobDescriptionSource"] == "excerpt_fallback"
+        with Session(engine) as session:
+            bundle = session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id))
+            assert bundle is not None
+            assert bundle.source_context_snapshot["context"]["jobPosting"]["jobDescription"] == "Excerpt fallback about AI workflow automation."
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_application_materials_are_private_to_owner(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    rebekah_token = create_auth_session_token(engine)
+    create_auth_session_token(
+        engine,
+        username="other-user",
+        email="other-user@jobops.local",
+        display_name="Other User",
+        password="other user alpha password",
+    )
+    with Session(engine) as session:
+        other_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "other-user"))
+        assert other_profile is not None
+        application = Application(
+            candidate_profile_id=other_profile.id,
+            company_name="Private Co",
+            job_title="Private Role",
+            status="in_progress",
+            notes="Other user's notes.",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        generate_response = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: rebekah_token},
+        )
+        assert generate_response.status_code == 404
+
+        read_response = client.get(
+            f"/v1/applications/{application_id}/materials",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: rebekah_token},
+        )
+        assert read_response.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_mark_applied_defaults_date_and_records_event(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -335,6 +594,8 @@ def create_saved_job(
     *,
     candidate_profile_id: str,
     title: str = "Applied AI Engineer",
+    full_description: str | None = None,
+    description_excerpt: str | None = None,
 ) -> CandidateSavedJob:
     job = JobPosting(
         title=title,
@@ -350,6 +611,8 @@ def create_saved_job(
         remote_work_mode="remote",
         employment_type="Full-time",
         salary_text="USD 150,000-180,000",
+        full_description=full_description,
+        description_excerpt=description_excerpt,
         posting_date=date(2026, 5, 20),
     )
     session.add(job)

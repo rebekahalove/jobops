@@ -102,6 +102,7 @@ def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> L
     salary_max = parse_whole_currency_amount(raw.get("salary_max"))
     salary_text = format_salary_text(raw.get("salary_min"), raw.get("salary_max"), currency_code=salary_currency)
     created = parse_datetime_value(raw.get("created"))
+    full_description = html_to_text(str(raw.get("description") or "")) or None
     return LiveJobSourceResult(
         title=title,
         company_name=company_name,
@@ -120,7 +121,8 @@ def normalize_adzuna_result(raw: object, *, query: str, settings: Settings) -> L
         salary_max=salary_max,
         salary_currency=salary_currency,
         salary_text=salary_text,
-        description_excerpt=html_to_text(str(raw.get("description") or ""))[:600] or None,
+        full_description=full_description,
+        description_excerpt=full_description[:600] if full_description else None,
         posting_date=created.date() if created else None,
         source_updated_at=created,
         raw_metadata=safe_provider_raw_metadata(raw),

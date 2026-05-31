@@ -25,7 +25,7 @@ export async function proxyJobOpsApi(request: Request, apiPath: string, init: Re
         ...(init.headers || {})
       }
     });
-    const payload = await apiResponse.json();
+    const payload = await parseUpstreamPayload(apiResponse);
     return NextResponse.json(payload, { status: apiResponse.status });
   } catch {
     return NextResponse.json({ ok: false, error: "JobOps API is unavailable." }, { status: 503 });
@@ -43,4 +43,20 @@ export async function parseJsonBody(request: Request) {
 function forwardCookieHeader(request: Request): Record<string, string> {
   const cookie = request.headers.get("cookie");
   return cookie ? { Cookie: cookie } : {};
+}
+
+async function parseUpstreamPayload(response: Response) {
+  const text = await response.text();
+  if (!text) {
+    return response.ok ? { ok: true } : { ok: false, error: `JobOps API request failed with HTTP ${response.status}.` };
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: response.ok ? "JobOps API returned a non-JSON response." : `JobOps API request failed with HTTP ${response.status}.`,
+      upstreamBodyPreview: text.slice(0, 300)
+    };
+  }
 }

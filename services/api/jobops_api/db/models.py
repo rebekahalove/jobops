@@ -197,6 +197,10 @@ class CandidateProfile(Base, TimestampMixin):
     tenant: Mapped[Tenant] = relationship(back_populates="candidate_profiles")
     facts: Mapped[list[ProfileFact]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     applications: Mapped[list[Application]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    application_material_bundles: Mapped[list[ApplicationMaterialBundle]] = relationship(
+        back_populates="candidate_profile",
+        cascade="all, delete-orphan",
+    )
     candidate_companies: Mapped[list[CandidateCompany]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     saved_jobs: Mapped[list[CandidateSavedJob]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
@@ -378,6 +382,7 @@ class JobPosting(Base, TimestampMixin):
     salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
     salary_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     salary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     description_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovered_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     url_verification_status: Mapped[str] = mapped_column(String(60), default="unverified")
@@ -467,6 +472,11 @@ class Application(Base, TimestampMixin):
     job: Mapped[JobPosting | None] = relationship(back_populates="applications")
     saved_job: Mapped[CandidateSavedJob | None] = relationship(back_populates="applications")
     events: Mapped[list[ApplicationEvent]] = relationship(back_populates="application", cascade="all, delete-orphan")
+    material_bundles: Mapped[list[ApplicationMaterialBundle]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+        order_by="ApplicationMaterialBundle.created_at.desc()",
+    )
 
     @property
     def source_provider(self) -> str | None:
@@ -492,6 +502,10 @@ class Application(Base, TimestampMixin):
     def employment_type(self) -> str | None:
         return self.job.employment_type if self.job is not None else None
 
+    @property
+    def latest_material_bundle(self) -> ApplicationMaterialBundle | None:
+        return self.material_bundles[0] if self.material_bundles else None
+
 
 class ApplicationEvent(Base):
     __tablename__ = "application_events"
@@ -508,6 +522,47 @@ class ApplicationEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     application: Mapped[Application] = relationship(back_populates="events")
+
+
+class ApplicationMaterialBundle(Base, TimestampMixin):
+    __tablename__ = "application_material_bundles"
+    __table_args__ = (
+        Index("ix_application_material_bundles_application_created", "application_id", "created_at"),
+        Index("ix_application_material_bundles_profile_created", "candidate_profile_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"))
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(40), default="generated")
+    source_context_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    model_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+
+    application: Mapped[Application] = relationship(back_populates="material_bundles")
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="application_material_bundles")
+    items: Mapped[list[ApplicationMaterialItem]] = relationship(
+        back_populates="bundle",
+        cascade="all, delete-orphan",
+        order_by="ApplicationMaterialItem.sort_order.asc()",
+    )
+
+
+class ApplicationMaterialItem(Base, TimestampMixin):
+    __tablename__ = "application_material_items"
+    __table_args__ = (
+        Index("ix_application_material_items_bundle_sort", "bundle_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    bundle_id: Mapped[str] = mapped_column(ForeignKey("application_material_bundles.id", ondelete="CASCADE"))
+    material_type: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(240))
+    content: Mapped[str] = mapped_column(Text)
+    content_format: Mapped[str] = mapped_column(String(40), default="markdown")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    bundle: Mapped[ApplicationMaterialBundle] = relationship(back_populates="items")
 
 
 class ProfileFact(Base, TimestampMixin):
