@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JOBOPS_SESSION_COOKIE_NAME, gateDashboardRequest, type DashboardAuthEnvironment } from "./dashboard-auth";
 
@@ -223,5 +224,14 @@ describe("dashboard auth gate", () => {
     });
 
     expect(response).toBeUndefined();
+  });
+
+  it("keeps API proxy routes out of Next middleware matchers", async () => {
+    const standaloneMiddleware = await readFile(new URL("../middleware.ts", import.meta.url), "utf-8");
+    const portfolioMiddleware = await readFile(new URL("../../portfolio/middleware.ts", import.meta.url), "utf-8");
+
+    expect(standaloneMiddleware).not.toContain('"/api/command-center"');
+    expect(portfolioMiddleware).not.toContain('"/jobops/:path*"');
+    expect(portfolioMiddleware).not.toContain('"/jobops/api/command-center"');
   });
 });

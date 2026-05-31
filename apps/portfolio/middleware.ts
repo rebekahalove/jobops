@@ -11,15 +11,23 @@ export async function middleware(request: Request) {
 
 export const config = {
   matcher: [
-    "/jobops/:path*",
-    "/api/command-center",
-    "/api/profile",
-    "/api/profile/:path*",
-    "/api/profile-intake",
-    "/api/profile-draft",
-    "/api/companies",
-    "/api/applications",
-    "/api/applications/:path*"
+    "/jobops",
+    "/jobops/about",
+    "/jobops/login",
+    "/jobops/forgot-password",
+    "/jobops/reset-password",
+    "/jobops/accept-invite",
+    "/jobops/invite/:path*",
+    "/jobops/privacy",
+    "/jobops/portfolio/:path*",
+    "/jobops/profile/:path*",
+    "/jobops/companies/:path*",
+    "/jobops/jobs/:path*",
+    "/jobops/applications/:path*",
+    "/jobops/materials/:path*",
+    "/jobops/follow-ups/:path*",
+    "/jobops/fit-scoring/:path*",
+    "/jobops/account/:path*"
   ]
 };
 

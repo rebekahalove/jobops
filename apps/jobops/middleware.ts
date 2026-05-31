@@ -21,14 +21,7 @@ export const config = {
     "/materials/:path*",
     "/follow-ups/:path*",
     "/fit-scoring/:path*",
-    "/api/command-center",
-    "/api/profile",
-    "/api/profile/:path*",
-    "/api/profile-intake",
-    "/api/profile-draft",
-    "/api/companies",
-    "/api/applications",
-    "/api/applications/:path*"
+    "/account/:path*"
   ]
 };
 
