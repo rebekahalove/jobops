@@ -75,6 +75,7 @@ describe("Jobs list", () => {
     expect(html).toContain("Verified");
     expect(html).toContain("Fetched page confirmed the job title and company.");
     expect(html).toContain("Matches applied AI and platform engineering goals.");
+    expect(html).toContain("Apply");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
@@ -168,5 +169,16 @@ describe("Jobs list", () => {
     expect(source).toContain('window.removeEventListener("jobops:jobs-updated", loadJobs)');
     expect(commandCenterSource).toContain('action.type === "job_discovery"');
     expect(commandCenterSource).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
+  });
+
+  it("posts saved_job_id and navigates to the created application when applying", async () => {
+    const source = await readFile(new URL("./jobs-list.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('body: JSON.stringify({');
+    expect(source).toContain("saved_job_id: job.id");
+    expect(source).toContain('status: "in_progress"');
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:applications-updated"))');
+    expect(source).toContain("navigateToApplication(payload.id)");
+    expect(source).toContain("applicationId=");
   });
 });

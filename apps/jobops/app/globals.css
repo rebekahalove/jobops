@@ -2609,12 +2609,14 @@ input:disabled {
   gap: 8px;
 }
 
+.application-card-grid,
 .company-card-grid,
 .job-card-grid {
   display: grid;
   gap: 10px;
 }
 
+.application-card,
 .company-card,
 .job-card {
   display: grid;
@@ -2626,14 +2628,28 @@ input:disabled {
   padding: 10px 12px;
 }
 
+.application-card-highlighted {
+  border-color: rgba(15, 118, 110, 0.52);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+}
+
+.application-card-header,
 .company-card-header,
 .job-card-header {
   display: grid;
   gap: 4px;
 }
 
+.application-card-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.application-card-main,
 .company-card-main,
 .job-card-main,
+.application-card-rail,
 .company-card-rail,
 .job-card-rail {
   display: grid;
@@ -2641,12 +2657,14 @@ input:disabled {
   gap: 6px;
 }
 
+.application-card-rail,
 .company-card-rail,
 .job-card-rail {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
 }
 
+.application-card-header h2,
 .company-card-header h2,
 .job-card-header h2 {
   margin-bottom: 0;
@@ -2654,8 +2672,11 @@ input:disabled {
   line-height: 1.2;
 }
 
+.application-card-header p,
 .company-card-header p,
 .job-card-header p,
+.application-notes,
+.application-fit,
 .company-description,
 .company-fit,
 .company-source-summary,
@@ -2668,8 +2689,11 @@ input:disabled {
   line-height: 1.35;
 }
 
+.application-card-header p,
 .company-card-header p,
 .job-card-header p,
+p.application-notes,
+p.application-fit,
 p.company-description,
 p.company-fit,
 p.company-source-summary,
@@ -2786,6 +2810,7 @@ p.job-verification {
   padding: 0;
 }
 
+.application-details,
 .company-details,
 .job-details {
   display: grid;
@@ -2795,6 +2820,7 @@ p.job-verification {
   margin: 0;
 }
 
+.application-details div,
 .company-details div,
 .job-details div {
   display: grid;
@@ -2808,6 +2834,7 @@ p.job-verification {
   padding: 0;
 }
 
+.application-details dt,
 .company-details dt,
 .job-details dt {
   color: var(--muted);
@@ -2816,6 +2843,7 @@ p.job-verification {
   text-transform: uppercase;
 }
 
+.application-details dd,
 .company-details dd,
 .job-details dd {
   margin: 0;
@@ -2823,6 +2851,17 @@ p.job-verification {
   font-size: 0.78rem;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.application-card-actions {
+  align-items: center;
+}
+
+.compact-action {
+  min-height: 0;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  padding: 5px 9px;
 }
 
 .company-links {
@@ -3958,11 +3997,15 @@ main.page-shell dd {
   .portfolio-card-grid,
   .profile-review-row,
   .application-layout,
+  .application-card,
   .company-card,
   .job-card,
+  .application-card-rail,
   .company-card-rail,
   .job-card-rail,
+  .application-card-header,
   .company-card-header,
+  .application-details,
   .company-details,
   .job-details,
   .application-form-grid,

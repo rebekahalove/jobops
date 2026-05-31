@@ -49,6 +49,7 @@ export function JobsList({
 }) {
   const [jobs, setJobs] = useState(initialJobs);
   const [message, setMessage] = useState("");
+  const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -92,6 +93,35 @@ export function JobsList({
     () => [...jobs].sort((left, right) => right.added_at.localeCompare(left.added_at)),
     [jobs]
   );
+
+  async function applyToJob(job: SavedJob) {
+    setPendingApplyJobId(job.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/applications`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          saved_job_id: job.id,
+          status: "in_progress"
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+
+      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
+      navigateToApplication(payload.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not start application.");
+    } finally {
+      setPendingApplyJobId(null);
+    }
+  }
 
   return (
     <main className="dashboard-main job-workspace">
@@ -181,6 +211,15 @@ export function JobsList({
                   </div>
 
                   <div className="company-links" aria-label={`${job.title} links`}>
+                    <button
+                      className="secondary-action compact-action"
+                      disabled={pendingApplyJobId === job.id}
+                      suppressHydrationWarning
+                      type="button"
+                      onClick={() => applyToJob(job)}
+                    >
+                      {pendingApplyJobId === job.id ? "Starting..." : "Apply"}
+                    </button>
                     <a href={job.job_url} rel="noopener noreferrer" target="_blank">
                       Job posting
                     </a>
@@ -212,7 +251,42 @@ function apiErrorMessage(payload: unknown, status: number) {
   if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
     return payload.detail;
   }
+  if (payload && typeof payload === "object" && "detail" in payload) {
+    const formattedDetail = formatApiDetail(payload.detail);
+    if (formattedDetail) {
+      return formattedDetail;
+    }
+  }
   return `Saved jobs API request failed with HTTP ${status}.`;
+}
+
+function formatApiDetail(detail: unknown) {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail.map(formatValidationIssue).filter(Boolean);
+    return messages.length > 0 ? messages.join(" ") : null;
+  }
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
+    return detail.message;
+  }
+  return null;
+}
+
+function formatValidationIssue(issue: unknown) {
+  if (!issue || typeof issue !== "object") {
+    return null;
+  }
+  const message = "msg" in issue && typeof issue.msg === "string" ? issue.msg : null;
+  if (!message) {
+    return null;
+  }
+  if (!("loc" in issue) || !Array.isArray(issue.loc)) {
+    return message;
+  }
+  const field = issue.loc.filter((part) => typeof part === "string").pop();
+  return field ? `${formatStatus(field)}: ${message}.` : `${message}.`;
 }
 
 function formatStatus(value: string) {
@@ -232,6 +306,15 @@ function shouldShowVerificationSummary(job: SavedJob) {
 
 function isVerifiedJobUrl(job: SavedJob) {
   return job.url_verification_status === "verified" || job.url_verification_status === "mock_verified";
+}
+
+function navigateToApplication(applicationId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const currentUrl = new URL(window.location.href);
+  const nextPath = currentUrl.pathname.endsWith("/jobs") ? currentUrl.pathname.replace(/\/jobs$/, "/applications") : "/applications";
+  window.location.assign(`${nextPath}?applicationId=${encodeURIComponent(applicationId)}`);
 }
 
 function FoldedText({ value, className }: { value?: string | null; className: string }) {
