@@ -389,6 +389,7 @@ class JobPosting(Base, TimestampMixin):
 
     company: Mapped[Company | None] = relationship(back_populates="job_postings")
     saved_links: Mapped[list[CandidateSavedJob]] = relationship(back_populates="job", cascade="all, delete-orphan")
+    applications: Mapped[list[Application]] = relationship(back_populates="job")
 
 
 class CandidateSavedJob(Base, TimestampMixin):
@@ -412,6 +413,7 @@ class CandidateSavedJob(Base, TimestampMixin):
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
     job: Mapped[JobPosting] = relationship(back_populates="saved_links")
+    applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
 
 
 class JobRole(Base, TimestampMixin):
@@ -447,6 +449,8 @@ class Application(Base, TimestampMixin):
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     job_role_id: Mapped[str | None] = mapped_column(ForeignKey("job_roles.id", ondelete="SET NULL"), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="SET NULL"), nullable=True)
+    saved_job_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_saved_jobs.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
     job_title: Mapped[str] = mapped_column(String(240))
     job_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -460,7 +464,33 @@ class Application(Base, TimestampMixin):
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="applications")
     company: Mapped[Company | None] = relationship(back_populates="applications")
     job_role: Mapped[JobRole | None] = relationship(back_populates="applications")
+    job: Mapped[JobPosting | None] = relationship(back_populates="applications")
+    saved_job: Mapped[CandidateSavedJob | None] = relationship(back_populates="applications")
     events: Mapped[list[ApplicationEvent]] = relationship(back_populates="application", cascade="all, delete-orphan")
+
+    @property
+    def source_provider(self) -> str | None:
+        return self.job.source_provider if self.job is not None else None
+
+    @property
+    def posting_date(self) -> date | None:
+        return self.job.posting_date if self.job is not None else None
+
+    @property
+    def fit_summary(self) -> str | None:
+        return self.saved_job.fit_summary if self.saved_job is not None else None
+
+    @property
+    def salary_text(self) -> str | None:
+        return self.job.salary_text if self.job is not None else None
+
+    @property
+    def remote_work_mode(self) -> str | None:
+        return self.job.remote_work_mode if self.job is not None else None
+
+    @property
+    def employment_type(self) -> str | None:
+        return self.job.employment_type if self.job is not None else None
 
 
 class ApplicationEvent(Base):

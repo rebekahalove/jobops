@@ -10,13 +10,14 @@ from sqlalchemy.orm import Session
 
 from jobops_api.auth import AuthContext, require_auth_context
 from jobops_api.company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
-from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, Company, JobRole
+from jobops_api.db.models import Application, ApplicationEvent, CandidateProfile, CandidateSavedJob, Company, JobPosting, JobRole
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
 
 
-ApplicationStatus = Literal["saved", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"]
+ApplicationStatus = Literal["saved", "in_progress", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"]
+ACTIVE_APPLICATION_STATUSES = ("saved", "in_progress", "applied", "interviewing", "offer")
 
 router = APIRouter(prefix="/v1", tags=["applications"], dependencies=[Depends(require_internal_api_key)])
 
@@ -24,8 +25,9 @@ router = APIRouter(prefix="/v1", tags=["applications"], dependencies=[Depends(re
 class ApplicationCreateRequest(BaseModel):
     candidate_profile_id: str | None = None
     candidate_profile_slug: str | None = None
-    company_name: str = Field(min_length=1, max_length=240)
-    job_title: str = Field(min_length=1, max_length=240)
+    saved_job_id: str | None = None
+    company_name: str | None = Field(default=None, max_length=240)
+    job_title: str | None = Field(default=None, max_length=240)
     job_url: str | None = None
     location: str | None = Field(default=None, max_length=240)
     source: str | None = Field(default=None, max_length=120)
@@ -37,6 +39,7 @@ class ApplicationCreateRequest(BaseModel):
 
 class ApplicationStatusUpdateRequest(BaseModel):
     status: ApplicationStatus
+    date_applied: date | None = None
 
 
 class ApplicationEventCreateRequest(BaseModel):
@@ -49,6 +52,9 @@ class ApplicationEventCreateRequest(BaseModel):
 class ApplicationResponse(BaseModel):
     id: str
     candidate_profile_id: str
+    job_id: str | None
+    saved_job_id: str | None
+    company_id: str | None
     company_name: str
     job_title: str
     job_url: str | None
@@ -60,6 +66,12 @@ class ApplicationResponse(BaseModel):
     next_follow_up_date: date | None
     created_at: datetime
     updated_at: datetime
+    source_provider: str | None = None
+    posting_date: date | None = None
+    fit_summary: str | None = None
+    salary_text: str | None = None
+    remote_work_mode: str | None = None
+    employment_type: str | None = None
 
 
 class ApplicationEventResponse(BaseModel):
@@ -79,8 +91,17 @@ def create_application(
     auth: AuthContext = Depends(require_auth_context),
 ) -> Application:
     candidate_profile = auth.candidate_profile
+    if request.saved_job_id:
+        return create_application_from_saved_job(session, candidate_profile=candidate_profile, request=request)
+
+    if request.company_name is None or request.job_title is None:
+        raise HTTPException(status_code=400, detail="company_name and job_title are required unless saved_job_id is provided.")
+
     company_name = request.company_name.strip()
     job_title = request.job_title.strip()
+    if not company_name or not job_title:
+        raise HTTPException(status_code=400, detail="company_name and job_title are required unless saved_job_id is provided.")
+
     company = get_or_create_company(session, candidate_profile.id, company_name)
     job_role = JobRole(
         candidate_profile_id=candidate_profile.id,
@@ -144,11 +165,25 @@ def update_application_status(
     if application is None or application.candidate_profile_id != auth.candidate_profile.id:
         raise HTTPException(status_code=404, detail="Application not found.")
 
+    previous_status = application.status
     application.status = request.status
+    if request.status == "applied":
+        application.date_applied = request.date_applied or application.date_applied or date.today()
     if application.job_role_id:
         job_role = session.get(JobRole, application.job_role_id)
         if job_role is not None:
             job_role.status = request.status
+
+    if request.status == "applied" and previous_status != "applied" and application.date_applied is not None:
+        session.add(
+            ApplicationEvent(
+                application_id=application.id,
+                event_type="applied",
+                event_date=application.date_applied,
+                notes="",
+                metadata_json={},
+            )
+        )
 
     session.commit()
     session.refresh(application)
@@ -230,6 +265,66 @@ def get_or_create_company(session: Session, candidate_profile_id: str, company_n
         review_status="reviewed",
     )
     return company
+
+
+def create_application_from_saved_job(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    request: ApplicationCreateRequest,
+) -> Application:
+    saved_job = session.get(CandidateSavedJob, request.saved_job_id)
+    if saved_job is None or saved_job.candidate_profile_id != candidate_profile.id:
+        raise HTTPException(status_code=404, detail="Saved job not found.")
+
+    job = session.get(JobPosting, saved_job.job_id)
+    if job is None:
+        raise HTTPException(status_code=409, detail="Saved job is missing its canonical job posting.")
+
+    existing_application = session.scalar(
+        select(Application)
+        .where(
+            Application.candidate_profile_id == candidate_profile.id,
+            Application.job_id == job.id,
+            Application.status.in_(ACTIVE_APPLICATION_STATUSES),
+        )
+        .order_by(Application.created_at.desc())
+        .limit(1)
+    )
+    if existing_application is not None:
+        return existing_application
+
+    company = job.company if job.company is not None else get_or_create_company(session, candidate_profile.id, job.company_name)
+    if job.company is not None:
+        ensure_candidate_company_link(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            company=job.company,
+            derivation_status="model_derived",
+            review_status="new",
+        )
+
+    requested_status = request.status or "in_progress"
+    status = "in_progress" if requested_status == "saved" else requested_status
+    application = Application(
+        candidate_profile_id=candidate_profile.id,
+        company_id=company.id if company is not None else None,
+        job_id=job.id,
+        saved_job_id=saved_job.id,
+        company_name=job.company_name.strip(),
+        job_title=job.title.strip(),
+        job_url=clean_optional_text(job.job_url),
+        location=clean_optional_text(job.location),
+        source=clean_optional_text(job.source or job.source_provider),
+        date_applied=None,
+        status=status,
+        notes=request.notes.strip(),
+        next_follow_up_date=request.next_follow_up_date,
+    )
+    session.add(application)
+    session.commit()
+    session.refresh(application)
+    return application
 
 
 def clean_optional_text(value: str | None) -> str | None:

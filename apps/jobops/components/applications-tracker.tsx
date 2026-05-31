@@ -2,47 +2,33 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-export const applicationStatuses = ["saved", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"] as const;
+export const applicationStatuses = ["saved", "in_progress", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"] as const;
 
 export type ApplicationStatus = (typeof applicationStatuses)[number];
 
 export type TrackedApplication = {
   id: string;
+  candidate_profile_id?: string;
+  job_id?: string | null;
+  saved_job_id?: string | null;
+  company_id?: string | null;
   company_name: string;
   job_title: string;
   job_url: string | null;
   location: string | null;
   source: string | null;
+  source_provider?: string | null;
+  posting_date?: string | null;
+  fit_summary?: string | null;
+  salary_text?: string | null;
+  remote_work_mode?: string | null;
+  employment_type?: string | null;
   date_applied: string | null;
   status: ApplicationStatus;
   notes: string;
   next_follow_up_date: string | null;
   created_at: string;
   updated_at: string;
-};
-
-type ApplicationFormState = {
-  companyName: string;
-  jobTitle: string;
-  jobUrl: string;
-  location: string;
-  source: string;
-  dateApplied: string;
-  status: ApplicationStatus;
-  notes: string;
-  nextFollowUpDate: string;
-};
-
-const emptyForm: ApplicationFormState = {
-  companyName: "",
-  jobTitle: "",
-  jobUrl: "",
-  location: "",
-  source: "",
-  dateApplied: "",
-  status: "saved",
-  notes: "",
-  nextFollowUpDate: ""
 };
 
 export function ApplicationsTracker({
@@ -53,10 +39,19 @@ export function ApplicationsTracker({
   initialApplications?: TrackedApplication[];
 }) {
   const [applications, setApplications] = useState(initialApplications);
-  const [form, setForm] = useState<ApplicationFormState>(emptyForm);
-  const [statusDrafts, setStatusDrafts] = useState<Record<string, ApplicationStatus>>({});
   const [message, setMessage] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
+  const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const applicationId = new URLSearchParams(window.location.search).get("applicationId");
+    if (applicationId) {
+      setHighlightedApplicationId(applicationId);
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -64,11 +59,21 @@ export function ApplicationsTracker({
     async function loadApplications() {
       try {
         const response = await fetch(`${apiBasePath}/applications`, { cache: "no-store" });
+        const payload = await response.json().catch(() => null);
         if (!response.ok) {
+          if (active) {
+            setMessage(apiErrorMessage(payload, response.status));
+          }
           return;
         }
-        const payload = (await response.json()) as TrackedApplication[];
+        if (!Array.isArray(payload)) {
+          if (active) {
+            setMessage("Applications API returned an unexpected response.");
+          }
+          return;
+        }
         if (active) {
+          setMessage("");
           setApplications(payload);
         }
       } catch {
@@ -79,62 +84,35 @@ export function ApplicationsTracker({
     }
 
     loadApplications();
+    window.addEventListener("jobops:applications-updated", loadApplications);
     return () => {
       active = false;
+      window.removeEventListener("jobops:applications-updated", loadApplications);
     };
   }, [apiBasePath]);
+
+  useEffect(() => {
+    if (!highlightedApplicationId || typeof document === "undefined") {
+      return;
+    }
+    const element = document.getElementById(applicationCardId(highlightedApplicationId));
+    if (element) {
+      element.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [highlightedApplicationId, applications]);
 
   const sortedApplications = useMemo(
     () =>
       [...applications].sort((left, right) => {
-        const leftDate = left.next_follow_up_date ?? left.date_applied ?? left.created_at;
-        const rightDate = right.next_follow_up_date ?? right.date_applied ?? right.created_at;
+        const leftDate = left.date_applied ?? left.created_at;
+        const rightDate = right.date_applied ?? right.created_at;
         return rightDate.localeCompare(leftDate);
       }),
     [applications]
   );
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsSubmitting(true);
-    setMessage("");
-
-    try {
-      const response = await fetch(`${apiBasePath}/applications`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          company_name: form.companyName,
-          job_title: form.jobTitle,
-          job_url: form.jobUrl || null,
-          location: form.location || null,
-          source: form.source || null,
-          date_applied: form.dateApplied || null,
-          status: form.status,
-          notes: form.notes,
-          next_follow_up_date: form.nextFollowUpDate || null
-        })
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? payload.detail ?? "Could not save application.");
-      }
-
-      setApplications((current) => [payload as TrackedApplication, ...current]);
-      setForm(emptyForm);
-      setMessage("Application saved.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save application.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function updateStatus(application: TrackedApplication) {
-    const nextStatus = statusDrafts[application.id] ?? application.status;
+  async function markApplied(application: TrackedApplication) {
+    setPendingApplicationId(application.id);
     setMessage("");
 
     try {
@@ -143,207 +121,225 @@ export function ApplicationsTracker({
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ status: nextStatus })
+        body: JSON.stringify({ status: "applied" })
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.error ?? payload.detail ?? "Could not update status.");
+        throw new Error(apiErrorMessage(payload, response.status));
       }
 
       setApplications((current) => current.map((item) => (item.id === application.id ? (payload as TrackedApplication) : item)));
-      setMessage("Status updated.");
+      setHighlightedApplicationId(application.id);
+      setMessage("Application marked applied.");
+      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not update status.");
+      setMessage(error instanceof Error ? error.message : "Could not mark application as applied.");
+    } finally {
+      setPendingApplicationId(null);
     }
   }
 
   return (
     <main className="dashboard-main application-workspace">
       <section className="page-heading">
-        <p className="eyebrow">Manual tracker MVP</p>
+        <p className="eyebrow">Application pipeline</p>
         <h1>Applications</h1>
-        <p>Track jobs you have saved or applied to, including status, source, notes, and the next follow-up date.</p>
+        <p>Convert saved jobs into in-progress applications and track submitted roles without manual entry.</p>
       </section>
 
-      <section className="application-layout" aria-label="Application tracker">
-        <form className="application-form" onSubmit={handleSubmit}>
-          <div>
-            <p className="eyebrow">Add application</p>
-            <h2>Manual entry</h2>
-          </div>
-          <div className="application-form-grid">
-            <label>
-              <span className="field-label">Company</span>
-              <input
-                required
-                suppressHydrationWarning
-                value={form.companyName}
-                onChange={(event) => setForm({ ...form, companyName: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Job title</span>
-              <input
-                required
-                suppressHydrationWarning
-                value={form.jobTitle}
-                onChange={(event) => setForm({ ...form, jobTitle: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Job URL</span>
-              <input
-                suppressHydrationWarning
-                type="url"
-                value={form.jobUrl}
-                onChange={(event) => setForm({ ...form, jobUrl: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Location</span>
-              <input
-                suppressHydrationWarning
-                value={form.location}
-                onChange={(event) => setForm({ ...form, location: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Source</span>
-              <input
-                suppressHydrationWarning
-                value={form.source}
-                onChange={(event) => setForm({ ...form, source: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Status</span>
-              <select
-                suppressHydrationWarning
-                value={form.status}
-                onChange={(event) => setForm({ ...form, status: event.target.value as ApplicationStatus })}
-              >
-                {applicationStatuses.map((status) => (
-                  <option key={status} value={status}>
-                    {formatStatus(status)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span className="field-label">Date applied</span>
-              <input
-                suppressHydrationWarning
-                type="date"
-                value={form.dateApplied}
-                onChange={(event) => setForm({ ...form, dateApplied: event.target.value })}
-              />
-            </label>
-            <label>
-              <span className="field-label">Next follow-up</span>
-              <input
-                suppressHydrationWarning
-                type="date"
-                value={form.nextFollowUpDate}
-                onChange={(event) => setForm({ ...form, nextFollowUpDate: event.target.value })}
-              />
-            </label>
-          </div>
-          <label>
-            <span className="field-label">Notes</span>
-            <textarea
-              className="small-textarea"
-              suppressHydrationWarning
-              value={form.notes}
-              onChange={(event) => setForm({ ...form, notes: event.target.value })}
-            />
-          </label>
-          <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
-            {isSubmitting ? "Saving..." : "Save application"}
-          </button>
-          {message ? <p className="application-message">{message}</p> : null}
-        </form>
+      {message ? <p className="application-message">{message}</p> : null}
 
-        <section className="application-list" aria-labelledby="application-list-title">
-          <div className="application-list-header">
-            <div>
-              <p className="eyebrow">Pipeline</p>
-              <h2 id="application-list-title">Saved applications</h2>
-            </div>
-            <span>{applications.length}</span>
+      <section className="application-list" aria-labelledby="application-list-title">
+        <div className="application-list-header">
+          <div>
+            <p className="eyebrow">Pipeline</p>
+            <h2 id="application-list-title">Applications</h2>
           </div>
-          {sortedApplications.length > 0 ? (
-            <div className="application-table-wrap">
-              <table className="application-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Role</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Follow-up</th>
-                    <th scope="col">Notes</th>
-                    <th scope="col">Edit status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedApplications.map((application) => (
-                    <tr key={application.id}>
-                      <td>
-                        <strong>{application.job_title}</strong>
-                        <span>{application.company_name}</span>
-                        {application.job_url ? <a href={application.job_url}>Job post</a> : null}
-                      </td>
-                      <td>
-                        <span className={`application-status application-status-${application.status}`}>
-                          {formatStatus(application.status)}
-                        </span>
-                      </td>
-                      <td>{formatDate(application.next_follow_up_date)}</td>
-                      <td>{application.notes || "No notes yet"}</td>
-                      <td>
-                        <div className="status-edit">
-                          <select
-                            aria-label={`Status for ${application.company_name} ${application.job_title}`}
-                            suppressHydrationWarning
-                            value={statusDrafts[application.id] ?? application.status}
-                            onChange={(event) =>
-                              setStatusDrafts({
-                                ...statusDrafts,
-                                [application.id]: event.target.value as ApplicationStatus
-                              })
-                            }
-                          >
-                            {applicationStatuses.map((status) => (
-                              <option key={status} value={status}>
-                                {formatStatus(status)}
-                              </option>
-                            ))}
-                          </select>
-                          <button className="secondary-action" suppressHydrationWarning type="button" onClick={() => updateStatus(application)}>
-                            Save
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="empty-state-block">
-              <h2>No applications yet</h2>
-              <p>Add the first job you saved or applied to. Job intake, fit scoring, and generated materials can attach later.</p>
-            </div>
-          )}
-        </section>
+          <span>{applications.length}</span>
+        </div>
+
+        {sortedApplications.length > 0 ? (
+          <div className="application-card-grid">
+            {sortedApplications.map((application) => (
+              <article
+                className={`application-card${highlightedApplicationId === application.id ? " application-card-highlighted" : ""}`}
+                id={applicationCardId(application.id)}
+                key={application.id}
+              >
+                <div className="application-card-main">
+                  <div className="application-card-header">
+                    <div>
+                      <h2>{application.job_title}</h2>
+                      <p>{application.company_name}</p>
+                    </div>
+                    <span className={`application-status application-status-${application.status}`}>{formatStatus(application.status)}</span>
+                  </div>
+
+                  <FoldedText className="application-notes" fallback="No notes yet" value={application.notes} />
+                  <FoldedText className="application-fit" value={application.fit_summary} />
+                </div>
+
+                <aside className="application-card-rail" aria-label={`${application.job_title} application details`}>
+                  <div className="record-rail-section">
+                    <dl className="application-details record-detail-grid">
+                      <div>
+                        <dt>Location</dt>
+                        <dd>{application.location || formatOptionalStatus(application.remote_work_mode ?? null)}</dd>
+                      </div>
+                      <div>
+                        <dt>Source</dt>
+                        <dd>{application.source || application.source_provider || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Created</dt>
+                        <dd>{formatDateTime(application.created_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Applied</dt>
+                        <dd>{formatDateOnly(application.date_applied)}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="record-rail-section">
+                    <dl className="application-details record-detail-grid">
+                      <div>
+                        <dt>Employment</dt>
+                        <dd>{application.employment_type || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Compensation</dt>
+                        <dd>{application.salary_text || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Posted</dt>
+                        <dd>{formatDateOnly(application.posting_date ?? null)}</dd>
+                      </div>
+                      <div>
+                        <dt>Follow-up</dt>
+                        <dd>{formatDateOnly(application.next_follow_up_date)}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="company-links application-card-actions" aria-label={`${application.job_title} actions`}>
+                    {application.job_url ? (
+                      <a href={application.job_url} rel="noopener noreferrer" target="_blank">
+                        Job post
+                      </a>
+                    ) : null}
+                    {application.status !== "applied" ? (
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingApplicationId === application.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => markApplied(application)}
+                      >
+                        {pendingApplicationId === application.id ? "Saving..." : "Mark applied"}
+                      </button>
+                    ) : null}
+                  </div>
+                </aside>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state-block">
+            <h2>No applications yet</h2>
+            <p>Click Apply on a saved job to start an application.</p>
+          </div>
+        )}
       </section>
     </main>
   );
 }
 
-function formatStatus(status: ApplicationStatus) {
+function apiErrorMessage(payload: unknown, status: number) {
+  if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") {
+    return payload.error;
+  }
+  if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
+    return payload.detail;
+  }
+  if (payload && typeof payload === "object" && "detail" in payload) {
+    const formattedDetail = formatApiDetail(payload.detail);
+    if (formattedDetail) {
+      return formattedDetail;
+    }
+  }
+  return `Applications API request failed with HTTP ${status}.`;
+}
+
+function formatApiDetail(detail: unknown) {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail.map(formatValidationIssue).filter(Boolean);
+    return messages.length > 0 ? messages.join(" ") : null;
+  }
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") {
+    return detail.message;
+  }
+  return null;
+}
+
+function formatValidationIssue(issue: unknown) {
+  if (!issue || typeof issue !== "object") {
+    return null;
+  }
+  const message = "msg" in issue && typeof issue.msg === "string" ? issue.msg : null;
+  if (!message) {
+    return null;
+  }
+  if (!("loc" in issue) || !Array.isArray(issue.loc)) {
+    return message;
+  }
+  const field = issue.loc.filter((part) => typeof part === "string").pop();
+  return field ? `${formatStatus(field)}: ${message}.` : `${message}.`;
+}
+
+function applicationCardId(applicationId: string) {
+  return `application-${applicationId}`;
+}
+
+function formatStatus(status: string) {
   return status.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-function formatDate(value: string | null) {
+function formatOptionalStatus(value: string | null) {
+  if (!value || value === "unknown") {
+    return "Unknown";
+  }
+  return formatStatus(value);
+}
+
+function FoldedText({ value, className, fallback }: { value?: string | null; className: string; fallback?: string }) {
+  if (!value) {
+    return fallback ? <p className={className}>{fallback}</p> : null;
+  }
+  const preview = previewText(value);
+  if (preview === value) {
+    return <p className={className}>{value}</p>;
+  }
+  return (
+    <details className={`folded-text ${className}`}>
+      <summary>{preview}</summary>
+      <p>{value}</p>
+    </details>
+  );
+}
+
+function previewText(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 145) {
+    return compact;
+  }
+  return `${compact.slice(0, 145).trimEnd()}...`;
+}
+
+function formatDateOnly(value: string | null) {
   if (!value) {
     return "Not set";
   }
@@ -354,4 +350,12 @@ function formatDate(value: string | null) {
   }
 
   return `${month}/${day}/${year}`;
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }

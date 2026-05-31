@@ -109,6 +109,8 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "company_id" in job_role_columns
     assert "target_company_id" not in job_role_columns
     assert "company_id" in application_columns
+    assert "job_id" in application_columns
+    assert "saved_job_id" in application_columns
     assert "target_company_id" not in application_columns
 
 
@@ -159,3 +161,50 @@ def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, 
     assert "target_companies" in inspector.get_table_names()
     assert "companies" not in inspector.get_table_names()
     assert "candidate_companies" not in inspector.get_table_names()
+
+
+def test_application_job_link_migration_preserves_existing_applications(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_application_link_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "20260529_0019")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO tenants (id, name, slug) VALUES ('tenant-1', 'Tenant', 'tenant')"))
+        connection.execute(
+            text(
+                "INSERT INTO candidate_profiles (id, tenant_id, slug, display_name, headline, summary, profile_status) "
+                "VALUES ('profile-1', 'tenant-1', 'one', 'One', 'Headline', '', 'draft')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO applications "
+                "(id, candidate_profile_id, company_name, job_title, job_url, location, source, date_applied, status, notes) "
+                "VALUES "
+                "('application-1', 'profile-1', 'Acme AI', 'Applied AI Engineer', 'https://example.test/job', "
+                "'Remote', 'manual', '2026-05-13', 'applied', 'Existing note')"
+            )
+        )
+
+    command.upgrade(alembic_config, "head")
+
+    inspector = inspect_database(engine)
+    application_columns = {column["name"] for column in inspector.get_columns("applications")}
+    assert {"job_id", "saved_job_id"}.issubset(application_columns)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT company_name, job_title, job_id, saved_job_id, notes FROM applications WHERE id = 'application-1'")
+        ).mappings().one()
+
+    assert row["company_name"] == "Acme AI"
+    assert row["job_title"] == "Applied AI Engineer"
+    assert row["job_id"] is None
+    assert row["saved_job_id"] is None
+    assert row["notes"] == "Existing note"
