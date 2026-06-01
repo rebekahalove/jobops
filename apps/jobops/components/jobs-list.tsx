@@ -1,6 +1,15 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+export type JobBucketId = "new" | "favorites" | "applied" | "archived";
+
+const jobTabs: Array<{ id: JobBucketId; label: string }> = [
+  { id: "new", label: "New" },
+  { id: "favorites", label: "Favorites" },
+  { id: "applied", label: "Applied" },
+  { id: "archived", label: "Archived" }
+];
 
 export type SavedJob = {
   id: string;
@@ -59,6 +68,8 @@ export function JobsList({
   const [message, setMessage] = useState("");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
   const [pendingArchiveJobId, setPendingArchiveJobId] = useState<string | null>(null);
+  const [activeBucket, setActiveBucket] = useState<JobBucketId>(() => defaultJobBucket(initialJobs));
+  const hasAppliedInitialBucket = useRef(initialJobs.length > 0);
 
   useEffect(() => {
     let active = true;
@@ -82,6 +93,10 @@ export function JobsList({
         if (active) {
           setMessage("");
           setJobs(payload);
+          if (!hasAppliedInitialBucket.current) {
+            setActiveBucket(defaultJobBucket(payload));
+            hasAppliedInitialBucket.current = true;
+          }
         }
       } catch {
         if (active) {
@@ -98,10 +113,9 @@ export function JobsList({
     };
   }, [apiBasePath]);
 
-  const sortedJobs = useMemo(
-    () => [...jobs].sort((left, right) => right.added_at.localeCompare(left.added_at)),
-    [jobs]
-  );
+  const jobCounts = useMemo(() => buildJobBucketCounts(jobs), [jobs]);
+  const sortedJobs = useMemo(() => sortJobsForBucket(jobs.filter((job) => jobBucket(job) === activeBucket), activeBucket), [activeBucket, jobs]);
+  const activeEmptyState = jobEmptyStates[activeBucket];
 
   async function applyToJob(job: SavedJob) {
     if (job.application_id) {
@@ -181,7 +195,24 @@ export function JobsList({
             <p className="eyebrow">Job leads</p>
             <h2 id="job-list-title">Saved jobs</h2>
           </div>
-          <span>{jobs.length}</span>
+          <span>{jobCounts[activeBucket]}</span>
+        </div>
+
+        <div className="queue-tabs" role="tablist" aria-label="Job queue filters">
+          {jobTabs.map((tab) => (
+            <button
+              aria-selected={activeBucket === tab.id}
+              className={`queue-tab${activeBucket === tab.id ? " active" : ""}`}
+              key={tab.id}
+              onClick={() => setActiveBucket(tab.id)}
+              role="tab"
+              suppressHydrationWarning
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <strong>{jobCounts[tab.id]}</strong>
+            </button>
+          ))}
         </div>
 
         {sortedJobs.length > 0 ? (
@@ -296,13 +327,81 @@ export function JobsList({
           </div>
         ) : (
           <div className="empty-state-block">
-            <h2>No saved jobs yet</h2>
-            <p>Ask the AI Command Center to find jobs that fit your profile. Saved postings will appear here with source links.</p>
+            <h2>{activeEmptyState.title}</h2>
+            <p>{activeEmptyState.body}</p>
           </div>
         )}
       </section>
     </main>
   );
+}
+
+const jobEmptyStates: Record<JobBucketId, { title: string; body: string }> = {
+  new: {
+    title: "No new jobs.",
+    body: "New jobs found by JobOps will appear here before you decide whether to apply."
+  },
+  favorites: {
+    title: "No favorite jobs yet.",
+    body: "Save jobs you want to apply to and they'll appear here."
+  },
+  applied: {
+    title: "No jobs with applications yet.",
+    body: "When you start an application from a job, it will appear here."
+  },
+  archived: {
+    title: "No archived jobs.",
+    body: "Archived jobs are hidden from your active queue, but saved application history and materials are preserved."
+  }
+};
+
+export function jobBucket(job: SavedJob): JobBucketId {
+  if (job.archived_at) {
+    return "archived";
+  }
+  if (job.has_application || job.application_id) {
+    return "applied";
+  }
+  if (isFavoriteJobStatus(job.status)) {
+    return "favorites";
+  }
+  return "new";
+}
+
+export function buildJobBucketCounts(jobs: SavedJob[]): Record<JobBucketId, number> {
+  return jobs.reduce(
+    (counts, job) => {
+      counts[jobBucket(job)] += 1;
+      return counts;
+    },
+    { new: 0, favorites: 0, applied: 0, archived: 0 }
+  );
+}
+
+export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
+  return [...jobs].sort((left, right) => jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket)));
+}
+
+function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
+  const counts = buildJobBucketCounts(jobs);
+  return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
+}
+
+function isFavoriteJobStatus(status: string) {
+  return ["favorite", "favorited", "saved", "watchlisted", "watchlist"].includes(status.toLowerCase());
+}
+
+function jobSortDate(job: SavedJob, bucket: JobBucketId) {
+  if (bucket === "archived") {
+    return job.archived_at ?? "";
+  }
+  if (bucket === "favorites") {
+    return job.updated_at || job.added_at;
+  }
+  if (bucket === "applied") {
+    return job.updated_at || job.added_at;
+  }
+  return job.added_at;
 }
 
 function apiErrorMessage(payload: unknown, status: number) {

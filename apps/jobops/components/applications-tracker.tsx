@@ -1,7 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+export type ApplicationBucketId = "started" | "applied" | "in-process" | "archived";
+
+const applicationTabs: Array<{ id: ApplicationBucketId; label: string }> = [
+  { id: "started", label: "Started" },
+  { id: "applied", label: "Applied" },
+  { id: "in-process", label: "In Process" },
+  { id: "archived", label: "Archived" }
+];
 
 export const applicationStatuses = [
   "saved",
@@ -86,6 +95,8 @@ export function ApplicationsTracker({
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
   const [pendingArchiveApplicationId, setPendingArchiveApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
+  const [activeBucket, setActiveBucket] = useState<ApplicationBucketId>(() => defaultApplicationBucket(initialApplications));
+  const hasAppliedInitialBucket = useRef(initialApplications.length > 0);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -119,6 +130,10 @@ export function ApplicationsTracker({
         if (active) {
           setMessage("");
           setApplications(payload);
+          if (!hasAppliedInitialBucket.current) {
+            setActiveBucket(defaultApplicationBucket(payload));
+            hasAppliedInitialBucket.current = true;
+          }
         }
       } catch {
         if (active) {
@@ -145,15 +160,12 @@ export function ApplicationsTracker({
     }
   }, [highlightedApplicationId, applications]);
 
+  const applicationCounts = useMemo(() => buildApplicationBucketCounts(applications), [applications]);
   const sortedApplications = useMemo(
-    () =>
-      [...applications].sort((left, right) => {
-        const leftDate = left.date_applied ?? left.created_at;
-        const rightDate = right.date_applied ?? right.created_at;
-        return rightDate.localeCompare(leftDate);
-      }),
-    [applications]
+    () => sortApplicationsForBucket(applications.filter((application) => applicationBucket(application) === activeBucket), activeBucket),
+    [activeBucket, applications]
   );
+  const activeEmptyState = applicationEmptyStates[activeBucket];
 
   async function markApplied(application: TrackedApplication) {
     setPendingApplicationId(application.id);
@@ -231,7 +243,24 @@ export function ApplicationsTracker({
             <p className="eyebrow">Pipeline</p>
             <h2 id="application-list-title">Applications</h2>
           </div>
-          <span>{applications.length}</span>
+          <span>{applicationCounts[activeBucket]}</span>
+        </div>
+
+        <div className="queue-tabs" role="tablist" aria-label="Application queue filters">
+          {applicationTabs.map((tab) => (
+            <button
+              aria-selected={activeBucket === tab.id}
+              className={`queue-tab${activeBucket === tab.id ? " active" : ""}`}
+              key={tab.id}
+              onClick={() => setActiveBucket(tab.id)}
+              role="tab"
+              suppressHydrationWarning
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <strong>{applicationCounts[tab.id]}</strong>
+            </button>
+          ))}
         </div>
 
         {sortedApplications.length > 0 ? (
@@ -382,8 +411,8 @@ export function ApplicationsTracker({
           </div>
         ) : (
           <div className="empty-state-block">
-            <h2>No applications yet</h2>
-            <p>Click Apply on a saved job to start an application.</p>
+            <h2>{activeEmptyState.title}</h2>
+            <p>{activeEmptyState.body}</p>
           </div>
         )}
       </section>
@@ -476,30 +505,64 @@ export function formatStatus(status: string) {
   return status.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-export function applicationDisplayBucket(application: TrackedApplication) {
-  if (application.archived_at) {
-    return "Archived";
+const applicationEmptyStates: Record<ApplicationBucketId, { title: string; body: string }> = {
+  started: {
+    title: "No started applications.",
+    body: "Start an application from a saved job and it will appear here."
+  },
+  applied: {
+    title: "No applied applications.",
+    body: "Applications you've submitted, rejected, withdrawn, or restored from archive will appear here."
+  },
+  "in-process": {
+    title: "No applications in process.",
+    body: "When an application moves into callback, interview, or active process, it will appear here."
+  },
+  archived: {
+    title: "No archived applications.",
+    body: "Archived applications are hidden from your active workflow, but saved materials and history are preserved."
   }
-  if (application.status === "started" || application.status === "saved") {
-    return "Started";
-  }
-  if (application.status === "in_process" || application.status === "in_progress") {
-    return "In process";
-  }
-  return "Applied";
-}
+};
 
-export function applicationDisplayClass(application: TrackedApplication) {
+export function applicationBucket(application: TrackedApplication): ApplicationBucketId {
   if (application.archived_at) {
     return "archived";
   }
-  if (application.status === "started" || application.status === "saved") {
+  if (application.status === "saved" || application.status === "started") {
     return "started";
   }
-  if (application.status === "in_process" || application.status === "in_progress") {
+  if (isInProcessApplicationStatus(application.status)) {
     return "in-process";
   }
   return "applied";
+}
+
+export function buildApplicationBucketCounts(applications: TrackedApplication[]): Record<ApplicationBucketId, number> {
+  return applications.reduce(
+    (counts, application) => {
+      counts[applicationBucket(application)] += 1;
+      return counts;
+    },
+    { started: 0, applied: 0, "in-process": 0, archived: 0 }
+  );
+}
+
+export function sortApplicationsForBucket(applications: TrackedApplication[], bucket: ApplicationBucketId) {
+  return [...applications].sort((left, right) => applicationSortDate(right, bucket).localeCompare(applicationSortDate(left, bucket)));
+}
+
+function defaultApplicationBucket(applications: TrackedApplication[]): ApplicationBucketId {
+  const counts = buildApplicationBucketCounts(applications);
+  return applicationTabs.find((tab) => counts[tab.id] > 0)?.id ?? "started";
+}
+
+export function applicationDisplayBucket(application: TrackedApplication) {
+  const bucket = applicationBucket(application);
+  return applicationTabs.find((tab) => tab.id === bucket)?.label ?? "Applied";
+}
+
+export function applicationDisplayClass(application: TrackedApplication) {
+  return applicationBucket(application);
 }
 
 export function canMarkApplied(application: TrackedApplication) {
@@ -511,17 +574,34 @@ export function canMarkTerminal(application: TrackedApplication) {
 }
 
 export function shouldShowUnderlyingStatus(application: TrackedApplication) {
-  return application.archived_at ? true : !["saved", "started", "in_progress", "in_process", "applied"].includes(application.status);
+  return application.archived_at ? true : !["saved", "started", "in_progress", "in_process", "interviewing", "offer", "applied"].includes(application.status);
 }
 
 export function underlyingStatusClass(status: string) {
-  if (status === "in_process" || status === "in_progress") {
+  if (isInProcessApplicationStatus(status)) {
     return "in-process";
   }
   if (status === "saved" || status === "started") {
     return "started";
   }
   return status;
+}
+
+function isInProcessApplicationStatus(status: string) {
+  return ["in_process", "in_progress", "interviewing", "offer"].includes(status);
+}
+
+function applicationSortDate(application: TrackedApplication, bucket: ApplicationBucketId) {
+  if (bucket === "started") {
+    return application.created_at;
+  }
+  if (bucket === "applied") {
+    return application.date_applied ?? application.created_at;
+  }
+  if (bucket === "in-process") {
+    return application.updated_at;
+  }
+  return application.archived_at ?? "";
 }
 
 export function actionResultMessage(payload: unknown, fallback: string) {
