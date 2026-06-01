@@ -70,6 +70,7 @@ describe("Jobs list", () => {
     );
 
     expect(html).toContain("Applied AI Engineer");
+    expect(html).toContain('id="saved-job-saved-job-1"');
     expect(html).toContain("Example Civic");
     expect(html).toContain("Remote US");
     expect(html).toContain("Full-time");

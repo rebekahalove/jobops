@@ -6,14 +6,18 @@ import { ApplicationDetail } from "./application-detail";
 import type { TrackedApplication } from "./applications-tracker";
 
 describe("Application detail", () => {
-  it("renders company, title, status, notes, linked job context, and generated materials", () => {
+  it("renders compact primary facts, saved-job navigation, notes, and generated materials", () => {
     const html = renderToStaticMarkup(<ApplicationDetail applicationId="app-1" initialApplication={applicationFixture()} />);
 
     expect(html).toContain("Application detail");
     expect(html).toContain("Acme AI: Applied AI Engineer");
     expect(html).toContain("In process");
     expect(html).toContain("Recruiter screen scheduled.");
-    expect(html).toContain("Saved job saved-job-1; canonical job job-1");
+    expect(html).toContain("application-detail-primary-grid");
+    expect(html).toContain("View saved job");
+    expect(html).toContain('href="/jobs#saved-job-saved-job-1"');
+    expect(html).not.toContain("Saved job saved-job-1; canonical job job-1");
+    expect(html).not.toContain("canonical job job-1");
     expect(html).toContain("Application Materials");
     expect(html).toContain("Positioning Summary");
     expect(html).toContain("Focus the application on applied AI systems.");
@@ -28,6 +32,21 @@ describe("Application detail", () => {
     );
 
     expect(html).toContain('href="/jobops/applications"');
+    expect(html).toContain('href="/jobops/jobs#saved-job-saved-job-1"');
+  });
+
+  it("folds lower-priority application metadata by default", () => {
+    const html = renderToStaticMarkup(<ApplicationDetail applicationId="app-1" initialApplication={applicationFixture()} />);
+
+    expect(html).toContain("<details");
+    expect(html).toContain("application-detail-metadata");
+    expect(html).toContain("<summary>More details</summary>");
+    expect(html).toContain("Source");
+    expect(html).toContain("Date applied");
+    expect(html).toContain("Created");
+    expect(html).toContain("Updated");
+    expect(html).toContain("Archive");
+    expect(html).not.toContain("<details open");
   });
 
   it("renders an empty materials state and archive action for an active application", () => {
@@ -107,6 +126,8 @@ describe("Application detail", () => {
     expect(source).toContain('postApplicationAction("reopen"');
     expect(source).toContain("`${apiBasePath}/applications/${application.id}/materials/generate`");
     expect(source).toContain("window.dispatchEvent(new CustomEvent(\"jobops:jobs-updated\"))");
+    expect(source).toContain("savedJobHref(application, workspaceBasePath)");
+    expect(source).not.toContain("linkedJobLabel");
   });
 });
 

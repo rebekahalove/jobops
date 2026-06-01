@@ -91,6 +91,21 @@ describe("JobOps dashboard shell", () => {
     expect(defaultMountedHtml).not.toContain('href="/jobops/admin/users"');
   });
 
+  it("renders the mounted JobOps command center with mounted workspace routes", () => {
+    mockPathname = "/jobops/jobs";
+    const html = renderToStaticMarkup(
+      <DashboardShell apiBasePath="/jobops/api" basePath="/jobops" enableAdminNav>
+        <DashboardHome basePath="/jobops" />
+      </DashboardShell>
+    );
+
+    expect(html).toContain("AI command center");
+    expect(html).toContain("Ask JobOps to work across your search.");
+    expect(html).toContain("Show examples");
+    expect(html).toContain('href="/jobops/jobs"');
+    expect(html).toContain('action="/jobops/api/dashboard-auth/logout"');
+  });
+
   it("marks the current workspace tab as active", () => {
     const html = renderToStaticMarkup(
       <DashboardShell>

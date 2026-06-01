@@ -301,24 +301,37 @@ export function ApplicationDetail({
           </div>
         </div>
 
-        <dl className="application-detail-grid">
+        <dl className="application-detail-grid application-detail-primary-grid">
           <DetailItem label="Company" value={application.company_name} />
-          <DetailItem label="Job title" value={application.job_title} />
+          <DetailItem className="application-detail-wide" label="Job title" value={application.job_title} />
           <DetailItem label="Location" value={application.location || formatOptionalStatus(application.remote_work_mode ?? null)} />
-          <DetailItem label="Source" value={application.source || application.source_provider || "Unknown"} />
-          <DetailItem label="Status" value={formatStatus(application.status)} />
-          <DetailItem label="Date applied" value={formatDateOnly(application.date_applied)} />
-          <DetailItem label="Employment" value={application.employment_type || "Unknown"} />
           <DetailItem label="Compensation" value={application.salary_text || "Unknown"} />
+          <DetailItem label="Employment" value={application.employment_type || "Unknown"} />
           <DetailItem label="Posted" value={formatDateOnly(application.posting_date ?? null)} />
           <DetailItem label="Follow-up" value={formatDateOnly(application.next_follow_up_date)} />
-          <DetailItem label="Created" value={formatDateTime(application.created_at)} />
-          <DetailItem label="Updated" value={formatDateTime(application.updated_at)} />
-          <DetailItem label="Linked job" value={linkedJobLabel(application)} />
-          <DetailItem label="Archive" value={application.archived_at ? formatDateTime(application.archived_at) : "Active"} />
-          {application.archived_reason ? <DetailItem label="Archived reason" value={application.archived_reason} /> : null}
-          {application.archived_by_action ? <DetailItem label="Archived by" value={formatStatus(application.archived_by_action)} /> : null}
         </dl>
+
+        {application.saved_job_id || application.job_id ? (
+          <div className="application-linked-job-action">
+            <Link className="secondary-action compact-action" href={savedJobHref(application, workspaceBasePath)}>
+              View saved job
+            </Link>
+          </div>
+        ) : null}
+
+        <details className="application-detail-metadata">
+          <summary>More details</summary>
+          <dl className="application-detail-grid application-detail-secondary-grid">
+            <DetailItem label="Source" value={application.source || application.source_provider || "Unknown"} />
+            <DetailItem label="Status" value={formatStatus(application.status)} />
+            <DetailItem label="Date applied" value={formatDateOnly(application.date_applied)} />
+            <DetailItem label="Created" value={formatDateTime(application.created_at)} />
+            <DetailItem label="Updated" value={formatDateTime(application.updated_at)} />
+            <DetailItem label="Archive" value={application.archived_at ? formatDateTime(application.archived_at) : "Active"} />
+            {application.archived_reason ? <DetailItem className="application-detail-wide" label="Archived reason" value={application.archived_reason} /> : null}
+            {application.archived_by_action ? <DetailItem label="Archived by" value={formatStatus(application.archived_by_action)} /> : null}
+          </dl>
+        </details>
       </section>
 
       <section className="application-detail-panel" aria-labelledby="application-notes-title">
@@ -364,24 +377,18 @@ async function loadApplicationFromList(apiBasePath: string, applicationId: strin
   return (payload as TrackedApplication[]).find((item) => item.id === applicationId) ?? null;
 }
 
-function DetailItem({ label, value }: { label: string; value: string }) {
+function DetailItem({ className, label, value }: { className?: string; label: string; value: React.ReactNode }) {
   return (
-    <div>
+    <div className={className}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
   );
 }
 
-function linkedJobLabel(application: TrackedApplication) {
-  if (application.saved_job_id && application.job_id) {
-    return `Saved job ${application.saved_job_id}; canonical job ${application.job_id}`;
-  }
+function savedJobHref(application: TrackedApplication, workspaceBasePath: string) {
   if (application.saved_job_id) {
-    return `Saved job ${application.saved_job_id}`;
+    return `${workspaceBasePath}/jobs#saved-job-${encodeURIComponent(application.saved_job_id)}`;
   }
-  if (application.job_id) {
-    return `Canonical job ${application.job_id}`;
-  }
-  return "None";
+  return `${workspaceBasePath}/jobs`;
 }

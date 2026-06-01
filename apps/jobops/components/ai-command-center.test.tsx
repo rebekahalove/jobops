@@ -19,10 +19,36 @@ describe("AI command center", () => {
     expect(html).toContain("AI command center");
     expect(html).toContain("Ask JobOps to work across your search.");
     expect(html).not.toContain("JobOps agent");
+    expect(html).toContain("Examples");
+    expect(html).toContain("Show examples");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-controls="jobops-starter-prompts"');
+    expect(html).toContain('id="jobops-starter-prompts"');
     expect(html).toContain("I want to be an Applied AI Engineer.");
     for (const prompt of starterPrompts.slice(1)) {
       expect(html).toContain(prompt.replace("'", "&#x27;"));
     }
+  });
+
+  it("keeps starter prompts wired to the command composer", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("const [areExamplesExpanded, setAreExamplesExpanded] = useState(false)");
+    expect(source).toContain('aria-expanded={areExamplesExpanded}');
+    expect(source).toContain("setAreExamplesExpanded((current) => !current)");
+    expect(source).toContain("starterPrompts.map((prompt)");
+    expect(source).toContain("onClick={() => setCommand(prompt)}");
+  });
+
+  it("renders the command composer controls", () => {
+    const html = renderToStaticMarkup(<AiCommandCenter />);
+
+    expect(html).toContain('for="jobops-command"');
+    expect(html).toContain(">Command</label>");
+    expect(html).toContain('id="jobops-command"');
+    expect(html).toContain("<textarea");
+    expect(html).toContain("Add file");
+    expect(html).toContain("Run command");
   });
 
   it("creates a planned action card from a submitted command plan", () => {
@@ -404,5 +430,25 @@ describe("AI command center", () => {
     expect(source).toContain("shouldStickToBottomRef.current");
     expect(source).toContain("setHasNewMessagesBelow(true)");
     expect(source).toContain("onScroll={handleConversationScroll}");
+  });
+
+  it("includes mobile command-center layout rules for chat, examples, composer, and actions", async () => {
+    const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(css).toContain("@media (max-width: 720px)");
+    expect(css).toContain(".ai-command-center");
+    expect(css).toContain("max-height: none");
+    expect(css).toContain("overflow: visible");
+    expect(css).toContain(".command-center-grid");
+    expect(css).toContain("display: contents");
+    expect(css).toContain(".command-conversation-frame");
+    expect(css).toContain("min-height: 220px");
+    expect(css).toContain("max-height: 42svh");
+    expect(css).toContain(".starter-prompts-panel.expanded .starter-prompts");
+    expect(css).toContain("overflow-x: auto");
+    expect(css).toContain(".command-composer");
+    expect(css).toContain("order: 4");
+    expect(css).toContain(".agent-action-rail");
+    expect(css).toContain("max-height: 220px");
   });
 });

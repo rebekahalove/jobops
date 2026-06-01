@@ -261,7 +261,7 @@ export function JobsList({
         {sortedJobs.length > 0 ? (
           <div className="job-card-grid">
             {sortedJobs.map((job) => (
-              <article className="job-card" key={job.id}>
+              <article className="job-card" id={`saved-job-${job.id}`} key={job.id}>
                 <div className="job-card-main">
                   <div className="job-card-header">
                     <div>
