@@ -477,8 +477,8 @@ def test_rejected_and_withdrawn_auto_archive_and_restore_preserves_status(monkey
     with Session(engine) as session:
         profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
         assert profile is not None
-        rejected = Application(candidate_profile_id=profile.id, company_name="Reject Co", job_title="Role", status="in_process")
-        withdrawn = Application(candidate_profile_id=profile.id, company_name="Withdraw Co", job_title="Role", status="in_process")
+        rejected = Application(candidate_profile_id=profile.id, company_name="Reject Co", job_title="Role", status="applied")
+        withdrawn = Application(candidate_profile_id=profile.id, company_name="Withdraw Co", job_title="Role", status="applied")
         session.add_all([rejected, withdrawn])
         session.commit()
         rejected_id = rejected.id
@@ -505,6 +505,10 @@ def test_rejected_and_withdrawn_auto_archive_and_restore_preserves_status(monkey
         assert withdrawn_response.status_code == 200
         assert rejected_response.json()["application_archived"] is True
         assert withdrawn_response.json()["application_archived"] is True
+        assert rejected_response.json()["application"]["status"] == "rejected"
+        assert rejected_response.json()["application"]["date_applied"] == date.today().isoformat()
+        assert withdrawn_response.json()["application"]["status"] == "withdrawn"
+        assert withdrawn_response.json()["application"]["date_applied"] == date.today().isoformat()
 
         restore_response = client.post(
             f"/v1/applications/{rejected_id}/restore",
@@ -523,9 +527,70 @@ def test_rejected_and_withdrawn_auto_archive_and_restore_preserves_status(monkey
             assert withdrawn is not None
             assert rejected.status == "rejected"
             assert rejected.archived_at is None
+            assert rejected.date_applied == date.today()
             assert withdrawn.status == "withdrawn"
             assert withdrawn.archived_at is not None
             assert withdrawn.archived_by_action == "status_withdrawn"
+            assert withdrawn.date_applied == date.today()
+            rejected_events = session.scalars(
+                select(ApplicationEvent.event_type).where(ApplicationEvent.application_id == rejected_id).order_by(ApplicationEvent.created_at.asc())
+            ).all()
+            withdrawn_events = session.scalars(
+                select(ApplicationEvent.event_type).where(ApplicationEvent.application_id == withdrawn_id).order_by(ApplicationEvent.created_at.asc())
+            ).all()
+            assert rejected_events == ["rejected"]
+            assert withdrawn_events == ["withdrawn"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reject_and_withdraw_require_applied_status(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        application = Application(candidate_profile_id=profile.id, company_name="Reject Co", job_title="Role", status="in_process")
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        reject_response = client.post(
+            f"/v1/applications/{application_id}/reject",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert reject_response.status_code == 409
+        assert "marked applied" in reject_response.json()["detail"]
+
+        withdraw_response = client.patch(
+            f"/v1/applications/{application_id}/status",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={"status": "withdrawn"},
+        )
+        assert withdraw_response.status_code == 409
+
+        with Session(engine) as session:
+            application = session.get(Application, application_id)
+            assert application is not None
+            assert application.status == "in_process"
+            assert application.archived_at is None
     finally:
         app.dependency_overrides.clear()
 

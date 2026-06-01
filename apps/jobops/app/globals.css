@@ -2648,11 +2648,17 @@ input:disabled {
   gap: 4px;
 }
 
+.application-card-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
 .job-card-header {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
 }
 
+.application-card-badges,
 .job-card-badges {
   display: flex;
   flex-wrap: wrap;

@@ -275,9 +275,16 @@ export function ApplicationsTracker({
                       <h2>{application.job_title}</h2>
                       <p>{application.company_name}</p>
                     </div>
-                    <span className={`application-status application-status-${applicationDisplayClass(application)}`}>
-                      {applicationDisplayBucket(application)}
-                    </span>
+                    <div className="application-card-badges">
+                      <span className={`application-status application-status-${applicationDisplayClass(application)}`}>
+                        {applicationDisplayBucket(application)}
+                      </span>
+                      {shouldShowUnderlyingStatus(application) ? (
+                        <span className={`application-status application-status-${underlyingStatusClass(application.status)}`}>
+                          {formatStatus(application.status)}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
 
                   <FoldedText className="application-notes" fallback="No notes yet" value={application.notes} />
@@ -325,6 +332,10 @@ export function ApplicationsTracker({
                         <dd>{formatDateOnly(application.next_follow_up_date)}</dd>
                       </div>
                       <div>
+                        <dt>Status</dt>
+                        <dd>{formatStatus(application.status)}</dd>
+                      </div>
+                      <div>
                         <dt>Archive</dt>
                         <dd>{application.archived_at ? formatDateTime(application.archived_at) : "Active"}</dd>
                       </div>
@@ -359,24 +370,28 @@ export function ApplicationsTracker({
                         >
                           {pendingArchiveApplicationId === application.id ? "Saving..." : "Archive"}
                         </button>
-                        <button
-                          className="secondary-action compact-action"
-                          disabled={pendingArchiveApplicationId === application.id}
-                          suppressHydrationWarning
-                          type="button"
-                          onClick={() => postApplicationAction(application, "reject", "Application marked rejected and archived.")}
-                        >
-                          Reject
-                        </button>
-                        <button
-                          className="secondary-action compact-action"
-                          disabled={pendingArchiveApplicationId === application.id}
-                          suppressHydrationWarning
-                          type="button"
-                          onClick={() => postApplicationAction(application, "withdraw", "Application marked withdrawn and archived.")}
-                        >
-                          Withdraw
-                        </button>
+                        {canMarkTerminal(application) ? (
+                          <>
+                            <button
+                              className="secondary-action compact-action"
+                              disabled={pendingArchiveApplicationId === application.id}
+                              suppressHydrationWarning
+                              type="button"
+                              onClick={() => postApplicationAction(application, "reject", "Application marked rejected and archived.")}
+                            >
+                              Reject
+                            </button>
+                            <button
+                              className="secondary-action compact-action"
+                              disabled={pendingArchiveApplicationId === application.id}
+                              suppressHydrationWarning
+                              type="button"
+                              onClick={() => postApplicationAction(application, "withdraw", "Application marked withdrawn and archived.")}
+                            >
+                              Withdraw
+                            </button>
+                          </>
+                        ) : null}
                         <button
                           className="secondary-action compact-action"
                           disabled={pendingMaterialsApplicationId === application.id}
@@ -524,6 +539,24 @@ function applicationDisplayClass(application: TrackedApplication) {
 
 function canMarkApplied(application: TrackedApplication) {
   return ["saved", "started", "in_progress", "in_process"].includes(application.status);
+}
+
+function canMarkTerminal(application: TrackedApplication) {
+  return application.status === "applied";
+}
+
+function shouldShowUnderlyingStatus(application: TrackedApplication) {
+  return application.archived_at ? true : !["saved", "started", "in_progress", "in_process", "applied"].includes(application.status);
+}
+
+function underlyingStatusClass(status: string) {
+  if (status === "in_process" || status === "in_progress") {
+    return "in-process";
+  }
+  if (status === "saved" || status === "started") {
+    return "started";
+  }
+  return status;
 }
 
 function actionResultMessage(payload: unknown, fallback: string) {

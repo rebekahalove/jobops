@@ -228,7 +228,7 @@ describe("Jobs list", () => {
     );
 
     expect(html).toContain("Archived");
-    expect(html).toContain("Application archived");
+    expect(html).toContain("Application archived: Rejected");
     expect(html).toContain("Restore");
   });
 });

@@ -62,10 +62,39 @@ describe("Applications tracker", () => {
     expect(html).toContain("Strong platform fit.");
     expect(html).toContain("Mark applied");
     expect(html).toContain("Archive");
+    expect(html).toContain("Generate materials");
+    expect(html).not.toContain("Reject");
+    expect(html).not.toContain("Withdraw");
+    expect(html).not.toContain("Edit status");
+  });
+
+  it("shows reject and withdraw only for applied applications", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationsTracker
+        initialApplications={[
+          {
+            id: "app-1",
+            company_name: "Acme AI",
+            job_title: "Applied AI Engineer",
+            job_url: null,
+            location: null,
+            source: null,
+            date_applied: "2026-05-13",
+            status: "applied",
+            notes: "",
+            next_follow_up_date: null,
+            archived_at: null,
+            created_at: "2026-05-13T00:00:00Z",
+            updated_at: "2026-05-13T00:00:00Z"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Applied AI Engineer");
     expect(html).toContain("Reject");
     expect(html).toContain("Withdraw");
-    expect(html).toContain("Generate materials");
-    expect(html).not.toContain("Edit status");
+    expect(html).not.toContain("Mark applied");
   });
 
   it("renders restored terminal statuses in the applied bucket and archived applications with restore", () => {
@@ -108,8 +137,10 @@ describe("Applications tracker", () => {
 
     expect(html).toContain("Rejected Engineer");
     expect(html).toContain("Applied");
+    expect(html).toContain("Rejected");
     expect(html).toContain("Archived Engineer");
     expect(html).toContain("Archived");
+    expect(html).toContain("Withdrawn");
     expect(html).toContain("Restore");
   });
 

@@ -276,9 +276,13 @@ def update_application_status(
 
     previous_status = application.status
     status = normalize_application_status(request.status)
+    if status in STATUS_AUTO_ARCHIVE_ACTIONS and previous_status != "applied":
+        raise HTTPException(status_code=409, detail="Application must be marked applied before it can be rejected or withdrawn.")
     application.status = status
     if status == "applied":
         application.date_applied = request.date_applied or application.date_applied or date.today()
+    if status in STATUS_AUTO_ARCHIVE_ACTIONS and application.date_applied is None:
+        application.date_applied = request.date_applied or date.today()
     if application.job_role_id:
         job_role = session.get(JobRole, application.job_role_id)
         if job_role is not None:
@@ -295,6 +299,15 @@ def update_application_status(
             )
         )
     if status in STATUS_AUTO_ARCHIVE_ACTIONS:
+        session.add(
+            ApplicationEvent(
+                application_id=application.id,
+                event_type=status,
+                event_date=date.today(),
+                notes=f"Application marked {status}.",
+                metadata_json={"archived": True},
+            )
+        )
         archive_application(
             application,
             reason=f"Application marked {status}.",
@@ -543,11 +556,24 @@ def mark_application_terminal_status(
     message: str,
 ) -> dict[str, Any]:
     application = get_owned_application_or_404(session, application_id, candidate_profile_id)
+    if application.status != "applied":
+        raise HTTPException(status_code=409, detail="Application must be marked applied before it can be rejected or withdrawn.")
+    if application.date_applied is None:
+        application.date_applied = date.today()
     application.status = status
     if application.job_role_id:
         job_role = session.get(JobRole, application.job_role_id)
         if job_role is not None:
             job_role.status = status
+    session.add(
+        ApplicationEvent(
+            application_id=application.id,
+            event_type=status,
+            event_date=date.today(),
+            notes=f"Application marked {status}.",
+            metadata_json={"archived": True},
+        )
+    )
     application_archived = archive_application(
         application,
         reason=f"Application marked {status}.",

@@ -369,7 +369,7 @@ function isVerifiedJobUrl(job: SavedJob) {
 
 function applicationBadgeLabel(job: SavedJob) {
   if (job.application_archived_at) {
-    return "Application archived";
+    return job.application_status ? `Application archived: ${applicationDisplayLabel(job.application_status)}` : "Application archived";
   }
   if (job.application_status) {
     return applicationDisplayLabel(job.application_status);
