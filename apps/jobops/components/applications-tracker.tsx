@@ -2,7 +2,18 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-export const applicationStatuses = ["saved", "in_progress", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"] as const;
+export const applicationStatuses = [
+  "saved",
+  "started",
+  "in_progress",
+  "in_process",
+  "applied",
+  "interviewing",
+  "rejected",
+  "offer",
+  "closed",
+  "withdrawn"
+] as const;
 
 export type ApplicationStatus = (typeof applicationStatuses)[number];
 
@@ -51,6 +62,9 @@ export type TrackedApplication = {
   status: ApplicationStatus;
   notes: string;
   next_follow_up_date: string | null;
+  archived_at?: string | null;
+  archived_reason?: string | null;
+  archived_by_action?: string | null;
   created_at: string;
   updated_at: string;
   latest_material_bundle?: ApplicationMaterialBundle | null;
@@ -67,6 +81,7 @@ export function ApplicationsTracker({
   const [message, setMessage] = useState("");
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
   const [pendingMaterialsApplicationId, setPendingMaterialsApplicationId] = useState<string | null>(null);
+  const [pendingArchiveApplicationId, setPendingArchiveApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -165,6 +180,38 @@ export function ApplicationsTracker({
     }
   }
 
+  async function postApplicationAction(
+    application: TrackedApplication,
+    action: "archive" | "restore" | "reject" | "withdraw",
+    fallbackMessage: string
+  ) {
+    setPendingArchiveApplicationId(application.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/applications/${application.id}/${action}`, { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("application" in payload)) {
+        throw new Error("Applications API returned an unexpected response.");
+      }
+
+      setApplications((current) => current.map((item) => (item.id === application.id ? (payload.application as TrackedApplication) : item)));
+      setHighlightedApplicationId(application.id);
+      setMessage(actionResultMessage(payload, fallbackMessage));
+      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
+      if (application.job_id) {
+        window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : `Could not ${action} application.`);
+    } finally {
+      setPendingArchiveApplicationId(null);
+    }
+  }
+
   async function generateMaterials(application: TrackedApplication) {
     setPendingMaterialsApplicationId(application.id);
     setMessage("");
@@ -228,7 +275,16 @@ export function ApplicationsTracker({
                       <h2>{application.job_title}</h2>
                       <p>{application.company_name}</p>
                     </div>
-                    <span className={`application-status application-status-${application.status}`}>{formatStatus(application.status)}</span>
+                    <div className="application-card-badges">
+                      <span className={`application-status application-status-${applicationDisplayClass(application)}`}>
+                        {applicationDisplayBucket(application)}
+                      </span>
+                      {shouldShowUnderlyingStatus(application) ? (
+                        <span className={`application-status application-status-${underlyingStatusClass(application.status)}`}>
+                          {formatStatus(application.status)}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
 
                   <FoldedText className="application-notes" fallback="No notes yet" value={application.notes} />
@@ -275,6 +331,14 @@ export function ApplicationsTracker({
                         <dt>Follow-up</dt>
                         <dd>{formatDateOnly(application.next_follow_up_date)}</dd>
                       </div>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{formatStatus(application.status)}</dd>
+                      </div>
+                      <div>
+                        <dt>Archive</dt>
+                        <dd>{application.archived_at ? formatDateTime(application.archived_at) : "Active"}</dd>
+                      </div>
                     </dl>
                   </div>
 
@@ -284,7 +348,7 @@ export function ApplicationsTracker({
                         Job post
                       </a>
                     ) : null}
-                    {application.status !== "applied" ? (
+                    {!application.archived_at && canMarkApplied(application) ? (
                       <button
                         className="secondary-action compact-action"
                         disabled={pendingApplicationId === application.id}
@@ -295,19 +359,64 @@ export function ApplicationsTracker({
                         {pendingApplicationId === application.id ? "Saving..." : "Mark applied"}
                       </button>
                     ) : null}
-                    <button
-                      className="secondary-action compact-action"
-                      disabled={pendingMaterialsApplicationId === application.id}
-                      suppressHydrationWarning
-                      type="button"
-                      onClick={() => generateMaterials(application)}
-                    >
-                      {pendingMaterialsApplicationId === application.id
-                        ? "Generating..."
-                        : application.latest_material_bundle
-                          ? "Regenerate materials"
-                          : "Generate materials"}
-                    </button>
+                    {!application.archived_at ? (
+                      <>
+                        <button
+                          className="secondary-action compact-action"
+                          disabled={pendingArchiveApplicationId === application.id}
+                          suppressHydrationWarning
+                          type="button"
+                          onClick={() => postApplicationAction(application, "archive", "Application archived.")}
+                        >
+                          {pendingArchiveApplicationId === application.id ? "Saving..." : "Archive"}
+                        </button>
+                        {canMarkTerminal(application) ? (
+                          <>
+                            <button
+                              className="secondary-action compact-action"
+                              disabled={pendingArchiveApplicationId === application.id}
+                              suppressHydrationWarning
+                              type="button"
+                              onClick={() => postApplicationAction(application, "reject", "Application marked rejected and archived.")}
+                            >
+                              Reject
+                            </button>
+                            <button
+                              className="secondary-action compact-action"
+                              disabled={pendingArchiveApplicationId === application.id}
+                              suppressHydrationWarning
+                              type="button"
+                              onClick={() => postApplicationAction(application, "withdraw", "Application marked withdrawn and archived.")}
+                            >
+                              Withdraw
+                            </button>
+                          </>
+                        ) : null}
+                        <button
+                          className="secondary-action compact-action"
+                          disabled={pendingMaterialsApplicationId === application.id}
+                          suppressHydrationWarning
+                          type="button"
+                          onClick={() => generateMaterials(application)}
+                        >
+                          {pendingMaterialsApplicationId === application.id
+                            ? "Generating..."
+                            : application.latest_material_bundle
+                              ? "Regenerate materials"
+                              : "Generate materials"}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingArchiveApplicationId === application.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => postApplicationAction(application, "restore", "Application restored.")}
+                      >
+                        {pendingArchiveApplicationId === application.id ? "Saving..." : "Restore"}
+                      </button>
+                    )}
                   </div>
                 </aside>
                 {application.latest_material_bundle ? <ApplicationMaterials bundle={application.latest_material_bundle} /> : null}
@@ -400,6 +509,61 @@ function applicationCardId(applicationId: string) {
 
 function formatStatus(status: string) {
   return status.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function applicationDisplayBucket(application: TrackedApplication) {
+  if (application.archived_at) {
+    return "Archived";
+  }
+  if (application.status === "started" || application.status === "saved") {
+    return "Started";
+  }
+  if (application.status === "in_process" || application.status === "in_progress") {
+    return "In process";
+  }
+  return "Applied";
+}
+
+function applicationDisplayClass(application: TrackedApplication) {
+  if (application.archived_at) {
+    return "archived";
+  }
+  if (application.status === "started" || application.status === "saved") {
+    return "started";
+  }
+  if (application.status === "in_process" || application.status === "in_progress") {
+    return "in-process";
+  }
+  return "applied";
+}
+
+function canMarkApplied(application: TrackedApplication) {
+  return ["saved", "started", "in_progress", "in_process"].includes(application.status);
+}
+
+function canMarkTerminal(application: TrackedApplication) {
+  return application.status === "applied";
+}
+
+function shouldShowUnderlyingStatus(application: TrackedApplication) {
+  return application.archived_at ? true : !["saved", "started", "in_progress", "in_process", "applied"].includes(application.status);
+}
+
+function underlyingStatusClass(status: string) {
+  if (status === "in_process" || status === "in_progress") {
+    return "in-process";
+  }
+  if (status === "saved" || status === "started") {
+    return "started";
+  }
+  return status;
+}
+
+function actionResultMessage(payload: unknown, fallback: string) {
+  if (payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string") {
+    return payload.message;
+  }
+  return fallback;
 }
 
 function formatOptionalStatus(value: string | null) {

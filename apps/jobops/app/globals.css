@@ -2585,10 +2585,18 @@ input:disabled {
 
 .application-status-rejected,
 .application-status-closed,
-.application-status-withdrawn {
+.application-status-withdrawn,
+.application-status-archived {
   border-color: #e4caca;
   background: #fff5f5;
   color: #8f2f2f;
+}
+
+.application-status-started,
+.application-status-in-process {
+  border-color: #c9d7e7;
+  background: #f4f8fc;
+  color: #315c7c;
 }
 
 .application-status-offer {
@@ -2638,6 +2646,24 @@ input:disabled {
 .job-card-header {
   display: grid;
   gap: 4px;
+}
+
+.application-card-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.job-card-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.application-card-badges,
+.job-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .application-card-header {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,8 +18,23 @@ from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
 
 
-ApplicationStatus = Literal["saved", "in_progress", "applied", "interviewing", "rejected", "offer", "closed", "withdrawn"]
-ACTIVE_APPLICATION_STATUSES = ("saved", "in_progress", "applied", "interviewing", "offer")
+ApplicationStatus = Literal[
+    "saved",
+    "started",
+    "in_progress",
+    "in_process",
+    "applied",
+    "interviewing",
+    "rejected",
+    "offer",
+    "closed",
+    "withdrawn",
+]
+APPLICATION_STATUS_ALIASES = {"saved": "started", "in_progress": "in_process"}
+STATUS_AUTO_ARCHIVE_ACTIONS = {
+    "rejected": "status_rejected",
+    "withdrawn": "status_withdrawn",
+}
 
 router = APIRouter(prefix="/v1", tags=["applications"], dependencies=[Depends(require_internal_api_key)])
 
@@ -104,6 +119,9 @@ class ApplicationResponse(BaseModel):
     status: str
     notes: str
     next_follow_up_date: date | None
+    archived_at: datetime | None
+    archived_reason: str | None
+    archived_by_action: str | None
     created_at: datetime
     updated_at: datetime
     source_provider: str | None = None
@@ -113,6 +131,17 @@ class ApplicationResponse(BaseModel):
     remote_work_mode: str | None = None
     employment_type: str | None = None
     latest_material_bundle: ApplicationMaterialBundleResponse | None = None
+
+
+class ApplicationActionResponse(BaseModel):
+    ok: bool = True
+    application_id: str
+    application_archived: bool = False
+    application_restored: bool = False
+    status: str
+    archived_at: datetime | None = None
+    message: str
+    application: ApplicationResponse
 
 
 class ApplicationEventResponse(BaseModel):
@@ -144,6 +173,7 @@ def create_application(
         raise HTTPException(status_code=400, detail="company_name and job_title are required unless saved_job_id is provided.")
 
     company = get_or_create_company(session, candidate_profile.id, company_name)
+    status = normalize_application_status(request.status)
     job_role = JobRole(
         candidate_profile_id=candidate_profile.id,
         company_id=company.id,
@@ -151,7 +181,7 @@ def create_application(
         job_url=clean_optional_text(request.job_url),
         location=clean_optional_text(request.location),
         source=clean_optional_text(request.source),
-        status=request.status,
+        status=status,
     )
     session.add(job_role)
     session.flush()
@@ -166,7 +196,7 @@ def create_application(
         location=clean_optional_text(request.location),
         source=clean_optional_text(request.source),
         date_applied=request.date_applied,
-        status=request.status,
+        status=status,
         notes=request.notes.strip(),
         next_follow_up_date=request.next_follow_up_date,
     )
@@ -195,7 +225,11 @@ def list_applications(
         .order_by(Application.created_at.desc())
     )
     if status is not None:
-        statement = statement.where(Application.status == status)
+        normalized_status = normalize_application_status(status)
+        if normalized_status == status:
+            statement = statement.where(Application.status == status)
+        else:
+            statement = statement.where(Application.status.in_((status, normalized_status)))
 
     return list(session.scalars(statement))
 
@@ -241,15 +275,20 @@ def update_application_status(
         raise HTTPException(status_code=404, detail="Application not found.")
 
     previous_status = application.status
-    application.status = request.status
-    if request.status == "applied":
+    status = normalize_application_status(request.status)
+    if status in STATUS_AUTO_ARCHIVE_ACTIONS and previous_status != "applied":
+        raise HTTPException(status_code=409, detail="Application must be marked applied before it can be rejected or withdrawn.")
+    application.status = status
+    if status == "applied":
         application.date_applied = request.date_applied or application.date_applied or date.today()
+    if status in STATUS_AUTO_ARCHIVE_ACTIONS and application.date_applied is None:
+        application.date_applied = request.date_applied or date.today()
     if application.job_role_id:
         job_role = session.get(JobRole, application.job_role_id)
         if job_role is not None:
-            job_role.status = request.status
+            job_role.status = status
 
-    if request.status == "applied" and previous_status != "applied" and application.date_applied is not None:
+    if status == "applied" and previous_status != "applied" and application.date_applied is not None:
         session.add(
             ApplicationEvent(
                 application_id=application.id,
@@ -259,10 +298,101 @@ def update_application_status(
                 metadata_json={},
             )
         )
+    if status in STATUS_AUTO_ARCHIVE_ACTIONS:
+        session.add(
+            ApplicationEvent(
+                application_id=application.id,
+                event_type=status,
+                event_date=date.today(),
+                notes=f"Application marked {status}.",
+                metadata_json={"archived": True},
+            )
+        )
+        archive_application(
+            application,
+            reason=f"Application marked {status}.",
+            action=STATUS_AUTO_ARCHIVE_ACTIONS[status],
+        )
 
     session.commit()
     session.refresh(application)
     return application
+
+
+@router.post("/applications/{application_id}/archive", response_model=ApplicationActionResponse)
+def archive_application_endpoint(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    application_archived = archive_application(
+        application,
+        reason="Application archived by user.",
+        action="user_archived_application",
+    )
+    session.commit()
+    session.refresh(application)
+    return application_action_response(
+        application,
+        application_archived=application_archived,
+        message=(
+            "Application archived. Saved materials and history were preserved."
+            if application_archived
+            else "Application was already archived. Saved materials and history are preserved."
+        ),
+    )
+
+
+@router.post("/applications/{application_id}/restore", response_model=ApplicationActionResponse)
+def restore_application_endpoint(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    application_restored = restore_application(application)
+    session.commit()
+    session.refresh(application)
+    return application_action_response(
+        application,
+        application_restored=application_restored,
+        message=(
+            "Application restored. Saved materials and history were preserved."
+            if application_restored
+            else "Application was already active. Saved materials and history are preserved."
+        ),
+    )
+
+
+@router.post("/applications/{application_id}/reject", response_model=ApplicationActionResponse)
+def mark_application_rejected(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    return mark_application_terminal_status(
+        session,
+        application_id=application_id,
+        candidate_profile_id=auth.candidate_profile.id,
+        status="rejected",
+        message="Application marked rejected and archived. Saved materials and history were preserved.",
+    )
+
+
+@router.post("/applications/{application_id}/withdraw", response_model=ApplicationActionResponse)
+def mark_application_withdrawn(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    return mark_application_terminal_status(
+        session,
+        application_id=application_id,
+        candidate_profile_id=auth.candidate_profile.id,
+        status="withdrawn",
+        message="Application marked withdrawn and archived. Saved materials and history were preserved.",
+    )
 
 
 @router.post("/applications/{application_id}/events", response_model=ApplicationEventResponse, status_code=201)
@@ -377,7 +507,6 @@ def create_application_from_saved_job(
         .where(
             Application.candidate_profile_id == candidate_profile.id,
             Application.job_id == job.id,
-            Application.status.in_(ACTIVE_APPLICATION_STATUSES),
         )
         .order_by(Application.created_at.desc())
         .limit(1)
@@ -395,8 +524,8 @@ def create_application_from_saved_job(
             review_status="new",
         )
 
-    requested_status = request.status or "in_progress"
-    status = "in_progress" if requested_status == "saved" else requested_status
+    requested_status = request.status or "in_process"
+    status = normalize_application_status(requested_status)
     application = Application(
         candidate_profile_id=candidate_profile.id,
         company_id=company.id if company is not None else None,
@@ -416,6 +545,88 @@ def create_application_from_saved_job(
     session.commit()
     session.refresh(application)
     return application
+
+
+def mark_application_terminal_status(
+    session: Session,
+    *,
+    application_id: str,
+    candidate_profile_id: str,
+    status: Literal["rejected", "withdrawn"],
+    message: str,
+) -> dict[str, Any]:
+    application = get_owned_application_or_404(session, application_id, candidate_profile_id)
+    if application.status != "applied":
+        raise HTTPException(status_code=409, detail="Application must be marked applied before it can be rejected or withdrawn.")
+    if application.date_applied is None:
+        application.date_applied = date.today()
+    application.status = status
+    if application.job_role_id:
+        job_role = session.get(JobRole, application.job_role_id)
+        if job_role is not None:
+            job_role.status = status
+    session.add(
+        ApplicationEvent(
+            application_id=application.id,
+            event_type=status,
+            event_date=date.today(),
+            notes=f"Application marked {status}.",
+            metadata_json={"archived": True},
+        )
+    )
+    application_archived = archive_application(
+        application,
+        reason=f"Application marked {status}.",
+        action=STATUS_AUTO_ARCHIVE_ACTIONS[status],
+    )
+    session.commit()
+    session.refresh(application)
+    return application_action_response(
+        application,
+        application_archived=application_archived,
+        message=message,
+    )
+
+
+def archive_application(application: Application, *, reason: str, action: str, archived_at: datetime | None = None) -> bool:
+    if application.archived_at is not None:
+        return False
+    application.archived_at = archived_at or datetime.now(timezone.utc)
+    application.archived_reason = reason
+    application.archived_by_action = action
+    return True
+
+
+def restore_application(application: Application) -> bool:
+    if application.archived_at is None:
+        return False
+    application.archived_at = None
+    application.archived_reason = None
+    application.archived_by_action = None
+    return True
+
+
+def normalize_application_status(status: str) -> str:
+    return APPLICATION_STATUS_ALIASES.get(status, status)
+
+
+def application_action_response(
+    application: Application,
+    *,
+    application_archived: bool = False,
+    application_restored: bool = False,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "application_id": application.id,
+        "application_archived": application_archived,
+        "application_restored": application_restored,
+        "status": application.status,
+        "archived_at": application.archived_at,
+        "message": message,
+        "application": application,
+    }
 
 
 def clean_optional_text(value: str | None) -> str | None:

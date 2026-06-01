@@ -415,6 +415,8 @@ class CandidateSavedJob(Base, TimestampMixin):
     discovery_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    archived_by_action: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
     job: Mapped[JobPosting] = relationship(back_populates="saved_links")
@@ -445,6 +447,7 @@ class JobRole(Base, TimestampMixin):
 class Application(Base, TimestampMixin):
     __tablename__ = "applications"
     __table_args__ = (
+        UniqueConstraint("candidate_profile_id", "job_id", name="uq_applications_profile_job"),
         Index("ix_applications_profile_status", "candidate_profile_id", "status"),
         Index("ix_applications_next_follow_up", "candidate_profile_id", "next_follow_up_date"),
         Index("ix_applications_profile_created", "candidate_profile_id", "created_at"),
@@ -465,6 +468,9 @@ class Application(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(40), default="saved")
     notes: Mapped[str] = mapped_column(Text, default="")
     next_follow_up_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    archived_by_action: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="applications")
     company: Mapped[Company | None] = relationship(back_populates="applications")
