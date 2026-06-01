@@ -130,6 +130,7 @@ class ApplicationResponse(BaseModel):
     salary_text: str | None = None
     remote_work_mode: str | None = None
     employment_type: str | None = None
+    apply_url: str | None = None
     latest_material_bundle: ApplicationMaterialBundleResponse | None = None
 
 
@@ -232,6 +233,15 @@ def list_applications(
             statement = statement.where(Application.status.in_((status, normalized_status)))
 
     return list(session.scalars(statement))
+
+
+@router.get("/applications/{application_id}", response_model=ApplicationResponse)
+def get_application(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> Application:
+    return get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
 
 
 @router.get("/applications/{application_id}/materials", response_model=list[ApplicationMaterialBundleResponse])

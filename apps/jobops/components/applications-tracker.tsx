@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
 export const applicationStatuses = [
@@ -58,6 +59,7 @@ export type TrackedApplication = {
   salary_text?: string | null;
   remote_work_mode?: string | null;
   employment_type?: string | null;
+  apply_url?: string | null;
   date_applied: string | null;
   status: ApplicationStatus;
   notes: string;
@@ -72,15 +74,16 @@ export type TrackedApplication = {
 
 export function ApplicationsTracker({
   apiBasePath = "/api",
+  workspaceBasePath = "",
   initialApplications = []
 }: {
   apiBasePath?: string;
+  workspaceBasePath?: string;
   initialApplications?: TrackedApplication[];
 }) {
   const [applications, setApplications] = useState(initialApplications);
   const [message, setMessage] = useState("");
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
-  const [pendingMaterialsApplicationId, setPendingMaterialsApplicationId] = useState<string | null>(null);
   const [pendingArchiveApplicationId, setPendingArchiveApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
 
@@ -212,36 +215,6 @@ export function ApplicationsTracker({
     }
   }
 
-  async function generateMaterials(application: TrackedApplication) {
-    setPendingMaterialsApplicationId(application.id);
-    setMessage("");
-
-    try {
-      const response = await fetch(`${apiBasePath}/applications/${application.id}/materials/generate`, {
-        method: "POST"
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(apiErrorMessage(payload, response.status));
-      }
-      if (!payload || typeof payload !== "object" || !("bundle" in payload)) {
-        throw new Error("Materials API returned an unexpected response.");
-      }
-
-      const bundle = payload.bundle as ApplicationMaterialBundle;
-      setApplications((current) =>
-        current.map((item) => (item.id === application.id ? { ...item, latest_material_bundle: bundle, updated_at: bundle.updated_at } : item))
-      );
-      setHighlightedApplicationId(application.id);
-      setMessage("Application materials generated.");
-      window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not generate application materials.");
-    } finally {
-      setPendingMaterialsApplicationId(null);
-    }
-  }
-
   return (
     <main className="dashboard-main application-workspace">
       <section className="page-heading">
@@ -284,20 +257,45 @@ export function ApplicationsTracker({
                           {formatStatus(application.status)}
                         </span>
                       ) : null}
+                      {application.latest_material_bundle ? <span className="application-status application-status-offer">Materials ready</span> : null}
                     </div>
                   </div>
 
                   <FoldedText className="application-notes" fallback="No notes yet" value={application.notes} />
                   <FoldedText className="application-fit" value={application.fit_summary} />
+                  {application.job_url ? (
+                    <div className="company-links application-card-primary-link" aria-label={`${application.job_title} primary link`}>
+                      <a href={application.job_url} rel="noopener noreferrer" target="_blank">
+                        Job post
+                      </a>
+                    </div>
+                  ) : null}
                 </div>
 
                 <aside className="application-card-rail" aria-label={`${application.job_title} application details`}>
                   <div className="record-rail-section">
                     <dl className="application-details record-detail-grid">
                       <div>
+                        <dt>Posted</dt>
+                        <dd>{formatDateOnly(application.posting_date ?? null)}</dd>
+                      </div>
+                      <div>
                         <dt>Location</dt>
                         <dd>{application.location || formatOptionalStatus(application.remote_work_mode ?? null)}</dd>
                       </div>
+                      <div>
+                        <dt>Compensation</dt>
+                        <dd>{application.salary_text || "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Employment</dt>
+                        <dd>{application.employment_type || "Unknown"}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="record-rail-section">
+                    <dl className="application-details record-detail-grid">
                       <div>
                         <dt>Source</dt>
                         <dd>{application.source || application.source_provider || "Unknown"}</dd>
@@ -310,44 +308,17 @@ export function ApplicationsTracker({
                         <dt>Applied</dt>
                         <dd>{formatDateOnly(application.date_applied)}</dd>
                       </div>
-                    </dl>
-                  </div>
-
-                  <div className="record-rail-section">
-                    <dl className="application-details record-detail-grid">
-                      <div>
-                        <dt>Employment</dt>
-                        <dd>{application.employment_type || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Compensation</dt>
-                        <dd>{application.salary_text || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Posted</dt>
-                        <dd>{formatDateOnly(application.posting_date ?? null)}</dd>
-                      </div>
-                      <div>
-                        <dt>Follow-up</dt>
-                        <dd>{formatDateOnly(application.next_follow_up_date)}</dd>
-                      </div>
                       <div>
                         <dt>Status</dt>
                         <dd>{formatStatus(application.status)}</dd>
-                      </div>
-                      <div>
-                        <dt>Archive</dt>
-                        <dd>{application.archived_at ? formatDateTime(application.archived_at) : "Active"}</dd>
                       </div>
                     </dl>
                   </div>
 
                   <div className="company-links application-card-actions" aria-label={`${application.job_title} actions`}>
-                    {application.job_url ? (
-                      <a href={application.job_url} rel="noopener noreferrer" target="_blank">
-                        Job post
-                      </a>
-                    ) : null}
+                    <Link className="secondary-action compact-action" href={applicationDetailHref(workspaceBasePath, application.id)}>
+                      View Application
+                    </Link>
                     {!application.archived_at && canMarkApplied(application) ? (
                       <button
                         className="secondary-action compact-action"
@@ -387,24 +358,11 @@ export function ApplicationsTracker({
                               suppressHydrationWarning
                               type="button"
                               onClick={() => postApplicationAction(application, "withdraw", "Application marked withdrawn and archived.")}
-                            >
-                              Withdraw
-                            </button>
-                          </>
-                        ) : null}
-                        <button
-                          className="secondary-action compact-action"
-                          disabled={pendingMaterialsApplicationId === application.id}
-                          suppressHydrationWarning
-                          type="button"
-                          onClick={() => generateMaterials(application)}
                         >
-                          {pendingMaterialsApplicationId === application.id
-                            ? "Generating..."
-                            : application.latest_material_bundle
-                              ? "Regenerate materials"
-                              : "Generate materials"}
+                          Withdraw
                         </button>
+                      </>
+                    ) : null}
                       </>
                     ) : (
                       <button
@@ -419,7 +377,6 @@ export function ApplicationsTracker({
                     )}
                   </div>
                 </aside>
-                {application.latest_material_bundle ? <ApplicationMaterials bundle={application.latest_material_bundle} /> : null}
               </article>
             ))}
           </div>
@@ -434,10 +391,18 @@ export function ApplicationsTracker({
   );
 }
 
-function ApplicationMaterials({ bundle }: { bundle: ApplicationMaterialBundle }) {
+export function ApplicationMaterials({
+  bundle,
+  defaultOpen = false,
+  roomy = false
+}: {
+  bundle: ApplicationMaterialBundle;
+  defaultOpen?: boolean;
+  roomy?: boolean;
+}) {
   const sortedItems = [...(bundle.items || [])].sort((left, right) => left.sort_order - right.sort_order);
   return (
-    <details className="application-materials">
+    <details className={`application-materials${roomy ? " application-materials-roomy" : ""}`} open={defaultOpen}>
       <summary>
         <span>Application Materials</span>
         <time dateTime={bundle.created_at}>{formatDateTime(bundle.created_at)}</time>
@@ -458,7 +423,7 @@ function MarkdownText({ value }: { value: string }) {
   return <pre className="application-material-content">{value}</pre>;
 }
 
-function apiErrorMessage(payload: unknown, status: number) {
+export function apiErrorMessage(payload: unknown, status: number) {
   if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") {
     return payload.error;
   }
@@ -507,11 +472,11 @@ function applicationCardId(applicationId: string) {
   return `application-${applicationId}`;
 }
 
-function formatStatus(status: string) {
+export function formatStatus(status: string) {
   return status.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-function applicationDisplayBucket(application: TrackedApplication) {
+export function applicationDisplayBucket(application: TrackedApplication) {
   if (application.archived_at) {
     return "Archived";
   }
@@ -524,7 +489,7 @@ function applicationDisplayBucket(application: TrackedApplication) {
   return "Applied";
 }
 
-function applicationDisplayClass(application: TrackedApplication) {
+export function applicationDisplayClass(application: TrackedApplication) {
   if (application.archived_at) {
     return "archived";
   }
@@ -537,19 +502,19 @@ function applicationDisplayClass(application: TrackedApplication) {
   return "applied";
 }
 
-function canMarkApplied(application: TrackedApplication) {
+export function canMarkApplied(application: TrackedApplication) {
   return ["saved", "started", "in_progress", "in_process"].includes(application.status);
 }
 
-function canMarkTerminal(application: TrackedApplication) {
+export function canMarkTerminal(application: TrackedApplication) {
   return application.status === "applied";
 }
 
-function shouldShowUnderlyingStatus(application: TrackedApplication) {
+export function shouldShowUnderlyingStatus(application: TrackedApplication) {
   return application.archived_at ? true : !["saved", "started", "in_progress", "in_process", "applied"].includes(application.status);
 }
 
-function underlyingStatusClass(status: string) {
+export function underlyingStatusClass(status: string) {
   if (status === "in_process" || status === "in_progress") {
     return "in-process";
   }
@@ -559,21 +524,21 @@ function underlyingStatusClass(status: string) {
   return status;
 }
 
-function actionResultMessage(payload: unknown, fallback: string) {
+export function actionResultMessage(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string") {
     return payload.message;
   }
   return fallback;
 }
 
-function formatOptionalStatus(value: string | null) {
+export function formatOptionalStatus(value: string | null) {
   if (!value || value === "unknown") {
     return "Unknown";
   }
   return formatStatus(value);
 }
 
-function FoldedText({ value, className, fallback }: { value?: string | null; className: string; fallback?: string }) {
+export function FoldedText({ value, className, fallback }: { value?: string | null; className: string; fallback?: string }) {
   if (!value) {
     return fallback ? <p className={className}>{fallback}</p> : null;
   }
@@ -597,7 +562,7 @@ function previewText(value: string) {
   return `${compact.slice(0, 145).trimEnd()}...`;
 }
 
-function formatDateOnly(value: string | null) {
+export function formatDateOnly(value: string | null) {
   if (!value) {
     return "Not set";
   }
@@ -610,10 +575,14 @@ function formatDateOnly(value: string | null) {
   return `${month}/${day}/${year}`;
 }
 
-function formatDateTime(value: string) {
+export function formatDateTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+export function applicationDetailHref(workspaceBasePath: string, applicationId: string) {
+  return `${workspaceBasePath}/applications/${encodeURIComponent(applicationId)}`;
 }

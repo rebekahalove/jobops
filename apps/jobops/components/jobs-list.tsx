@@ -48,9 +48,11 @@ export type SavedJob = {
 
 export function JobsList({
   apiBasePath = "/api",
+  workspaceBasePath = "",
   initialJobs = []
 }: {
   apiBasePath?: string;
+  workspaceBasePath?: string;
   initialJobs?: SavedJob[];
 }) {
   const [jobs, setJobs] = useState(initialJobs);
@@ -104,7 +106,7 @@ export function JobsList({
   async function applyToJob(job: SavedJob) {
     if (job.application_id) {
       setMessage(applicationAlreadyExistsMessage(job));
-      navigateToApplication(job.application_id);
+      navigateToApplication(workspaceBasePath, job.application_id);
       return;
     }
 
@@ -128,7 +130,7 @@ export function JobsList({
       }
 
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
-      navigateToApplication(payload.id);
+      navigateToApplication(workspaceBasePath, payload.id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not start application.");
     } finally {
@@ -263,12 +265,12 @@ export function JobsList({
                   <div className="company-links" aria-label={`${job.title} links`}>
                     <button
                       className="secondary-action compact-action"
-                      disabled={pendingApplyJobId === job.id || Boolean(job.archived_at)}
+                      disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
                       suppressHydrationWarning
                       type="button"
                       onClick={() => applyToJob(job)}
                     >
-                      {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "Open application" : "Apply"}
+                      {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "View application" : "Apply"}
                     </button>
                     <button
                       className="secondary-action compact-action"
@@ -415,13 +417,11 @@ function actionResultMessage(payload: unknown, fallback: string) {
   return fallback;
 }
 
-function navigateToApplication(applicationId: string) {
+function navigateToApplication(workspaceBasePath: string, applicationId: string) {
   if (typeof window === "undefined") {
     return;
   }
-  const currentUrl = new URL(window.location.href);
-  const nextPath = currentUrl.pathname.endsWith("/jobs") ? currentUrl.pathname.replace(/\/jobs$/, "/applications") : "/applications";
-  window.location.assign(`${nextPath}?applicationId=${encodeURIComponent(applicationId)}`);
+  window.location.assign(`${workspaceBasePath}/applications/${encodeURIComponent(applicationId)}`);
 }
 
 function FoldedText({ value, className }: { value?: string | null; className: string }) {

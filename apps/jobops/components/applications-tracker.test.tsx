@@ -16,7 +16,7 @@ describe("Applications tracker", () => {
     expect(html).not.toContain("Save application");
   });
 
-  it("renders compact application cards with role, company, status, links, and mark-applied action", () => {
+  it("renders compact application cards with role, company, status, links, and view action", () => {
     const html = renderToStaticMarkup(
       <ApplicationsTracker
         initialApplications={[
@@ -57,15 +57,69 @@ describe("Applications tracker", () => {
     expect(html).toContain("Full-time");
     expect(html).toContain("USD 150,000-180,000");
     expect(html).toContain("05/10/2026");
-    expect(html).toContain("05/20/2026");
     expect(html).toContain("Recruiter screen scheduled.");
     expect(html).toContain("Strong platform fit.");
     expect(html).toContain("Mark applied");
     expect(html).toContain("Archive");
-    expect(html).toContain("Generate materials");
+    expect(html).toContain('href="/applications/app-1"');
+    expect(html).toContain("View Application");
     expect(html).not.toContain("Reject");
     expect(html).not.toContain("Withdraw");
     expect(html).not.toContain("Edit status");
+    expect(html).not.toContain("Generate materials");
+    expect(html).not.toContain("Follow-up");
+    expect(html).not.toContain("<dt>Archive</dt>");
+
+    const fitIndex = html.indexOf("Strong platform fit.");
+    const jobPostIndex = html.indexOf("Job post");
+    const postedIndex = html.indexOf("<dt>Posted</dt>");
+    const locationIndex = html.indexOf("<dt>Location</dt>");
+    const compensationIndex = html.indexOf("<dt>Compensation</dt>");
+    const employmentIndex = html.indexOf("<dt>Employment</dt>");
+    const sourceIndex = html.indexOf("<dt>Source</dt>");
+    const createdIndex = html.indexOf("<dt>Created</dt>");
+    const appliedIndex = html.indexOf("<dt>Applied</dt>");
+    const statusIndex = html.indexOf("<dt>Status</dt>");
+    const viewIndex = html.indexOf("View Application");
+    const markAppliedIndex = html.indexOf("Mark applied");
+    const archiveIndex = html.indexOf("Archive");
+
+    expect(fitIndex).toBeLessThan(jobPostIndex);
+    expect(postedIndex).toBeLessThan(locationIndex);
+    expect(locationIndex).toBeLessThan(compensationIndex);
+    expect(compensationIndex).toBeLessThan(employmentIndex);
+    expect(sourceIndex).toBeLessThan(createdIndex);
+    expect(createdIndex).toBeLessThan(appliedIndex);
+    expect(appliedIndex).toBeLessThan(statusIndex);
+    expect(viewIndex).toBeLessThan(markAppliedIndex);
+    expect(markAppliedIndex).toBeLessThan(archiveIndex);
+  });
+
+  it("routes application cards through the mounted workspace base path when provided", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationsTracker
+        workspaceBasePath="/jobops"
+        initialApplications={[
+          {
+            id: "app-1",
+            company_name: "Acme AI",
+            job_title: "Applied AI Engineer",
+            job_url: null,
+            location: null,
+            source: null,
+            date_applied: null,
+            status: "in_process",
+            notes: "",
+            next_follow_up_date: null,
+            archived_at: null,
+            created_at: "2026-05-13T00:00:00Z",
+            updated_at: "2026-05-13T00:00:00Z"
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain('href="/jobops/applications/app-1"');
   });
 
   it("shows reject and withdraw only for applied applications", () => {
@@ -144,7 +198,7 @@ describe("Applications tracker", () => {
     expect(html).toContain("Restore");
   });
 
-  it("renders generated materials under a collapsed application-card section", () => {
+  it("keeps generated materials compact on application cards", () => {
     const html = renderToStaticMarkup(
       <ApplicationsTracker
         initialApplications={[
@@ -207,12 +261,12 @@ describe("Applications tracker", () => {
       />
     );
 
-    expect(html).toContain("Application Materials");
-    expect(html).toContain("Positioning Summary");
-    expect(html).toContain("Cover Letter Draft");
-    expect(html).toContain("Regenerate materials");
-    expect(html).toContain("<details class=\"application-materials\">");
-    expect(html).not.toContain("<details class=\"application-materials\" open=\"\"");
+    expect(html).toContain("Materials ready");
+    expect(html).toContain('href="/applications/app-1"');
+    expect(html).not.toContain("Regenerate materials");
+    expect(html).not.toContain("Positioning Summary");
+    expect(html).not.toContain("Cover Letter Draft");
+    expect(html).not.toContain("<details class=\"application-materials\">");
   });
 
   it("refreshes on application updates and highlights URL-selected applications", async () => {
@@ -223,12 +277,12 @@ describe("Applications tracker", () => {
     expect(source).toContain('new URLSearchParams(window.location.search).get("applicationId")');
     expect(source).toContain("scrollIntoView");
     expect(source).toContain('body: JSON.stringify({ status: "applied" })');
-    expect(source).toContain("generateMaterials(application)");
-    expect(source).toContain('${apiBasePath}/applications/${application.id}/materials/generate');
-    expect(source).toContain("pendingMaterialsApplicationId");
     expect(source).toContain('${apiBasePath}/applications/${application.id}/${action}');
     expect(source).toContain('postApplicationAction(application, "reject"');
     expect(source).toContain('postApplicationAction(application, "withdraw"');
+    expect(source).not.toContain("generateMaterials(application)");
+    expect(source).not.toContain('${apiBasePath}/applications/${application.id}/materials/generate');
+    expect(source).not.toContain("pendingMaterialsApplicationId");
   });
 
   it("does not repurpose the separate Materials page", async () => {
