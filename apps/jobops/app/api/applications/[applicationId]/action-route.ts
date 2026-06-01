@@ -39,16 +39,24 @@ export async function POST(request: Request, context: RouteContext) {
 }
 
 function applicationActionFromUrl(url: string) {
-  if (url.includes("/restore")) {
+  const action = lastPathSegment(url);
+  if (action === "restore") {
     return "restore";
   }
-  if (url.includes("/reject")) {
+  if (action === "reject") {
     return "reject";
   }
-  if (url.includes("/withdraw")) {
+  if (action === "withdraw") {
     return "withdraw";
   }
+  if (action === "reopen") {
+    return "reopen";
+  }
   return "archive";
+}
+
+function lastPathSegment(url: string) {
+  return new URL(url).pathname.split("/").filter(Boolean).pop();
 }
 
 function forwardCookieHeader(request: Request): Record<string, string> {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -297,6 +297,51 @@ def test_archiving_job_without_application_preserves_job_and_unrelated_applicati
         app.dependency_overrides.clear()
 
 
+def test_favorite_and_unfavorite_job_updates_saved_job_status(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        saved_job.status = "new"
+        session.commit()
+        saved_job_id = saved_job.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        favorite_response = client.post(
+            f"/v1/jobs/{saved_job_id}/favorite",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert favorite_response.status_code == 200
+        assert favorite_response.json()["job"]["status"] == "saved"
+
+        unfavorite_response = client.post(
+            f"/v1/jobs/{saved_job_id}/unfavorite",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert unfavorite_response.status_code == 200
+        assert unfavorite_response.json()["job"]["status"] == "new"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_archiving_and_restoring_job_cascades_only_job_archived_application(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -540,6 +585,67 @@ def test_rejected_and_withdrawn_auto_archive_and_restore_preserves_status(monkey
             ).all()
             assert rejected_events == ["rejected"]
             assert withdrawn_events == ["withdrawn"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reopen_terminal_application_clears_terminal_status_date_and_archive(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        application = Application(
+            candidate_profile_id=profile.id,
+            company_name="Withdraw Co",
+            job_title="Role",
+            status="withdrawn",
+            date_applied=date.today(),
+            archived_at=datetime.now(timezone.utc),
+            archived_reason="Application marked withdrawn.",
+            archived_by_action="status_withdrawn",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/reopen",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["application"]["status"] == "applied"
+        assert payload["application"]["date_applied"] is None
+        assert payload["application"]["archived_at"] is None
+        assert payload["application_restored"] is True
+
+        with Session(engine) as session:
+            application = session.get(Application, application_id)
+            assert application is not None
+            assert application.status == "applied"
+            assert application.date_applied is None
+            assert application.archived_at is None
+            event = session.scalar(select(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
+            assert event is not None
+            assert event.event_type == "terminal_status_reset"
+            assert event.metadata_json["previous_terminal_status"] == "withdrawn"
     finally:
         app.dependency_overrides.clear()
 

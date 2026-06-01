@@ -1,6 +1,15 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+export type JobBucketId = "new" | "favorites" | "applied" | "archived";
+
+const jobTabs: Array<{ id: JobBucketId; label: string }> = [
+  { id: "new", label: "New" },
+  { id: "favorites", label: "Favorites" },
+  { id: "applied", label: "Applied" },
+  { id: "archived", label: "Archived" }
+];
 
 export type SavedJob = {
   id: string;
@@ -57,8 +66,20 @@ export function JobsList({
 }) {
   const [jobs, setJobs] = useState(initialJobs);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
   const [pendingArchiveJobId, setPendingArchiveJobId] = useState<string | null>(null);
+  const [pendingFavoriteJobId, setPendingFavoriteJobId] = useState<string | null>(null);
+  const [activeBucket, setActiveBucket] = useState<JobBucketId>(() => defaultJobBucket(initialJobs));
+  const hasAppliedInitialBucket = useRef(initialJobs.length > 0);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setMessage(""), messageKind === "error" ? 9000 : 5200);
+    return () => window.clearTimeout(timeout);
+  }, [message, messageKind]);
 
   useEffect(() => {
     let active = true;
@@ -69,12 +90,14 @@ export function JobsList({
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Saved jobs API returned an unexpected response.");
           }
           return;
@@ -82,9 +105,14 @@ export function JobsList({
         if (active) {
           setMessage("");
           setJobs(payload);
+          if (!hasAppliedInitialBucket.current) {
+            setActiveBucket(defaultJobBucket(payload));
+            hasAppliedInitialBucket.current = true;
+          }
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Saved jobs API is unavailable. Start FastAPI to load saved records.");
         }
       }
@@ -98,13 +126,13 @@ export function JobsList({
     };
   }, [apiBasePath]);
 
-  const sortedJobs = useMemo(
-    () => [...jobs].sort((left, right) => right.added_at.localeCompare(left.added_at)),
-    [jobs]
-  );
+  const jobCounts = useMemo(() => buildJobBucketCounts(jobs), [jobs]);
+  const sortedJobs = useMemo(() => sortJobsForBucket(jobs.filter((job) => jobBucket(job) === activeBucket), activeBucket), [activeBucket, jobs]);
+  const activeEmptyState = jobEmptyStates[activeBucket];
 
   async function applyToJob(job: SavedJob) {
     if (job.application_id) {
+      setMessageKind("info");
       setMessage(applicationAlreadyExistsMessage(job));
       navigateToApplication(workspaceBasePath, job.application_id);
       return;
@@ -121,7 +149,7 @@ export function JobsList({
         },
         body: JSON.stringify({
           saved_job_id: job.id,
-          status: "in_process"
+          status: "started"
         })
       });
       const payload = await response.json();
@@ -132,6 +160,7 @@ export function JobsList({
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       navigateToApplication(workspaceBasePath, payload.id);
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : "Could not start application.");
     } finally {
       setPendingApplyJobId(null);
@@ -153,15 +182,43 @@ export function JobsList({
       }
 
       setJobs((current) => current.map((item) => (item.id === job.id ? (payload.job as SavedJob) : item)));
+      setMessageKind("success");
       setMessage(actionResultMessage(payload, action === "archive" ? "Job archived." : "Job restored."));
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       if ("application_id" in payload && payload.application_id) {
         window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       }
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : `Could not ${action} job.`);
     } finally {
       setPendingArchiveJobId(null);
+    }
+  }
+
+  async function setJobFavoriteState(job: SavedJob, action: "favorite" | "unfavorite") {
+    setPendingFavoriteJobId(job.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/jobs/${job.id}/${action}`, { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("job" in payload)) {
+        throw new Error("Saved jobs API returned an unexpected response.");
+      }
+
+      setJobs((current) => current.map((item) => (item.id === job.id ? (payload.job as SavedJob) : item)));
+      setMessageKind("success");
+      setMessage(actionResultMessage(payload, action === "favorite" ? "Job added to Favorites." : "Job moved back to New."));
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : `Could not ${action} job.`);
+    } finally {
+      setPendingFavoriteJobId(null);
     }
   }
 
@@ -173,7 +230,7 @@ export function JobsList({
         <p>Review discovered roles saved from reliable source links. Applications and materials attach later.</p>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
 
       <section className="job-list" aria-labelledby="job-list-title">
         <div className="application-list-header">
@@ -181,7 +238,24 @@ export function JobsList({
             <p className="eyebrow">Job leads</p>
             <h2 id="job-list-title">Saved jobs</h2>
           </div>
-          <span>{jobs.length}</span>
+          <span>{jobCounts[activeBucket]}</span>
+        </div>
+
+        <div className="queue-tabs" role="tablist" aria-label="Job queue filters">
+          {jobTabs.map((tab) => (
+            <button
+              aria-selected={activeBucket === tab.id}
+              className={`queue-tab${activeBucket === tab.id ? " active" : ""}`}
+              key={tab.id}
+              onClick={() => setActiveBucket(tab.id)}
+              role="tab"
+              suppressHydrationWarning
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <strong>{jobCounts[tab.id]}</strong>
+            </button>
+          ))}
         </div>
 
         {sortedJobs.length > 0 ? (
@@ -281,6 +355,17 @@ export function JobsList({
                     >
                       {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
                     </button>
+                    {!job.archived_at && !job.application_id ? (
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingFavoriteJobId === job.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                      >
+                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                      </button>
+                    ) : null}
                     <a href={job.job_url} rel="noopener noreferrer" target="_blank">
                       Job posting
                     </a>
@@ -296,13 +381,81 @@ export function JobsList({
           </div>
         ) : (
           <div className="empty-state-block">
-            <h2>No saved jobs yet</h2>
-            <p>Ask the AI Command Center to find jobs that fit your profile. Saved postings will appear here with source links.</p>
+            <h2>{activeEmptyState.title}</h2>
+            <p>{activeEmptyState.body}</p>
           </div>
         )}
       </section>
     </main>
   );
+}
+
+const jobEmptyStates: Record<JobBucketId, { title: string; body: string }> = {
+  new: {
+    title: "No new jobs.",
+    body: "New jobs found by JobOps will appear here before you decide whether to apply."
+  },
+  favorites: {
+    title: "No favorite jobs yet.",
+    body: "Save jobs you want to apply to and they'll appear here."
+  },
+  applied: {
+    title: "No jobs with applications yet.",
+    body: "When you start an application from a job, it will appear here."
+  },
+  archived: {
+    title: "No archived jobs.",
+    body: "Archived jobs are hidden from your active queue, but saved application history and materials are preserved."
+  }
+};
+
+export function jobBucket(job: SavedJob): JobBucketId {
+  if (job.archived_at) {
+    return "archived";
+  }
+  if (job.has_application || job.application_id) {
+    return "applied";
+  }
+  if (isFavoriteJobStatus(job.status)) {
+    return "favorites";
+  }
+  return "new";
+}
+
+export function buildJobBucketCounts(jobs: SavedJob[]): Record<JobBucketId, number> {
+  return jobs.reduce(
+    (counts, job) => {
+      counts[jobBucket(job)] += 1;
+      return counts;
+    },
+    { new: 0, favorites: 0, applied: 0, archived: 0 }
+  );
+}
+
+export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
+  return [...jobs].sort((left, right) => jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket)));
+}
+
+function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
+  const counts = buildJobBucketCounts(jobs);
+  return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
+}
+
+function isFavoriteJobStatus(status: string) {
+  return ["favorite", "favorited", "saved", "watchlisted", "watchlist"].includes(status.toLowerCase());
+}
+
+function jobSortDate(job: SavedJob, bucket: JobBucketId) {
+  if (bucket === "archived") {
+    return job.archived_at ?? "";
+  }
+  if (bucket === "favorites") {
+    return job.updated_at || job.added_at;
+  }
+  if (bucket === "applied") {
+    return job.updated_at || job.added_at;
+  }
+  return job.added_at;
 }
 
 function apiErrorMessage(payload: unknown, status: number) {
@@ -371,7 +524,7 @@ function isVerifiedJobUrl(job: SavedJob) {
 
 function applicationBadgeLabel(job: SavedJob) {
   if (job.application_archived_at) {
-    return job.application_status ? `Application archived: ${applicationDisplayLabel(job.application_status)}` : "Application archived";
+    return job.application_status ? applicationDisplayLabel(job.application_status) : "Application archived";
   }
   if (job.application_status) {
     return applicationDisplayLabel(job.application_status);

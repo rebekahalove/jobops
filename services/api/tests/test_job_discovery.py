@@ -66,7 +66,7 @@ def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> 
         saved_link = session.scalars(select(CandidateSavedJob).order_by(CandidateSavedJob.added_at.asc())).first()
         assert saved_link is not None
         assert saved_link.added_at is not None
-        assert saved_link.status == "saved"
+        assert saved_link.status == "new"
         assert saved_link.fit_summary
         assert any(job.posting_date is not None for job in session.scalars(select(JobPosting)).all())
 

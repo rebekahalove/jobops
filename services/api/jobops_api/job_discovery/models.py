@@ -11,7 +11,7 @@ from ..db.models import CandidateCompany, CandidateSavedJob, JobPosting
 from ..model_connector import ModelRequest
 
 
-JobStatus = Literal["saved", "new", "archived"]
+JobStatus = Literal["new", "saved", "archived"]
 RemoteWorkMode = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 JobProvenance = Literal["provider_result", "fetched_page", "user_url", "mock"]
 ProviderType = Literal["broad_search", "ats_board", "mock"]

@@ -49,7 +49,7 @@ class ApplicationCreateRequest(BaseModel):
     location: str | None = Field(default=None, max_length=240)
     source: str | None = Field(default=None, max_length=120)
     date_applied: date | None = None
-    status: ApplicationStatus = "saved"
+    status: ApplicationStatus = "started"
     notes: str = ""
     next_follow_up_date: date | None = None
 
@@ -405,6 +405,42 @@ def mark_application_withdrawn(
     )
 
 
+@router.post("/applications/{application_id}/reopen", response_model=ApplicationActionResponse)
+def reopen_terminal_application(
+    application_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    application = get_owned_application_or_404(session, application_id, auth.candidate_profile.id)
+    if application.status not in {"rejected", "withdrawn"}:
+        raise HTTPException(status_code=409, detail="Only rejected or withdrawn applications can be moved back to Applied.")
+
+    previous_status = application.status
+    application.status = "applied"
+    application.date_applied = None
+    application_restored = restore_application(application)
+    if application.job_role_id:
+        job_role = session.get(JobRole, application.job_role_id)
+        if job_role is not None:
+            job_role.status = "applied"
+    session.add(
+        ApplicationEvent(
+            application_id=application.id,
+            event_type="terminal_status_reset",
+            event_date=date.today(),
+            notes="Application moved back to Applied from rejected or withdrawn.",
+            metadata_json={"previous_terminal_status": previous_status},
+        )
+    )
+    session.commit()
+    session.refresh(application)
+    return application_action_response(
+        application,
+        application_restored=application_restored,
+        message="Application moved back to Applied. Rejection or withdrawal details were cleared.",
+    )
+
+
 @router.post("/applications/{application_id}/events", response_model=ApplicationEventResponse, status_code=201)
 def add_application_event(
     application_id: str,
@@ -534,7 +570,7 @@ def create_application_from_saved_job(
             review_status="new",
         )
 
-    requested_status = request.status or "in_process"
+    requested_status = request.status or "started"
     status = normalize_application_status(requested_status)
     application = Application(
         candidate_profile_id=candidate_profile.id,

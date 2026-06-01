@@ -9,7 +9,7 @@ type RouteContext = {
 
 export async function POST(request: Request, context: RouteContext) {
   const { savedJobId } = await context.params;
-  const action = request.url.includes("/restore") ? "restore" : "archive";
+  const action = jobActionFromUrl(request.url);
   let config: Awaited<ReturnType<typeof getJobOpsApiServerConfig>>;
   try {
     config = await getJobOpsApiServerConfig();
@@ -36,6 +36,24 @@ export async function POST(request: Request, context: RouteContext) {
       { status: 503 }
     );
   }
+}
+
+function jobActionFromUrl(url: string) {
+  const action = lastPathSegment(url);
+  if (action === "restore") {
+    return "restore";
+  }
+  if (action === "unfavorite") {
+    return "unfavorite";
+  }
+  if (action === "favorite") {
+    return "favorite";
+  }
+  return "archive";
+}
+
+function lastPathSegment(url: string) {
+  return new URL(url).pathname.split("/").filter(Boolean).pop();
 }
 
 function forwardCookieHeader(request: Request): Record<string, string> {

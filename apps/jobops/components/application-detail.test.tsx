@@ -71,6 +71,26 @@ describe("Application detail", () => {
     expect(html).toContain("application-status-rejected");
     expect(html).not.toContain("application-status-applied");
     expect(html).not.toContain("application-status-archived");
+    expect(html).toContain("Move back to Applied");
+  });
+
+  it("renders the terminal reset action for withdrawn archived applications", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationDetail
+        applicationId="app-1"
+        initialApplication={{
+          ...applicationFixture(),
+          status: "withdrawn",
+          archived_at: "2026-05-16T00:00:00Z",
+          archived_by_action: "status_withdrawn",
+          archived_reason: "Application marked withdrawn."
+        }}
+      />
+    );
+
+    expect(html).toContain("Withdrawn");
+    expect(html).toContain("Restore");
+    expect(html).toContain("Move back to Applied");
   });
 
   it("loads application detail from the id route and keeps action endpoints scoped to the application", async () => {
@@ -84,6 +104,7 @@ describe("Application detail", () => {
     expect(source).toContain("loadApplicationFromList(apiBasePath, applicationId)");
     expect(source).toContain("`${apiBasePath}/applications`");
     expect(source).toContain("`${apiBasePath}/applications/${application.id}/${action}`");
+    expect(source).toContain('postApplicationAction("reopen"');
     expect(source).toContain("`${apiBasePath}/applications/${application.id}/materials/generate`");
     expect(source).toContain("window.dispatchEvent(new CustomEvent(\"jobops:jobs-updated\"))");
   });

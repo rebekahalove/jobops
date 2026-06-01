@@ -2530,6 +2530,65 @@ input:disabled {
   font-weight: 800;
 }
 
+.queue-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 8px;
+}
+
+.queue-tab {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 850;
+  padding: 7px 11px;
+  white-space: nowrap;
+}
+
+.queue-tab strong {
+  display: inline-flex;
+  min-width: 24px;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--focus);
+  font-size: 0.75rem;
+  font-weight: 900;
+  line-height: 1;
+  padding: 5px 7px;
+}
+
+.queue-tab:hover,
+.queue-tab:focus-visible,
+.queue-tab.active {
+  border-color: rgba(15, 118, 110, 0.3);
+  background: var(--surface-strong);
+}
+
+.queue-tab.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.queue-tab.active strong {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
 .application-table-wrap {
   overflow-x: auto;
 }

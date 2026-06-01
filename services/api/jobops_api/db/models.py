@@ -408,7 +408,7 @@ class CandidateSavedJob(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
     job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
-    status: Mapped[str] = mapped_column(String(40), default="saved")
+    status: Mapped[str] = mapped_column(String(40), default="new")
     fit_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_command: Mapped[str | None] = mapped_column(Text, nullable=True)
