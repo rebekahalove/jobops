@@ -2690,6 +2690,14 @@ input:disabled {
   align-items: start;
 }
 
+.application-card-rail {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content;
+}
+
+.application-card-rail .application-details {
+  grid-template-columns: 1fr;
+}
+
 .application-card-header h2,
 .company-card-header h2,
 .job-card-header h2 {
@@ -2880,7 +2888,17 @@ p.job-verification {
 }
 
 .application-card-actions {
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-self: end;
+}
+
+.application-card-actions .secondary-action {
+  width: 100%;
+}
+
+.application-card-primary-link {
+  margin-top: 2px;
 }
 
 .application-materials {
@@ -2940,6 +2958,162 @@ p.job-verification {
   white-space: pre-wrap;
 }
 
+.application-detail-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-back-link {
+  display: inline-flex;
+  min-height: 42px;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--accent-strong);
+  font-size: 0.88rem;
+  font-weight: 900;
+  padding: 9px 12px;
+  text-decoration: none;
+}
+
+.detail-back-link::before {
+  content: "<";
+  margin-right: 8px;
+}
+
+.detail-back-link:hover,
+.detail-back-link:focus-visible {
+  border-color: rgba(15, 118, 110, 0.42);
+  background: var(--surface-strong);
+}
+
+.application-detail-header,
+.application-detail-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.application-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.application-detail-header h1 {
+  margin: 0;
+  font-size: clamp(1.6rem, 5vw, 2.35rem);
+  line-height: 1.08;
+}
+
+.application-detail-badges {
+  justify-content: flex-end;
+}
+
+.application-detail-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.application-detail-panel h2,
+.application-detail-panel h3 {
+  margin: 0;
+}
+
+.application-detail-panel h2 {
+  font-size: 1.08rem;
+}
+
+.application-detail-panel h3 {
+  font-size: 0.95rem;
+}
+
+.application-detail-panel-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.application-detail-actions {
+  justify-content: flex-end;
+}
+
+.application-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.application-detail-grid div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.application-detail-grid dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.application-detail-grid dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.application-detail-body-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.application-materials-roomy {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.application-materials-roomy > summary {
+  min-height: 42px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.94rem;
+}
+
+.application-materials-roomy .application-materials-body {
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.application-materials-roomy .application-material-section {
+  gap: 8px;
+}
+
+.application-materials-roomy .application-material-section h3 {
+  font-size: 1rem;
+}
+
+.application-materials-roomy .application-material-content {
+  max-height: none;
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+.application-detail-empty-materials {
+  padding: 16px;
+}
+
 .compact-action {
   min-height: 0;
   font-size: 0.78rem;
@@ -2951,6 +3125,10 @@ p.job-verification {
   grid-column: 1 / -1;
   font-size: 0.78rem;
   line-height: 1.25;
+}
+
+.application-card-actions {
+  grid-column: auto;
 }
 
 .company-links a {
@@ -4088,6 +4266,8 @@ main.page-shell dd {
   .job-card-rail,
   .application-card-header,
   .company-card-header,
+  .application-detail-header,
+  .application-detail-grid,
   .application-details,
   .company-details,
   .job-details,
@@ -4095,6 +4275,10 @@ main.page-shell dd {
   .profile-review-details,
   .status-edit {
     grid-template-columns: 1fr;
+  }
+
+  .application-card-actions {
+    justify-self: stretch;
   }
 
   .profile-command-actions {

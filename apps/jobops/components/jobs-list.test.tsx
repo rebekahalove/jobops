@@ -80,7 +80,7 @@ describe("Jobs list", () => {
     expect(html).toContain("Fetched page confirmed the job title and company.");
     expect(html).toContain("Matches applied AI and platform engineering goals.");
     expect(html).toContain("In process");
-    expect(html).toContain("Open application");
+    expect(html).toContain("View application");
     expect(html).toContain("Archive");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
     expect(html).toContain('target="_blank"');
@@ -184,9 +184,15 @@ describe("Jobs list", () => {
     expect(source).toContain("saved_job_id: job.id");
     expect(source).toContain('status: "in_process"');
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:applications-updated"))');
-    expect(source).toContain("navigateToApplication(payload.id)");
+    expect(source).toContain("navigateToApplication(workspaceBasePath, payload.id)");
     expect(source).toContain("job.application_id");
-    expect(source).toContain("applicationId=");
+    expect(source).toContain("/applications/");
+  });
+
+  it("supports mounted application detail navigation for the portfolio app", async () => {
+    const source = await readFile(new URL("../../portfolio/app/jobops/jobs/page.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('workspaceBasePath="/jobops"');
   });
 
   it("renders archived jobs with restore action and archived application badge", () => {
@@ -229,6 +235,7 @@ describe("Jobs list", () => {
 
     expect(html).toContain("Archived");
     expect(html).toContain("Application archived: Rejected");
+    expect(html).toContain("View application");
     expect(html).toContain("Restore");
   });
 });

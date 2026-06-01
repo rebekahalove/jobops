@@ -509,6 +509,10 @@ class Application(Base, TimestampMixin):
         return self.job.employment_type if self.job is not None else None
 
     @property
+    def apply_url(self) -> str | None:
+        return self.job.apply_url if self.job is not None else None
+
+    @property
     def latest_material_bundle(self) -> ApplicationMaterialBundle | None:
         return self.material_bundles[0] if self.material_bundles else None
 
