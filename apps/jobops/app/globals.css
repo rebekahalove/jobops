@@ -591,6 +591,30 @@ textarea {
   white-space: pre;
 }
 
+.starter-prompts-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.starter-prompts-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.starter-prompts-header span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.starter-prompts-toggle {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
 .starter-prompts {
   display: flex;
   flex-wrap: wrap;
@@ -2198,6 +2222,7 @@ input:disabled {
 }
 
 .profile-review-panel-header p {
+  max-width: 46rem;
   margin: 0;
 }
 
@@ -3110,10 +3135,23 @@ p.job-verification {
   margin: 0;
 }
 
+.application-detail-primary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 10px;
+}
+
+.application-detail-secondary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 .application-detail-grid div {
   display: grid;
   gap: 3px;
   min-width: 0;
+}
+
+.application-detail-grid .application-detail-wide {
+  grid-column: 1 / -1;
 }
 
 .application-detail-grid dt {
@@ -3129,6 +3167,33 @@ p.job-verification {
   font-size: 0.92rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.application-linked-job-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.application-linked-job-action .secondary-action {
+  width: fit-content;
+  text-decoration: none;
+}
+
+.application-detail-metadata {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.application-detail-metadata summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.application-detail-metadata > .application-detail-grid {
+  margin-top: 10px;
 }
 
 .application-detail-body-text {
@@ -4268,6 +4333,7 @@ main.page-shell dd {
 
   .command-shell {
     width: var(--workspace-width);
+    gap: 10px;
     padding-top: 16px;
   }
 
@@ -4298,6 +4364,66 @@ main.page-shell dd {
   .placeholder-panel,
   .ai-command-center {
     padding: 20px;
+  }
+
+  .ai-command-center {
+    grid-template-rows: auto minmax(220px, 42svh) auto auto auto;
+    gap: 12px;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .command-center-header h1 {
+    font-size: 1.35rem;
+  }
+
+  .command-center-grid {
+    display: contents;
+  }
+
+  .command-conversation-frame {
+    order: 2;
+    min-height: 220px;
+    max-height: 42svh;
+  }
+
+  .command-conversation-frame > .command-conversation {
+    min-height: 220px;
+    max-height: 42svh;
+  }
+
+  .starter-prompts-panel {
+    order: 3;
+  }
+
+  .starter-prompts-header {
+    display: flex;
+  }
+
+  .starter-prompts-toggle {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .starter-prompts {
+    display: none;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+
+  .starter-prompts-panel.expanded .starter-prompts {
+    display: flex;
+  }
+
+  .starter-prompt {
+    flex: 0 0 auto;
+    max-width: min(78vw, 320px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .workflow-grid,
@@ -4334,6 +4460,53 @@ main.page-shell dd {
   .profile-review-details,
   .status-edit {
     grid-template-columns: 1fr;
+  }
+
+  .profile-review-panel-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .profile-review-panel-copy {
+    display: contents;
+  }
+
+  .profile-review-panel-description {
+    grid-column: 1 / -1;
+    max-width: min(100%, 46rem);
+  }
+
+  .application-detail-panel {
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .application-detail-panel-heading {
+    align-items: flex-start;
+  }
+
+  .application-detail-actions {
+    justify-content: flex-start;
+  }
+
+  .application-detail-primary-grid,
+  .application-detail-secondary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .application-detail-grid dt {
+    font-size: 0.64rem;
+  }
+
+  .application-detail-grid dd {
+    font-size: 0.88rem;
+    line-height: 1.3;
+  }
+
+  .application-linked-job-action .secondary-action {
+    width: 100%;
   }
 
   .application-card-actions {
@@ -4384,7 +4557,25 @@ main.page-shell dd {
   }
 
   .command-composer {
+    order: 4;
     grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .command-composer > textarea {
+    min-height: 76px;
+    max-height: 26svh;
+  }
+
+  .command-composer-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-action-rail {
+    order: 5;
+    min-height: 0;
+    max-height: 220px;
   }
 
   .attachment-button {

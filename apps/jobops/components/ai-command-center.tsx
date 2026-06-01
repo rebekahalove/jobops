@@ -59,6 +59,7 @@ export function AiCommandCenter({
   const [messages, setMessages] = useState<CommandMessage[]>(initialMessages);
   const [actions, setActions] = useState<PlannedCommandAction[]>(initialActions);
   const [attachmentStatus, setAttachmentStatus] = useState("");
+  const [areExamplesExpanded, setAreExamplesExpanded] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -349,12 +350,28 @@ export function AiCommandCenter({
         </aside>
       </div>
 
-      <div className="starter-prompts" aria-label="Starter prompts">
-        {starterPrompts.map((prompt) => (
-          <button className="starter-prompt" key={prompt} onClick={() => setCommand(prompt)} suppressHydrationWarning type="button">
-            {prompt}
+      <div className={`starter-prompts-panel${areExamplesExpanded ? " expanded" : ""}`}>
+        <div className="starter-prompts-header">
+          <span>Examples</span>
+          <button
+            aria-controls="jobops-starter-prompts"
+            aria-expanded={areExamplesExpanded}
+            aria-label={areExamplesExpanded ? "Hide starter prompt examples" : "Show starter prompt examples"}
+            className="starter-prompts-toggle secondary-action"
+            onClick={() => setAreExamplesExpanded((current) => !current)}
+            suppressHydrationWarning
+            type="button"
+          >
+            {areExamplesExpanded ? "Hide examples" : "Show examples"}
           </button>
-        ))}
+        </div>
+        <div className="starter-prompts" id="jobops-starter-prompts" aria-label="Starter prompts">
+          {starterPrompts.map((prompt) => (
+            <button className="starter-prompt" key={prompt} onClick={() => setCommand(prompt)} suppressHydrationWarning type="button">
+              {prompt}
+            </button>
+          ))}
+        </div>
       </div>
 
       <form className="command-composer" onSubmit={handleSubmit}>

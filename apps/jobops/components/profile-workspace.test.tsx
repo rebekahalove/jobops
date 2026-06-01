@@ -87,6 +87,22 @@ describe("Profile intake workspace", () => {
     expect(html).toContain("No questions yet");
   });
 
+  it("keeps the profile review panel description able to span under mobile header counts", () => {
+    const html = renderToStaticMarkup(<ReviewTabbedList activeTab="basics" draft={null} onTabChange={() => undefined} />);
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+    expect(html).toContain("profile-review-panel-copy");
+    expect(html).toContain("profile-review-panel-description");
+    expect(html).toContain("0 Generated / 0 Private / 0 Public");
+    expect(css).toContain(".profile-review-panel-header");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(css).toContain(".profile-review-panel-copy");
+    expect(css).toContain("display: contents");
+    expect(css).toContain(".profile-review-panel-description");
+    expect(css).toContain("grid-column: 1 / -1");
+    expect(css).toContain("max-width: min(100%, 46rem)");
+  });
+
   it("points empty profile states to command-center intake instead of stale page chat copy", () => {
     const html = renderToStaticMarkup(<ProfileWorkspace />);
 

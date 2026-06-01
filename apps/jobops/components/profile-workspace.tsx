@@ -936,9 +936,11 @@ export function ReviewTabbedList({
         role="tabpanel"
       >
         <div className="profile-review-panel-header">
-          <div>
+          <div className="profile-review-panel-copy">
             <h3 className="profile-panel-kicker">{activeLabel}</h3>
-            <p>Generated items need review. Private items are active internally. Public items are managed in the preview.</p>
+            <p className="profile-review-panel-description">
+              Generated items need review. Private items are active internally. Public items are managed in the preview.
+            </p>
           </div>
           <span className="profile-review-panel-counts">
             {generatedCounts[activeTab]} Generated / {publishedPrivateCounts[activeTab]} Private / {publishedPublicCounts[activeTab]} Public
