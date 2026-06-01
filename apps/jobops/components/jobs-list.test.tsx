@@ -183,7 +183,7 @@ describe("Jobs list", () => {
 
     expect(source).toContain('body: JSON.stringify({');
     expect(source).toContain("saved_job_id: job.id");
-    expect(source).toContain('status: "in_process"');
+    expect(source).toContain('status: "started"');
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:applications-updated"))');
     expect(source).toContain("navigateToApplication(workspaceBasePath, payload.id)");
     expect(source).toContain("job.application_id");
@@ -235,7 +235,8 @@ describe("Jobs list", () => {
     );
 
     expect(html).toContain("Archived");
-    expect(html).toContain("Application archived: Rejected");
+    expect(html).not.toContain("Application archived: Rejected");
+    expect(html).toContain("Rejected");
     expect(html).toContain("View application");
     expect(html).toContain("Restore");
   });
@@ -257,6 +258,22 @@ describe("Jobs list", () => {
     expect(html).toContain("Applied");
     expect(html).toContain("Archived");
     expect(html).toContain("<strong>1</strong>");
+  });
+
+  it("renders favorite and unfavorite actions for active unapplied jobs", () => {
+    const newHtml = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({ id: "job-new", status: "new", title: "New Role" })
+        ]}
+      />
+    );
+    const favoriteHtml = renderToStaticMarkup(
+      <JobsList initialJobs={[jobFixture({ id: "job-favorite", status: "saved", title: "Favorite Role" })]} />
+    );
+
+    expect(newHtml).toContain("Favorite");
+    expect(favoriteHtml).toContain("Unfavorite");
   });
 
   it("buckets jobs with archived as an overlay", () => {

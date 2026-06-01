@@ -66,10 +66,20 @@ export function JobsList({
 }) {
   const [jobs, setJobs] = useState(initialJobs);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
   const [pendingArchiveJobId, setPendingArchiveJobId] = useState<string | null>(null);
+  const [pendingFavoriteJobId, setPendingFavoriteJobId] = useState<string | null>(null);
   const [activeBucket, setActiveBucket] = useState<JobBucketId>(() => defaultJobBucket(initialJobs));
   const hasAppliedInitialBucket = useRef(initialJobs.length > 0);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setMessage(""), messageKind === "error" ? 9000 : 5200);
+    return () => window.clearTimeout(timeout);
+  }, [message, messageKind]);
 
   useEffect(() => {
     let active = true;
@@ -80,12 +90,14 @@ export function JobsList({
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Saved jobs API returned an unexpected response.");
           }
           return;
@@ -100,6 +112,7 @@ export function JobsList({
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Saved jobs API is unavailable. Start FastAPI to load saved records.");
         }
       }
@@ -119,6 +132,7 @@ export function JobsList({
 
   async function applyToJob(job: SavedJob) {
     if (job.application_id) {
+      setMessageKind("info");
       setMessage(applicationAlreadyExistsMessage(job));
       navigateToApplication(workspaceBasePath, job.application_id);
       return;
@@ -135,7 +149,7 @@ export function JobsList({
         },
         body: JSON.stringify({
           saved_job_id: job.id,
-          status: "in_process"
+          status: "started"
         })
       });
       const payload = await response.json();
@@ -146,6 +160,7 @@ export function JobsList({
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       navigateToApplication(workspaceBasePath, payload.id);
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : "Could not start application.");
     } finally {
       setPendingApplyJobId(null);
@@ -167,15 +182,43 @@ export function JobsList({
       }
 
       setJobs((current) => current.map((item) => (item.id === job.id ? (payload.job as SavedJob) : item)));
+      setMessageKind("success");
       setMessage(actionResultMessage(payload, action === "archive" ? "Job archived." : "Job restored."));
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       if ("application_id" in payload && payload.application_id) {
         window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       }
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : `Could not ${action} job.`);
     } finally {
       setPendingArchiveJobId(null);
+    }
+  }
+
+  async function setJobFavoriteState(job: SavedJob, action: "favorite" | "unfavorite") {
+    setPendingFavoriteJobId(job.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${apiBasePath}/jobs/${job.id}/${action}`, { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      if (!payload || typeof payload !== "object" || !("job" in payload)) {
+        throw new Error("Saved jobs API returned an unexpected response.");
+      }
+
+      setJobs((current) => current.map((item) => (item.id === job.id ? (payload.job as SavedJob) : item)));
+      setMessageKind("success");
+      setMessage(actionResultMessage(payload, action === "favorite" ? "Job added to Favorites." : "Job moved back to New."));
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : `Could not ${action} job.`);
+    } finally {
+      setPendingFavoriteJobId(null);
     }
   }
 
@@ -187,7 +230,7 @@ export function JobsList({
         <p>Review discovered roles saved from reliable source links. Applications and materials attach later.</p>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
 
       <section className="job-list" aria-labelledby="job-list-title">
         <div className="application-list-header">
@@ -312,6 +355,17 @@ export function JobsList({
                     >
                       {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
                     </button>
+                    {!job.archived_at && !job.application_id ? (
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingFavoriteJobId === job.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                      >
+                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                      </button>
+                    ) : null}
                     <a href={job.job_url} rel="noopener noreferrer" target="_blank">
                       Job posting
                     </a>
@@ -470,7 +524,7 @@ function isVerifiedJobUrl(job: SavedJob) {
 
 function applicationBadgeLabel(job: SavedJob) {
   if (job.application_archived_at) {
-    return job.application_status ? `Application archived: ${applicationDisplayLabel(job.application_status)}` : "Application archived";
+    return job.application_status ? applicationDisplayLabel(job.application_status) : "Application archived";
   }
   if (job.application_status) {
     return applicationDisplayLabel(job.application_status);

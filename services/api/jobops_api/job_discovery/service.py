@@ -184,6 +184,50 @@ def restore_job(
     )
 
 
+@router.post("/jobs/{saved_job_id}/favorite", response_model=SavedJobActionResponse)
+def favorite_job(
+    saved_job_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    saved_job = get_owned_saved_job_or_404(session, saved_job_id, auth.candidate_profile.id)
+    application = get_application_for_saved_job(session, saved_job, auth.candidate_profile.id)
+    changed = saved_job.status != "saved"
+    if changed:
+        saved_job.status = "saved"
+    session.commit()
+    session.refresh(saved_job)
+    if application is not None:
+        session.refresh(application)
+    return saved_job_action_response(
+        saved_job,
+        application=application,
+        message="Job added to Favorites." if changed else "Job was already in Favorites.",
+    )
+
+
+@router.post("/jobs/{saved_job_id}/unfavorite", response_model=SavedJobActionResponse)
+def unfavorite_job(
+    saved_job_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    saved_job = get_owned_saved_job_or_404(session, saved_job_id, auth.candidate_profile.id)
+    application = get_application_for_saved_job(session, saved_job, auth.candidate_profile.id)
+    changed = saved_job.status != "new"
+    if changed:
+        saved_job.status = "new"
+    session.commit()
+    session.refresh(saved_job)
+    if application is not None:
+        session.refresh(application)
+    return saved_job_action_response(
+        saved_job,
+        application=application,
+        message="Job moved back to New." if changed else "Job was already in New.",
+    )
+
+
 def run_job_discovery(
     request: JobDiscoveryRequest,
     *,
@@ -1509,7 +1553,7 @@ def save_live_job_source_results(
         link = CandidateSavedJob(
             candidate_profile_id=candidate_profile.id,
             job_id=existing_job.id,
-            status="saved",
+            status="new",
             fit_summary=result.fit_summary,
             user_notes=None,
             source_command=discovery_query,

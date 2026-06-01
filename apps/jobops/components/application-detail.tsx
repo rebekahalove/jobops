@@ -7,6 +7,7 @@ import {
   actionResultMessage,
   apiErrorMessage,
   canMarkApplied,
+  canReopenTerminal,
   canMarkTerminal,
   formatDateOnly,
   formatDateTime,
@@ -30,9 +31,18 @@ export function ApplicationDetail({
 }) {
   const [application, setApplication] = useState<TrackedApplication | null>(initialApplication);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingStatus, setPendingStatus] = useState(false);
   const [pendingArchive, setPendingArchive] = useState(false);
   const [pendingMaterials, setPendingMaterials] = useState(false);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setMessage(""), messageKind === "error" ? 9000 : 5200);
+    return () => window.clearTimeout(timeout);
+  }, [message, messageKind]);
 
   useEffect(() => {
     let active = true;
@@ -53,12 +63,14 @@ export function ApplicationDetail({
             }
           }
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Applications API returned an unexpected response.");
           }
           return;
@@ -69,6 +81,7 @@ export function ApplicationDetail({
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Application API is unavailable. Start FastAPI to load this application.");
         }
       }
@@ -100,17 +113,19 @@ export function ApplicationDetail({
         throw new Error(apiErrorMessage(payload, response.status));
       }
       setApplication(payload as TrackedApplication);
+      setMessageKind("success");
       setMessage("Application marked applied.");
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : "Could not mark application as applied.");
     } finally {
       setPendingStatus(false);
     }
   }
 
-  async function postApplicationAction(action: "archive" | "restore" | "reject" | "withdraw", fallbackMessage: string) {
+  async function postApplicationAction(action: "archive" | "restore" | "reject" | "withdraw" | "reopen", fallbackMessage: string) {
     if (!application) {
       return;
     }
@@ -127,10 +142,12 @@ export function ApplicationDetail({
         throw new Error("Applications API returned an unexpected response.");
       }
       setApplication(payload.application as TrackedApplication);
+      setMessageKind("success");
       setMessage(actionResultMessage(payload, fallbackMessage));
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : `Could not ${action} application.`);
     } finally {
       setPendingArchive(false);
@@ -157,9 +174,11 @@ export function ApplicationDetail({
       }
       const bundle = payload.bundle as ApplicationMaterialBundle;
       setApplication({ ...application, latest_material_bundle: bundle, updated_at: bundle.updated_at });
+      setMessageKind("success");
       setMessage("Application materials generated.");
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : "Could not generate application materials.");
     } finally {
       setPendingMaterials(false);
@@ -201,7 +220,7 @@ export function ApplicationDetail({
         </div>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
 
       <section className="application-detail-panel" aria-labelledby="application-detail-title">
         <div className="application-detail-panel-heading">
@@ -258,15 +277,27 @@ export function ApplicationDetail({
                 ) : null}
               </>
             ) : (
+              <>
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingArchive}
+                  type="button"
+                  onClick={() => postApplicationAction("restore", "Application restored. Saved materials and history were preserved.")}
+                >
+                  {pendingArchive ? "Saving..." : "Restore"}
+                </button>
+              </>
+            )}
+            {canReopenTerminal(application) ? (
               <button
                 className="secondary-action compact-action"
                 disabled={pendingArchive}
                 type="button"
-                onClick={() => postApplicationAction("restore", "Application restored. Saved materials and history were preserved.")}
+                onClick={() => postApplicationAction("reopen", "Application moved back to Applied. Rejection or withdrawal details were cleared.")}
               >
-                {pendingArchive ? "Saving..." : "Restore"}
+                {pendingArchive ? "Saving..." : "Move back to Applied"}
               </button>
-            )}
+            ) : null}
           </div>
         </div>
 

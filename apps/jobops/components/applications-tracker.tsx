@@ -92,11 +92,20 @@ export function ApplicationsTracker({
 }) {
   const [applications, setApplications] = useState(initialApplications);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingApplicationId, setPendingApplicationId] = useState<string | null>(null);
   const [pendingArchiveApplicationId, setPendingArchiveApplicationId] = useState<string | null>(null);
   const [highlightedApplicationId, setHighlightedApplicationId] = useState<string | null>(null);
   const [activeBucket, setActiveBucket] = useState<ApplicationBucketId>(() => defaultApplicationBucket(initialApplications));
   const hasAppliedInitialBucket = useRef(initialApplications.length > 0);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setMessage(""), messageKind === "error" ? 9000 : 5200);
+    return () => window.clearTimeout(timeout);
+  }, [message, messageKind]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -117,12 +126,14 @@ export function ApplicationsTracker({
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Applications API returned an unexpected response.");
           }
           return;
@@ -137,6 +148,7 @@ export function ApplicationsTracker({
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Application API is unavailable. Start FastAPI to load saved records.");
         }
       }
@@ -186,9 +198,11 @@ export function ApplicationsTracker({
 
       setApplications((current) => current.map((item) => (item.id === application.id ? (payload as TrackedApplication) : item)));
       setHighlightedApplicationId(application.id);
+      setMessageKind("success");
       setMessage("Application marked applied.");
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : "Could not mark application as applied.");
     } finally {
       setPendingApplicationId(null);
@@ -215,12 +229,14 @@ export function ApplicationsTracker({
 
       setApplications((current) => current.map((item) => (item.id === application.id ? (payload.application as TrackedApplication) : item)));
       setHighlightedApplicationId(application.id);
+      setMessageKind("success");
       setMessage(actionResultMessage(payload, fallbackMessage));
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
       if (application.job_id) {
         window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       }
     } catch (error) {
+      setMessageKind("error");
       setMessage(error instanceof Error ? error.message : `Could not ${action} application.`);
     } finally {
       setPendingArchiveApplicationId(null);
@@ -235,7 +251,7 @@ export function ApplicationsTracker({
         <p>Convert saved jobs into in-progress applications and track submitted roles without manual entry.</p>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
 
       <section className="application-list" aria-labelledby="application-list-title">
         <div className="application-list-header">
@@ -571,6 +587,10 @@ export function canMarkApplied(application: TrackedApplication) {
 
 export function canMarkTerminal(application: TrackedApplication) {
   return application.status === "applied";
+}
+
+export function canReopenTerminal(application: TrackedApplication) {
+  return application.status === "rejected" || application.status === "withdrawn";
 }
 
 export function shouldShowUnderlyingStatus(application: TrackedApplication) {
