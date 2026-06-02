@@ -10,7 +10,12 @@ import {
   type PlannedCommandAction,
   type WorkspaceTab
 } from "../lib/command-center-actions";
-import type { CommandCenterApiResponse, CommandCenterProxyResponse, CommandCenterStreamEvent } from "../lib/command-center-contract";
+import type {
+  CommandCenterApiResponse,
+  CommandCenterProxyResponse,
+  CommandCenterStatusUpdate,
+  CommandCenterStreamEvent
+} from "../lib/command-center-contract";
 
 export type CommandMessage = {
   id: string;
@@ -150,6 +155,7 @@ export function AiCommandCenter({
     ]);
     setCommand("");
     setIsSubmitting(true);
+    const streamStatusUpdates: CommandCenterStatusUpdate[] = [];
 
     try {
       const result = await runCommandCenterStream({
@@ -157,13 +163,14 @@ export function AiCommandCenter({
         apiBasePath,
         clientContext,
         command: submittedCommand,
-        onStatus: (message) => {
+        onStatus: (statusUpdate) => {
+          streamStatusUpdates.push(statusUpdate);
           setMessages((current) => [
             ...current,
             {
               id: `agent-status-${Date.now()}-${current.length}`,
               role: "agent",
-              text: message
+              text: statusUpdate.message
             }
           ]);
         }
@@ -179,6 +186,23 @@ export function AiCommandCenter({
             id: `agent-error-${Date.now()}-${current.length}`,
             role: "agent",
             text: `Status update: ${message}`
+          }
+        ]);
+        setIsSubmitting(false);
+        return;
+      }
+
+      const interruptedStatus = latestRoutedStreamStatus(streamStatusUpdates);
+      if (interruptedStatus) {
+        const fallbackAction = createInterruptedStreamAction(submittedCommand, interruptedStatus, `action-${Date.now()}`);
+        const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
+        setActions((current) => [fallbackAction, ...current]);
+        setMessages((current) => [
+          ...current,
+          {
+            id: `agent-interrupted-${Date.now()}-${current.length}`,
+            role: "agent",
+            text: `Status update: the command stream was interrupted after routing to ${fallbackAction.title}. I did not re-run it to avoid duplicate changes. Refresh or open ${workspace} to check the latest saved results.`
           }
         ]);
         setIsSubmitting(false);
@@ -443,7 +467,7 @@ async function runCommandCenterStream({
   apiBasePath: string;
   clientContext?: Record<string, unknown>;
   command: string;
-  onStatus: (message: string) => void;
+  onStatus: (statusUpdate: CommandCenterStatusUpdate) => void;
 }): Promise<CommandCenterApiResponse> {
   const requestUrl = `${apiBasePath}/command-center/stream`;
   const response = await fetch(requestUrl, {
@@ -495,7 +519,7 @@ async function runCommandCenterStream({
         continue;
       }
       if (event.type === "status") {
-        onStatus(event.statusUpdate.message);
+        onStatus(event.statusUpdate);
       } else {
         result = event.result;
       }
@@ -508,7 +532,7 @@ async function runCommandCenterStream({
 
   const finalEvent = parseCommandCenterStreamEvent(buffer);
   if (finalEvent?.type === "status") {
-    onStatus(finalEvent.statusUpdate.message);
+    onStatus(finalEvent.statusUpdate);
   } else if (finalEvent?.type === "result") {
     result = finalEvent.result;
   }
@@ -560,6 +584,31 @@ function parseCommandCenterStreamEvent(line: string): CommandCenterStreamEvent |
     return parsed;
   }
   return null;
+}
+
+function latestRoutedStreamStatus(statusUpdates: CommandCenterStatusUpdate[]) {
+  for (let index = statusUpdates.length - 1; index >= 0; index -= 1) {
+    const statusUpdate = statusUpdates[index];
+    if (statusUpdate.actionType && statusUpdate.actionType !== "unknown") {
+      return statusUpdate;
+    }
+  }
+  return null;
+}
+
+function createInterruptedStreamAction(command: string, statusUpdate: CommandCenterStatusUpdate, id: string): PlannedCommandAction {
+  const plannedAction = createPlannedAction(command, id);
+  const workspace = statusUpdate.targetWorkspace ?? plannedAction.targetWorkspace;
+  const workspaceLabel = workspace ? formatWorkspaceLabel(workspace) : "the command center";
+
+  return {
+    ...plannedAction,
+    type: statusUpdate.actionType ?? plannedAction.type,
+    status: "needs_confirmation",
+    targetWorkspace: workspace ?? undefined,
+    ctaLabel: workspace ? `Open ${workspaceLabel}` : plannedAction.ctaLabel,
+    summary: `JobOps routed this command, but the browser stream ended before the final result arrived. The command was not replayed to avoid duplicate changes.`
+  };
 }
 
 async function readCommandCenterStreamError(response: Response, requestUrl: string) {

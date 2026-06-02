@@ -254,7 +254,10 @@ describe("AI command center", () => {
     expect(source).toContain("Command-center fallback returned a non-JSON response.");
     expect(source).toContain("bodyPreview: previewDiagnosticBody(body)");
     expect(source).toContain("responseUrl: response.url || null");
-    expect(source).toContain("onStatus(event.statusUpdate.message)");
+    expect(source).toContain("onStatus(event.statusUpdate)");
+    expect(source).toContain("latestRoutedStreamStatus(streamStatusUpdates)");
+    expect(source).toContain("I did not re-run it to avoid duplicate changes.");
+    expect(source).toContain("The command was not replayed to avoid duplicate changes.");
     expect(source).toContain("no router decision was received");
     expect(source).toContain("formatTranscriptMessage(submittedCommand)");
     expect(source).toContain("messages.map((message)");
