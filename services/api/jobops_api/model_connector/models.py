@@ -8,6 +8,7 @@ ModelTask = Literal[
     "command_router",
     "company_discovery",
     "job_candidate_selection",
+    "job_search_planning",
     "job_discovery",
     "command_center_guidance",
     "profile_extract",

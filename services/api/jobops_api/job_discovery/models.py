@@ -15,6 +15,7 @@ JobStatus = Literal["new", "saved", "archived"]
 RemoteWorkMode = Literal["remote", "hybrid", "onsite", "flexible", "unknown"]
 JobProvenance = Literal["provider_result", "fetched_page", "user_url", "mock"]
 ProviderType = Literal["broad_search", "ats_board", "mock"]
+JobSearchMode = Literal["broad", "company_specific", "followed_companies", "url"]
 SkipReasonCode = Literal[
     "duplicate_for_user",
     "duplicate_global_job",
@@ -258,6 +259,140 @@ class JobCandidateSelectionOutput(ApiModel):
     )
 
 
+class JobSearchPlanProviderStrategy(ApiModel):
+    use_broad_search: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("use_broad_search", "useBroadSearch"),
+        serialization_alias="useBroadSearch",
+    )
+    use_company_boards: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("use_company_boards", "useCompanyBoards"),
+        serialization_alias="useCompanyBoards",
+    )
+    requested_result_goal: int = Field(
+        default=20,
+        validation_alias=AliasChoices("requested_result_goal", "requestedResultGoal"),
+        serialization_alias="requestedResultGoal",
+        ge=1,
+        le=200,
+    )
+    max_provider_pages: int = Field(
+        default=2,
+        validation_alias=AliasChoices("max_provider_pages", "maxProviderPages"),
+        serialization_alias="maxProviderPages",
+        ge=1,
+        le=10,
+    )
+    allow_replanning: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("allow_replanning", "allowReplanning"),
+        serialization_alias="allowReplanning",
+    )
+
+
+class JobSearchPlan(ApiModel):
+    search_mode: JobSearchMode = Field(
+        default="broad",
+        validation_alias=AliasChoices("search_mode", "searchMode"),
+        serialization_alias="searchMode",
+    )
+    role_queries: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("role_queries", "roleQueries"),
+        serialization_alias="roleQueries",
+        max_length=12,
+    )
+    company_names: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("company_names", "companyNames"),
+        serialization_alias="companyNames",
+        max_length=50,
+    )
+    locations: list[str] = Field(default_factory=list, max_length=12)
+    remote_work_modes: list[RemoteWorkMode] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("remote_work_modes", "remoteWorkModes"),
+        serialization_alias="remoteWorkModes",
+        max_length=5,
+    )
+    employment_types: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("employment_types", "employmentTypes"),
+        serialization_alias="employmentTypes",
+        max_length=8,
+    )
+    salary_min: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("salary_min", "salaryMin"),
+        serialization_alias="salaryMin",
+        ge=0,
+    )
+    include_terms: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("include_terms", "includeTerms"),
+        serialization_alias="includeTerms",
+        max_length=20,
+    )
+    exclude_terms: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("exclude_terms", "excludeTerms"),
+        serialization_alias="excludeTerms",
+        max_length=20,
+    )
+    hard_constraints: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("hard_constraints", "hardConstraints"),
+        serialization_alias="hardConstraints",
+        max_length=20,
+    )
+    soft_preferences: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("soft_preferences", "softPreferences"),
+        serialization_alias="softPreferences",
+        max_length=20,
+    )
+    provider_strategy: JobSearchPlanProviderStrategy = Field(
+        default_factory=JobSearchPlanProviderStrategy,
+        validation_alias=AliasChoices("provider_strategy", "providerStrategy"),
+        serialization_alias="providerStrategy",
+    )
+    rationale: str = Field(default="", max_length=900)
+
+    @field_validator("role_queries", "company_names", "locations", "employment_types", "include_terms", "exclude_terms", "hard_constraints", "soft_preferences")
+    @classmethod
+    def clean_string_list(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            stripped = " ".join(value.split()).strip(" ,.;:-")
+            key = stripped.casefold()
+            if stripped and key not in seen:
+                cleaned.append(stripped)
+                seen.add(key)
+        return cleaned
+
+
+class JobSearchPlannerOutput(ApiModel):
+    search_plan: JobSearchPlan = Field(
+        validation_alias=AliasChoices("search_plan", "searchPlan"),
+        serialization_alias="searchPlan",
+    )
+
+
+@dataclass(frozen=True)
+class JobSearchPlannerResult:
+    plan: JobSearchPlan
+    request: ModelRequest
+    response_provider: str
+    response_model: str
+    response: Any | None = None
+    fallback_used: bool = False
+    recent_searches_used_count: int = 0
+
+
 class SavedJobResponse(BaseModel):
     id: str
     candidate_profile_id: str
@@ -330,6 +465,7 @@ class JobDiscoveryRequest:
     candidate_profile_slug: str
     active_workspace: str | None = None
     client_context: dict[str, Any] | None = None
+    router_extracted: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +545,10 @@ class JobSearchRequest:
     target_context: dict[str, Any]
     private_profile_context: dict[str, Any]
     user_constraints: list[str]
+    search_plan: JobSearchPlan | None = None
+    company_names: list[str] | None = None
+    locations: list[str] | None = None
+    max_provider_pages: int = 1
 
 
 @dataclass(frozen=True)
@@ -421,6 +561,15 @@ class ProviderDiagnostic:
     raw_result_count: int | None = None
     error: str | None = None
     query: str | None = None
+    company_name: str | None = None
+    location: str | None = None
+    page: int | None = None
+    pages_attempted: int | None = None
+    total_matches: int | None = None
+    normalized_result_count: int | None = None
+    deduped_result_count: int | None = None
+    candidate_count_after_filters: int | None = None
+    request_criteria: dict[str, Any] | None = None
     board_token: str | None = None
     search_mode: str | None = None
 
@@ -434,6 +583,15 @@ class ProviderDiagnostic:
             "rawResultCount": self.raw_result_count,
             "error": self.error,
             "query": self.query,
+            "companyName": self.company_name,
+            "location": self.location,
+            "page": self.page,
+            "pagesAttempted": self.pages_attempted,
+            "totalMatches": self.total_matches,
+            "normalizedResultCount": self.normalized_result_count,
+            "dedupedResultCount": self.deduped_result_count,
+            "candidateCountAfterFilters": self.candidate_count_after_filters,
+            "requestCriteria": self.request_criteria,
             "boardToken": self.board_token,
             "searchMode": self.search_mode,
         }

@@ -203,6 +203,7 @@ class CandidateProfile(Base, TimestampMixin):
     )
     candidate_companies: Mapped[list[CandidateCompany]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     saved_jobs: Mapped[list[CandidateSavedJob]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    job_search_runs: Mapped[list[JobSearchRun]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -421,6 +422,61 @@ class CandidateSavedJob(Base, TimestampMixin):
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
     job: Mapped[JobPosting] = relationship(back_populates="saved_links")
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
+
+
+class JobSearchRun(Base):
+    __tablename__ = "job_search_runs"
+    __table_args__ = (
+        Index("ix_job_search_runs_profile_created", "candidate_profile_id", "created_at"),
+        Index("ix_job_search_runs_profile_status_created", "candidate_profile_id", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    command_text: Mapped[str] = mapped_column(Text)
+    search_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    provider_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    search_mode: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="started")
+    total_provider_results: Mapped[int] = mapped_column(Integer, default=0)
+    total_matches_reported: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    candidate_pool_count: Mapped[int] = mapped_column(Integer, default=0)
+    model_selected_count: Mapped[int] = mapped_column(Integer, default=0)
+    saved_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_existing_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="job_search_runs")
+    query_runs: Mapped[list[JobSearchQueryRun]] = relationship(back_populates="job_search_run", cascade="all, delete-orphan")
+
+
+class JobSearchQueryRun(Base):
+    __tablename__ = "job_search_query_runs"
+    __table_args__ = (
+        Index("ix_job_search_query_runs_run_created", "job_search_run_id", "created_at"),
+        Index("ix_job_search_query_runs_provider", "provider_name", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_search_run_id: Mapped[str] = mapped_column(ForeignKey("job_search_runs.id", ondelete="CASCADE"))
+    provider_name: Mapped[str] = mapped_column(String(120))
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_matches: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    normalized_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    deduped_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    candidate_count_after_filters: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    job_search_run: Mapped[JobSearchRun] = relationship(back_populates="query_runs")
 
 
 class JobRole(Base, TimestampMixin):

@@ -64,6 +64,8 @@ def select_job_candidates_with_model(
     provider_diagnostics: list[ProviderDiagnostic],
     user_constraints: list[str],
     save_limit: int,
+    search_plan: dict[str, Any] | None = None,
+    recent_search_summary: list[dict[str, Any]] | None = None,
 ) -> JobCandidateSelectionResult | JobDiscoveryServiceResult:
     model_request = build_job_candidate_selection_model_request(
         request,
@@ -75,6 +77,8 @@ def select_job_candidates_with_model(
         provider_diagnostics=provider_diagnostics,
         user_constraints=user_constraints,
         save_limit=save_limit,
+        search_plan=search_plan,
+        recent_search_summary=recent_search_summary,
     )
     connector_config = read_model_connector_config_from_settings(settings)
     routed_request = route_model_request(model_request, connector_config.routing)
@@ -260,6 +264,8 @@ def build_job_candidate_selection_model_request(
     provider_diagnostics: list[ProviderDiagnostic],
     user_constraints: list[str],
     save_limit: int,
+    search_plan: dict[str, Any] | None = None,
+    recent_search_summary: list[dict[str, Any]] | None = None,
 ) -> ModelRequest:
     payload = {
         "latest_user_message": request.latest_user_message,
@@ -271,6 +277,8 @@ def build_job_candidate_selection_model_request(
         "current_saved_jobs": current_saved_jobs[:50],
         "current_saved_companies": current_saved_companies[:50],
         "user_constraints": user_constraints,
+        "search_plan": search_plan or {},
+        "recent_search_summary": recent_search_summary or [],
         "provider_diagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
         "candidate_jobs": [serialize_candidate_pool_entry(entry) for entry in candidate_entries],
         "selection_rules": {

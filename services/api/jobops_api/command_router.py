@@ -254,6 +254,7 @@ Rules:
 - Route job-posting save/track/add requests to add_job_from_url.
 - Route broad requests to find, discover, show, or recommend concrete jobs/roles/postings to job_discovery.
 - Route messages like "find some jobs for me to apply to", "find me some jobs to apply to", "find applied AI jobs", "find remote AI platform roles", and "show me roles I should consider" to job_discovery.
+- Route company-specific job-search requests like "check for relevant jobs at Tomoro", "look for jobs at Tomoro", and "look for new jobs at companies I'm following" to job_discovery, not company_discovery or company_update.
 - Do not ask what kind of jobs the user wants when profile_context or target_summary is present; job_discovery can use saved targets, saved companies, and the latest message as search context.
 - Route company research/finding/follow-list requests to company_discovery.
 - Route requests asking whether, which, or what companies to follow, watch, track, research, or add to the watchlist to company_discovery, even when phrased as career advice.
@@ -432,6 +433,15 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
     current_companies = [company for company in context.get("current_saved_companies") or [] if isinstance(company, dict)]
     matched_company = match_company_from_message(normalized, current_companies)
 
+    if looks_like_job_discovery(normalized, context.get("active_workspace")):
+        return router_json(
+            "job_discovery",
+            "high",
+            "jobs",
+            "User is asking to find concrete jobs to save.",
+            company=matched_company,
+            company_name=matched_company.get("name") if matched_company else infer_job_search_company_name(message),
+        )
     if looks_like_company_update(normalized):
         field = infer_company_update_field(normalized)
         return router_json(
@@ -447,8 +457,6 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
         )
     if looks_like_company_discovery(normalized, context.get("active_workspace")):
         return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
-    if looks_like_job_discovery(normalized, context.get("active_workspace")):
-        return router_json("job_discovery", "high", "jobs", "User is asking to find concrete jobs to save.")
     if "follow-up" in normalized or "follow up" in normalized:
         return router_json("follow_up_review", "high", "follow-ups", "User is asking about follow-ups.")
     if "material" in normalized or "cover letter" in normalized or "resume variant" in normalized:
@@ -620,6 +628,17 @@ def looks_like_job_discovery(normalized: str, active_workspace: object) -> bool:
         "find applied ai",
         "find ai platform",
         "find jobs like this",
+        "look for jobs",
+        "look for new jobs",
+        "check for relevant jobs",
+        "check my saved companies for jobs",
+        "jobs from my companies list",
+        "jobs at companies i follow",
+        "jobs at companies i'm following",
+        "try something broader",
+        "try a broader job search",
+        "search again",
+        "check tomoro again",
     ]
     if any(signal in normalized for signal in direct_signals):
         return True
@@ -630,6 +649,20 @@ def looks_like_job_discovery(normalized: str, active_workspace: object) -> bool:
         and any(term in normalized for term in find_terms)
         and any(term in normalized for term in role_terms)
     )
+
+
+def infer_job_search_company_name(message: str) -> str | None:
+    patterns = [
+        r"\b(?:at|from|for)\s+([A-Z][A-Za-z0-9&.\- ]{1,60}?)(?:\s+(?:again|jobs?|roles?|openings?|but|remote|hybrid)|[.?!]|$)",
+        r"\bcheck\s+([A-Z][A-Za-z0-9&.\- ]{1,60}?)(?:\s+again|[.?!]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message)
+        if match:
+            value = " ".join(match.group(1).split()).strip(" ,.;:-")
+            if value and value.casefold() not in {"my companies list", "companies i follow"}:
+                return value
+    return None
 
 
 def looks_like_company_discovery(normalized: str, active_workspace: object) -> bool:

@@ -23,6 +23,7 @@ def test_load_settings_uses_app_env_file(tmp_path: Path, monkeypatch: pytest.Mon
     assert settings.database_url == "postgresql://example"
     assert settings.cors_origins == ()
     assert settings.enable_api_docs is True
+    assert settings.job_discovery_save_limit == 25
 
 
 def test_load_settings_does_not_define_default_user_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -449,6 +449,7 @@ def dispatch_command_center_action(
             session=session,
             settings=settings,
             router_payload=router_payload,
+            router_decision=router_decision,
         )
 
     if interpreted_action == "company_update":
@@ -697,6 +698,7 @@ def execute_job_discovery_command(
     session: Session,
     settings,
     router_payload: dict[str, Any] | None = None,
+    router_decision: CommandRouterOutput | None = None,
 ) -> CommandCenterCommandResponse:
     discovery_result = run_job_discovery(
         JobDiscoveryRequest(
@@ -704,6 +706,7 @@ def execute_job_discovery_command(
             candidate_profile_slug=candidate_slug,
             active_workspace=request.active_workspace,
             client_context=request.client_context,
+            router_extracted=router_decision.extracted.model_dump(by_alias=True) if router_decision is not None else None,
         ),
         db_session=session,
         settings=settings,
@@ -1106,6 +1109,16 @@ def is_job_discovery_command(normalized_command: str, active_workspace: str | No
         "find applied ai",
         "find ai platform",
         "find jobs like this",
+        "look for jobs",
+        "look for new jobs",
+        "check for relevant jobs",
+        "check my saved companies for jobs",
+        "jobs from my companies list",
+        "jobs at companies i follow",
+        "jobs at companies i'm following",
+        "try something broader",
+        "try a broader job search",
+        "search again",
     ]
     if any(signal in normalized_command for signal in direct_signals):
         return True

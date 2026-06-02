@@ -27,7 +27,7 @@ from ..company_canonicalization import (
     ensure_candidate_company_link,
     upsert_canonical_company,
 )
-from ..db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting
+from ..db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting, JobSearchQueryRun, JobSearchRun
 from ..db.session import get_db_session
 from ..model_connector import ModelConnector
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
@@ -45,6 +45,7 @@ from .models import (
     JobProviderConfigurationError,
     JobProviderRuntimeError,
     JobSearchRequest,
+    JobSearchPlan,
     JobUrlVerificationResult,
     LiveJobSourceResult,
     ProviderDiagnostic,
@@ -54,6 +55,7 @@ from .models import (
     SkippedJobResult,
     SkipReasonCode,
 )
+from .planning import select_job_search_plan_with_model
 from .selection import (
     apply_model_selection_to_source_result,
     build_empty_job_candidate_selection_result,
@@ -279,27 +281,63 @@ def run_live_source_job_discovery(
     target_context: dict[str, Any],
     private_profile_context: dict[str, Any],
 ) -> JobDiscoveryServiceResult:
-    fresh_search_queries = build_provider_job_search_queries(
+    user_urls = extract_http_urls(request.latest_user_message)
+    provider_names = configured_job_provider_names(settings)
+    recent_search_history = load_recent_job_search_history(
+        db_session,
+        candidate_profile.id,
+        limit=settings.job_discovery_recent_search_limit,
+    )
+    planner_result = select_job_search_plan_with_model(
         request,
+        connector=connector,
+        settings=settings,
+        router_extracted=request.router_extracted,
+        current_saved_jobs=current_saved_jobs,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        recent_search_history=recent_search_history,
+        provider_capabilities=build_provider_capabilities(settings, provider_names),
+    )
+    search_plan = planner_result.plan
+    fresh_search_queries = build_provider_job_search_queries_from_plan(
+        request,
+        search_plan=search_plan,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
     )
-    user_urls = extract_http_urls(request.latest_user_message)
-    provider_names = configured_job_provider_names(settings)
     search_request = JobSearchRequest(
         latest_user_message=request.latest_user_message,
         search_queries=fresh_search_queries,
-        results_per_provider=settings.job_discovery_results_per_provider,
+        results_per_provider=search_plan.provider_strategy.requested_result_goal,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
-        user_constraints=infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
+        user_constraints=compact_unique_strings(
+            [
+                *infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
+                *search_plan.exclude_terms,
+            ],
+            limit=40,
+        ),
+        search_plan=search_plan,
+        company_names=search_plan.company_names,
+        locations=search_plan.locations,
+        max_provider_pages=search_plan.provider_strategy.max_provider_pages,
     )
     search_queries_used: list[str] = fresh_search_queries
     provider_diagnostics: list[ProviderDiagnostic] = []
     provider_errors: list[str] = []
     save_result: JobDiscoverySaveResult | None = None
+    search_run = create_job_search_run(
+        db_session,
+        candidate_profile=candidate_profile,
+        command_text=request.latest_user_message,
+        search_plan=search_plan,
+        provider_names=provider_names,
+    )
 
     log_job_discovery_provider_plan(
         settings,
@@ -308,6 +346,7 @@ def run_live_source_job_discovery(
         search_queries=fresh_search_queries,
         saved_job_count=len(current_saved_jobs),
         saved_company_count=len(current_saved_companies),
+        search_plan=search_plan,
     )
 
     if user_urls:
@@ -337,6 +376,8 @@ def run_live_source_job_discovery(
             "Job discovery live providers are not configured: %s",
             json.dumps(payload, sort_keys=True),
         )
+        complete_job_search_run(search_run, status="failed", provider_diagnostics=[], error="No job discovery providers configured.")
+        db_session.commit()
         return live_job_discovery_unconfigured_response(
             settings,
             mode=mode,
@@ -355,6 +396,8 @@ def run_live_source_job_discovery(
                 "Job discovery provider configuration failed: %s",
                 json.dumps(payload, sort_keys=True),
             )
+            complete_job_search_run(search_run, status="failed", provider_diagnostics=[], error=str(error))
+            db_session.commit()
             return live_job_discovery_unconfigured_response(
                 settings,
                 mode="unavailable",
@@ -367,6 +410,14 @@ def run_live_source_job_discovery(
         provider_diagnostics = search_outcome.diagnostics
         provider_errors = search_outcome.errors
         if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
+            persist_job_search_query_runs(db_session, search_run, provider_diagnostics)
+            complete_job_search_run(
+                search_run,
+                status="failed",
+                provider_diagnostics=provider_diagnostics,
+                error="; ".join(provider_errors[:3]),
+            )
+            db_session.commit()
             log_job_discovery_provider_summary(
                 settings,
                 provider_names=provider_names,
@@ -376,6 +427,7 @@ def run_live_source_job_discovery(
                 saved_count=0,
                 skipped_count=0,
                 errors=provider_errors,
+                search_plan=search_plan,
                 level=logging.WARNING,
             )
             return live_job_discovery_provider_error_response(
@@ -401,6 +453,7 @@ def run_live_source_job_discovery(
             search_queries=fresh_search_queries,
             target_context=target_context,
             private_profile_context=private_profile_context,
+            search_plan=search_plan,
         ),
     )
     preselection_skipped = candidate_pool.skipped
@@ -431,6 +484,8 @@ def run_live_source_job_discovery(
                 provider_diagnostics=provider_diagnostics,
                 user_constraints=search_request.user_constraints,
                 save_limit=settings.job_discovery_save_limit,
+                search_plan=search_plan.model_dump(by_alias=True),
+                recent_search_summary=recent_search_history[:10],
             )
             if isinstance(selection_result_or_error, JobDiscoveryServiceResult):
                 return selection_result_or_error
@@ -485,14 +540,25 @@ def run_live_source_job_discovery(
         "skippedJobs": skipped_jobs,
         "skippedReasons": skipped_counts,
         "jobDiscoveryMode": job_discovery_mode,
+        "jobSearchRunId": search_run.id,
         "configuredProviders": list(provider_names),
         "providerDiagnostics": [diagnostic.to_dict() for diagnostic in provider_diagnostics],
+        "searchPlan": search_plan.model_dump(by_alias=True),
+        "searchCriteria": summarize_search_plan(search_plan),
+        "recentSearchesUsed": planner_result.recent_searches_used_count,
+        "plannerFallbackUsed": planner_result.fallback_used,
+        "plannerProvider": planner_result.response_provider,
+        "plannerModel": planner_result.response_model,
         "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
         "providerName": ",".join(provider_names) if provider_names else job_discovery_mode,
         "sourceName": ",".join(provider_names) if provider_names else job_discovery_mode,
         "searchQueriesUsed": search_queries_used,
         "providerResultCount": provider_result_count,
-        "providerRawResultCount": provider_result_count,
+        "providerRawResultCount": provider_raw_result_count(provider_diagnostics, provider_result_count),
+        "totalMatchesReported": total_matches_reported(provider_diagnostics),
+        "pagesAttempted": total_pages_attempted(provider_diagnostics),
+        "replansAttempted": 0,
+        "companiesSearched": search_plan.company_names,
         "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
         "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
         "candidateCountAfterHardExclusionFilter": candidate_pool.count_after_hard_exclusion_filter,
@@ -510,6 +576,20 @@ def run_live_source_job_discovery(
         "excludedJobUrlCount": len(current_saved_job_urls(current_saved_jobs)),
         "currentSavedCompanyCount": len(current_saved_companies),
     }
+    persist_job_search_query_runs(db_session, search_run, provider_diagnostics, candidate_pool=candidate_pool)
+    complete_job_search_run(
+        search_run,
+        status="completed",
+        provider_diagnostics=provider_diagnostics,
+        total_provider_results=provider_result_count,
+        candidate_pool_count=len(candidate_pool.entries),
+        model_selected_count=len(selection_result.selected_entries) if selection_result is not None else len(saved_jobs),
+        saved_count=len(saved_jobs),
+        updated_existing_count=len(updated_saved_jobs),
+        duplicate_count=result_payload["duplicateCount"],
+        skipped_count=len(skipped_jobs),
+    )
+    db_session.commit()
     summary_level = logging.INFO
     if provider_errors or (provider_names and provider_result_count == 0):
         summary_level = logging.WARNING
@@ -522,6 +602,7 @@ def run_live_source_job_discovery(
         saved_count=len(saved_jobs),
         skipped_count=len(skipped_jobs),
         errors=provider_errors,
+        search_plan=search_plan,
         level=summary_level,
     )
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
@@ -647,6 +728,7 @@ def log_job_discovery_provider_plan(
     search_queries: list[str],
     saved_job_count: int,
     saved_company_count: int,
+    search_plan: JobSearchPlan | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "configuredProviders": list(provider_names),
@@ -657,6 +739,8 @@ def log_job_discovery_provider_plan(
     }
     if should_log_job_discovery_debug(settings):
         payload["searchQueryPreviews"] = [safe_log_preview(query, limit=160) for query in search_queries[:5]]
+        if search_plan is not None:
+            payload["searchCriteria"] = summarize_search_plan(search_plan)
     logger.info("Job discovery provider plan: %s", json.dumps(payload, sort_keys=True))
 
 
@@ -670,6 +754,7 @@ def log_job_discovery_provider_summary(
     saved_count: int,
     skipped_count: int,
     errors: list[str],
+    search_plan: JobSearchPlan | None = None,
     level: int = logging.INFO,
 ) -> None:
     payload: dict[str, Any] = {
@@ -678,16 +763,21 @@ def log_job_discovery_provider_summary(
         "candidateCountAfterDedupe": candidate_count_after_dedupe,
         "savedCount": saved_count,
         "skippedCount": skipped_count,
+        "saveLimit": settings.job_discovery_save_limit,
+        "candidatePoolLimit": settings.job_discovery_candidate_pool_limit,
         "providerDiagnostics": [
             serialize_provider_diagnostic_for_log(settings, diagnostic) for diagnostic in diagnostics
         ],
     }
+    if search_plan is not None and should_log_job_discovery_debug(settings):
+        payload["searchCriteria"] = summarize_search_plan(search_plan)
     if errors:
         if should_log_job_discovery_debug(settings):
             payload["providerErrors"] = [safe_log_preview(error, limit=240) for error in errors[:8]]
         else:
             payload["providerErrorCount"] = len(errors)
-    logger.log(level, "Job discovery provider summary: %s", json.dumps(payload, sort_keys=True, default=str))
+    visible_level = logging.WARNING if level == logging.INFO and should_log_job_discovery_debug(settings) else level
+    logger.log(visible_level, "Job discovery provider summary: %s", json.dumps(payload, sort_keys=True, default=str))
 
 
 def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: ProviderDiagnostic) -> dict[str, Any]:
@@ -700,12 +790,24 @@ def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: Provid
     }
     if diagnostic.raw_result_count is not None:
         payload["rawResultCount"] = diagnostic.raw_result_count
+    if diagnostic.total_matches is not None:
+        payload["totalMatches"] = diagnostic.total_matches
+    if diagnostic.page is not None:
+        payload["page"] = diagnostic.page
+    if diagnostic.pages_attempted is not None:
+        payload["pagesAttempted"] = diagnostic.pages_attempted
     if diagnostic.search_mode:
         payload["searchMode"] = diagnostic.search_mode
     if diagnostic.board_token:
         payload["boardToken"] = diagnostic.board_token
     if diagnostic.query and should_log_job_discovery_debug(settings):
         payload["queryPreview"] = safe_log_preview(diagnostic.query, limit=160)
+    if diagnostic.location:
+        payload["location"] = diagnostic.location
+    if diagnostic.company_name:
+        payload["companyName"] = diagnostic.company_name
+    if diagnostic.request_criteria and should_log_job_discovery_debug(settings):
+        payload["requestCriteria"] = diagnostic.request_criteria
     if diagnostic.error:
         payload["error"] = (
             safe_log_preview(diagnostic.error, limit=240)
@@ -717,6 +819,38 @@ def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: Provid
 
 def should_log_job_discovery_debug(settings: Settings) -> bool:
     return settings.app_env.lower() not in {"prod", "production"}
+
+
+def build_provider_capabilities(settings: Settings, provider_names: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "providers": [
+            {
+                "name": name,
+                "type": provider_type_for_name(name),
+                "supports_total_matches": name == "adzuna",
+                "supports_pagination": name == "adzuna",
+                "supports_company_boards": name in {"greenhouse", "ashby"},
+            }
+            for name in provider_names
+        ],
+        "limits": {
+            "results_per_provider": settings.job_discovery_results_per_provider,
+            "candidate_pool_limit": settings.job_discovery_candidate_pool_limit,
+            "save_limit": settings.job_discovery_save_limit,
+            "max_provider_pages": settings.job_discovery_max_provider_pages,
+            "replan_limit": settings.job_discovery_search_replan_limit,
+            "company_search_limit": settings.job_discovery_company_search_limit,
+        },
+    }
+
+
+def provider_type_for_name(provider_name: str) -> str:
+    return {
+        "adzuna": "broad_search",
+        "greenhouse": "ats_board",
+        "ashby": "ats_board",
+        "mock": "mock",
+    }.get(provider_name, "unknown")
 
 
 def configured_job_provider_names(settings: Settings) -> tuple[str, ...]:
@@ -1063,6 +1197,43 @@ def build_provider_job_search_queries(
     return compact_unique_strings(queries, limit=12)
 
 
+def build_provider_job_search_queries_from_plan(
+    request: JobDiscoveryRequest,
+    *,
+    search_plan: JobSearchPlan,
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> list[str]:
+    role_queries = search_plan.role_queries or infer_job_search_role_queries(
+        request.latest_user_message,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    role_queries = [query for query in role_queries if query and query.casefold() not in {"job", "jobs"}] or ["jobs"]
+    queries: list[str] = []
+
+    if search_plan.search_mode in {"company_specific", "followed_companies"} and search_plan.company_names:
+        for company_name in search_plan.company_names:
+            for role in role_queries[:3]:
+                queries.append(compact_provider_query([company_name, role, *search_plan.remote_work_modes[:1]]))
+        if search_plan.search_mode == "company_specific":
+            return compact_unique_strings(queries, limit=12)
+
+    for role in role_queries[:6]:
+        query_parts = [role]
+        if "remote" in search_plan.remote_work_modes and "remote" not in role.casefold():
+            query_parts.append("remote")
+        queries.append(compact_provider_query(query_parts))
+
+    _ = current_saved_companies
+    return compact_unique_strings(queries, limit=12)
+
+
+def compact_provider_query(parts: list[str]) -> str:
+    return " ".join(part for part in (" ".join(str(part).split()).strip() for part in parts) if part)
+
+
 def build_fresh_job_search_queries(
     request: JobDiscoveryRequest,
     *,
@@ -1108,9 +1279,15 @@ def build_job_relevance_terms(
     search_queries: list[str],
     target_context: dict[str, Any],
     private_profile_context: dict[str, Any],
+    search_plan: JobSearchPlan | None = None,
 ) -> list[str]:
     terms: list[str] = []
     terms.extend(search_queries)
+    if search_plan is not None:
+        terms.extend(search_plan.role_queries)
+        terms.extend(search_plan.include_terms)
+        terms.extend(search_plan.company_names)
+        terms.extend(search_plan.locations)
     terms.extend(infer_job_search_role_queries(latest_user_message, target_context=target_context, private_profile_context=private_profile_context))
     terms.extend(coerce_string_list(target_context.get("skills")))
     terms.extend(coerce_string_list(target_context.get("keywords")))
@@ -1383,6 +1560,184 @@ def current_saved_job_urls(current_saved_jobs: list[dict[str, Any]]) -> list[str
             urls.append(normalized)
     return urls
 
+
+def load_recent_job_search_history(session: Session, candidate_profile_id: str, *, limit: int) -> list[dict[str, Any]]:
+    capped_limit = max(1, min(limit, 50))
+    runs = list(
+        session.scalars(
+            select(JobSearchRun)
+            .where(JobSearchRun.candidate_profile_id == candidate_profile_id)
+            .order_by(JobSearchRun.created_at.desc())
+            .limit(capped_limit)
+        )
+    )
+    if not runs:
+        return []
+    run_ids = [run.id for run in runs]
+    query_runs = list(
+        session.scalars(
+            select(JobSearchQueryRun)
+            .where(JobSearchQueryRun.job_search_run_id.in_(run_ids))
+            .order_by(JobSearchQueryRun.created_at.desc())
+            .limit(capped_limit * 4)
+        )
+    )
+    queries_by_run: dict[str, list[JobSearchQueryRun]] = {}
+    for query_run in query_runs:
+        queries_by_run.setdefault(query_run.job_search_run_id, []).append(query_run)
+    return [serialize_recent_job_search_run(run, queries_by_run.get(run.id, [])[:8]) for run in runs]
+
+
+def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearchQueryRun]) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "command_text": safe_log_preview(run.command_text, limit=240),
+        "search_mode": run.search_mode,
+        "status": run.status,
+        "provider_names": run.provider_names or [],
+        "searched_role_queries": (run.search_plan_json or {}).get("roleQueries") or (run.search_plan_json or {}).get("role_queries") or [],
+        "searched_companies": (run.search_plan_json or {}).get("companyNames") or (run.search_plan_json or {}).get("company_names") or [],
+        "total_provider_results": run.total_provider_results,
+        "total_matches_reported": run.total_matches_reported,
+        "candidate_pool_count": run.candidate_pool_count,
+        "model_selected_count": run.model_selected_count,
+        "saved_count": run.saved_count,
+        "duplicate_count": run.duplicate_count,
+        "skipped_count": run.skipped_count,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "queries": [
+            {
+                "provider_name": query.provider_name,
+                "query": safe_log_preview(query.query or "", limit=160) or None,
+                "company_name": query.company_name,
+                "location": query.location,
+                "page": query.page,
+                "total_matches": query.total_matches,
+                "raw_result_count": query.raw_result_count,
+                "normalized_result_count": query.normalized_result_count,
+                "candidate_count_after_filters": query.candidate_count_after_filters,
+                "error": safe_log_preview(query.error or "", limit=160) or None,
+            }
+            for query in query_runs
+        ],
+    }
+
+
+def create_job_search_run(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    command_text: str,
+    search_plan: JobSearchPlan,
+    provider_names: tuple[str, ...],
+) -> JobSearchRun:
+    run = JobSearchRun(
+        candidate_profile_id=candidate_profile.id,
+        command_text=command_text,
+        search_plan_json=search_plan.model_dump(by_alias=True),
+        provider_names=list(provider_names),
+        search_mode=search_plan.search_mode,
+        status="started",
+        total_provider_results=0,
+        candidate_pool_count=0,
+        model_selected_count=0,
+        saved_count=0,
+        updated_existing_count=0,
+        duplicate_count=0,
+        skipped_count=0,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def persist_job_search_query_runs(
+    session: Session,
+    run: JobSearchRun,
+    provider_diagnostics: list[ProviderDiagnostic],
+    *,
+    candidate_pool: CandidatePoolBuildResult | None = None,
+) -> None:
+    for diagnostic in provider_diagnostics:
+        session.add(
+            JobSearchQueryRun(
+                job_search_run_id=run.id,
+                provider_name=diagnostic.provider_name,
+                query=diagnostic.query,
+                company_name=diagnostic.company_name,
+                location=diagnostic.location,
+                page=diagnostic.page,
+                total_matches=diagnostic.total_matches,
+                raw_result_count=diagnostic.raw_result_count or diagnostic.result_count or 0,
+                normalized_result_count=diagnostic.normalized_result_count
+                if diagnostic.normalized_result_count is not None
+                else diagnostic.result_count,
+                deduped_result_count=diagnostic.deduped_result_count
+                if diagnostic.deduped_result_count is not None
+                else diagnostic.result_count,
+                candidate_count_after_filters=diagnostic.candidate_count_after_filters
+                if diagnostic.candidate_count_after_filters is not None
+                else (candidate_pool.count_after_hard_exclusion_filter if candidate_pool is not None else 0),
+                error=diagnostic.error,
+            )
+        )
+
+
+def complete_job_search_run(
+    run: JobSearchRun,
+    *,
+    status: str,
+    provider_diagnostics: list[ProviderDiagnostic],
+    total_provider_results: int = 0,
+    candidate_pool_count: int = 0,
+    model_selected_count: int = 0,
+    saved_count: int = 0,
+    updated_existing_count: int = 0,
+    duplicate_count: int = 0,
+    skipped_count: int = 0,
+    error: str | None = None,
+) -> None:
+    run.status = status
+    run.total_provider_results = total_provider_results
+    run.total_matches_reported = total_matches_reported(provider_diagnostics)
+    run.candidate_pool_count = candidate_pool_count
+    run.model_selected_count = model_selected_count
+    run.saved_count = saved_count
+    run.updated_existing_count = updated_existing_count
+    run.duplicate_count = duplicate_count
+    run.skipped_count = skipped_count
+    run.error = error
+    run.completed_at = datetime.now(timezone.utc)
+
+
+def total_matches_reported(provider_diagnostics: list[ProviderDiagnostic]) -> int | None:
+    values = [diagnostic.total_matches for diagnostic in provider_diagnostics if diagnostic.total_matches is not None]
+    return sum(values) if values else None
+
+
+def provider_raw_result_count(provider_diagnostics: list[ProviderDiagnostic], fallback: int) -> int:
+    values = [diagnostic.raw_result_count for diagnostic in provider_diagnostics if diagnostic.raw_result_count is not None]
+    return sum(values) if values else fallback
+
+
+def total_pages_attempted(provider_diagnostics: list[ProviderDiagnostic]) -> int:
+    pages = [diagnostic.page for diagnostic in provider_diagnostics if diagnostic.page is not None]
+    if pages:
+        return len(pages)
+    return sum(diagnostic.pages_attempted or 0 for diagnostic in provider_diagnostics)
+
+
+def summarize_search_plan(search_plan: JobSearchPlan) -> dict[str, Any]:
+    return {
+        "searchMode": search_plan.search_mode,
+        "roleQueries": search_plan.role_queries,
+        "companyNames": search_plan.company_names,
+        "locations": search_plan.locations,
+        "remoteWorkModes": search_plan.remote_work_modes,
+        "salaryMin": search_plan.salary_min,
+        "excludeTerms": search_plan.exclude_terms,
+        "maxProviderPages": search_plan.provider_strategy.max_provider_pages,
+    }
 
 
 def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) -> list[dict[str, Any]]:
