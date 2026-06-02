@@ -1125,11 +1125,279 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["providerDiagnostics"][0]["providerName"] == "adzuna"
         assert result.body["result"]["providerDiagnostics"][0]["resultCount"] == 0
         assert result.body["result"]["providerDiagnostics"][0]["attempted"] is True
-        # Replanning is deferred for this branch: the cap is surfaced, but no second provider pass runs.
-        assert result.body["result"]["replansAttempted"] == 0
+        assert result.body["result"]["replansAttempted"] == settings.job_discovery_search_replan_limit
         assert result.body["result"]["replanLimit"] == settings.job_discovery_search_replan_limit
-        assert result.body["result"]["replanningStatus"] == "deferred"
-        assert "not implemented" in result.body["result"]["replanningDeferredReason"]
+        assert result.body["result"]["replanningStatus"] == "attempted"
+        assert result.body["result"]["replanReasons"] == ["no_provider_results"]
+
+
+def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+    selection_payloads = []
+    provider_calls = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(self.payload).encode("utf-8")
+
+    class ReplanningConnector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                payload = json.loads(request.messages[-1].content)
+                planner_payloads.append(payload)
+                if len(planner_payloads) == 1:
+                    return fake_job_search_planner_response(role_query="No Match AI Engineer", requested_result_goal=10)
+                return fake_job_search_planner_response(role_query="AI Platform Engineer", requested_result_goal=10)
+            assert request.task == "job_candidate_selection"
+            payload = json.loads(request.messages[-1].content)
+            selection_payloads.append(payload)
+            selected_candidate = payload["candidate_jobs"][0]
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected the replanned provider result.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": selected_candidate["candidateId"],
+                                "fitSummary": "Strong AI platform fit.",
+                                "rank": 1,
+                                "selectionReason": "Found after replanning from the zero-result query.",
+                                "concerns": [],
+                            }
+                        ],
+                        "skippedCandidateNotes": [],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    def fake_urlopen(_request, timeout):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            return FakeResponse({"count": 0, "results": []})
+        return FakeResponse(
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "id": "adz-replanned-1",
+                        "title": "AI Platform Engineer",
+                        "company": {"display_name": "Replanned AI"},
+                        "redirect_url": "https://jobs.example.test/replanned-ai-platform",
+                        "description": "Build AI workflow automation.",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=ReplanningConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 2
+        assert provider_calls >= 2
+        assert planner_payloads[1]["replan_context"]["reason"] == "zero_total_matches"
+        assert planner_payloads[1]["replan_context"]["priorSearchPlan"]["roleQueries"] == ["No Match AI Engineer"]
+        assert planner_payloads[1]["replan_context"]["providerResultCount"] == 0
+        assert result.body["result"]["replansAttempted"] == 1
+        assert result.body["result"]["replanReasons"] == ["zero_total_matches"]
+        assert result.body["result"]["savedCount"] == 1
+        assert selection_payloads[0]["candidate_jobs"][0]["title"] == "AI Platform Engineer"
+        run = session.scalar(select(JobSearchRun))
+        assert run is not None
+        assert run.replans_attempted == 1
+        assert run.search_plan_json["roleQueries"] == ["AI Platform Engineer"]
+        assert len(session.scalars(select(JobSearchQueryRun)).all()) == 2
+
+
+def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+    provider_calls = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"count": 0, "results": []}).encode("utf-8")
+
+    class ReplanningConnector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                payload = json.loads(request.messages[-1].content)
+                planner_payloads.append(payload)
+                return fake_job_search_planner_response(
+                    role_query=f"No Match AI Engineer {len(planner_payloads)}",
+                    requested_result_goal=10,
+                )
+            raise AssertionError("Candidate selection should not run without provider candidates.")
+
+    def fake_urlopen(_request, timeout):
+        nonlocal provider_calls
+        provider_calls += 1
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=ReplanningConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 2
+        assert provider_calls == 2
+        assert result.body["result"]["replansAttempted"] == 1
+        assert result.body["result"]["replanLimit"] == 1
+        assert result.body["result"]["savedCount"] == 0
+
+
+def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "AI Platform Engineer",
+                            "company": {"display_name": "One Match AI"},
+                            "redirect_url": "https://jobs.example.test/one-match-ai-platform",
+                            "description": "Build AI workflow automation.",
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    class Connector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                planner_payloads.append(json.loads(request.messages[-1].content))
+                return fake_job_search_planner_response(role_query="AI Platform Engineer", requested_result_goal=10)
+            assert request.task == "job_candidate_selection"
+            payload = json.loads(request.messages[-1].content)
+            selected_candidate = payload["candidate_jobs"][0]
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected the only provider-backed match.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": selected_candidate["candidateId"],
+                                "fitSummary": "Good platform fit.",
+                                "rank": 1,
+                                "selectionReason": "The provider reported this is the only match.",
+                                "concerns": [],
+                            }
+                        ],
+                        "skippedCandidateNotes": [],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=Connector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 1
+        assert result.body["result"]["replansAttempted"] == 0
+        assert result.body["result"]["replanningStatus"] == "not_needed"
+        assert result.body["result"]["savedCount"] == 1
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:

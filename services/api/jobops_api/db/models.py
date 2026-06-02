@@ -441,6 +441,7 @@ class JobSearchRun(Base):
     total_provider_results: Mapped[int] = mapped_column(Integer, default=0)
     total_matches_reported: Mapped[int | None] = mapped_column(Integer, nullable=True)
     candidate_pool_count: Mapped[int] = mapped_column(Integer, default=0)
+    replans_attempted: Mapped[int] = mapped_column(Integer, default=0)
     model_selected_count: Mapped[int] = mapped_column(Integer, default=0)
     saved_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_existing_count: Mapped[int] = mapped_column(Integer, default=0)

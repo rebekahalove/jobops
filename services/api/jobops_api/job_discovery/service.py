@@ -46,6 +46,7 @@ from .models import (
     JobProviderRuntimeError,
     JobSearchRequest,
     JobSearchPlan,
+    JobSearchPlannerResult,
     JobUrlVerificationResult,
     LiveJobSourceResult,
     ProviderDiagnostic,
@@ -301,35 +302,18 @@ def run_live_source_job_discovery(
         provider_capabilities=build_provider_capabilities(settings, provider_names),
     )
     search_plan = planner_result.plan
-    fresh_search_queries = build_provider_job_search_queries_from_plan(
+    fresh_search_queries, search_request = build_job_search_request_for_plan(
         request,
         search_plan=search_plan,
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
     )
-    search_request = JobSearchRequest(
-        latest_user_message=request.latest_user_message,
-        search_queries=fresh_search_queries,
-        results_per_provider=search_plan.provider_strategy.requested_result_goal,
-        current_saved_companies=current_saved_companies,
-        target_context=target_context,
-        private_profile_context=private_profile_context,
-        user_constraints=compact_unique_strings(
-            [
-                *infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
-                *search_plan.exclude_terms,
-            ],
-            limit=40,
-        ),
-        search_plan=search_plan,
-        company_names=search_plan.company_names,
-        locations=search_plan.locations,
-        max_provider_pages=search_plan.provider_strategy.max_provider_pages,
-    )
-    search_queries_used: list[str] = fresh_search_queries
+    search_queries_used: list[str] = []
     provider_diagnostics: list[ProviderDiagnostic] = []
     provider_errors: list[str] = []
+    replan_reasons: list[str] = []
+    replans_attempted = 0
     save_result: JobDiscoverySaveResult | None = None
     search_run = create_job_search_run(
         db_session,
@@ -339,21 +323,12 @@ def run_live_source_job_discovery(
         provider_names=provider_names,
     )
 
-    log_job_discovery_provider_plan(
-        settings,
-        provider_names=provider_names,
-        user_url_count=len(user_urls),
-        search_queries=fresh_search_queries,
-        saved_job_count=len(current_saved_jobs),
-        saved_company_count=len(current_saved_companies),
-        search_plan=search_plan,
-    )
-
     if user_urls:
         source_results = build_user_url_source_results(user_urls)
         provider_result_count = len(source_results)
         job_discovery_mode = "live_provider"
         provider_names = ("user_url",)
+        search_queries_used = fresh_search_queries
         provider_diagnostics = [
             ProviderDiagnostic(
                 provider_name="user_url",
@@ -406,55 +381,128 @@ def run_live_source_job_discovery(
                 detail=str(error),
             )
         job_discovery_mode = "mock" if provider_names == ("mock",) else "live_provider"
-        search_outcome = run_configured_job_providers(providers, search_request, settings)
-        provider_diagnostics = search_outcome.diagnostics
-        provider_errors = search_outcome.errors
-        if provider_errors and not settings.job_discovery_allow_partial_provider_failures:
-            persist_job_search_query_runs(db_session, search_run, provider_diagnostics)
-            complete_job_search_run(
-                search_run,
-                status="failed",
-                provider_diagnostics=provider_diagnostics,
-                error="; ".join(provider_errors[:3]),
-            )
-            db_session.commit()
-            log_job_discovery_provider_summary(
-                settings,
-                provider_names=provider_names,
-                diagnostics=provider_diagnostics,
-                provider_result_count=len(search_outcome.results),
-                candidate_count_after_dedupe=0,
-                saved_count=0,
-                skipped_count=0,
-                errors=provider_errors,
+        merged_source_results: list[LiveJobSourceResult] = []
+        provider_result_count = 0
+        current_planner_result: JobSearchPlannerResult = planner_result
+        while True:
+            search_plan = current_planner_result.plan
+            fresh_search_queries, search_request = build_job_search_request_for_plan(
+                request,
                 search_plan=search_plan,
-                level=logging.WARNING,
+                current_saved_companies=current_saved_companies,
+                target_context=target_context,
+                private_profile_context=private_profile_context,
             )
-            return live_job_discovery_provider_error_response(
+            search_queries_used = compact_unique_strings([*search_queries_used, *fresh_search_queries], limit=50)
+            log_job_discovery_provider_plan(
                 settings,
                 provider_names=provider_names,
+                user_url_count=len(user_urls),
                 search_queries=fresh_search_queries,
-                provider_diagnostics=provider_diagnostics,
-                errors=provider_errors,
+                saved_job_count=len(current_saved_jobs),
+                saved_company_count=len(current_saved_companies),
+                search_plan=search_plan,
             )
-        provider_result_count = len(search_outcome.results)
-        source_results = search_outcome.results
+            search_outcome = run_configured_job_providers(providers, search_request, settings)
+            provider_diagnostics.extend(search_outcome.diagnostics)
+            provider_errors.extend(search_outcome.errors)
+            if search_outcome.errors and not settings.job_discovery_allow_partial_provider_failures:
+                persist_job_search_query_runs(db_session, search_run, provider_diagnostics)
+                complete_job_search_run(
+                    search_run,
+                    status="failed",
+                    provider_diagnostics=provider_diagnostics,
+                    error="; ".join(provider_errors[:3]),
+                    replans_attempted=replans_attempted,
+                )
+                db_session.commit()
+                log_job_discovery_provider_summary(
+                    settings,
+                    provider_names=provider_names,
+                    diagnostics=provider_diagnostics,
+                    provider_result_count=len(search_outcome.results),
+                    candidate_count_after_dedupe=0,
+                    saved_count=0,
+                    skipped_count=0,
+                    errors=provider_errors,
+                    search_plan=search_plan,
+                    level=logging.WARNING,
+                )
+                return live_job_discovery_provider_error_response(
+                    settings,
+                    provider_names=provider_names,
+                    search_queries=fresh_search_queries,
+                    provider_diagnostics=provider_diagnostics,
+                    errors=provider_errors,
+                )
+            provider_result_count += len(search_outcome.results)
+            merged_source_results = dedupe_provider_results([*merged_source_results, *search_outcome.results])
+            merged_provider_result_count = len(merged_source_results)
+            candidate_pool = build_candidate_pool_for_search_plan(
+                request,
+                source_results=merged_source_results,
+                current_saved_jobs=current_saved_jobs,
+                search_request=search_request,
+                search_queries_used=search_queries_used,
+                target_context=target_context,
+                private_profile_context=private_profile_context,
+                search_plan=search_plan,
+                settings=settings,
+            )
+            replan_reason = job_search_replan_reason(
+                provider_diagnostics=provider_diagnostics,
+                provider_result_count=merged_provider_result_count,
+                candidate_pool=candidate_pool,
+                settings=settings,
+            )
+            if (
+                replan_reason is None
+                or not search_plan.provider_strategy.allow_replanning
+                or settings.job_discovery_search_replan_limit <= 0
+                or replans_attempted >= settings.job_discovery_search_replan_limit
+            ):
+                break
+            replan_context = build_job_search_replan_context(
+                reason=replan_reason,
+                prior_search_plan=search_plan,
+                search_queries_used=search_queries_used,
+                provider_diagnostics=provider_diagnostics,
+                provider_result_count=merged_provider_result_count,
+                candidate_pool=candidate_pool,
+                settings=settings,
+                replans_attempted=replans_attempted,
+            )
+            replan_reasons.append(replan_reason)
+            replans_attempted += 1
+            current_planner_result = select_job_search_plan_with_model(
+                request,
+                connector=connector,
+                settings=settings,
+                router_extracted=request.router_extracted,
+                current_saved_jobs=current_saved_jobs,
+                current_saved_companies=current_saved_companies,
+                target_context=target_context,
+                private_profile_context=private_profile_context,
+                recent_search_history=recent_search_history,
+                provider_capabilities=build_provider_capabilities(settings, provider_names),
+                replan_context=replan_context,
+            )
+            planner_result = current_planner_result
+        source_results = merged_source_results
 
     selection_result: JobCandidateSelectionResult | None = None
-    candidate_pool = build_candidate_pool(
-        source_results,
+    search_run.search_plan_json = search_plan.model_dump(by_alias=True)
+    search_run.search_mode = search_plan.search_mode
+    candidate_pool = build_candidate_pool_for_search_plan(
+        request,
+        source_results=source_results,
         current_saved_jobs=current_saved_jobs,
-        user_constraints=search_request.user_constraints,
-        save_limit=settings.job_discovery_save_limit,
-        candidate_pool_limit=settings.job_discovery_candidate_pool_limit,
-        company_cap=settings.job_discovery_company_candidate_cap,
-        relevance_terms=build_job_relevance_terms(
-            request.latest_user_message,
-            search_queries=fresh_search_queries,
-            target_context=target_context,
-            private_profile_context=private_profile_context,
-            search_plan=search_plan,
-        ),
+        search_request=search_request,
+        search_queries_used=search_queries_used,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        search_plan=search_plan,
+        settings=settings,
     )
     preselection_skipped = candidate_pool.skipped
     source_results = [entry.result for entry in candidate_pool.entries]
@@ -519,8 +567,6 @@ def run_live_source_job_discovery(
         for link in [*save_result.saved_links, *save_result.updated_existing_links]
         if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
     )
-    # Replanning is intentionally deferred in this branch. The planner request supports
-    # replan_context, but provider execution does not loop after zero/low-result searches yet.
     result_payload = {
         "assistantMessage": build_selected_job_discovery_assistant_message(
             selection_result,
@@ -559,13 +605,14 @@ def run_live_source_job_discovery(
         "providerRawResultCount": provider_raw_result_count(provider_diagnostics, provider_result_count),
         "totalMatchesReported": total_matches_reported(provider_diagnostics),
         "pagesAttempted": total_pages_attempted(provider_diagnostics),
-        "replansAttempted": 0,
+        "replansAttempted": replans_attempted,
         "replanLimit": settings.job_discovery_search_replan_limit,
-        "replanningStatus": "deferred",
-        "replanningDeferredReason": (
-            "Zero-result replanning is not implemented in this branch; search history, planning, "
-            "provider diagnostics, and capped pagination are persisted for a future replan loop."
+        "replanningStatus": job_search_replanning_status(
+            replans_attempted,
+            settings.job_discovery_search_replan_limit,
+            replan_reasons,
         ),
+        "replanReasons": replan_reasons,
         "companiesSearched": search_plan.company_names,
         "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
         "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
@@ -596,6 +643,7 @@ def run_live_source_job_discovery(
         updated_existing_count=len(updated_saved_jobs),
         duplicate_count=result_payload["duplicateCount"],
         skipped_count=len(skipped_jobs),
+        replans_attempted=replans_attempted,
     )
     db_session.commit()
     summary_level = logging.INFO
@@ -850,6 +898,140 @@ def build_provider_capabilities(settings: Settings, provider_names: tuple[str, .
             "company_search_limit": settings.job_discovery_company_search_limit,
         },
     }
+
+
+def build_job_search_request_for_plan(
+    request: JobDiscoveryRequest,
+    *,
+    search_plan: JobSearchPlan,
+    current_saved_companies: list[dict[str, Any]],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+) -> tuple[list[str], JobSearchRequest]:
+    search_queries = build_provider_job_search_queries_from_plan(
+        request,
+        search_plan=search_plan,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+    )
+    return search_queries, JobSearchRequest(
+        latest_user_message=request.latest_user_message,
+        search_queries=search_queries,
+        results_per_provider=search_plan.provider_strategy.requested_result_goal,
+        current_saved_companies=current_saved_companies,
+        target_context=target_context,
+        private_profile_context=private_profile_context,
+        user_constraints=compact_unique_strings(
+            [
+                *infer_user_constraint_terms(request.latest_user_message, target_context, private_profile_context),
+                *search_plan.exclude_terms,
+            ],
+            limit=40,
+        ),
+        search_plan=search_plan,
+        company_names=search_plan.company_names,
+        locations=search_plan.locations,
+        max_provider_pages=search_plan.provider_strategy.max_provider_pages,
+    )
+
+
+def build_candidate_pool_for_search_plan(
+    request: JobDiscoveryRequest,
+    *,
+    source_results: list[LiveJobSourceResult],
+    current_saved_jobs: list[dict[str, Any]],
+    search_request: JobSearchRequest,
+    search_queries_used: list[str],
+    target_context: dict[str, Any],
+    private_profile_context: dict[str, Any],
+    search_plan: JobSearchPlan,
+    settings: Settings,
+) -> CandidatePoolBuildResult:
+    return build_candidate_pool(
+        source_results,
+        current_saved_jobs=current_saved_jobs,
+        user_constraints=search_request.user_constraints,
+        save_limit=settings.job_discovery_save_limit,
+        candidate_pool_limit=settings.job_discovery_candidate_pool_limit,
+        company_cap=settings.job_discovery_company_candidate_cap,
+        relevance_terms=build_job_relevance_terms(
+            request.latest_user_message,
+            search_queries=search_queries_used,
+            target_context=target_context,
+            private_profile_context=private_profile_context,
+            search_plan=search_plan,
+        ),
+    )
+
+
+def job_search_replan_reason(
+    *,
+    provider_diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_pool: CandidatePoolBuildResult,
+    settings: Settings,
+) -> str | None:
+    total_matches = total_matches_reported(provider_diagnostics)
+    raw_result_count = provider_raw_result_count(provider_diagnostics, provider_result_count)
+    candidate_pool_target = min(settings.job_discovery_save_limit, settings.job_discovery_candidate_pool_limit)
+    if total_matches == 0:
+        return "zero_total_matches"
+    if provider_result_count == 0:
+        return "no_provider_results"
+    if len(candidate_pool.entries) < candidate_pool_target:
+        if total_matches is None:
+            return None
+        if total_matches > 0 and raw_result_count >= total_matches:
+            return None
+        return "insufficient_candidate_pool"
+    return None
+
+
+def build_job_search_replan_context(
+    *,
+    reason: str,
+    prior_search_plan: JobSearchPlan,
+    search_queries_used: list[str],
+    provider_diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_pool: CandidatePoolBuildResult,
+    settings: Settings,
+    replans_attempted: int,
+) -> dict[str, Any]:
+    diagnostics = provider_diagnostics[-20:]
+    total_matches_values = [
+        diagnostic.total_matches for diagnostic in diagnostics if diagnostic.total_matches is not None
+    ]
+    return {
+        "reason": reason,
+        "attemptNumber": replans_attempted + 1,
+        "priorSearchPlan": prior_search_plan.model_dump(by_alias=True),
+        "searchQueriesUsed": search_queries_used[-20:],
+        "providerDiagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
+        "totalMatchesValues": total_matches_values,
+        "totalMatchesReported": total_matches_reported(provider_diagnostics),
+        "rawResultCount": provider_raw_result_count(provider_diagnostics, provider_result_count),
+        "normalizedResultCount": sum(
+            diagnostic.normalized_result_count
+            if diagnostic.normalized_result_count is not None
+            else diagnostic.result_count
+            for diagnostic in provider_diagnostics
+        ),
+        "providerResultCount": provider_result_count,
+        "candidatePoolCount": len(candidate_pool.entries),
+        "candidatePoolTarget": min(settings.job_discovery_save_limit, settings.job_discovery_candidate_pool_limit),
+    }
+
+
+def job_search_replanning_status(replans_attempted: int, replan_limit: int, reasons: list[str]) -> str:
+    if replans_attempted > 0:
+        return "attempted"
+    if replan_limit <= 0:
+        return "disabled"
+    if reasons:
+        return "limited"
+    return "not_needed"
 
 
 def provider_type_for_name(provider_name: str) -> str:
@@ -1608,6 +1790,7 @@ def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearc
         "total_provider_results": run.total_provider_results,
         "total_matches_reported": run.total_matches_reported,
         "candidate_pool_count": run.candidate_pool_count,
+        "replans_attempted": run.replans_attempted,
         "model_selected_count": run.model_selected_count,
         "saved_count": run.saved_count,
         "duplicate_count": run.duplicate_count,
@@ -1648,6 +1831,7 @@ def create_job_search_run(
         status="started",
         total_provider_results=0,
         candidate_pool_count=0,
+        replans_attempted=0,
         model_selected_count=0,
         saved_count=0,
         updated_existing_count=0,
@@ -1698,6 +1882,7 @@ def complete_job_search_run(
     provider_diagnostics: list[ProviderDiagnostic],
     total_provider_results: int = 0,
     candidate_pool_count: int = 0,
+    replans_attempted: int = 0,
     model_selected_count: int = 0,
     saved_count: int = 0,
     updated_existing_count: int = 0,
@@ -1709,6 +1894,7 @@ def complete_job_search_run(
     run.total_provider_results = total_provider_results
     run.total_matches_reported = total_matches_reported(provider_diagnostics)
     run.candidate_pool_count = candidate_pool_count
+    run.replans_attempted = replans_attempted
     run.model_selected_count = model_selected_count
     run.saved_count = saved_count
     run.updated_existing_count = updated_existing_count
