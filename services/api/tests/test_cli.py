@@ -102,3 +102,23 @@ def test_seed_initial_user_cli_requires_explicit_admin_flag(monkeypatch):
 
     assert calls[0]["user_type"] == "admin"
     assert calls[0]["update_existing"] is True
+
+
+def test_seed_greenhouse_companies_cli_passes_candidate_slug(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "seed-greenhouse-companies",
+            "--candidate-slug",
+            "rebekah-love",
+        ],
+    )
+    monkeypatch.setattr(cli, "seed_greenhouse_companies_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls == [{"candidate_slug": "rebekah-love"}]

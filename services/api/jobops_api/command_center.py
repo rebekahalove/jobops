@@ -439,9 +439,9 @@ def dispatch_command_center_action(
             router_payload=router_payload,
         )
 
-    if interpreted_action == "job_discovery":
+    if interpreted_action in {"job_discovery", "add_job_from_url"}:
         if candidate_slug is None:
-            return missing_candidate_slug_response("job_discovery", "jobs", "Discover jobs")
+            return missing_candidate_slug_response(interpreted_action, "jobs", title_for_action(interpreted_action))
         return execute_job_discovery_command(
             request,
             candidate_slug=candidate_slug,
@@ -450,6 +450,7 @@ def dispatch_command_center_action(
             settings=settings,
             router_payload=router_payload,
             router_decision=router_decision,
+            action_type=interpreted_action,
         )
 
     if interpreted_action == "company_update":
@@ -699,6 +700,7 @@ def execute_job_discovery_command(
     settings,
     router_payload: dict[str, Any] | None = None,
     router_decision: CommandRouterOutput | None = None,
+    action_type: CommandActionType = "job_discovery",
 ) -> CommandCenterCommandResponse:
     discovery_result = run_job_discovery(
         JobDiscoveryRequest(
@@ -719,10 +721,10 @@ def execute_job_discovery_command(
             assistant_message=error_message,
             actions=[
                 CommandCenterActionResult(
-                    type="job_discovery",
+                    type=action_type,
                     status="failed",
                     targetWorkspace="jobs",
-                    title="Discover jobs",
+                    title=title_for_action(action_type),
                     summary=error_message,
                     resultPayload={**discovery_result.body, **router_debug_payload(router_payload)},
                 )
@@ -743,10 +745,10 @@ def execute_job_discovery_command(
         assistant_message=assistant_message,
         actions=[
             CommandCenterActionResult(
-                type="job_discovery",
+                type=action_type,
                 status="completed",
                 targetWorkspace="jobs",
-                title="Discover jobs",
+                title=title_for_action(action_type),
                 summary=build_job_discovery_action_summary(saved_count, updated_count, skipped_count),
                 resultPayload=result_payload,
             )
@@ -757,7 +759,7 @@ def execute_job_discovery_command(
             CommandCenterStatusUpdate(
                 stage="job_discovery",
                 message="Status update: searched for relevant jobs and reconciled matching postings with your Jobs list.",
-                actionType="job_discovery",
+                actionType=action_type,
                 confidence=None,
                 targetWorkspace="jobs",
             )

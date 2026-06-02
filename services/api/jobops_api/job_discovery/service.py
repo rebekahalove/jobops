@@ -325,7 +325,10 @@ def run_live_source_job_discovery(
     )
 
     if user_urls:
-        source_results = build_user_url_source_results(user_urls)
+        source_results, url_diagnostics, url_errors = build_user_url_source_results(
+            user_urls,
+            search_request=search_request,
+        )
         provider_result_count = len(source_results)
         job_discovery_mode = "live_provider"
         provider_names = ("user_url",)
@@ -340,6 +343,8 @@ def run_live_source_job_discovery(
                 query="user-provided-url",
             )
         ]
+        provider_diagnostics.extend(url_diagnostics)
+        provider_errors.extend(url_errors)
     elif not provider_names:
         mode = "unavailable"
         payload = {
@@ -404,7 +409,9 @@ def run_live_source_job_discovery(
                 saved_company_count=len(current_saved_companies),
                 search_plan=search_plan,
             )
-            search_outcome = run_configured_job_providers(providers, search_request, settings)
+            routed_providers, route_diagnostics = route_job_discovery_providers(providers, search_request)
+            provider_diagnostics.extend(route_diagnostics)
+            search_outcome = run_configured_job_providers(routed_providers, search_request, settings)
             provider_diagnostics.extend(search_outcome.diagnostics)
             provider_errors.extend(search_outcome.errors)
             if search_outcome.errors and not settings.job_discovery_allow_partial_provider_failures:
@@ -538,8 +545,12 @@ def run_live_source_job_discovery(
         search_plan=search_plan,
         settings=settings,
     )
-    preselection_skipped = candidate_pool.skipped
-    source_results = [entry.result for entry in candidate_pool.entries]
+    if provider_names == ("user_url",):
+        preselection_skipped = []
+        source_results = dedupe_provider_results(source_results)
+    else:
+        preselection_skipped = candidate_pool.skipped
+        source_results = [entry.result for entry in candidate_pool.entries]
 
     if save_result is None and provider_names == ("user_url",):
         save_result = save_live_job_source_results(
@@ -1180,7 +1191,7 @@ def run_configured_job_providers(
     diagnostics: list[ProviderDiagnostic] = []
     errors: list[str] = []
     for provider in providers:
-        configured = provider.is_configured(settings)
+        configured = provider.is_configured(settings) or provider_is_configured_for_request(provider, request, settings)
         if not configured:
             message = f"Job discovery provider {provider.provider_name} is not configured."
             logger.warning(
@@ -1247,6 +1258,115 @@ def run_configured_job_providers(
         diagnostics.extend(outcome.diagnostics)
         errors.extend(outcome.errors)
     return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+def route_job_discovery_providers(
+    providers: list[JobDiscoveryProvider],
+    request: JobSearchRequest,
+) -> tuple[list[JobDiscoveryProvider], list[ProviderDiagnostic]]:
+    search_mode = request.search_plan.search_mode if request.search_plan is not None else "broad"
+    if search_mode == "broad":
+        return providers, []
+
+    provider_by_name = {provider.provider_name: provider for provider in providers}
+    broad_providers = [provider for provider in providers if provider.provider_type == "broad_search"]
+    routed: list[JobDiscoveryProvider] = []
+    diagnostics: list[ProviderDiagnostic] = []
+
+    company_names = request.company_names or []
+    target_companies = saved_companies_for_search(request.current_saved_companies, company_names, include_all=search_mode == "followed_companies")
+    greenhouse_companies = [company for company in target_companies if saved_company_has_greenhouse_metadata(company)]
+    ashby_companies = [company for company in target_companies if saved_company_has_ashby_metadata(company)]
+    fallback_companies = [
+        company
+        for company in target_companies
+        if not saved_company_has_greenhouse_metadata(company) and not saved_company_has_ashby_metadata(company)
+    ]
+
+    if greenhouse_companies and "greenhouse" in provider_by_name:
+        routed.append(provider_by_name["greenhouse"])
+        diagnostics.append(
+            ProviderDiagnostic(
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                configured=True,
+                attempted=False,
+                company_name=", ".join(str(company.get("name")) for company in greenhouse_companies if company.get("name"))[:240] or None,
+                search_mode=search_mode,
+                reason="saved_company_board_token",
+            )
+        )
+    if ashby_companies and "ashby" in provider_by_name:
+        routed.append(provider_by_name["ashby"])
+        diagnostics.append(
+            ProviderDiagnostic(
+                provider_name="ashby",
+                provider_type="ats_board",
+                configured=True,
+                attempted=False,
+                company_name=", ".join(str(company.get("name")) for company in ashby_companies if company.get("name"))[:240] or None,
+                search_mode=search_mode,
+                reason="saved_company_ashby_metadata",
+            )
+        )
+
+    if fallback_companies or not routed:
+        routed.extend(broad_providers)
+        if broad_providers:
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name=",".join(provider.provider_name for provider in broad_providers),
+                    provider_type="broad_search",
+                    configured=True,
+                    attempted=False,
+                    company_name=", ".join(str(company.get("name")) for company in fallback_companies if company.get("name"))[:240] or None,
+                    search_mode=search_mode,
+                    reason="broad_fallback_for_companies_without_known_ats_source" if fallback_companies else "no_company_board_provider_available",
+                )
+            )
+
+    if not routed:
+        routed = providers
+    seen: set[str] = set()
+    deduped: list[JobDiscoveryProvider] = []
+    for provider in routed:
+        if provider.provider_name in seen:
+            continue
+        seen.add(provider.provider_name)
+        deduped.append(provider)
+    return deduped, diagnostics
+
+
+def provider_is_configured_for_request(provider: JobDiscoveryProvider, request: JobSearchRequest, settings: Settings) -> bool:
+    if provider.provider_name != "greenhouse":
+        return False
+    from .providers.greenhouse import resolve_greenhouse_board_tokens
+
+    return bool(resolve_greenhouse_board_tokens(settings, request=request))
+
+
+def saved_companies_for_search(
+    companies: list[dict[str, Any]],
+    company_names: list[str],
+    *,
+    include_all: bool,
+) -> list[dict[str, Any]]:
+    if include_all:
+        return companies
+    requested = {name.casefold() for name in company_names if name}
+    if not requested:
+        return []
+    return [company for company in companies if str(company.get("name") or "").casefold() in requested]
+
+
+def saved_company_has_greenhouse_metadata(company: dict[str, Any]) -> bool:
+    from .providers.greenhouse import greenhouse_board_token_from_company
+
+    return bool(greenhouse_board_token_from_company(company))
+
+
+def saved_company_has_ashby_metadata(company: dict[str, Any]) -> bool:
+    return bool(company.get("ashby_board_url") or company.get("ashbyBoardUrl"))
 
 
 def build_candidate_pool(
@@ -2256,7 +2376,8 @@ def source_result_to_job_record(result: LiveJobSourceResult, verification: JobUr
         jobUrl=result.job_url,
         companyWebsiteUrl=result.company_website_url,
         companyCareersUrl=result.company_careers_url,
-        sourceUrls=[url for url in [result.source_url, result.job_url, *result.source_urls] if url],
+        companyJobListingsUrl=result.company_job_listings_url,
+        sourceUrls=[url for url in [result.company_job_listings_url, result.source_url, result.job_url, *result.source_urls] if url],
         source=result.source_provider,
         location=result.location,
         remoteWorkMode=result.remote_work_mode or "unknown",
@@ -2380,9 +2501,33 @@ def extract_http_urls(text: str) -> list[str]:
     return compact_unique_strings(re.findall(r"https?://[^\s<>)\"']+", text), limit=10)
 
 
-def build_user_url_source_results(urls: list[str]) -> list[LiveJobSourceResult]:
+def build_user_url_source_results(
+    urls: list[str],
+    *,
+    search_request: JobSearchRequest,
+) -> tuple[list[LiveJobSourceResult], list[ProviderDiagnostic], list[str]]:
     results: list[LiveJobSourceResult] = []
+    diagnostics: list[ProviderDiagnostic] = []
+    errors: list[str] = []
     for url in urls:
+        greenhouse_result = build_greenhouse_user_url_source_result(url, search_request)
+        if greenhouse_result is not None:
+            results.append(greenhouse_result)
+            diagnostics.append(
+                ProviderDiagnostic(
+                    provider_name="greenhouse",
+                    provider_type="ats_board",
+                    configured=True,
+                    attempted=True,
+                    result_count=1,
+                    query="user-provided-url",
+                    board_token=greenhouse_result.ats_board_token,
+                    company_name=greenhouse_result.company_name,
+                    search_mode="url",
+                    reason="url_ingestion",
+                )
+            )
+            continue
         domain = domain_from_url(url) or "Unknown company"
         results.append(
             LiveJobSourceResult(
@@ -2396,7 +2541,22 @@ def build_user_url_source_results(urls: list[str]) -> list[LiveJobSourceResult]:
                 fit_summary="Saved from a user-provided job URL.",
             )
         )
-    return results
+    return results, diagnostics, errors
+
+
+def build_greenhouse_user_url_source_result(url: str, search_request: JobSearchRequest) -> LiveJobSourceResult | None:
+    from .providers.greenhouse import fetch_greenhouse_job_from_url, parse_greenhouse_url
+
+    if parse_greenhouse_url(url) is None:
+        return None
+    try:
+        return fetch_greenhouse_job_from_url(url, search_request)
+    except Exception as error:
+        logger.warning(
+            "Greenhouse URL ingestion failed: %s",
+            json.dumps({"error": type(error).__name__, "url": safe_log_preview(url, limit=200)}, sort_keys=True),
+        )
+        return None
 
 
 

@@ -1347,6 +1347,11 @@ def serialize_current_saved_companies(session: Session, candidate_profile_id: st
             "website_url": link.company.website_url,
             "careers_url": link.company.careers_url,
             "job_listings_url": link.company.job_listings_url,
+            "source_urls": link.company.source_urls or [],
+            "ats_provider": "greenhouse" if link.company.greenhouse_board_token else ("ashby" if link.company.ashby_board_url else None),
+            "ats_board_token": link.company.greenhouse_board_token,
+            "greenhouse_board_token": link.company.greenhouse_board_token,
+            "ashby_board_url": link.company.ashby_board_url,
             "domains": [
                 domain
                 for domain in [

@@ -10,6 +10,7 @@ from jobops_api.auth import USER_TYPE_ADMIN, USER_TYPE_USER, create_alpha_invite
 from jobops_api.db.models import Application, ApplicationEvent, CandidateCompany, CandidateProfile, CommandInteractionLog, JobRole, Tenant, User, UserSession, WorkspaceMembership
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
+from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
 from jobops_api.profile_seed import load_public_seed_profile
 
 
@@ -55,6 +56,12 @@ def main() -> None:
     seed_user_parser.add_argument("--user-type", choices=[USER_TYPE_USER, USER_TYPE_ADMIN], default=USER_TYPE_USER, help="User type to assign. Defaults to user.")
     seed_user_parser.add_argument("--update-existing", action="store_true", help="Allow updating an existing matching seed user instead of failing.")
 
+    greenhouse_parser = subparsers.add_parser(
+        "seed-greenhouse-companies",
+        help="Upsert known Greenhouse-backed companies for a candidate profile.",
+    )
+    greenhouse_parser.add_argument("--candidate-slug", default="rebekah-love")
+
     inspect_parser = subparsers.add_parser("inspect-alpha-workspaces", help="Print users, workspaces, and profile ids.")
     inspect_parser.add_argument("--workspace-slug", default=None)
 
@@ -94,6 +101,8 @@ def main() -> None:
             user_type=resolve_user_type_args(args.admin, args.user_type),
             update_existing=args.update_existing,
         )
+    elif args.command == "seed-greenhouse-companies":
+        seed_greenhouse_companies_command(candidate_slug=args.candidate_slug)
     elif args.command == "inspect-alpha-workspaces":
         inspect_alpha_workspaces_command(workspace_slug=args.workspace_slug)
     elif args.command == "reset-test-workspace":
@@ -158,6 +167,17 @@ def seed_initial_user_command(
         print(f"User: {auth.user.username} <{auth.user.email}> ({auth.user.id}) type={auth.user.user_type}")
         print(f"Workspace: {auth.tenant.slug} ({auth.tenant.id})")
         print(f"Candidate profile: {auth.candidate_profile.slug} ({auth.candidate_profile.id})")
+
+
+def seed_greenhouse_companies_command(*, candidate_slug: str) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        candidate_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == candidate_slug))
+        if candidate_profile is None:
+            raise SystemExit(f"Candidate profile not found: {candidate_slug}")
+        links = upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=candidate_profile.id)
+        session.commit()
+        print(f"Upserted {len(links)} Greenhouse company link(s) for candidate profile: {candidate_slug}")
 
 
 def resolve_password_arg(password: str | None, prompt_password: bool) -> str:
