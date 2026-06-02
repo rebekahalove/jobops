@@ -474,6 +474,20 @@ def run_live_source_job_discovery(
             )
             replan_reasons.append(replan_reason)
             replans_attempted += 1
+            logger.info(
+                "Job discovery replanning triggered: %s",
+                json.dumps(
+                    {
+                        "reason": replan_reason,
+                        "replansAttempted": replans_attempted,
+                        "replanLimit": settings.job_discovery_search_replan_limit,
+                        "providerResultCount": merged_provider_result_count,
+                        "candidatePoolCount": len(candidate_pool.entries),
+                        "totalMatchesReported": total_matches_reported(provider_diagnostics),
+                    },
+                    sort_keys=True,
+                ),
+            )
             current_planner_result = select_job_search_plan_with_model(
                 request,
                 connector=connector,
