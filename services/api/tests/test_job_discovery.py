@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,7 +13,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
-from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting
+import jobops_api.job_discovery.service as job_discovery_service_module
+from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting, JobSearchQueryRun, JobSearchRun
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
@@ -22,9 +24,17 @@ from jobops_api.job_discovery import (
     run_job_discovery,
 )
 from jobops_api.job_discovery.models import (
+    JobSearchPlan,
     JobSearchRequest,
     LiveJobSourceResult,
     ProviderSearchOutcome,
+)
+from jobops_api.job_discovery.planning import (
+    apply_job_search_plan_guardrails,
+    build_fallback_job_search_plan,
+    build_job_search_planner_model_request,
+    select_job_search_plan_with_model,
+    validate_job_search_planner_output,
 )
 from jobops_api.job_discovery.providers.adzuna import build_adzuna_request, normalize_adzuna_result
 from jobops_api.job_discovery.providers.greenhouse import normalize_greenhouse_result
@@ -32,12 +42,50 @@ from jobops_api.job_discovery.providers.registry import resolve_job_discovery_pr
 from jobops_api.job_discovery.provider_utils import infer_location_query
 from jobops_api.job_discovery.service import (
     build_provider_job_search_queries,
+    build_provider_job_search_queries_from_plan,
     infer_user_constraint_terms,
     infer_job_search_role_queries,
     save_live_job_source_results,
 )
 from jobops_api.job_discovery.url_verification import source_result_verification
 from jobops_api.settings import Settings
+
+
+def fake_job_search_planner_response(
+    *,
+    role_query: str = "AI Platform Engineer",
+    locations: list[str] | None = None,
+    requested_result_goal: int = 20,
+) -> ModelResponse:
+    return ModelResponse(
+        text=json.dumps(
+            {
+                "searchPlan": {
+                    "searchMode": "broad",
+                    "roleQueries": [role_query],
+                    "companyNames": [],
+                    "locations": locations or [],
+                    "remoteWorkModes": [],
+                    "employmentTypes": [],
+                    "salaryMin": None,
+                    "includeTerms": [],
+                    "excludeTerms": [],
+                    "hardConstraints": [],
+                    "softPreferences": [],
+                    "providerStrategy": {
+                        "useBroadSearch": True,
+                        "useCompanyBoards": True,
+                        "requestedResultGoal": requested_result_goal,
+                        "maxProviderPages": 2,
+                        "allowReplanning": True,
+                    },
+                    "rationale": "Fake planner response for tests.",
+                }
+            }
+        ),
+        provider="fake",
+        model="fake-planner",
+    )
 
 
 def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> None:
@@ -328,6 +376,18 @@ def test_provider_queries_for_broad_request_use_profile_skills_before_generic_jo
     assert "jobs" not in queries
 
 
+def test_provider_queries_keep_location_out_of_keyword_query() -> None:
+    queries = build_provider_job_search_queries_from_plan(
+        JobDiscoveryRequest(latest_user_message="Find AI jobs in Connecticut", candidate_profile_slug="rebekah-love"),
+        search_plan=JobSearchPlan(searchMode="broad", roleQueries=["AI Engineer"], locations=["Connecticut"]),
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+    )
+
+    assert queries == ["AI Engineer"]
+
+
 def test_provider_query_precedence_uses_command_before_profile_fallbacks() -> None:
     queries = infer_job_search_role_queries(
         "find conservation technician jobs",
@@ -503,6 +563,35 @@ def test_adzuna_provider_builds_params_and_normalizes_results(tmp_path: Path) ->
     assert result.salary_text == "USD 150,000-180,000"
     assert result.posting_date is not None
     assert result.source_updated_at is not None
+
+
+def test_adzuna_uses_search_plan_location_as_where_not_keyword(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        model_provider="mock",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+        adzuna_country="us",
+    )
+    request = JobSearchRequest(
+        latest_user_message="Find AI jobs in Connecticut",
+        search_queries=["AI Engineer"],
+        results_per_provider=12,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="broad", roleQueries=["AI Engineer"], locations=["Connecticut"]),
+        locations=["Connecticut"],
+    )
+
+    url, params = build_adzuna_request(settings, request, query=request.search_queries[0])
+
+    assert url == "https://api.adzuna.com/v1/api/jobs/us/search/1"
+    assert params["what"] == "AI Engineer"
+    assert params["where"] == "Connecticut"
 
 
 def test_adzuna_salary_values_are_rounded_and_currency_coded(tmp_path: Path) -> None:
@@ -745,6 +834,9 @@ def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tm
     class FakeConnector:
         def generate(self, request):
             nonlocal captured_request
+            if request.task == "job_search_planning":
+                return fake_job_search_planner_response()
+            assert request.task == "job_candidate_selection"
             captured_request = request
             payload = json.loads(request.messages[-1].content)
             selected_candidate = next(
@@ -882,7 +974,7 @@ def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tm
 
 
 def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tmp_path: Path) -> None:
-    calls = []
+    selection_calls = []
 
     class FakeResponse:
         status = 200
@@ -911,8 +1003,11 @@ def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tm
 
     class TruncatingConnector:
         def generate(self, request):
-            calls.append(request)
-            if len(calls) == 1:
+            if request.task == "job_search_planning":
+                return fake_job_search_planner_response()
+            assert request.task == "job_candidate_selection"
+            selection_calls.append(request)
+            if len(selection_calls) == 1:
                 return ModelResponse(
                     text='{"assistantMessage":"too long","selectedJobs":[{"candidateId":"J001"',
                     provider="fake",
@@ -964,7 +1059,7 @@ def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tm
         )
 
         assert result.status_code == 200
-        assert len(calls) == 2
+        assert len(selection_calls) == 2
         assert result.body["result"]["savedCount"] == 1
         assert result.body["result"]["selectedCandidateIds"] == ["J001"]
 
@@ -993,7 +1088,7 @@ def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
         assert len(session.scalars(select(JobPosting)).all()) == 0
 
 
-def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
+def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
         headers = {"content-type": "application/json"}
@@ -1007,7 +1102,12 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         def read(self, *_args):
             return json.dumps({"results": []}).encode("utf-8")
 
-    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
+    log_messages = []
+
+    def capture_log(_level, message, *args, **_kwargs):
+        log_messages.append(message % args if args else message)
+
+    monkeypatch.setattr(job_discovery_service_module.logger, "log", capture_log)
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = make_settings(
@@ -1031,6 +1131,290 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["providerDiagnostics"][0]["providerName"] == "adzuna"
         assert result.body["result"]["providerDiagnostics"][0]["resultCount"] == 0
         assert result.body["result"]["providerDiagnostics"][0]["attempted"] is True
+        assert result.body["result"]["replansAttempted"] == settings.job_discovery_search_replan_limit
+        assert result.body["result"]["replanLimit"] == settings.job_discovery_search_replan_limit
+        assert result.body["result"]["replanningStatus"] == "attempted"
+        assert result.body["result"]["replanReasons"] == ["no_provider_results"]
+        assert any("Job discovery replanning triggered" in message for message in log_messages)
+        assert any('"replansAttempted": 1' in message for message in log_messages)
+
+
+def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+    selection_payloads = []
+    provider_calls = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(self.payload).encode("utf-8")
+
+    class ReplanningConnector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                payload = json.loads(request.messages[-1].content)
+                planner_payloads.append(payload)
+                if len(planner_payloads) == 1:
+                    return fake_job_search_planner_response(role_query="No Match AI Engineer", requested_result_goal=10)
+                return fake_job_search_planner_response(role_query="AI Platform Engineer", requested_result_goal=10)
+            assert request.task == "job_candidate_selection"
+            payload = json.loads(request.messages[-1].content)
+            selection_payloads.append(payload)
+            selected_candidate = payload["candidate_jobs"][0]
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected the replanned provider result.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": selected_candidate["candidateId"],
+                                "fitSummary": "Strong AI platform fit.",
+                                "rank": 1,
+                                "selectionReason": "Found after replanning from the zero-result query.",
+                                "concerns": [],
+                            }
+                        ],
+                        "skippedCandidateNotes": [],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    def fake_urlopen(_request, timeout):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            return FakeResponse({"count": 0, "results": []})
+        return FakeResponse(
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "id": "adz-replanned-1",
+                        "title": "AI Platform Engineer",
+                        "company": {"display_name": "Replanned AI"},
+                        "redirect_url": "https://jobs.example.test/replanned-ai-platform",
+                        "description": "Build AI workflow automation.",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=ReplanningConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 2
+        assert provider_calls >= 2
+        assert planner_payloads[1]["replan_context"]["reason"] == "zero_total_matches"
+        assert planner_payloads[1]["replan_context"]["priorSearchPlan"]["roleQueries"] == ["No Match AI Engineer"]
+        assert planner_payloads[1]["replan_context"]["providerResultCount"] == 0
+        assert result.body["result"]["replansAttempted"] == 1
+        assert result.body["result"]["replanReasons"] == ["zero_total_matches"]
+        assert result.body["result"]["savedCount"] == 1
+        assert selection_payloads[0]["candidate_jobs"][0]["title"] == "AI Platform Engineer"
+        run = session.scalar(select(JobSearchRun))
+        assert run is not None
+        assert run.replans_attempted == 1
+        assert run.search_plan_json["roleQueries"] == ["AI Platform Engineer"]
+        assert len(session.scalars(select(JobSearchQueryRun)).all()) == 2
+
+
+def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+    provider_calls = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"count": 0, "results": []}).encode("utf-8")
+
+    class ReplanningConnector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                payload = json.loads(request.messages[-1].content)
+                planner_payloads.append(payload)
+                return fake_job_search_planner_response(
+                    role_query=f"No Match AI Engineer {len(planner_payloads)}",
+                    requested_result_goal=10,
+                )
+            raise AssertionError("Candidate selection should not run without provider candidates.")
+
+    def fake_urlopen(_request, timeout):
+        nonlocal provider_calls
+        provider_calls += 1
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=ReplanningConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 2
+        assert provider_calls == 2
+        assert result.body["result"]["replansAttempted"] == 1
+        assert result.body["result"]["replanLimit"] == 1
+        assert result.body["result"]["savedCount"] == 0
+
+
+def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path) -> None:
+    planner_payloads = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": "AI Platform Engineer",
+                            "company": {"display_name": "One Match AI"},
+                            "redirect_url": "https://jobs.example.test/one-match-ai-platform",
+                            "description": "Build AI workflow automation.",
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    class Connector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                planner_payloads.append(json.loads(request.messages[-1].content))
+                return fake_job_search_planner_response(role_query="AI Platform Engineer", requested_result_goal=10)
+            assert request.task == "job_candidate_selection"
+            payload = json.loads(request.messages[-1].content)
+            selected_candidate = payload["candidate_jobs"][0]
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": "Selected the only provider-backed match.",
+                        "selectedJobs": [
+                            {
+                                "candidateId": selected_candidate["candidateId"],
+                                "fitSummary": "Good platform fit.",
+                                "rank": 1,
+                                "selectionReason": "The provider reported this is the only match.",
+                                "concerns": [],
+                            }
+                        ],
+                        "skippedCandidateNotes": [],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    log_messages = []
+
+    def capture_log(_level, message, *args, **_kwargs):
+        log_messages.append(message % args if args else message)
+
+    monkeypatch.setattr(job_discovery_service_module.logger, "log", capture_log)
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = replace(
+        make_settings(
+            tmp_path,
+            model_provider="gemini",
+            job_discovery_source="none",
+            job_discovery_providers=("adzuna",),
+            adzuna_app_id="app-id",
+            adzuna_app_key="app-key",
+        ),
+        job_discovery_results_per_provider=10,
+        job_discovery_save_limit=5,
+        job_discovery_search_replan_limit=1,
+    )
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find AI platform jobs.", candidate_profile_slug="rebekah-love"),
+            connector=Connector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(planner_payloads) == 1
+        assert result.body["result"]["replansAttempted"] == 0
+        assert result.body["result"]["replanningStatus"] == "not_needed"
+        assert result.body["result"]["replanningDecision"] == "provider_results_exhausted"
+        assert result.body["result"]["savedCount"] == 1
+        assert any("Job discovery replanning skipped" in message for message in log_messages)
+        assert any("provider_results_exhausted" in message for message in log_messages)
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
@@ -1067,6 +1451,9 @@ def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) ->
         assert result.body["code"] == "live_job_discovery_provider_failed"
         assert result.body["providerDiagnostics"][0]["providerName"] == "adzuna"
         assert result.body["providerDiagnostics"][0]["error"] == "Adzuna request failed with HTTP 401."
+        assert result.body["providerDiagnostics"][0]["requestCriteria"]["what"] == "Applied AI"
+        assert result.body["providerDiagnostics"][0]["requestCriteria"]["where"] is None
+        assert "app-id" not in json.dumps(result.body["providerDiagnostics"][0]["requestCriteria"])
 
 
 def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: Path) -> None:
@@ -1412,6 +1799,396 @@ def test_command_center_job_discovery_passes_actual_chat_transcript(tmp_path: Pa
     assert captured["client_context"] == client_context
 
 
+def test_job_search_planner_request_includes_required_context(tmp_path: Path) -> None:
+    request = JobDiscoveryRequest(
+        latest_user_message="Find remote applied AI engineer jobs over $130k",
+        candidate_profile_slug="rebekah-love",
+        active_workspace="jobs",
+        router_extracted={"companyName": "Tomoro"},
+    )
+    model_request = build_job_search_planner_model_request(
+        request,
+        router_extracted=request.router_extracted,
+        current_saved_jobs=[{"title": "Existing Role", "company_name": "Old Co", "normalized_url": "https://old.example/jobs/1"}],
+        current_saved_companies=[{"name": "Tomoro", "job_listings_url": "https://tomoro.example/jobs"}],
+        target_context={"target_role_titles": ["Applied AI Engineer"]},
+        private_profile_context={"profile_basics": {"headline": "Applied AI Systems Engineer"}},
+        recent_search_history=[{"command_text": "Find manager jobs", "saved_count": 0}],
+        provider_capabilities={"providers": [{"name": "adzuna", "supports_total_matches": True}]},
+    )
+
+    payload = json.loads(model_request.messages[-1].content)
+
+    assert model_request.task == "job_search_planning"
+    assert model_request.response_mime_type == "application/json"
+    assert model_request.search_grounding is False
+    assert payload["latest_user_message"] == "Find remote applied AI engineer jobs over $130k"
+    assert payload["router_extracted_fields"]["companyName"] == "Tomoro"
+    assert payload["candidate_target_context"]["target_role_titles"] == ["Applied AI Engineer"]
+    assert payload["private_profile_context"]["profile_basics"]["headline"] == "Applied AI Systems Engineer"
+    assert payload["current_saved_companies"][0]["name"] == "Tomoro"
+    assert payload["current_saved_jobs_summary"][0]["title"] == "Existing Role"
+    assert payload["recent_job_search_history"][0]["command_text"] == "Find manager jobs"
+    assert payload["provider_capabilities"]["providers"][0]["name"] == "adzuna"
+    assert "Do not invent" in model_request.messages[0].content
+
+
+def test_search_planner_uses_injected_connector(tmp_path: Path) -> None:
+    captured_requests = []
+
+    class FakePlannerConnector:
+        def generate(self, request):
+            captured_requests.append(request)
+            assert request.task == "job_search_planning"
+            return fake_job_search_planner_response(
+                role_query="Forward Deployed AI Engineer",
+                locations=["Connecticut"],
+            )
+
+    settings = replace(
+        make_settings(tmp_path),
+        job_discovery_results_per_provider=50,
+        job_discovery_save_limit=25,
+    )
+
+    result = select_job_search_plan_with_model(
+        JobDiscoveryRequest(
+            latest_user_message="Find AI forward deployed engineer jobs in Connecticut.",
+            candidate_profile_slug="rebekah-love",
+        ),
+        connector=FakePlannerConnector(),
+        settings=settings,
+        router_extracted={},
+        current_saved_jobs=[],
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        recent_search_history=[],
+        provider_capabilities={
+            "providers": [{"name": "adzuna", "type": "broad_search"}],
+            "limits": {"results_per_provider": 50, "max_provider_pages": 2, "replan_limit": 1},
+        },
+    )
+
+    assert captured_requests
+    assert result.fallback_used is False
+    assert result.response_provider == "fake"
+    assert result.plan.role_queries == ["Forward Deployed AI Engineer"]
+    assert result.plan.locations == ["Connecticut"]
+    assert result.plan.provider_strategy.requested_result_goal == 50
+
+
+def test_planner_output_validates_company_salary_location_and_exclusions() -> None:
+    output = validate_job_search_planner_output(
+        json.dumps(
+            {
+                "searchPlan": {
+                    "searchMode": "company_specific",
+                    "roleQueries": ["Senior Applied AI Engineer"],
+                    "companyNames": ["Tomoro"],
+                    "locations": ["Louisville"],
+                    "remoteWorkModes": ["hybrid"],
+                    "employmentTypes": ["Full-time"],
+                    "salaryMin": 130000,
+                    "includeTerms": ["LLM"],
+                    "excludeTerms": ["manager", "AI trainer"],
+                    "hardConstraints": ["hybrid Louisville", "over $130k"],
+                    "softPreferences": ["product engineering"],
+                    "providerStrategy": {
+                        "useBroadSearch": True,
+                        "useCompanyBoards": True,
+                        "requestedResultGoal": 30,
+                        "maxProviderPages": 2,
+                        "allowReplanning": True,
+                    },
+                    "rationale": "User explicitly asked for a company-specific hybrid Louisville search.",
+                }
+            }
+        )
+    )
+
+    plan = output.search_plan
+    assert plan.search_mode == "company_specific"
+    assert plan.company_names == ["Tomoro"]
+    assert plan.locations == ["Louisville"]
+    assert plan.remote_work_modes == ["hybrid"]
+    assert plan.salary_min == 130000
+    assert plan.exclude_terms == ["manager", "AI trainer"]
+
+
+def test_planner_guardrails_raise_low_provider_goal_to_support_save_limit(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        job_discovery_results_per_provider=50,
+        job_discovery_save_limit=25,
+    )
+    request = JobDiscoveryRequest(
+        latest_user_message="Find AI jobs in Connecticut",
+        candidate_profile_slug="rebekah-love",
+    )
+    plan = JobSearchPlan(
+        searchMode="broad",
+        roleQueries=["AI Engineer"],
+        locations=["Connecticut"],
+        providerStrategy={"requestedResultGoal": 20, "maxProviderPages": 2, "allowReplanning": True},
+    )
+    fallback_plan = build_fallback_job_search_plan(
+        request,
+        router_extracted={},
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        settings=settings,
+    )
+
+    guarded = apply_job_search_plan_guardrails(
+        plan,
+        request=request,
+        router_extracted={},
+        current_saved_companies=[],
+        fallback_plan=fallback_plan,
+        settings=settings,
+    )
+
+    assert guarded.provider_strategy.requested_result_goal == 50
+
+
+def test_job_discovery_persists_search_run_and_query_history(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Find remote applied AI engineer jobs.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+        assert result.status_code == 200
+        run = session.scalar(select(JobSearchRun))
+        assert run is not None
+        assert result.body["result"]["jobSearchRunId"] == run.id
+        assert run.status == "completed"
+        assert run.command_text == "Find remote applied AI engineer jobs."
+        assert run.search_plan_json["roleQueries"]
+        assert run.saved_count == result.body["result"]["savedCount"]
+        assert run.candidate_pool_count == result.body["result"]["candidateCountAfterDiversityCap"]
+        query_runs = session.scalars(select(JobSearchQueryRun)).all()
+        assert len(query_runs) == 1
+        assert query_runs[0].provider_name == "mock"
+        assert query_runs[0].query
+
+
+def test_recent_search_history_is_loaded_into_later_planner_context(tmp_path: Path, monkeypatch) -> None:
+    engine = create_seeded_engine()
+    captured_payloads: list[dict[str, Any]] = []
+
+    from jobops_api.job_discovery import planning as planning_module
+
+    original = planning_module.build_job_search_planner_model_request
+
+    def capture_request(*args, **kwargs):
+        model_request = original(*args, **kwargs)
+        captured_payloads.append(json.loads(model_request.messages[-1].content))
+        return model_request
+
+    monkeypatch.setattr(planning_module, "build_job_search_planner_model_request", capture_request)
+
+    with Session(engine) as session:
+        first = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI engineer jobs.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+        assert first.status_code == 200
+        second = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Try something broader.", candidate_profile_slug="rebekah-love"),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert second.status_code == 200
+    assert captured_payloads[0]["recent_job_search_history"] == []
+    assert captured_payloads[1]["recent_job_search_history"][0]["command_text"] == "Find applied AI engineer jobs."
+    assert captured_payloads[1]["recent_job_search_history"][0]["saved_count"] == 2
+
+
+def test_company_specific_job_discovery_preserves_explicit_company(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Check for relevant jobs at Tomoro.",
+                candidate_profile_slug="rebekah-love",
+                router_extracted={"companyName": "Tomoro"},
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["searchPlan"]["searchMode"] == "company_specific"
+    assert result.body["result"]["searchPlan"]["companyNames"] == ["Tomoro"]
+    assert all("Tomoro" in query for query in result.body["result"]["searchQueriesUsed"])
+
+
+def test_followed_company_job_discovery_uses_saved_companies(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        add_saved_company(session, profile.id, "Tomoro")
+        add_saved_company(session, profile.id, "Wasteology")
+        session.commit()
+
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Find jobs from my companies list.",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.status_code == 200
+    assert result.body["result"]["searchPlan"]["searchMode"] == "followed_companies"
+    assert set(result.body["result"]["searchPlan"]["companyNames"][:2]) == {"Wasteology", "Tomoro"}
+    assert any("Tomoro" in query for query in result.body["result"]["searchQueriesUsed"])
+    assert any("Wasteology" in query for query in result.body["result"]["searchQueriesUsed"])
+
+
+def test_adzuna_paginates_when_total_matches_indicates_more_results(monkeypatch, tmp_path: Path) -> None:
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            page = len(requested_urls)
+            return json.dumps(
+                {
+                    "count": 25,
+                    "results": [
+                        {
+                            "id": f"adz-{page}",
+                            "title": f"Applied AI Engineer {page}",
+                            "company": {"display_name": "Provider Co"},
+                            "redirect_url": f"https://jobs.example.test/{page}",
+                            "description": "Applied AI role",
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from jobops_api.job_discovery.providers.adzuna import AdzunaJobDiscoveryProvider
+
+    provider = AdzunaJobDiscoveryProvider()
+    settings = make_settings(
+        tmp_path,
+        model_provider="mock",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+    outcome = provider.search(
+        JobSearchRequest(
+            latest_user_message="Find applied AI jobs.",
+            search_queries=["Applied AI Engineer"],
+            results_per_provider=10,
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+            user_constraints=[],
+            max_provider_pages=2,
+        ),
+        settings,
+    )
+
+    assert len(outcome.results) == 2
+    assert [diagnostic.page for diagnostic in outcome.diagnostics] == [1, 2]
+    assert all(diagnostic.total_matches == 25 for diagnostic in outcome.diagnostics)
+    assert outcome.diagnostics[0].request_criteria == {
+        "country": "us",
+        "page": 1,
+        "what": "Applied AI Engineer",
+        "where": None,
+        "whatExclude": None,
+        "resultsPerPage": 10,
+        "contentType": "application/json",
+    }
+    assert requested_urls[0].split("?")[0].endswith("/search/1")
+    assert requested_urls[1].split("?")[0].endswith("/search/2")
+
+
+def test_adzuna_does_not_paginate_zero_total_matches(monkeypatch, tmp_path: Path) -> None:
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"count": 0, "results": []}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from jobops_api.job_discovery.providers.adzuna import AdzunaJobDiscoveryProvider
+
+    provider = AdzunaJobDiscoveryProvider()
+    settings = make_settings(
+        tmp_path,
+        model_provider="mock",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+    outcome = provider.search(
+        JobSearchRequest(
+            latest_user_message="Find applied AI jobs.",
+            search_queries=["Applied AI Engineer"],
+            results_per_provider=10,
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+            user_constraints=[],
+            max_provider_pages=3,
+        ),
+        settings,
+    )
+
+    assert outcome.results == []
+    assert len(requested_urls) == 1
+    assert outcome.diagnostics[0].total_matches == 0
+    assert outcome.diagnostics[0].page == 1
+
+
 
 def test_command_center_safe_action_log_metrics_are_counts_only() -> None:
     action = command_center_module.CommandCenterActionResult(
@@ -1447,6 +2224,25 @@ def test_command_center_safe_action_log_metrics_are_counts_only() -> None:
         "currentSavedCompanyCount": 44,
         "skippedReasons": {"Job URL was not supported by fresh search grounding/source URLs.": 3},
     }
+
+
+def add_saved_company(session: Session, candidate_profile_id: str, name: str) -> CandidateCompany:
+    company = Company(
+        name=name,
+        normalized_name=name.casefold(),
+        source_summary="Test saved company.",
+    )
+    session.add(company)
+    session.flush()
+    link = CandidateCompany(
+        candidate_profile_id=candidate_profile_id,
+        company_id=company.id,
+        review_status="new",
+        derivation_status="model_derived",
+    )
+    session.add(link)
+    session.flush()
+    return link
 
 
 def create_seeded_engine(*, include_second_profile: bool = False):

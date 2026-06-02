@@ -183,6 +183,11 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Find some jobs for me to apply to", "job_discovery"),
             ("Find applied AI engineer jobs", "job_discovery"),
             ("Find me applied AI jobs, but avoid defense contractors and gambling related companies.", "job_discovery"),
+            ("Check for relevant jobs at Tomoro", "job_discovery"),
+            ("Look for jobs at Tomoro", "job_discovery"),
+            ("Find jobs from my companies list", "job_discovery"),
+            ("Find remote applied AI engineer jobs over $130k", "job_discovery"),
+            ("Try something broader", "job_discovery"),
             ("Show me roles I should consider", "job_discovery"),
             ("Find me a dozen progressive politics companies who hire AI engineers", "company_discovery"),
             (
@@ -209,6 +214,27 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             assert result.decision is not None
             assert result.decision.action_type == expected_action
             assert result.decision.confidence == "high"
+
+
+def test_mock_command_router_preserves_company_for_job_search(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+
+        result = run_command_router(
+            CommandRouterRequest(
+                latest_user_message="Look for jobs at Tomoro",
+                active_workspace=None,
+                candidate_profile=profile,
+            ),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.decision is not None
+    assert result.decision.action_type == "job_discovery"
+    assert result.decision.extracted.company_name == "Tomoro"
 
 
 def create_seeded_engine():

@@ -29,7 +29,7 @@ class GreenhouseJobDiscoveryProvider:
         results: list[LiveJobSourceResult] = []
         diagnostics: list[ProviderDiagnostic] = []
         errors: list[str] = []
-        for token in resolve_greenhouse_board_tokens(settings):
+        for token in resolve_greenhouse_board_tokens(settings, request=request):
             url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
             try:
                 payload = fetch_json(url, params={"content": "true"})
@@ -83,6 +83,7 @@ class GreenhouseJobDiscoveryProvider:
                     attempted=True,
                     result_count=len(board_results),
                     raw_result_count=len(raw_jobs),
+                    normalized_result_count=len(board_results),
                     query=query,
                     board_token=token,
                     search_mode="board_fetch_local_filter",
@@ -91,10 +92,16 @@ class GreenhouseJobDiscoveryProvider:
         return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
 
 
-def resolve_greenhouse_board_tokens(settings: Settings) -> tuple[str, ...]:
+def resolve_greenhouse_board_tokens(settings: Settings, request: JobSearchRequest | None = None) -> tuple[str, ...]:
     tokens = list(settings.greenhouse_board_tokens)
     if settings.greenhouse_company_boards:
-        tokens.extend(settings.greenhouse_company_boards.values())
+        requested_companies = {name.casefold() for name in (request.company_names or [])} if request else set()
+        if requested_companies:
+            for company_name, token in settings.greenhouse_company_boards.items():
+                if company_name.casefold() in requested_companies:
+                    tokens.append(token)
+        else:
+            tokens.extend(settings.greenhouse_company_boards.values())
     return tuple(compact_unique_strings(tokens, limit=100))
 
 

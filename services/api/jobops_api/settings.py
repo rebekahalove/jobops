@@ -27,8 +27,12 @@ class Settings:
     job_discovery_allow_partial_provider_failures: bool = False
     job_discovery_results_per_provider: int = 50
     job_discovery_candidate_pool_limit: int = 100
-    job_discovery_save_limit: int = 5
+    job_discovery_save_limit: int = 25
     job_discovery_company_candidate_cap: int = 10
+    job_discovery_max_provider_pages: int = 2
+    job_discovery_search_replan_limit: int = 1
+    job_discovery_recent_search_limit: int = 50
+    job_discovery_company_search_limit: int = 12
     adzuna_app_id: str | None = None
     adzuna_app_key: str | None = None
     adzuna_country: str = "us"
@@ -101,11 +105,27 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         ),
         job_discovery_save_limit=parse_int(
             merged.get("JOBOPS_JOB_DISCOVERY_SAVE_LIMIT"),
-            default=5,
+            default=25,
         ),
         job_discovery_company_candidate_cap=parse_int(
             merged.get("JOBOPS_JOB_DISCOVERY_COMPANY_CANDIDATE_CAP"),
             default=10,
+        ),
+        job_discovery_max_provider_pages=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_MAX_PROVIDER_PAGES"),
+            default=2,
+        ),
+        job_discovery_search_replan_limit=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_SEARCH_REPLAN_LIMIT"),
+            default=1,
+        ),
+        job_discovery_recent_search_limit=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_RECENT_SEARCH_LIMIT"),
+            default=50,
+        ),
+        job_discovery_company_search_limit=parse_int(
+            merged.get("JOBOPS_JOB_DISCOVERY_COMPANY_SEARCH_LIMIT"),
+            default=12,
         ),
         adzuna_app_id=merged.get("JOBOPS_ADZUNA_APP_ID"),
         adzuna_app_key=merged.get("JOBOPS_ADZUNA_APP_KEY"),
