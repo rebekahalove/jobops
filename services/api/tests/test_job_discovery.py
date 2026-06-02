@@ -32,6 +32,7 @@ from jobops_api.job_discovery.planning import (
     apply_job_search_plan_guardrails,
     build_fallback_job_search_plan,
     build_job_search_planner_model_request,
+    select_job_search_plan_with_model,
     validate_job_search_planner_output,
 )
 from jobops_api.job_discovery.providers.adzuna import build_adzuna_request, normalize_adzuna_result
@@ -47,6 +48,43 @@ from jobops_api.job_discovery.service import (
 )
 from jobops_api.job_discovery.url_verification import source_result_verification
 from jobops_api.settings import Settings
+
+
+def fake_job_search_planner_response(
+    *,
+    role_query: str = "AI Platform Engineer",
+    locations: list[str] | None = None,
+    requested_result_goal: int = 20,
+) -> ModelResponse:
+    return ModelResponse(
+        text=json.dumps(
+            {
+                "searchPlan": {
+                    "searchMode": "broad",
+                    "roleQueries": [role_query],
+                    "companyNames": [],
+                    "locations": locations or [],
+                    "remoteWorkModes": [],
+                    "employmentTypes": [],
+                    "salaryMin": None,
+                    "includeTerms": [],
+                    "excludeTerms": [],
+                    "hardConstraints": [],
+                    "softPreferences": [],
+                    "providerStrategy": {
+                        "useBroadSearch": True,
+                        "useCompanyBoards": True,
+                        "requestedResultGoal": requested_result_goal,
+                        "maxProviderPages": 2,
+                        "allowReplanning": True,
+                    },
+                    "rationale": "Fake planner response for tests.",
+                }
+            }
+        ),
+        provider="fake",
+        model="fake-planner",
+    )
 
 
 def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> None:
@@ -795,6 +833,9 @@ def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tm
     class FakeConnector:
         def generate(self, request):
             nonlocal captured_request
+            if request.task == "job_search_planning":
+                return fake_job_search_planner_response()
+            assert request.task == "job_candidate_selection"
             captured_request = request
             payload = json.loads(request.messages[-1].content)
             selected_candidate = next(
@@ -932,7 +973,7 @@ def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tm
 
 
 def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tmp_path: Path) -> None:
-    calls = []
+    selection_calls = []
 
     class FakeResponse:
         status = 200
@@ -961,8 +1002,11 @@ def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tm
 
     class TruncatingConnector:
         def generate(self, request):
-            calls.append(request)
-            if len(calls) == 1:
+            if request.task == "job_search_planning":
+                return fake_job_search_planner_response()
+            assert request.task == "job_candidate_selection"
+            selection_calls.append(request)
+            if len(selection_calls) == 1:
                 return ModelResponse(
                     text='{"assistantMessage":"too long","selectedJobs":[{"candidateId":"J001"',
                     provider="fake",
@@ -1014,7 +1058,7 @@ def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tm
         )
 
         assert result.status_code == 200
-        assert len(calls) == 2
+        assert len(selection_calls) == 2
         assert result.body["result"]["savedCount"] == 1
         assert result.body["result"]["selectedCandidateIds"] == ["J001"]
 
@@ -1081,6 +1125,10 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["providerDiagnostics"][0]["providerName"] == "adzuna"
         assert result.body["result"]["providerDiagnostics"][0]["resultCount"] == 0
         assert result.body["result"]["providerDiagnostics"][0]["attempted"] is True
+        assert result.body["result"]["replansAttempted"] == 0
+        assert result.body["result"]["replanLimit"] == settings.job_discovery_search_replan_limit
+        assert result.body["result"]["replanningStatus"] == "deferred"
+        assert "not implemented" in result.body["result"]["replanningDeferredReason"]
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
@@ -1497,6 +1545,51 @@ def test_job_search_planner_request_includes_required_context(tmp_path: Path) ->
     assert payload["recent_job_search_history"][0]["command_text"] == "Find manager jobs"
     assert payload["provider_capabilities"]["providers"][0]["name"] == "adzuna"
     assert "Do not invent" in model_request.messages[0].content
+
+
+def test_search_planner_uses_injected_connector(tmp_path: Path) -> None:
+    captured_requests = []
+
+    class FakePlannerConnector:
+        def generate(self, request):
+            captured_requests.append(request)
+            assert request.task == "job_search_planning"
+            return fake_job_search_planner_response(
+                role_query="Forward Deployed AI Engineer",
+                locations=["Connecticut"],
+            )
+
+    settings = replace(
+        make_settings(tmp_path),
+        job_discovery_results_per_provider=50,
+        job_discovery_save_limit=25,
+    )
+
+    result = select_job_search_plan_with_model(
+        JobDiscoveryRequest(
+            latest_user_message="Find AI forward deployed engineer jobs in Connecticut.",
+            candidate_profile_slug="rebekah-love",
+        ),
+        connector=FakePlannerConnector(),
+        settings=settings,
+        router_extracted={},
+        current_saved_jobs=[],
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        recent_search_history=[],
+        provider_capabilities={
+            "providers": [{"name": "adzuna", "type": "broad_search"}],
+            "limits": {"results_per_provider": 50, "max_provider_pages": 2, "replan_limit": 1},
+        },
+    )
+
+    assert captured_requests
+    assert result.fallback_used is False
+    assert result.response_provider == "fake"
+    assert result.plan.role_queries == ["Forward Deployed AI Engineer"]
+    assert result.plan.locations == ["Connecticut"]
+    assert result.plan.provider_strategy.requested_result_goal == 50
 
 
 def test_planner_output_validates_company_salary_location_and_exclusions() -> None:

@@ -78,8 +78,7 @@ def select_job_search_plan_with_model(
         settings=settings,
     )
     try:
-        _ = connector
-        active_connector = create_model_connector(
+        active_connector = connector or create_model_connector(
             connector_config,
             mock_responses_by_task={"job_search_planning": build_mock_job_search_planner_response},
         )

@@ -558,6 +558,12 @@ def run_live_source_job_discovery(
         "totalMatchesReported": total_matches_reported(provider_diagnostics),
         "pagesAttempted": total_pages_attempted(provider_diagnostics),
         "replansAttempted": 0,
+        "replanLimit": settings.job_discovery_search_replan_limit,
+        "replanningStatus": "deferred",
+        "replanningDeferredReason": (
+            "Zero-result replanning is not implemented in this branch; search history, planning, "
+            "provider diagnostics, and capped pagination are persisted for a future replan loop."
+        ),
         "companiesSearched": search_plan.company_names,
         "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
         "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
