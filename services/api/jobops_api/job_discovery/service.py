@@ -519,6 +519,8 @@ def run_live_source_job_discovery(
         for link in [*save_result.saved_links, *save_result.updated_existing_links]
         if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
     )
+    # Replanning is intentionally deferred in this branch. The planner request supports
+    # replan_context, but provider execution does not loop after zero/low-result searches yet.
     result_payload = {
         "assistantMessage": build_selected_job_discovery_assistant_message(
             selection_result,

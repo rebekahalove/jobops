@@ -1125,6 +1125,7 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["providerDiagnostics"][0]["providerName"] == "adzuna"
         assert result.body["result"]["providerDiagnostics"][0]["resultCount"] == 0
         assert result.body["result"]["providerDiagnostics"][0]["attempted"] is True
+        # Replanning is deferred for this branch: the cap is surfaced, but no second provider pass runs.
         assert result.body["result"]["replansAttempted"] == 0
         assert result.body["result"]["replanLimit"] == settings.job_discovery_search_replan_limit
         assert result.body["result"]["replanningStatus"] == "deferred"
