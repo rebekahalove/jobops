@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any, Literal
 
@@ -60,6 +61,7 @@ NON_MUTATING_PROFILE_ACTIONS = {
 
 
 router = APIRouter(prefix="/v1/command-center", tags=["command-center"], dependencies=[Depends(require_internal_api_key)])
+logger = logging.getLogger(__name__)
 
 
 class ApiModel(BaseModel):
@@ -251,6 +253,18 @@ def stream_command_center_command(
         candidate_slug = auth.candidate_profile.slug if has_auth_context else meaningful_text(request.candidate_profile_slug)
         candidate_profile = auth.candidate_profile if has_auth_context else resolve_direct_candidate_profile(session, candidate_slug)
         candidate_slug = candidate_slug or (candidate_profile.slug if candidate_profile is not None else None)
+        logger.warning(
+            "Command-center stream started: %s",
+            json.dumps(
+                {
+                    "activeWorkspace": request.active_workspace,
+                    "candidateSlug": candidate_slug,
+                    "commandLength": len(request.command),
+                    "hasAuthContext": has_auth_context,
+                },
+                sort_keys=True,
+            ),
+        )
         safety_response = preflight_safety_response(request.command)
         if safety_response is not None:
             save_command_interaction_log(
@@ -280,6 +294,18 @@ def stream_command_center_command(
         try:
             if router_result.decision is not None:
                 status_update = build_router_decision_status_update(router_result.decision)
+                logger.warning(
+                    "Command-center stream routed: %s",
+                    json.dumps(
+                        {
+                            "actionType": router_result.decision.action_type,
+                            "candidateSlug": candidate_slug,
+                            "confidence": router_result.decision.confidence,
+                            "targetWorkspace": router_result.decision.target_workspace,
+                        },
+                        sort_keys=True,
+                    ),
+                )
                 yield command_stream_event("status", {"statusUpdate": status_update.model_dump(by_alias=True)})
                 if router_result.decision.confidence == "high" and router_result.decision.action_type != "unknown":
                     response = dispatch_command_center_action(
@@ -376,8 +402,33 @@ def stream_command_center_command(
                 model_provider=settings.model_provider,
             )
             session.commit()
+            logger.warning(
+                "Command-center stream completed: %s",
+                json.dumps(
+                    {
+                        "actionTypes": [action.type for action in response.actions],
+                        "candidateSlug": candidate_slug,
+                        "latencyMs": round((time.perf_counter() - started_at) * 1000),
+                        "status": [action.status for action in response.actions],
+                        "targetWorkspace": response.target_workspace,
+                    },
+                    sort_keys=True,
+                ),
+            )
             yield command_stream_event("result", {"result": response.model_dump(by_alias=True)})
         except Exception as error:
+            logger.exception(
+                "Command-center stream failed: %s",
+                json.dumps(
+                    {
+                        "candidateSlug": candidate_slug,
+                        "errorType": type(error).__name__,
+                        "latencyMs": round((time.perf_counter() - started_at) * 1000),
+                        "routerAction": router_result.decision.action_type if router_result.decision is not None else None,
+                    },
+                    sort_keys=True,
+                ),
+            )
             error_response = command_stream_failure_response(
                 request,
                 router_result=router_result,

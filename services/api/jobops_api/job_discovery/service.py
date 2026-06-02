@@ -323,6 +323,15 @@ def run_live_source_job_discovery(
         search_plan=search_plan,
         provider_names=provider_names,
     )
+    log_job_discovery_run_started(
+        settings,
+        search_run=search_run,
+        candidate_profile=candidate_profile,
+        provider_names=provider_names,
+        search_plan=search_plan,
+        current_saved_job_count=len(current_saved_jobs),
+        current_saved_company_count=len(current_saved_companies),
+    )
 
     if user_urls:
         source_results, url_diagnostics, url_errors = build_user_url_source_results(
@@ -699,6 +708,15 @@ def run_live_source_job_discovery(
     summary_level = logging.INFO
     if provider_errors or (provider_names and provider_result_count == 0):
         summary_level = logging.WARNING
+    log_job_discovery_run_completed(
+        search_run=search_run,
+        provider_result_count=provider_result_count,
+        candidate_count_after_dedupe=candidate_pool.count_after_dedupe,
+        saved_count=len(saved_jobs),
+        updated_existing_count=len(updated_saved_jobs),
+        skipped_count=len(skipped_jobs),
+        provider_error_count=len(provider_errors),
+    )
     log_job_discovery_provider_summary(
         settings,
         provider_names=provider_names,
@@ -852,6 +870,59 @@ def log_job_discovery_provider_plan(
         if search_plan is not None:
             payload["searchCriteria"] = summarize_search_plan(search_plan)
     logger.info("Job discovery provider plan: %s", json.dumps(payload, sort_keys=True))
+
+
+def log_job_discovery_run_started(
+    settings: Settings,
+    *,
+    search_run: JobSearchRun,
+    candidate_profile: CandidateProfile,
+    provider_names: tuple[str, ...],
+    search_plan: JobSearchPlan,
+    current_saved_job_count: int,
+    current_saved_company_count: int,
+) -> None:
+    payload: dict[str, Any] = {
+        "candidateProfileId": candidate_profile.id,
+        "candidateSlug": candidate_profile.slug,
+        "commandLength": len(search_run.command_text or ""),
+        "configuredProviders": list(provider_names),
+        "currentSavedCompanyCount": current_saved_company_count,
+        "currentSavedJobCount": current_saved_job_count,
+        "jobSearchRunId": search_run.id,
+        "searchMode": search_plan.search_mode,
+    }
+    if should_log_job_discovery_debug(settings):
+        payload["commandPreview"] = safe_log_preview(search_run.command_text, limit=180)
+        payload["searchCriteria"] = summarize_search_plan(search_plan)
+    logger.warning("Job discovery run started: %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def log_job_discovery_run_completed(
+    *,
+    search_run: JobSearchRun,
+    provider_result_count: int,
+    candidate_count_after_dedupe: int,
+    saved_count: int,
+    updated_existing_count: int,
+    skipped_count: int,
+    provider_error_count: int,
+) -> None:
+    payload = {
+        "candidatePoolCount": search_run.candidate_pool_count,
+        "duplicateCount": search_run.duplicate_count,
+        "jobSearchRunId": search_run.id,
+        "modelSelectedCount": search_run.model_selected_count,
+        "providerErrorCount": provider_error_count,
+        "providerResultCount": provider_result_count,
+        "candidateCountAfterDedupe": candidate_count_after_dedupe,
+        "savedCount": saved_count,
+        "searchMode": search_run.search_mode,
+        "skippedCount": skipped_count,
+        "status": search_run.status,
+        "updatedExistingCount": updated_existing_count,
+    }
+    logger.warning("Job discovery run completed: %s", json.dumps(payload, sort_keys=True, default=str))
 
 
 def log_job_discovery_provider_summary(

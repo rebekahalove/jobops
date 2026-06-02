@@ -793,6 +793,15 @@ def test_command_center_add_job_url_executes_url_intake(tmp_path: Path, monkeypa
     assert response.assistant_message == "Saved 1 job from the provided URL."
 
 
+def test_command_center_stream_lifecycle_logging_is_present() -> None:
+    source = Path(command_center_module.__file__).read_text(encoding="utf-8")
+
+    assert "Command-center stream started:" in source
+    assert "Command-center stream routed:" in source
+    assert "Command-center stream completed:" in source
+    assert "Command-center stream failed:" in source
+
+
 def test_router_unavailable_ambiguous_url_asks_for_clarification(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()

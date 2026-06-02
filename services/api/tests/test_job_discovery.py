@@ -1808,6 +1808,63 @@ def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) ->
         assert "app-id" not in json.dumps(result.body["providerDiagnostics"][0]["requestCriteria"])
 
 
+def test_job_discovery_run_lifecycle_is_logged(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+
+    def capture_warning(message, *args, **_kwargs):
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr(job_discovery_service_module.logger, "warning", capture_warning)
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path)
+    search_plan = JobSearchPlan(searchMode="broad", roleQueries=["Applied AI Engineer"])
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        search_run = job_discovery_service_module.create_job_search_run(
+            session,
+            candidate_profile=profile,
+            command_text="Find applied AI engineer jobs to apply to.",
+            search_plan=search_plan,
+            provider_names=("mock",),
+        )
+        job_discovery_service_module.log_job_discovery_run_started(
+            settings,
+            search_run=search_run,
+            candidate_profile=profile,
+            provider_names=("mock",),
+            search_plan=search_plan,
+            current_saved_job_count=2,
+            current_saved_company_count=3,
+        )
+        job_discovery_service_module.complete_job_search_run(
+            search_run,
+            status="completed",
+            provider_diagnostics=[],
+            total_provider_results=4,
+            candidate_pool_count=3,
+            model_selected_count=2,
+            saved_count=1,
+            updated_existing_count=1,
+            duplicate_count=1,
+            skipped_count=1,
+        )
+        job_discovery_service_module.log_job_discovery_run_completed(
+            search_run=search_run,
+            provider_result_count=4,
+            candidate_count_after_dedupe=3,
+            saved_count=1,
+            updated_existing_count=1,
+            skipped_count=1,
+            provider_error_count=0,
+        )
+
+    assert any("Job discovery run started:" in message for message in messages)
+    assert any("Job discovery run completed:" in message for message in messages)
+    assert any("jobSearchRunId" in message for message in messages)
+
+
 def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
