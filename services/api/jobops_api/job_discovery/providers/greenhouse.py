@@ -100,12 +100,20 @@ class GreenhouseJobDiscoveryProvider:
             raw_jobs = payload.get("jobs") if isinstance(payload, dict) else []
             if not isinstance(raw_jobs, list):
                 raw_jobs = []
+            query = greenhouse_filter_query_for_target(request, target)
             board_results = [
                 result
                 for raw in raw_jobs
-                if (result := normalize_greenhouse_result(raw, board_token=token, request=request, company_name=target.company_name))
+                if (
+                    result := normalize_greenhouse_result(
+                        raw,
+                        board_token=token,
+                        request=request,
+                        company_name=target.company_name,
+                        source_query=query,
+                    )
+                )
             ]
-            query = request.search_queries[0] if request.search_queries else None
             if query:
                 board_results = [result for result in board_results if source_result_matches_query(result, query)]
             results.extend(board_results)
@@ -188,6 +196,7 @@ def normalize_greenhouse_result(
     board_token: str,
     request: JobSearchRequest,
     company_name: str | None = None,
+    source_query: str | None = None,
 ) -> LiveJobSourceResult | None:
     if not isinstance(raw, dict):
         return None
@@ -208,7 +217,7 @@ def normalize_greenhouse_result(
         source_provider="greenhouse",
         provider_type="ats_board",
         source_result_id=f"{board_token}:{job_id}" if job_id is not None else board_token,
-        source_query=request.search_queries[0] if request.search_queries else None,
+        source_query=source_query or greenhouse_filter_query_for_target(request) or (request.search_queries[0] if request.search_queries else None),
         source_url=job_url,
         provenance="provider_result",
         location=clean_text_value(nested_get(raw, "location", "name")),
@@ -275,7 +284,13 @@ def fetch_greenhouse_job_from_url(url: str, request: JobSearchRequest) -> LiveJo
     if raw_job is None:
         return None
     company_name = company_name_for_greenhouse_board(parts.board_token, request.current_saved_companies)
-    result = normalize_greenhouse_result(raw_job, board_token=parts.board_token, request=request, company_name=company_name)
+    result = normalize_greenhouse_result(
+        raw_job,
+        board_token=parts.board_token,
+        request=request,
+        company_name=company_name,
+        source_query=greenhouse_filter_query_for_target(request),
+    )
     if result is None:
         return None
     return replace(
@@ -348,6 +363,25 @@ def company_name_for_greenhouse_board(board_token: str, current_saved_companies:
     if known_name:
         return known_name
     return fallback_name
+
+
+def greenhouse_filter_query_for_target(
+    request: JobSearchRequest,
+    target: GreenhouseBoardTarget | None = None,
+) -> str | None:
+    search_mode = request.search_plan.search_mode if request.search_plan is not None else None
+    if search_mode in {"company_specific", "followed_companies"} and request.search_plan is not None:
+        for role_query in request.search_plan.role_queries:
+            query = clean_text_value(role_query)
+            if query and query.casefold() not in {"job", "jobs"}:
+                return query
+    if target is not None and target.company_name and request.search_queries:
+        company_prefix = target.company_name.casefold()
+        for query in request.search_queries:
+            cleaned = clean_text_value(query)
+            if cleaned and not cleaned.casefold().startswith(company_prefix):
+                return cleaned
+    return request.search_queries[0] if request.search_queries else None
 
 
 def source_result_matches_query(result: LiveJobSourceResult, query: str) -> bool:

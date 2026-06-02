@@ -414,7 +414,11 @@ def run_live_source_job_discovery(
             search_outcome = run_configured_job_providers(routed_providers, search_request, settings)
             provider_diagnostics.extend(search_outcome.diagnostics)
             provider_errors.extend(search_outcome.errors)
-            if search_outcome.errors and not settings.job_discovery_allow_partial_provider_failures:
+            if (
+                search_outcome.errors
+                and not settings.job_discovery_allow_partial_provider_failures
+                and not should_tolerate_partial_company_board_errors(search_outcome, search_plan)
+            ):
                 persist_job_search_query_runs(db_session, search_run, provider_diagnostics)
                 complete_job_search_run(
                     search_run,
@@ -1258,6 +1262,20 @@ def run_configured_job_providers(
         diagnostics.extend(outcome.diagnostics)
         errors.extend(outcome.errors)
     return ProviderSearchOutcome(results=results, diagnostics=diagnostics, errors=errors)
+
+
+def should_tolerate_partial_company_board_errors(
+    outcome: ProviderSearchOutcome,
+    search_plan: JobSearchPlan,
+) -> bool:
+    if search_plan.search_mode not in {"company_specific", "followed_companies"}:
+        return False
+    if not outcome.results:
+        return False
+    return any(
+        diagnostic.provider_type == "ats_board" and diagnostic.attempted and diagnostic.result_count > 0
+        for diagnostic in outcome.diagnostics
+    )
 
 
 def route_job_discovery_providers(
