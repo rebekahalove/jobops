@@ -27,6 +27,7 @@ from jobops_api.job_discovery.models import (
     JobSearchPlan,
     JobSearchRequest,
     LiveJobSourceResult,
+    ProviderDiagnostic,
     ProviderSearchOutcome,
 )
 from jobops_api.job_discovery.planning import (
@@ -37,7 +38,13 @@ from jobops_api.job_discovery.planning import (
     validate_job_search_planner_output,
 )
 from jobops_api.job_discovery.providers.adzuna import build_adzuna_request, normalize_adzuna_result
-from jobops_api.job_discovery.providers.greenhouse import normalize_greenhouse_result
+from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
+from jobops_api.job_discovery.providers.greenhouse import (
+    canonical_greenhouse_jobs_api_url,
+    normalize_greenhouse_result,
+    parse_greenhouse_url,
+    GreenhouseJobDiscoveryProvider,
+)
 from jobops_api.job_discovery.providers.registry import resolve_job_discovery_providers
 from jobops_api.job_discovery.provider_utils import infer_location_query
 from jobops_api.job_discovery.service import (
@@ -45,7 +52,9 @@ from jobops_api.job_discovery.service import (
     build_provider_job_search_queries_from_plan,
     infer_user_constraint_terms,
     infer_job_search_role_queries,
+    route_job_discovery_providers,
     save_live_job_source_results,
+    should_tolerate_partial_company_board_errors,
 )
 from jobops_api.job_discovery.url_verification import source_result_verification
 from jobops_api.settings import Settings
@@ -714,6 +723,349 @@ def test_greenhouse_provider_normalizes_board_jobs() -> None:
     assert result.description_excerpt == "Own retrieval and evaluation systems."
     assert result.source_updated_at is not None
     assert result.posting_date is None
+
+
+def test_greenhouse_url_parser_supports_public_and_api_urls() -> None:
+    cases = [
+        ("https://job-boards.greenhouse.io/examplecivic", "examplecivic", None),
+        ("https://job-boards.greenhouse.io/examplecivic/jobs/123", "examplecivic", "123"),
+        ("https://boards.greenhouse.io/examplecivic", "examplecivic", None),
+        ("https://boards.greenhouse.io/examplecivic/jobs/123", "examplecivic", "123"),
+        ("https://boards-api.greenhouse.io/v1/boards/examplecivic/jobs", "examplecivic", None),
+        ("https://boards-api.greenhouse.io/v1/boards/examplecivic/jobs/123", "examplecivic", "123"),
+    ]
+
+    for url, token, job_id in cases:
+        parsed = parse_greenhouse_url(url)
+        assert parsed is not None
+        assert parsed.provider == "greenhouse"
+        assert parsed.board_token == token
+        assert parsed.job_id == job_id
+        assert parsed.jobs_api_url == canonical_greenhouse_jobs_api_url(token)
+
+
+def test_greenhouse_url_ingestion_upserts_company_job_and_candidate_links(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": 4680768006,
+                            "title": "Applied AI Engineer",
+                            "absolute_url": "https://job-boards.greenhouse.io/hightouch/jobs/4680768006",
+                            "location": {"name": "Remote"},
+                            "content": "<p>Build reliable data activation systems.</p>",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path, job_discovery_source="none", job_discovery_providers=())
+
+    with Session(engine) as session:
+        profile = session.scalar(select(job_discovery_service_module.CandidateProfile).where(job_discovery_service_module.CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=profile.id)
+        session.commit()
+
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Add this job to my list https://job-boards.greenhouse.io/hightouch/jobs/4680768006",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["savedCount"] == 1
+        job = session.scalar(select(JobPosting).where(JobPosting.source_result_id == "hightouch:4680768006"))
+        assert job is not None
+        assert job.company_id is not None
+        assert job.company_name == "Hightouch"
+        assert job.ats_provider == "greenhouse"
+        assert job.ats_board_token == "hightouch"
+        company = session.get(Company, job.company_id)
+        assert company is not None
+        assert company.name == "Hightouch"
+        assert company.greenhouse_board_token == "hightouch"
+        assert company.job_listings_url == "https://boards-api.greenhouse.io/v1/boards/hightouch/jobs"
+        saved_link = session.scalar(select(CandidateSavedJob).where(CandidateSavedJob.job_id == job.id))
+        assert saved_link is not None
+        assert saved_link.status == "new"
+
+        duplicate = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Save this job https://job-boards.greenhouse.io/hightouch/jobs/4680768006",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert duplicate.status_code == 200
+        assert duplicate.body["result"]["savedCount"] == 0
+        assert duplicate.body["result"]["updatedExistingCount"] == 1
+        assert len(session.scalars(select(JobPosting)).all()) == 1
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 1
+
+
+def test_greenhouse_url_ingestion_repairs_token_derived_company_name(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": 4680768006,
+                            "title": "Applied AI Engineer",
+                            "absolute_url": "https://job-boards.greenhouse.io/solutions/jobs/4680768006",
+                            "location": {"name": "Remote"},
+                            "content": "<p>Build reliable systems.</p>",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path, job_discovery_source="none", job_discovery_providers=())
+
+    with Session(engine) as session:
+        profile = session.scalar(select(job_discovery_service_module.CandidateProfile).where(job_discovery_service_module.CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        company = Company(
+            name="Solutions",
+            normalized_name="solutions",
+            greenhouse_board_token="solutions",
+            job_listings_url="https://boards-api.greenhouse.io/v1/boards/solutions/jobs",
+            source_urls=["https://boards-api.greenhouse.io/v1/boards/solutions/jobs"],
+        )
+        session.add(company)
+        session.flush()
+        session.add(CandidateCompany(candidate_profile_id=profile.id, company_id=company.id, review_status="new"))
+        session.commit()
+
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Add this job to my list https://job-boards.greenhouse.io/solutions/jobs/4680768006",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        job = session.scalar(select(JobPosting).where(JobPosting.source_result_id == "solutions:4680768006"))
+        assert job is not None
+        assert job.company_name == "Cadence Solutions"
+        repaired = session.get(Company, company.id)
+        assert repaired is not None
+        assert repaired.name == "Cadence Solutions"
+        assert repaired.normalized_name == "cadence solutions"
+
+
+def test_greenhouse_seed_is_idempotent_and_does_not_overwrite_non_empty_company_fields() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = session.scalar(select(job_discovery_service_module.CandidateProfile).where(job_discovery_service_module.CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        company = Company(
+            name="Hightouch",
+            normalized_name="hightouch",
+            website_url="https://www.hightouch.com",
+            greenhouse_board_token="hightouch",
+            job_listings_url="https://custom.example/jobs",
+            source_urls=["https://custom.example/jobs"],
+        )
+        session.add(company)
+        session.commit()
+
+        first = upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=profile.id)
+        second = upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=profile.id)
+        session.commit()
+
+        assert len(first) == 9
+        assert len(second) == 9
+        hightouch = session.scalar(select(Company).where(Company.greenhouse_board_token == "hightouch"))
+        assert hightouch is not None
+        assert hightouch.website_url == "https://www.hightouch.com"
+        assert hightouch.job_listings_url == "https://custom.example/jobs"
+        assert len(session.scalars(select(Company).where(Company.greenhouse_board_token == "hightouch")).all()) == 1
+        assert len(session.scalars(select(CandidateCompany).where(CandidateCompany.candidate_profile_id == profile.id)).all()) == 9
+
+
+def test_provider_routing_prefers_saved_greenhouse_company_board() -> None:
+    providers = resolve_job_discovery_providers(("adzuna", "greenhouse", "mock"))
+    request = JobSearchRequest(
+        latest_user_message="Find jobs at Hightouch",
+        search_queries=["AI Engineer"],
+        results_per_provider=20,
+        current_saved_companies=[
+            {
+                "name": "Hightouch",
+                "greenhouse_board_token": "hightouch",
+                "job_listings_url": "https://boards-api.greenhouse.io/v1/boards/hightouch/jobs",
+            }
+        ],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="company_specific", roleQueries=["AI Engineer"], companyNames=["Hightouch"]),
+        company_names=["Hightouch"],
+    )
+
+    routed, diagnostics = route_job_discovery_providers(providers, request)
+
+    assert [provider.provider_name for provider in routed] == ["greenhouse"]
+    assert diagnostics[0].reason == "saved_company_board_token"
+
+
+def test_provider_routing_adds_greenhouse_for_saved_company_when_settings_only_have_broad_provider() -> None:
+    providers = resolve_job_discovery_providers(("adzuna",))
+    request = JobSearchRequest(
+        latest_user_message="Find jobs at Solutions",
+        search_queries=["Applied AI Engineer"],
+        results_per_provider=20,
+        current_saved_companies=[
+            {
+                "name": "Cadence Solutions",
+                "greenhouse_board_token": "solutions",
+                "job_listings_url": "https://boards-api.greenhouse.io/v1/boards/solutions/jobs",
+            }
+        ],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="company_specific", roleQueries=["Applied AI Engineer"], companyNames=["Solutions"]),
+        company_names=["Solutions"],
+    )
+
+    routed, diagnostics = route_job_discovery_providers(providers, request)
+
+    assert [provider.provider_name for provider in routed] == ["greenhouse"]
+    assert diagnostics[0].reason == "saved_company_board_token_dynamic_provider"
+
+
+def test_greenhouse_followed_company_search_filters_each_board_by_role_query(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        token = "hightouch" if "hightouch" in url else "anthropic"
+        return FakeResponse(
+            {
+                "jobs": [
+                    {
+                        "id": f"{token}-1",
+                        "title": "Applied AI Engineer",
+                        "absolute_url": f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                        "location": {"name": "Remote"},
+                        "content": "<p>Applied AI platform role.</p>",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    request = JobSearchRequest(
+        latest_user_message="Find jobs from my companies list",
+        search_queries=["Anthropic Applied AI Engineer remote", "Hightouch Applied AI Engineer remote"],
+        results_per_provider=20,
+        current_saved_companies=[
+            {"name": "Anthropic", "greenhouse_board_token": "anthropic"},
+            {"name": "Hightouch", "greenhouse_board_token": "hightouch"},
+        ],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(
+            searchMode="followed_companies",
+            roleQueries=["Applied AI Engineer"],
+            companyNames=["Anthropic", "Hightouch"],
+        ),
+        company_names=["Anthropic", "Hightouch"],
+    )
+
+    outcome = GreenhouseJobDiscoveryProvider().search(
+        request,
+        make_settings(tmp_path, greenhouse_board_tokens=()),
+    )
+
+    assert [result.company_name for result in outcome.results] == ["Anthropic", "Hightouch"]
+    assert {diagnostic.query for diagnostic in outcome.diagnostics} == {"Applied AI Engineer"}
+
+
+def test_partial_broad_provider_errors_do_not_fail_after_company_board_results() -> None:
+    outcome = ProviderSearchOutcome(
+        results=[
+            LiveJobSourceResult(
+                title="Applied AI Engineer",
+                company_name="Anthropic",
+                job_url="https://job-boards.greenhouse.io/anthropic/jobs/1",
+                source_provider="greenhouse",
+                provider_type="ats_board",
+            )
+        ],
+        diagnostics=[
+            ProviderDiagnostic(
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                configured=True,
+                attempted=True,
+                result_count=1,
+            ),
+            ProviderDiagnostic(
+                provider_name="adzuna",
+                provider_type="broad_search",
+                configured=True,
+                attempted=True,
+                result_count=0,
+                error="Adzuna request failed with HTTP 503.",
+            ),
+        ],
+        errors=["Adzuna request failed with HTTP 503."],
+    )
+
+    assert should_tolerate_partial_company_board_errors(
+        outcome,
+        JobSearchPlan(searchMode="followed_companies", roleQueries=["Applied AI Engineer"], companyNames=["Anthropic"]),
+    )
 
 
 def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path: Path) -> None:

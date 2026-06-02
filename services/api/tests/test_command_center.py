@@ -762,9 +762,25 @@ def test_command_center_routes_generic_company_url_update_to_company_update(tmp_
         assert saved.company.website_url == "https://civicactions.com"
 
 
-def test_command_center_add_job_url_remains_planned_tool(tmp_path: Path, monkeypatch) -> None:
+def test_command_center_add_job_url_executes_url_intake(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()
+
+    def fake_run_job_discovery(request, **kwargs):
+        return SimpleNamespace(
+            body={
+                "ok": True,
+                "result": {
+                    "assistantMessage": "Saved 1 job from the provided URL.",
+                    "jobs": [{"id": "saved-job-1"}],
+                    "updatedExistingJobs": [],
+                    "skippedJobs": [],
+                },
+            },
+            status_code=200,
+        )
+
+    monkeypatch.setattr(command_center_module, "run_job_discovery", fake_run_job_discovery)
 
     with Session(engine) as session:
         response = command_center_module.execute_command_center_command(
@@ -773,7 +789,8 @@ def test_command_center_add_job_url_remains_planned_tool(tmp_path: Path, monkeyp
         )
 
     assert response.actions[0].type == "add_job_from_url"
-    assert response.actions[0].status == "planned"
+    assert response.actions[0].status == "completed"
+    assert response.assistant_message == "Saved 1 job from the provided URL."
 
 
 def test_router_unavailable_ambiguous_url_asks_for_clarification(tmp_path: Path, monkeypatch) -> None:

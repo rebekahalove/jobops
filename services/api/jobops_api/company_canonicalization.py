@@ -14,6 +14,7 @@ from .db.models import CandidateCompany, Company
 CANONICAL_COMPANY_URL_FIELDS = {"website_url", "careers_url", "job_listings_url", "source_urls"}
 NON_COMPANY_MATCH_DOMAINS = {
     "adzuna.com",
+    "boards-api.greenhouse.io",
     "boards.greenhouse.io",
     "job-boards.greenhouse.io",
     "jobs.ashbyhq.com",
@@ -79,7 +80,19 @@ def find_canonical_company(
     *,
     normalized_name: str | None,
     normalized_domain: str | None,
+    greenhouse_board_token: str | None = None,
+    ashby_board_url: str | None = None,
 ) -> Company | None:
+    if greenhouse_board_token:
+        by_greenhouse = session.scalar(select(Company).where(Company.greenhouse_board_token == greenhouse_board_token))
+        if by_greenhouse is not None:
+            return by_greenhouse
+
+    if ashby_board_url:
+        by_ashby = session.scalar(select(Company).where(Company.ashby_board_url == ashby_board_url))
+        if by_ashby is not None:
+            return by_ashby
+
     if normalized_domain:
         by_domain = session.scalar(select(Company).where(Company.normalized_domain == normalized_domain))
         if by_domain is not None:
@@ -124,11 +137,13 @@ def upsert_canonical_company(
 
     clean_sources = clean_company_source_urls(source_urls or [])
     clean_normalized_name = normalize_company_name(normalized_name or cleaned_name) or None
+    clean_greenhouse_board_token = greenhouse_board_token.strip() if greenhouse_board_token else None
+    clean_ashby_board_url = ashby_board_url.strip() if ashby_board_url else None
     normalized_domain = normalized_domain_from_company_urls(
         website_url,
         careers_url,
         job_listings_url,
-        ashby_board_url,
+        clean_ashby_board_url,
         source_urls=clean_sources,
     )
     now = last_seen_at or datetime.now(timezone.utc)
@@ -136,6 +151,8 @@ def upsert_canonical_company(
         session,
         normalized_name=clean_normalized_name,
         normalized_domain=normalized_domain,
+        greenhouse_board_token=clean_greenhouse_board_token,
+        ashby_board_url=clean_ashby_board_url,
     )
 
     if company is None:
@@ -156,8 +173,8 @@ def upsert_canonical_company(
             source_urls=clean_sources[:12],
             source_summary=source_summary,
             data_confidence=data_confidence or "medium",
-            greenhouse_board_token=greenhouse_board_token,
-            ashby_board_url=ashby_board_url,
+            greenhouse_board_token=clean_greenhouse_board_token,
+            ashby_board_url=clean_ashby_board_url,
             lever_slug=lever_slug,
             first_seen_at=now,
             last_seen_at=now,
@@ -165,6 +182,10 @@ def upsert_canonical_company(
         session.add(company)
         session.flush()
         return company
+
+    if should_upgrade_company_name(company, cleaned_name, clean_greenhouse_board_token):
+        company.name = cleaned_name
+        company.normalized_name = clean_normalized_name
 
     company.normalized_name = company.normalized_name or clean_normalized_name
     if normalized_domain and not company.normalized_domain:
@@ -182,13 +203,24 @@ def upsert_canonical_company(
     company.source_urls = merge_text_lists(company.source_urls or [], clean_sources, limit=12)
     company.source_summary = company.source_summary or source_summary
     company.data_confidence = company.data_confidence or data_confidence or "medium"
-    company.greenhouse_board_token = company.greenhouse_board_token or greenhouse_board_token
-    company.ashby_board_url = company.ashby_board_url or ashby_board_url
+    company.greenhouse_board_token = company.greenhouse_board_token or clean_greenhouse_board_token
+    company.ashby_board_url = company.ashby_board_url or clean_ashby_board_url
     company.lever_slug = company.lever_slug or lever_slug
     company.last_seen_at = now
     session.add(company)
     session.flush()
     return company
+
+
+def should_upgrade_company_name(company: Company, incoming_name: str, greenhouse_board_token: str | None) -> bool:
+    if not greenhouse_board_token:
+        return False
+    existing_name = normalize_company_name(company.name)
+    incoming_normalized = normalize_company_name(incoming_name)
+    if not existing_name or not incoming_normalized or existing_name == incoming_normalized:
+        return False
+    token_title = normalize_company_name(greenhouse_board_token.replace("-", " ").replace("_", " ").title())
+    return existing_name == token_title
 
 
 def ensure_candidate_company_link(

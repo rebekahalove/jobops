@@ -526,6 +526,7 @@ class LiveJobSourceResult:
     source_updated_at: datetime | None = None
     company_website_url: str | None = None
     company_careers_url: str | None = None
+    company_job_listings_url: str | None = None
     ats_provider: str | None = None
     ats_board_token: str | None = None
     fit_summary: str | None = None
@@ -572,6 +573,7 @@ class ProviderDiagnostic:
     request_criteria: dict[str, Any] | None = None
     board_token: str | None = None
     search_mode: str | None = None
+    reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -594,6 +596,7 @@ class ProviderDiagnostic:
             "requestCriteria": self.request_criteria,
             "boardToken": self.board_token,
             "searchMode": self.search_mode,
+            "reason": self.reason,
         }
 
 
