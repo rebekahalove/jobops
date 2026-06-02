@@ -493,7 +493,8 @@ def run_live_source_job_discovery(
             )
             replan_reasons.append(replan_reason)
             replans_attempted += 1
-            logger.info(
+            logger.log(
+                visible_job_discovery_log_level(settings),
                 "Job discovery replanning triggered: %s",
                 json.dumps(
                     {
@@ -694,6 +695,10 @@ def run_live_source_job_discovery(
         errors=provider_errors,
         search_plan=search_plan,
         level=summary_level,
+        replans_attempted=replans_attempted,
+        replan_limit=settings.job_discovery_search_replan_limit,
+        replan_reasons=replan_reasons,
+        replan_decision=replan_decision,
     )
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
 
@@ -846,6 +851,10 @@ def log_job_discovery_provider_summary(
     errors: list[str],
     search_plan: JobSearchPlan | None = None,
     level: int = logging.INFO,
+    replans_attempted: int = 0,
+    replan_limit: int | None = None,
+    replan_reasons: list[str] | None = None,
+    replan_decision: str | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "configuredProviders": list(provider_names),
@@ -853,12 +862,18 @@ def log_job_discovery_provider_summary(
         "candidateCountAfterDedupe": candidate_count_after_dedupe,
         "savedCount": saved_count,
         "skippedCount": skipped_count,
+        "replansAttempted": replans_attempted,
+        "replanLimit": settings.job_discovery_search_replan_limit if replan_limit is None else replan_limit,
         "saveLimit": settings.job_discovery_save_limit,
         "candidatePoolLimit": settings.job_discovery_candidate_pool_limit,
         "providerDiagnostics": [
             serialize_provider_diagnostic_for_log(settings, diagnostic) for diagnostic in diagnostics
         ],
     }
+    if replan_reasons:
+        payload["replanReasons"] = replan_reasons
+    if replan_decision:
+        payload["replanningDecision"] = replan_decision
     if search_plan is not None and should_log_job_discovery_debug(settings):
         payload["searchCriteria"] = summarize_search_plan(search_plan)
     if errors:
@@ -868,6 +883,10 @@ def log_job_discovery_provider_summary(
             payload["providerErrorCount"] = len(errors)
     visible_level = logging.WARNING if level == logging.INFO and should_log_job_discovery_debug(settings) else level
     logger.log(visible_level, "Job discovery provider summary: %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def visible_job_discovery_log_level(settings: Settings) -> int:
+    return logging.WARNING if should_log_job_discovery_debug(settings) else logging.INFO
 
 
 def serialize_provider_diagnostic_for_log(settings: Settings, diagnostic: ProviderDiagnostic) -> dict[str, Any]:
@@ -1062,7 +1081,8 @@ def log_job_discovery_replanning_skipped(
     settings: Settings,
     replans_attempted: int,
 ) -> None:
-    logger.info(
+    logger.log(
+        visible_job_discovery_log_level(settings),
         "Job discovery replanning skipped: %s",
         json.dumps(
             {

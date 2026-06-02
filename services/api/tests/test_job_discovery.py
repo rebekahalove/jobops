@@ -1130,6 +1130,7 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["replanningStatus"] == "attempted"
         assert result.body["result"]["replanReasons"] == ["no_provider_results"]
         assert "Job discovery replanning triggered" in caplog.text
+        assert '"replansAttempted": 1' in caplog.text
 
 
 def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path: Path) -> None:
