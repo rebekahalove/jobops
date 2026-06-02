@@ -1312,7 +1312,7 @@ def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tm
         assert result.body["result"]["savedCount"] == 0
 
 
-def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path) -> None:
+def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path, caplog) -> None:
     planner_payloads = []
 
     class FakeResponse:
@@ -1370,6 +1370,7 @@ def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(mon
                 model="fake-model",
             )
 
+    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = replace(
@@ -1398,7 +1399,10 @@ def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(mon
         assert len(planner_payloads) == 1
         assert result.body["result"]["replansAttempted"] == 0
         assert result.body["result"]["replanningStatus"] == "not_needed"
+        assert result.body["result"]["replanningDecision"] == "provider_results_exhausted"
         assert result.body["result"]["savedCount"] == 1
+        assert "Job discovery replanning skipped" in caplog.text
+        assert "provider_results_exhausted" in caplog.text
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:

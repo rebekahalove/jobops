@@ -313,6 +313,7 @@ def run_live_source_job_discovery(
     provider_diagnostics: list[ProviderDiagnostic] = []
     provider_errors: list[str] = []
     replan_reasons: list[str] = []
+    replan_decision = "not_evaluated"
     replans_attempted = 0
     save_result: JobDiscoverySaveResult | None = None
     search_run = create_job_search_run(
@@ -455,12 +456,30 @@ def run_live_source_job_discovery(
                 candidate_pool=candidate_pool,
                 settings=settings,
             )
+            replan_decision = job_search_replan_decision(
+                replan_reason=replan_reason,
+                provider_diagnostics=provider_diagnostics,
+                provider_result_count=merged_provider_result_count,
+                candidate_pool=candidate_pool,
+                search_plan=search_plan,
+                settings=settings,
+                replans_attempted=replans_attempted,
+            )
             if (
                 replan_reason is None
                 or not search_plan.provider_strategy.allow_replanning
                 or settings.job_discovery_search_replan_limit <= 0
                 or replans_attempted >= settings.job_discovery_search_replan_limit
             ):
+                if replan_decision != "no_replan_needed":
+                    log_job_discovery_replanning_skipped(
+                        replan_decision,
+                        provider_diagnostics=provider_diagnostics,
+                        provider_result_count=merged_provider_result_count,
+                        candidate_pool=candidate_pool,
+                        settings=settings,
+                        replans_attempted=replans_attempted,
+                    )
                 break
             replan_context = build_job_search_replan_context(
                 reason=replan_reason,
@@ -626,6 +645,7 @@ def run_live_source_job_discovery(
             settings.job_discovery_search_replan_limit,
             replan_reasons,
         ),
+        "replanningDecision": replan_decision,
         "replanReasons": replan_reasons,
         "companiesSearched": search_plan.company_names,
         "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
@@ -1000,6 +1020,64 @@ def job_search_replan_reason(
             return None
         return "insufficient_candidate_pool"
     return None
+
+
+def job_search_replan_decision(
+    *,
+    replan_reason: str | None,
+    provider_diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_pool: CandidatePoolBuildResult,
+    search_plan: JobSearchPlan,
+    settings: Settings,
+    replans_attempted: int,
+) -> str:
+    if replan_reason is not None:
+        return f"triggered:{replan_reason}"
+    if not search_plan.provider_strategy.allow_replanning:
+        return "disabled_by_plan"
+    if settings.job_discovery_search_replan_limit <= 0:
+        return "disabled_by_settings"
+    if replans_attempted >= settings.job_discovery_search_replan_limit:
+        return "limit_reached"
+    total_matches = total_matches_reported(provider_diagnostics)
+    raw_result_count = provider_raw_result_count(provider_diagnostics, provider_result_count)
+    candidate_pool_target = min(settings.job_discovery_save_limit, settings.job_discovery_candidate_pool_limit)
+    if (
+        len(candidate_pool.entries) < candidate_pool_target
+        and total_matches is not None
+        and total_matches > 0
+        and raw_result_count >= total_matches
+    ):
+        return "provider_results_exhausted"
+    return "no_replan_needed"
+
+
+def log_job_discovery_replanning_skipped(
+    decision: str,
+    *,
+    provider_diagnostics: list[ProviderDiagnostic],
+    provider_result_count: int,
+    candidate_pool: CandidatePoolBuildResult,
+    settings: Settings,
+    replans_attempted: int,
+) -> None:
+    logger.info(
+        "Job discovery replanning skipped: %s",
+        json.dumps(
+            {
+                "decision": decision,
+                "replansAttempted": replans_attempted,
+                "replanLimit": settings.job_discovery_search_replan_limit,
+                "providerResultCount": provider_result_count,
+                "candidatePoolCount": len(candidate_pool.entries),
+                "candidatePoolTarget": min(settings.job_discovery_save_limit, settings.job_discovery_candidate_pool_limit),
+                "rawResultCount": provider_raw_result_count(provider_diagnostics, provider_result_count),
+                "totalMatchesReported": total_matches_reported(provider_diagnostics),
+            },
+            sort_keys=True,
+        ),
+    )
 
 
 def build_job_search_replan_context(
