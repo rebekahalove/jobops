@@ -22,6 +22,18 @@ from ..provider_utils import (
 
 GREENHOUSE_BOARD_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io"}
 GREENHOUSE_API_HOST = "boards-api.greenhouse.io"
+GREENHOUSE_KNOWN_BOARD_COMPANY_NAMES = {
+    "agencywithin": "WITHIN",
+    "anthropic": "Anthropic",
+    "assetwatch": "AssetWatch",
+    "cadencesolutions": "Cadence Solutions",
+    "doitintl": "DoiT",
+    "gradial": "Gradial",
+    "hightouch": "Hightouch",
+    "mercury": "Mercury",
+    "nozominetworks": "Nozomi Networks",
+    "solutions": "Cadence Solutions",
+}
 
 
 @dataclass(frozen=True)
@@ -310,11 +322,15 @@ def normalize_greenhouse_board_token(value: object) -> str:
 
 
 def company_name_for_greenhouse_board(board_token: str, current_saved_companies: list[dict[str, Any]]) -> str:
+    known_name = GREENHOUSE_KNOWN_BOARD_COMPANY_NAMES.get(board_token.casefold())
+    fallback_name = board_token.replace("-", " ").replace("_", " ").title()
     for company in current_saved_companies:
         direct_token = greenhouse_board_token_from_company(company)
         if direct_token and direct_token.casefold() == board_token.casefold():
             name = clean_text_value(company.get("name"))
             if name:
+                if known_name and name.casefold() == fallback_name.casefold():
+                    return known_name
                 return name
         values = [
             company.get("job_listings_url"),
@@ -326,8 +342,12 @@ def company_name_for_greenhouse_board(board_token: str, current_saved_companies:
         if any(isinstance(value, str) and board_token.casefold() in value.casefold() for value in values):
             name = clean_text_value(company.get("name"))
             if name:
+                if known_name and name.casefold() == fallback_name.casefold():
+                    return known_name
                 return name
-    return board_token.replace("-", " ").replace("_", " ").title()
+    if known_name:
+        return known_name
+    return fallback_name
 
 
 def source_result_matches_query(result: LiveJobSourceResult, query: str) -> bool:

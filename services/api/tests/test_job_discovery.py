@@ -819,6 +819,70 @@ def test_greenhouse_url_ingestion_upserts_company_job_and_candidate_links(monkey
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 1
 
 
+def test_greenhouse_url_ingestion_repairs_token_derived_company_name(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": 4680768006,
+                            "title": "Applied AI Engineer",
+                            "absolute_url": "https://job-boards.greenhouse.io/solutions/jobs/4680768006",
+                            "location": {"name": "Remote"},
+                            "content": "<p>Build reliable systems.</p>",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path, job_discovery_source="none", job_discovery_providers=())
+
+    with Session(engine) as session:
+        profile = session.scalar(select(job_discovery_service_module.CandidateProfile).where(job_discovery_service_module.CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        company = Company(
+            name="Solutions",
+            normalized_name="solutions",
+            greenhouse_board_token="solutions",
+            job_listings_url="https://boards-api.greenhouse.io/v1/boards/solutions/jobs",
+            source_urls=["https://boards-api.greenhouse.io/v1/boards/solutions/jobs"],
+        )
+        session.add(company)
+        session.flush()
+        session.add(CandidateCompany(candidate_profile_id=profile.id, company_id=company.id, review_status="new"))
+        session.commit()
+
+        result = run_job_discovery(
+            JobDiscoveryRequest(
+                latest_user_message="Add this job to my list https://job-boards.greenhouse.io/solutions/jobs/4680768006",
+                candidate_profile_slug="rebekah-love",
+            ),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        job = session.scalar(select(JobPosting).where(JobPosting.source_result_id == "solutions:4680768006"))
+        assert job is not None
+        assert job.company_name == "Cadence Solutions"
+        repaired = session.get(Company, company.id)
+        assert repaired is not None
+        assert repaired.name == "Cadence Solutions"
+        assert repaired.normalized_name == "cadence solutions"
+
+
 def test_greenhouse_seed_is_idempotent_and_does_not_overwrite_non_empty_company_fields() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -873,6 +937,32 @@ def test_provider_routing_prefers_saved_greenhouse_company_board() -> None:
 
     assert [provider.provider_name for provider in routed] == ["greenhouse"]
     assert diagnostics[0].reason == "saved_company_board_token"
+
+
+def test_provider_routing_adds_greenhouse_for_saved_company_when_settings_only_have_broad_provider() -> None:
+    providers = resolve_job_discovery_providers(("adzuna",))
+    request = JobSearchRequest(
+        latest_user_message="Find jobs at Solutions",
+        search_queries=["Applied AI Engineer"],
+        results_per_provider=20,
+        current_saved_companies=[
+            {
+                "name": "Cadence Solutions",
+                "greenhouse_board_token": "solutions",
+                "job_listings_url": "https://boards-api.greenhouse.io/v1/boards/solutions/jobs",
+            }
+        ],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="company_specific", roleQueries=["Applied AI Engineer"], companyNames=["Solutions"]),
+        company_names=["Solutions"],
+    )
+
+    routed, diagnostics = route_job_discovery_providers(providers, request)
+
+    assert [provider.provider_name for provider in routed] == ["greenhouse"]
+    assert diagnostics[0].reason == "saved_company_board_token_dynamic_provider"
 
 
 def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path: Path) -> None:

@@ -183,6 +183,10 @@ def upsert_canonical_company(
         session.flush()
         return company
 
+    if should_upgrade_company_name(company, cleaned_name, clean_greenhouse_board_token):
+        company.name = cleaned_name
+        company.normalized_name = clean_normalized_name
+
     company.normalized_name = company.normalized_name or clean_normalized_name
     if normalized_domain and not company.normalized_domain:
         company.domain = company.domain or normalized_domain
@@ -206,6 +210,17 @@ def upsert_canonical_company(
     session.add(company)
     session.flush()
     return company
+
+
+def should_upgrade_company_name(company: Company, incoming_name: str, greenhouse_board_token: str | None) -> bool:
+    if not greenhouse_board_token:
+        return False
+    existing_name = normalize_company_name(company.name)
+    incoming_normalized = normalize_company_name(incoming_name)
+    if not existing_name or not incoming_normalized or existing_name == incoming_normalized:
+        return False
+    token_title = normalize_company_name(greenhouse_board_token.replace("-", " ").replace("_", " ").title())
+    return existing_name == token_title
 
 
 def ensure_candidate_company_link(

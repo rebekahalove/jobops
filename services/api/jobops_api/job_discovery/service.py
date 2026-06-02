@@ -1296,6 +1296,21 @@ def route_job_discovery_providers(
                 reason="saved_company_board_token",
             )
         )
+    elif greenhouse_companies:
+        from .providers.greenhouse import GreenhouseJobDiscoveryProvider
+
+        routed.append(GreenhouseJobDiscoveryProvider())
+        diagnostics.append(
+            ProviderDiagnostic(
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                configured=True,
+                attempted=False,
+                company_name=", ".join(str(company.get("name")) for company in greenhouse_companies if company.get("name"))[:240] or None,
+                search_mode=search_mode,
+                reason="saved_company_board_token_dynamic_provider",
+            )
+        )
     if ashby_companies and "ashby" in provider_by_name:
         routed.append(provider_by_name["ashby"])
         diagnostics.append(
@@ -1356,7 +1371,17 @@ def saved_companies_for_search(
     requested = {name.casefold() for name in company_names if name}
     if not requested:
         return []
-    return [company for company in companies if str(company.get("name") or "").casefold() in requested]
+    return [company for company in companies if saved_company_matches_requested_names(company, requested)]
+
+
+def saved_company_matches_requested_names(company: dict[str, Any], requested: set[str]) -> bool:
+    from .providers.greenhouse import greenhouse_board_token_from_company
+
+    name = str(company.get("name") or "").casefold()
+    token = (greenhouse_board_token_from_company(company) or "").casefold()
+    aliases = {name, token}
+    aliases.update(part for part in name.split() if len(part) >= 3)
+    return any(value in aliases or (value and value in name) for value in requested)
 
 
 def saved_company_has_greenhouse_metadata(company: dict[str, Any]) -> bool:
