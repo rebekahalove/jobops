@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
+import jobops_api.job_discovery.service as job_discovery_service_module
 from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting, JobSearchQueryRun, JobSearchRun
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
@@ -1087,7 +1088,7 @@ def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
         assert len(session.scalars(select(JobPosting)).all()) == 0
 
 
-def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
+def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
         headers = {"content-type": "application/json"}
@@ -1101,7 +1102,12 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         def read(self, *_args):
             return json.dumps({"results": []}).encode("utf-8")
 
-    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
+    log_messages = []
+
+    def capture_log(_level, message, *args, **_kwargs):
+        log_messages.append(message % args if args else message)
+
+    monkeypatch.setattr(job_discovery_service_module.logger, "log", capture_log)
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = make_settings(
@@ -1129,8 +1135,8 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path, caplog) -
         assert result.body["result"]["replanLimit"] == settings.job_discovery_search_replan_limit
         assert result.body["result"]["replanningStatus"] == "attempted"
         assert result.body["result"]["replanReasons"] == ["no_provider_results"]
-        assert "Job discovery replanning triggered" in caplog.text
-        assert '"replansAttempted": 1' in caplog.text
+        assert any("Job discovery replanning triggered" in message for message in log_messages)
+        assert any('"replansAttempted": 1' in message for message in log_messages)
 
 
 def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path: Path) -> None:
@@ -1313,7 +1319,7 @@ def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tm
         assert result.body["result"]["savedCount"] == 0
 
 
-def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path, caplog) -> None:
+def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path) -> None:
     planner_payloads = []
 
     class FakeResponse:
@@ -1371,7 +1377,12 @@ def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(mon
                 model="fake-model",
             )
 
-    caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
+    log_messages = []
+
+    def capture_log(_level, message, *args, **_kwargs):
+        log_messages.append(message % args if args else message)
+
+    monkeypatch.setattr(job_discovery_service_module.logger, "log", capture_log)
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
     engine = create_seeded_engine()
     settings = replace(
@@ -1402,8 +1413,8 @@ def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(mon
         assert result.body["result"]["replanningStatus"] == "not_needed"
         assert result.body["result"]["replanningDecision"] == "provider_results_exhausted"
         assert result.body["result"]["savedCount"] == 1
-        assert "Job discovery replanning skipped" in caplog.text
-        assert "provider_results_exhausted" in caplog.text
+        assert any("Job discovery replanning skipped" in message for message in log_messages)
+        assert any("provider_results_exhausted" in message for message in log_messages)
 
 
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
