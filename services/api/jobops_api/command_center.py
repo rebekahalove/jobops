@@ -6,6 +6,7 @@ import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -1427,7 +1428,7 @@ def build_router_decision_status_update(router_decision: CommandRouterOutput) ->
 
 
 def command_stream_event(event_type: str, payload: dict[str, Any]) -> str:
-    return json.dumps({"type": event_type, **payload}) + "\n"
+    return json.dumps(jsonable_encoder({"type": event_type, **payload})) + "\n"
 
 
 def command_stream_failure_response(

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -800,6 +802,29 @@ def test_command_center_stream_lifecycle_logging_is_present() -> None:
     assert "Command-center stream routed:" in source
     assert "Command-center stream completed:" in source
     assert "Command-center stream failed:" in source
+
+
+def test_command_stream_event_encodes_database_values() -> None:
+    identifier = uuid4()
+    emitted_at = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+
+    event = json.loads(
+        command_center_module.command_stream_event(
+            "result",
+            {
+                "result": {
+                    "id": identifier,
+                    "posting_date": date(2026, 6, 2),
+                    "emitted_at": emitted_at,
+                }
+            },
+        )
+    )
+
+    assert event["type"] == "result"
+    assert event["result"]["id"] == str(identifier)
+    assert event["result"]["posting_date"] == "2026-06-02"
+    assert event["result"]["emitted_at"] == "2026-06-02T12:00:00+00:00"
 
 
 def test_router_unavailable_ambiguous_url_asks_for_clarification(tmp_path: Path, monkeypatch) -> None:
