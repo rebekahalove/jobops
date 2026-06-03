@@ -343,6 +343,83 @@ def test_command_stream_emits_result_for_profile_intake_validation_failure(tmp_p
     )
 
 
+def test_non_stream_fallback_reuses_recent_mutating_stream_response(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        command_center_module,
+        "run_command_router",
+        lambda *args, **kwargs: SimpleNamespace(
+            decision=command_center_module.CommandRouterOutput(
+                actionType="job_discovery",
+                confidence="high",
+                targetWorkspace="jobs",
+            ),
+            body={"ok": True},
+            status_code=200,
+            unavailable=False,
+        ),
+    )
+
+    def fake_run_job_discovery(request, *, db_session, settings, candidate_profile=None):
+        calls.append(request.latest_user_message)
+        return SimpleNamespace(
+            status_code=200,
+            body={
+                "ok": True,
+                "result": {
+                    "assistantMessage": "No new jobs were saved.",
+                    "jobs": [],
+                    "updatedExistingJobs": [],
+                    "skippedJobs": [],
+                    "jobSearchRunId": "stream-run-1",
+                },
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_job_discovery", fake_run_job_discovery)
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        command_payload = {
+            "command": "find some jobs from my companies list",
+            "active_workspace": "jobs",
+        }
+        with client.stream(
+            "POST",
+            "/v1/command-center/commands/stream",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json=command_payload,
+        ) as stream_response:
+            events = [json.loads(line) for line in stream_response.iter_lines() if line]
+        fallback_response = client.post(
+            "/v1/command-center/commands",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json=command_payload,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    fallback_payload = fallback_response.json()
+    assert stream_response.status_code == 200
+    assert fallback_response.status_code == 200
+    assert events[-1]["result"]["actions"][0]["resultPayload"]["jobSearchRunId"] == "stream-run-1"
+    assert fallback_payload["actions"][0]["resultPayload"]["jobSearchRunId"] == "stream-run-1"
+    assert calls == ["find some jobs from my companies list"]
+
+
 def test_profile_intake_command_passes_current_saved_draft_as_existing_draft(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
     engine = create_seeded_engine()

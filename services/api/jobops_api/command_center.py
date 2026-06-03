@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
@@ -63,6 +64,7 @@ NON_MUTATING_PROFILE_ACTIONS = {
 
 router = APIRouter(prefix="/v1/command-center", tags=["command-center"], dependencies=[Depends(require_internal_api_key)])
 logger = logging.getLogger(__name__)
+COMMAND_FALLBACK_REPLAY_WINDOW = timedelta(minutes=5)
 
 
 class ApiModel(BaseModel):
@@ -141,6 +143,21 @@ def execute_command_center_command(
         )
         session.commit()
         return safety_response
+    replay_response = recent_mutating_command_response(session, auth=auth if has_auth_context else None, request=request)
+    if replay_response is not None:
+        logger.warning(
+            "Command-center duplicate fallback replay suppressed: %s",
+            json.dumps(
+                {
+                    "actionTypes": [action.type for action in replay_response.actions],
+                    "candidateSlug": candidate_slug,
+                    "commandLength": len(request.command),
+                    "targetWorkspace": replay_response.target_workspace,
+                },
+                sort_keys=True,
+            ),
+        )
+        return replay_response
     router_result = run_command_router(
         CommandRouterRequest(
             latest_user_message=request.command,
@@ -904,6 +921,7 @@ def save_command_interaction_log(
     actions = response.actions if response is not None else []
     first_action = actions[0] if actions else None
     action_metrics = [safe_action_log_metrics(action) for action in actions]
+    command_response = jsonable_encoder(response.model_dump(by_alias=True)) if response is not None else None
     session.add(
         CommandInteractionLog(
             user_id=auth.user_id,
@@ -917,6 +935,11 @@ def save_command_interaction_log(
                 "routerOk": bool(router_payload and router_payload.get("ok")),
                 "actionStatuses": [action.status for action in actions],
                 "actionMetrics": action_metrics,
+                "request": {
+                    "activeWorkspace": request.active_workspace,
+                    "commandLength": len(request.command),
+                },
+                "commandResponse": command_response,
             },
             action_applied=any(
                 action.status == "completed" and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
@@ -926,6 +949,43 @@ def save_command_interaction_log(
             latency_ms=latency_ms,
         )
     )
+
+
+def recent_mutating_command_response(
+    session: Session,
+    *,
+    auth: AuthContext | None,
+    request: CommandCenterCommandRequest,
+) -> CommandCenterCommandResponse | None:
+    if auth is None:
+        return None
+    replay_since = datetime.now(timezone.utc) - COMMAND_FALLBACK_REPLAY_WINDOW
+    recent_logs = session.scalars(
+        select(CommandInteractionLog)
+        .where(
+            CommandInteractionLog.user_id == auth.user_id,
+            CommandInteractionLog.tenant_id == auth.tenant_id,
+            CommandInteractionLog.candidate_profile_id == auth.candidate_profile.id,
+            CommandInteractionLog.user_message == request.command,
+            CommandInteractionLog.action_applied.is_(True),
+            CommandInteractionLog.created_at >= replay_since,
+        )
+        .order_by(CommandInteractionLog.created_at.desc())
+        .limit(5)
+    ).all()
+    for log in recent_logs:
+        validation_result = log.validation_result if isinstance(log.validation_result, dict) else {}
+        logged_request = validation_result.get("request") if isinstance(validation_result.get("request"), dict) else {}
+        if logged_request.get("activeWorkspace") != request.active_workspace:
+            continue
+        command_response = validation_result.get("commandResponse")
+        if not isinstance(command_response, dict):
+            continue
+        try:
+            return CommandCenterCommandResponse.model_validate(command_response)
+        except Exception:
+            continue
+    return None
 
 
 def safe_action_log_metrics(action: CommandCenterActionResult) -> dict[str, Any]:
