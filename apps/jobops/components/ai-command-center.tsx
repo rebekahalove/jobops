@@ -193,18 +193,11 @@ export function AiCommandCenter({
       }
 
       const interruptedStatus = latestRoutedStreamStatus(streamStatusUpdates);
-      if (interruptedStatus) {
-        const fallbackAction = createInterruptedStreamAction(submittedCommand, interruptedStatus, `action-${Date.now()}`);
-        const workspace = fallbackAction.targetWorkspace ? formatWorkspaceLabel(fallbackAction.targetWorkspace) : "Command Center";
-        setActions((current) => [fallbackAction, ...current]);
-        setMessages((current) => [
-          ...current,
-          {
-            id: `agent-interrupted-${Date.now()}-${current.length}`,
-            role: "agent",
-            text: `Status update: the command stream was interrupted after routing to ${fallbackAction.title}. I did not re-run it to avoid duplicate changes. Refresh or open ${workspace} to check the latest saved results.`
-          }
-        ]);
+      const interruptedAction = interruptedStatus
+        ? createInterruptedStreamAction(submittedCommand, interruptedStatus, `action-${Date.now()}`)
+        : createInterruptedFallbackAction(submittedCommand, `action-${Date.now()}`);
+      if (interruptedStatus || shouldAvoidFallbackReplay(interruptedAction)) {
+        addInterruptedStreamMessage(interruptedAction, Boolean(interruptedStatus));
         setIsSubmitting(false);
         return;
       }
@@ -290,6 +283,21 @@ export function AiCommandCenter({
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
+  }
+
+  function addInterruptedStreamMessage(interruptedAction: PlannedCommandAction, wasRouted: boolean) {
+    const workspace = interruptedAction.targetWorkspace ? formatWorkspaceLabel(interruptedAction.targetWorkspace) : "Command Center";
+    setActions((current) => [interruptedAction, ...current]);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `agent-interrupted-${Date.now()}-${current.length}`,
+        role: "agent",
+        text: wasRouted
+          ? `Status update: the command stream was interrupted after routing to ${interruptedAction.title}. I did not re-run it to avoid duplicate changes. Refresh or open ${workspace} to check the latest saved results.`
+          : `Status update: the command stream was interrupted before the final result reached the browser. I did not re-run this ${interruptedAction.title} command to avoid duplicate changes. Refresh or open ${workspace} to check the latest saved results.`
+      }
+    ]);
   }
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -609,6 +617,20 @@ function createInterruptedStreamAction(command: string, statusUpdate: CommandCen
     ctaLabel: workspace ? `Open ${workspaceLabel}` : plannedAction.ctaLabel,
     summary: `JobOps routed this command, but the browser stream ended before the final result arrived. The command was not replayed to avoid duplicate changes.`
   };
+}
+
+function createInterruptedFallbackAction(command: string, id: string): PlannedCommandAction {
+  const plannedAction = createPlannedAction(command, id);
+
+  return {
+    ...plannedAction,
+    status: "needs_confirmation",
+    summary: `The command stream ended before the final result reached the browser. The command was not replayed to avoid duplicate changes.`
+  };
+}
+
+function shouldAvoidFallbackReplay(action: PlannedCommandAction) {
+  return action.type !== "unknown";
 }
 
 async function readCommandCenterStreamError(response: Response, requestUrl: string) {

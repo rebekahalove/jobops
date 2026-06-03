@@ -256,6 +256,9 @@ describe("AI command center", () => {
     expect(source).toContain("responseUrl: response.url || null");
     expect(source).toContain("onStatus(event.statusUpdate)");
     expect(source).toContain("latestRoutedStreamStatus(streamStatusUpdates)");
+    expect(source).toContain("createInterruptedFallbackAction(submittedCommand");
+    expect(source).toContain("shouldAvoidFallbackReplay(interruptedAction)");
+    expect(source).toContain("the command stream was interrupted before the final result reached the browser");
     expect(source).toContain("I did not re-run it to avoid duplicate changes.");
     expect(source).toContain("The command was not replayed to avoid duplicate changes.");
     expect(source).toContain("no router decision was received");
@@ -355,6 +358,7 @@ describe("AI command center", () => {
     expect(classifyCommand("Here's a job URL. Add it to my jobs list.").type).toBe("add_job_from_url");
     expect(classifyCommand("Find me some jobs to apply to.").type).toBe("job_discovery");
     expect(classifyCommand("Find some jobs for me to apply to.").type).toBe("job_discovery");
+    expect(classifyCommand("find some jobs from my companies list").type).toBe("job_discovery");
     expect(classifyCommand("Find applied AI engineer jobs.").type).toBe("job_discovery");
     expect(classifyCommand("Show me roles I should consider.").type).toBe("job_discovery");
     expect(classifyCommand("Follow this company.").type).toBe("company_discovery");

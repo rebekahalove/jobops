@@ -160,6 +160,10 @@ export function classifyCommand(command: string): ClassifiedCommand {
     return actionDetails.prioritize_jobs;
   }
 
+  if (looksLikeJobDiscovery(normalized)) {
+    return actionDetails.job_discovery;
+  }
+
   if (
     normalized.includes("follow this company") ||
     normalized.includes("follow company") ||
@@ -189,10 +193,6 @@ export function classifyCommand(command: string): ClassifiedCommand {
 
   if (/https?:\/\/\S+/.test(command) || normalized.includes("job url") || normalized.includes("add it to my jobs")) {
     return actionDetails.add_job_from_url;
-  }
-
-  if (looksLikeJobDiscovery(normalized)) {
-    return actionDetails.job_discovery;
   }
 
   return actionDetails.unknown;
