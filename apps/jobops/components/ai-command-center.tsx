@@ -14,7 +14,8 @@ import type {
   CommandCenterApiResponse,
   CommandCenterProxyResponse,
   CommandCenterStatusUpdate,
-  CommandCenterStreamEvent
+  CommandCenterStreamEvent,
+  JobSearchRunStatus
 } from "../lib/command-center-contract";
 
 export type CommandMessage = {
@@ -40,6 +41,9 @@ const ACTION_SUMMARY_MAX_CHARS = 360;
 const SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS = 200;
 const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+const JOB_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeJobDiscoveryRunId";
+const JOB_DISCOVERY_POLL_INTERVAL_MS = 2500;
+const TERMINAL_JOB_SEARCH_RUN_STATUSES = new Set(["completed", "failed", "needs_confirmation", "cancelled"]);
 
 const initialMessages: CommandMessage[] = [
   {
@@ -66,10 +70,13 @@ export function AiCommandCenter({
   const [attachmentStatus, setAttachmentStatus] = useState("");
   const [areExamplesExpanded, setAreExamplesExpanded] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeJobDiscoveryRunId, setActiveJobDiscoveryRunId] = useState<string | null>(null);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  const reportedJobDiscoveryRunIdsRef = useRef(new Set<string>());
+  const pollingFailureRunIdsRef = useRef(new Set<string>());
 
   const latestAction = actions[0];
   const transcriptLabel = useMemo(
@@ -92,6 +99,64 @@ export function AiCommandCenter({
       scrollConversationToBottom();
     });
   }, [messages]);
+
+  useEffect(() => {
+    const storedRunId = readStoredJobDiscoveryRunId();
+    if (storedRunId) {
+      setActiveJobDiscoveryRunId(storedRunId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeJobDiscoveryRunId) {
+      return;
+    }
+
+    const runId = activeJobDiscoveryRunId;
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    async function pollRunStatus() {
+      try {
+        const run = await fetchJobSearchRunStatus(runId, apiBasePath);
+        if (cancelled) {
+          return;
+        }
+        pollingFailureRunIdsRef.current.delete(run.id);
+        updateJobDiscoveryActionFromRun(run);
+        if (TERMINAL_JOB_SEARCH_RUN_STATUSES.has(run.status)) {
+          clearStoredJobDiscoveryRunId(run.id);
+          setActiveJobDiscoveryRunId((current) => (current === run.id ? null : current));
+          addTerminalJobDiscoveryRunMessage(run);
+          return;
+        }
+      } catch {
+        if (!cancelled && !pollingFailureRunIdsRef.current.has(runId)) {
+          pollingFailureRunIdsRef.current.add(runId);
+          setMessages((current) => [
+            ...current,
+            {
+              id: `agent-job-run-polling-${Date.now()}-${current.length}`,
+              role: "agent",
+              text: "Status update: job discovery is still running, but this browser could not read the latest run status yet. I will keep polling without replaying the command."
+            }
+          ]);
+        }
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(pollRunStatus, JOB_DISCOVERY_POLL_INTERVAL_MS);
+      }
+    }
+
+    pollRunStatus();
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [activeJobDiscoveryRunId, apiBasePath]);
 
   function handleConversationScroll() {
     const conversation = conversationRef.current;
@@ -280,6 +345,100 @@ export function AiCommandCenter({
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
     if (nextActions.some((action) => action.type === "job_discovery" && action.status === "completed")) {
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    }
+    const runId = nextActions.map(getAsyncJobDiscoveryRunId).find(Boolean);
+    if (runId) {
+      storeJobDiscoveryRunId(runId);
+      setActiveJobDiscoveryRunId(runId);
+    }
+  }
+
+  function updateJobDiscoveryActionFromRun(run: JobSearchRunStatus) {
+    setActions((current) => {
+      const nextStatus =
+        run.status === "completed"
+          ? "completed"
+          : run.status === "failed" || run.status === "cancelled"
+            ? "failed"
+            : run.status === "needs_confirmation"
+              ? "needs_confirmation"
+              : "running";
+      const nextSummary = run.message || buildJobDiscoveryRunSummary(run);
+      let matched = false;
+      const updated = current.map((action) => {
+        const payloadRunId = getAsyncJobDiscoveryRunId(action);
+        if (action.type !== "job_discovery" || payloadRunId !== run.id) {
+          return action;
+        }
+        matched = true;
+        return {
+          ...action,
+          status: nextStatus,
+          summary: nextSummary,
+          resultPayload: {
+            ...(isRecord(action.resultPayload) ? action.resultPayload : {}),
+            async: true,
+            jobSearchRunId: run.id,
+            status: run.status,
+            providerResultCount: run.providerResultCount,
+            candidatePoolCount: run.candidatePoolCount,
+            candidateCountAfterDedupe: run.candidateCountAfterDedupe,
+            modelSelectedCount: run.modelSelectedCount,
+            savedCount: run.savedCount,
+            updatedExistingCount: run.updatedExistingCount,
+            duplicateCount: run.duplicateCount,
+            skippedCount: run.skippedCount,
+            providerErrorCount: run.providerErrorCount,
+            error: run.error ?? undefined
+          }
+        } satisfies PlannedCommandAction;
+      });
+      if (matched) {
+        return updated;
+      }
+      return [
+        {
+          id: `action-job-run-${run.id}`,
+          type: "job_discovery",
+          title: "Discover jobs",
+          summary: nextSummary,
+          status: nextStatus,
+          targetWorkspace: "jobs",
+          ctaLabel: "Open Jobs",
+          resultPayload: {
+            async: true,
+            jobSearchRunId: run.id,
+            status: run.status,
+            savedCount: run.savedCount,
+            updatedExistingCount: run.updatedExistingCount,
+            duplicateCount: run.duplicateCount,
+            skippedCount: run.skippedCount
+          }
+        },
+        ...updated
+      ];
+    });
+  }
+
+  function addTerminalJobDiscoveryRunMessage(run: JobSearchRunStatus) {
+    if (reportedJobDiscoveryRunIdsRef.current.has(run.id)) {
+      return;
+    }
+    reportedJobDiscoveryRunIdsRef.current.add(run.id);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `agent-job-run-${Date.now()}-${current.length}`,
+        role: "agent",
+        text:
+          run.status === "completed"
+            ? buildJobDiscoveryRunSummary(run)
+            : `Job discovery failed: ${run.error || run.message || "No jobs were saved."}`
+      }
+    ]);
+    if (run.status === "completed") {
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
@@ -530,6 +689,7 @@ async function runCommandCenterStream({
         onStatus(event.statusUpdate);
       } else {
         result = event.result;
+        return result;
       }
     }
 
@@ -631,6 +791,78 @@ function createInterruptedFallbackAction(command: string, id: string): PlannedCo
 
 function shouldAvoidFallbackReplay(action: PlannedCommandAction) {
   return action.type !== "unknown";
+}
+
+function getAsyncJobDiscoveryRunId(action: PlannedCommandAction) {
+  if (action.type !== "job_discovery" || !isRecord(action.resultPayload)) {
+    return null;
+  }
+  const payload = action.resultPayload;
+  return payload.async === true && typeof payload.jobSearchRunId === "string" ? payload.jobSearchRunId : null;
+}
+
+async function fetchJobSearchRunStatus(runId: string, apiBasePath: string): Promise<JobSearchRunStatus> {
+  const response = await fetch(`${apiBasePath}/job-search-runs/${encodeURIComponent(runId)}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error("Job search run status request failed.");
+  }
+  const payload = (await response.json()) as unknown;
+  if (!isJobSearchRunStatus(payload)) {
+    throw new Error("Job search run status response was invalid.");
+  }
+  return payload;
+}
+
+function buildJobDiscoveryRunSummary(run: JobSearchRunStatus) {
+  return `Job discovery completed: ${run.savedCount} new job(s) saved, ${run.updatedExistingCount} refreshed, ${run.duplicateCount} duplicate(s), ${run.skippedCount} skipped.`;
+}
+
+function readStoredJobDiscoveryRunId() {
+  try {
+    return window.sessionStorage.getItem(JOB_DISCOVERY_RUN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeJobDiscoveryRunId(runId: string) {
+  try {
+    window.sessionStorage.setItem(JOB_DISCOVERY_RUN_STORAGE_KEY, runId);
+  } catch {
+    // Session storage is a recovery aid; polling still works from component state.
+  }
+}
+
+function clearStoredJobDiscoveryRunId(runId: string) {
+  try {
+    if (window.sessionStorage.getItem(JOB_DISCOVERY_RUN_STORAGE_KEY) === runId) {
+      window.sessionStorage.removeItem(JOB_DISCOVERY_RUN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function isJobSearchRunStatus(value: unknown): value is JobSearchRunStatus {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.status === "string" &&
+    typeof value.message === "string" &&
+    typeof value.providerResultCount === "number" &&
+    typeof value.candidatePoolCount === "number" &&
+    typeof value.candidateCountAfterDedupe === "number" &&
+    typeof value.modelSelectedCount === "number" &&
+    typeof value.savedCount === "number" &&
+    typeof value.updatedExistingCount === "number" &&
+    typeof value.duplicateCount === "number" &&
+    typeof value.skippedCount === "number" &&
+    typeof value.providerErrorCount === "number"
+  );
 }
 
 async function readCommandCenterStreamError(response: Response, requestUrl: string) {
@@ -953,10 +1185,10 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
 }
 
 function getJobDiscoveryDiagnostics(resultPayload: unknown) {
-  if (!resultPayload || typeof resultPayload !== "object" || Array.isArray(resultPayload)) {
+  if (!isRecord(resultPayload)) {
     return null;
   }
-  const payload = resultPayload as Record<string, unknown>;
+  const payload = resultPayload;
   if (!("jobDiscoveryMode" in payload || "providerResultCount" in payload || "skippedReasons" in payload)) {
     return null;
   }
@@ -970,6 +1202,10 @@ function getJobDiscoveryDiagnostics(resultPayload: unknown) {
     skippedReasonsDiagnostic(payload.skippedReasons)
   ].filter((item): item is { label: string; value: string } => Boolean(item));
   return diagnostics.length ? diagnostics : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function textDiagnostic(label: string, value: unknown) {

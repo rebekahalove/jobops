@@ -18,7 +18,7 @@ export const commandCenterActionTypes = [
 
 export type CommandCenterActionType = (typeof commandCenterActionTypes)[number];
 
-export type PlannedActionStatus = "planned" | "needs_confirmation" | "completed" | "failed";
+export type PlannedActionStatus = "planned" | "running" | "needs_confirmation" | "completed" | "failed";
 
 export type PlannedCommandAction = {
   id: string;

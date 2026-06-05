@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -25,7 +25,7 @@ from .command_router import (
 )
 from .db.models import CandidateProfile, CommandInteractionLog
 from .db.session import get_db_session
-from .job_discovery import JobDiscoveryRequest, run_job_discovery
+from .job_discovery import JobDiscoveryRequest, run_job_discovery, start_job_discovery_run
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
 from .profiles import get_candidate_profile_by_slug
@@ -52,7 +52,7 @@ CommandActionType = Literal[
     "unknown",
 ]
 
-ActionStatus = Literal["planned", "needs_confirmation", "completed", "failed"]
+ActionStatus = Literal["planned", "running", "needs_confirmation", "completed", "failed"]
 NON_MUTATING_PROFILE_ACTIONS = {
     "discussion_only",
     "career_discovery",
@@ -120,6 +120,7 @@ class CommandCenterCommandResponse(ApiModel):
 @router.post("/commands", response_model=CommandCenterCommandResponse)
 def execute_command_center_command(
     request: CommandCenterCommandRequest,
+    background_tasks: BackgroundTasks = None,
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
 ) -> CommandCenterCommandResponse:
@@ -178,6 +179,7 @@ def execute_command_center_command(
                 candidate_profile=candidate_profile,
                 session=session,
                 settings=settings,
+                background_tasks=background_tasks,
             )
         elif router_result.decision is not None:
             response = clarifying_router_response(router_result.decision, router_result.body)
@@ -228,6 +230,7 @@ def execute_command_center_command(
                     candidate_profile=candidate_profile,
                     session=session,
                     settings=settings,
+                    background_tasks=background_tasks,
                 )
         response.status_updates = [build_routing_status_update(router_result, response), *response.status_updates]
         save_command_interaction_log(
@@ -261,6 +264,7 @@ def execute_command_center_command(
 @router.post("/commands/stream")
 def stream_command_center_command(
     request: CommandCenterCommandRequest,
+    background_tasks: BackgroundTasks = None,
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
 ) -> StreamingResponse:
@@ -335,6 +339,7 @@ def stream_command_center_command(
                         candidate_profile=candidate_profile,
                         session=session,
                         settings=settings,
+                        background_tasks=background_tasks,
                     )
                 else:
                     response = clarifying_router_response(router_result.decision, router_result.body)
@@ -404,6 +409,7 @@ def stream_command_center_command(
                         candidate_profile=candidate_profile,
                         session=session,
                         settings=settings,
+                        background_tasks=background_tasks,
                     )
 
             if status_update is None:
@@ -482,6 +488,7 @@ def dispatch_command_center_action(
     candidate_profile,
     session: Session,
     settings,
+    background_tasks: BackgroundTasks | None = None,
 ) -> CommandCenterCommandResponse:
     interpreted_action = normalize_dispatch_action(action_type)
 
@@ -508,7 +515,22 @@ def dispatch_command_center_action(
             router_payload=router_payload,
         )
 
-    if interpreted_action in {"job_discovery", "add_job_from_url"}:
+    if interpreted_action == "job_discovery":
+        if candidate_slug is None:
+            return missing_candidate_slug_response(interpreted_action, "jobs", title_for_action(interpreted_action))
+        if candidate_profile is None:
+            return candidate_profile_not_found_response(interpreted_action, "jobs", title_for_action(interpreted_action))
+        return start_async_job_discovery_command(
+            request,
+            candidate_slug=candidate_slug,
+            candidate_profile=candidate_profile,
+            session=session,
+            router_payload=router_payload,
+            router_decision=router_decision,
+            background_tasks=background_tasks,
+        )
+
+    if interpreted_action == "add_job_from_url":
         if candidate_slug is None:
             return missing_candidate_slug_response(interpreted_action, "jobs", title_for_action(interpreted_action))
         return execute_job_discovery_command(
@@ -836,6 +858,74 @@ def execute_job_discovery_command(
     )
 
 
+def start_async_job_discovery_command(
+    request: CommandCenterCommandRequest,
+    *,
+    candidate_slug: str,
+    candidate_profile: CandidateProfile,
+    session: Session,
+    router_payload: dict[str, Any] | None = None,
+    router_decision: CommandRouterOutput | None = None,
+    background_tasks: BackgroundTasks | None = None,
+) -> CommandCenterCommandResponse:
+    job_request = JobDiscoveryRequest(
+        latest_user_message=request.command,
+        candidate_profile_slug=candidate_slug,
+        active_workspace=request.active_workspace,
+        client_context=request.client_context,
+        router_extracted=router_decision.extracted.model_dump(by_alias=True) if router_decision is not None else None,
+    )
+    run, created = start_job_discovery_run(
+        job_request,
+        db_session=session,
+        candidate_profile=candidate_profile,
+        background_tasks=background_tasks,
+    )
+    result_payload = {
+        "ok": True,
+        "async": True,
+        "jobSearchRunId": run.id,
+        "status": run.status if run.status in {"queued", "running", "started"} else "running",
+        "reusedActiveRun": not created,
+        "savedCount": run.saved_count,
+        "updatedExistingCount": run.updated_existing_count,
+        "duplicateCount": run.duplicate_count,
+        "skippedCount": run.skipped_count,
+        "providerResultCount": run.total_provider_results,
+        "modelSelectedCount": run.model_selected_count,
+        "providerErrorCount": run.provider_error_count,
+    }
+    assistant_message = (
+        "Job discovery is already running. I will keep tracking that run instead of starting another provider search."
+        if not created
+        else "Job discovery started. I will update this card when the saved results are ready."
+    )
+    return CommandCenterCommandResponse(
+        assistant_message=assistant_message,
+        actions=[
+            CommandCenterActionResult(
+                type="job_discovery",
+                status="running",
+                targetWorkspace="jobs",
+                title="Discover jobs",
+                summary="Job discovery is running. JobOps will refresh Jobs when the run completes.",
+                resultPayload=result_payload,
+            )
+        ],
+        target_workspace="jobs",
+        result_payload=result_payload,
+        statusUpdates=[
+            CommandCenterStatusUpdate(
+                stage="job_discovery",
+                message="Status update: job discovery started in the background.",
+                actionType="job_discovery",
+                confidence=None,
+                targetWorkspace="jobs",
+            )
+        ],
+    )
+
+
 def execute_company_update_command(
     router_decision: CommandRouterOutput,
     *,
@@ -942,7 +1032,7 @@ def save_command_interaction_log(
                 "commandResponse": command_response,
             },
             action_applied=any(
-                action.status == "completed" and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
+                action.status in {"completed", "running"} and action.type not in NON_MUTATING_PROFILE_ACTIONS for action in actions
             ),
             final_response=response.assistant_message if response is not None else "",
             error_details={"type": type(error).__name__, "message": str(error)} if error else {},

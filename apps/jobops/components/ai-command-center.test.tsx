@@ -243,6 +243,27 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
   });
 
+  it("polls async job-discovery runs without replaying commands", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('const JOB_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeJobDiscoveryRunId"');
+    expect(source).toContain("setActiveJobDiscoveryRunId(runId)");
+    expect(source).toContain("storeJobDiscoveryRunId(runId)");
+    expect(source).toContain('fetch(`${apiBasePath}/job-search-runs/${encodeURIComponent(runId)}`');
+    expect(source).toContain("TERMINAL_JOB_SEARCH_RUN_STATUSES.has(run.status)");
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
+    expect(source).toContain("without replaying the command");
+    expect(source).toContain("clearStoredJobDiscoveryRunId(run.id)");
+  });
+
+  it("returns from the stream as soon as an async result event is parsed", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("result = event.result;");
+    expect(source).toContain("return result;");
+    expect(source).not.toContain("reader.cancel()");
+  });
+
   it("adds router status updates to the transcript", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
