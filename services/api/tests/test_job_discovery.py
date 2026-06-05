@@ -54,6 +54,7 @@ from jobops_api.job_discovery.service import (
     infer_user_constraint_terms,
     infer_job_search_role_queries,
     route_job_discovery_providers,
+    run_configured_job_providers,
     save_live_job_source_results,
     should_tolerate_partial_company_board_errors,
 )
@@ -1209,6 +1210,35 @@ def test_greenhouse_followed_company_search_filters_each_board_by_role_query(mon
 
     assert [result.company_name for result in outcome.results] == ["Anthropic", "Hightouch"]
     assert {diagnostic.query for diagnostic in outcome.diagnostics} == {"Applied AI Engineer"}
+
+
+def test_greenhouse_without_board_targets_is_skipped_without_failing_broad_search(tmp_path: Path) -> None:
+    request = JobSearchRequest(
+        latest_user_message="Find me some jobs to apply to",
+        search_queries=["Applied AI Systems Engineer remote"],
+        results_per_provider=20,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="broad", roleQueries=["Applied AI Systems Engineer"]),
+        company_names=[],
+    )
+
+    outcome = run_configured_job_providers(
+        [GreenhouseJobDiscoveryProvider()],
+        request,
+        make_settings(tmp_path, job_discovery_providers=("greenhouse",), greenhouse_board_tokens=()),
+    )
+
+    assert outcome.results == []
+    assert outcome.errors == []
+    assert len(outcome.diagnostics) == 1
+    assert outcome.diagnostics[0].provider_name == "greenhouse"
+    assert outcome.diagnostics[0].configured is False
+    assert outcome.diagnostics[0].attempted is False
+    assert outcome.diagnostics[0].error is None
+    assert outcome.diagnostics[0].reason == "no_board_targets_available"
 
 
 def test_partial_broad_provider_errors_do_not_fail_after_company_board_results() -> None:

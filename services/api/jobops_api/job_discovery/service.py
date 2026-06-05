@@ -1472,6 +1472,27 @@ def run_configured_job_providers(
     for provider in providers:
         configured = provider.is_configured(settings) or provider_is_configured_for_request(provider, request, settings)
         if not configured:
+            if provider.provider_type == "ats_board":
+                logger.info(
+                    "Job discovery ATS provider skipped without board targets: %s",
+                    json.dumps(
+                        {
+                            "providerName": provider.provider_name,
+                            "providerType": provider.provider_type,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                diagnostics.append(
+                    ProviderDiagnostic(
+                        provider_name=provider.provider_name,
+                        provider_type=provider.provider_type,
+                        configured=False,
+                        attempted=False,
+                        reason="no_board_targets_available",
+                    )
+                )
+                continue
             message = f"Job discovery provider {provider.provider_name} is not configured."
             logger.warning(
                 "Job discovery provider is not configured: %s",
