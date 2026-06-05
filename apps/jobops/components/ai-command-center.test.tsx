@@ -243,6 +243,27 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
   });
 
+  it("polls async job-discovery runs without replaying commands", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('const JOB_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeJobDiscoveryRunId"');
+    expect(source).toContain("setActiveJobDiscoveryRunId(runId)");
+    expect(source).toContain("storeJobDiscoveryRunId(runId)");
+    expect(source).toContain('fetch(`${apiBasePath}/job-search-runs/${encodeURIComponent(runId)}`');
+    expect(source).toContain("TERMINAL_JOB_SEARCH_RUN_STATUSES.has(run.status)");
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
+    expect(source).toContain("without replaying the command");
+    expect(source).toContain("clearStoredJobDiscoveryRunId(run.id)");
+  });
+
+  it("returns from the stream as soon as an async result event is parsed", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("result = event.result;");
+    expect(source).toContain("return result;");
+    expect(source).not.toContain("reader.cancel()");
+  });
+
   it("adds router status updates to the transcript", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
@@ -392,12 +413,20 @@ describe("AI command center", () => {
       new URL("../../portfolio/app/jobops/api/command-center/stream/route.ts", import.meta.url),
       "utf-8"
     );
+    const jobSearchRunWrapperSource = await readFile(
+      new URL("../../portfolio/app/jobops/api/job-search-runs/[runId]/route.ts", import.meta.url),
+      "utf-8"
+    );
     const standaloneSource = await readFile(new URL("../app/api/command-center/stream/route.ts", import.meta.url), "utf-8");
 
     expect(wrapperSource).toContain(
       'export { POST } from "../../../../../../jobops/app/api/command-center/stream/route"'
     );
     expect(wrapperSource).toContain('export const runtime = "nodejs"');
+    expect(jobSearchRunWrapperSource).toContain("Production mounts JobOps under rebekahalove.dev/jobops");
+    expect(jobSearchRunWrapperSource).toContain(
+      'export { GET } from "../../../../../../jobops/app/api/job-search-runs/[runId]/route"'
+    );
     expect(standaloneSource).toContain("/v1/command-center/commands/stream");
     expect(standaloneSource).toContain("Command-center stream proxy request.");
     expect(standaloneSource).toContain("commandLength");

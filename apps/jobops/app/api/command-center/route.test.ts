@@ -300,4 +300,43 @@ describe("command-center API proxy", () => {
       })
     );
   });
+
+  it("proxies job search run status requests from FastAPI", async () => {
+    const { GET } = await import("../job-search-runs/[runId]/route");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json(
+        {
+          id: "run-1",
+          status: "completed",
+          providerResultCount: 19,
+          candidatePoolCount: 10,
+          candidateCountAfterDedupe: 8,
+          modelSelectedCount: 3,
+          savedCount: 1,
+          updatedExistingCount: 0,
+          duplicateCount: 4,
+          skippedCount: 14,
+          providerErrorCount: 0,
+          message: "Job discovery completed."
+        },
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET(new Request("http://next.test/api/job-search-runs/run-1", { headers: { cookie: "jobops_session=test" } }), {
+      params: Promise.resolve({ runId: "run-1" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://fastapi.test/v1/job-search-runs/run-1");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        Cookie: "jobops_session=test",
+        "X-JobOps-Internal-Key": "test-secret"
+      })
+    );
+    expect(await response.json()).toMatchObject({ id: "run-1", status: "completed", savedCount: 1 });
+  });
 });

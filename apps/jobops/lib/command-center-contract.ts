@@ -27,6 +27,26 @@ export type CommandCenterStatusUpdate = {
   targetWorkspace?: WorkspaceTab | null;
 };
 
+export type JobSearchRunStatus = {
+  id: string;
+  status: "queued" | "started" | "running" | "completed" | "failed" | "needs_confirmation" | "cancelled" | string;
+  searchMode?: string | null;
+  createdAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  providerResultCount: number;
+  candidatePoolCount: number;
+  candidateCountAfterDedupe: number;
+  modelSelectedCount: number;
+  savedCount: number;
+  updatedExistingCount: number;
+  duplicateCount: number;
+  skippedCount: number;
+  providerErrorCount: number;
+  error?: string | null;
+  message: string;
+};
+
 export type CommandCenterProxyResponse =
   | {
       ok: true;

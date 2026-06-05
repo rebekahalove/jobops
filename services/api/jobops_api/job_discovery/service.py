@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -28,7 +29,7 @@ from ..company_canonicalization import (
     upsert_canonical_company,
 )
 from ..db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, JobPosting, JobSearchQueryRun, JobSearchRun
-from ..db.session import get_db_session
+from ..db.session import create_session_factory, get_db_session
 from ..model_connector import ModelConnector
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
 from ..security import require_internal_api_key
@@ -74,6 +75,9 @@ from .url_verification import source_result_verification
 
 
 JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX = "J"
+ACTIVE_JOB_DISCOVERY_RUN_STATUSES = {"queued", "running", "started"}
+TERMINAL_JOB_DISCOVERY_RUN_STATUSES = {"completed", "failed", "cancelled", "needs_confirmation"}
+ACTIVE_JOB_DISCOVERY_RUN_STALE_AFTER = timedelta(hours=2)
 
 
 router = APIRouter(prefix="/v1", tags=["jobs"], dependencies=[Depends(require_internal_api_key)])
@@ -95,6 +99,30 @@ def list_jobs(
     links = list(session.scalars(statement))
     application_by_job_id = load_application_lookup_for_saved_jobs(session, links, auth.candidate_profile.id)
     return [serialize_saved_job(link, application=application_by_job_id.get(link.job_id)) for link in links]
+
+
+@router.get("/job-search-runs/{run_id}")
+def get_job_search_run_status(
+    run_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    run = session.scalar(
+        select(JobSearchRun).where(
+            JobSearchRun.id == run_id,
+            JobSearchRun.candidate_profile_id == auth.candidate_profile.id,
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Job search run not found.")
+    query_runs = list(
+        session.scalars(
+            select(JobSearchQueryRun)
+            .where(JobSearchQueryRun.job_search_run_id == run.id)
+            .order_by(JobSearchQueryRun.created_at.desc())
+        )
+    )
+    return serialize_job_search_run_status(run, query_runs)
 
 
 @router.post("/jobs/{saved_job_id}/archive", response_model=SavedJobActionResponse)
@@ -238,6 +266,7 @@ def run_job_discovery(
     db_session: Session,
     settings: Settings | None = None,
     candidate_profile: CandidateProfile | None = None,
+    job_search_run_id: str | None = None,
 ) -> JobDiscoveryServiceResult:
     active_settings = settings or load_settings()
     candidate_profile = candidate_profile or get_candidate_profile_by_slug(db_session, request.candidate_profile_slug)
@@ -268,7 +297,168 @@ def run_job_discovery(
         current_saved_companies=current_saved_companies,
         target_context=target_context,
         private_profile_context=private_profile_context,
+        job_search_run_id=job_search_run_id,
     )
+
+
+def start_job_discovery_run(
+    request: JobDiscoveryRequest,
+    *,
+    db_session: Session,
+    candidate_profile: CandidateProfile,
+    background_tasks: Any | None,
+    session_factory: Callable[[], Session] | None = None,
+) -> tuple[JobSearchRun, bool]:
+    stale_before = datetime.now(timezone.utc) - ACTIVE_JOB_DISCOVERY_RUN_STALE_AFTER
+    stale_active_runs = list(
+        db_session.scalars(
+            select(JobSearchRun).where(
+                JobSearchRun.candidate_profile_id == candidate_profile.id,
+                JobSearchRun.status.in_(ACTIVE_JOB_DISCOVERY_RUN_STATUSES),
+                JobSearchRun.created_at < stale_before,
+            )
+        )
+    )
+    for run in stale_active_runs:
+        run.status = "failed"
+        run.completed_at = datetime.now(timezone.utc)
+        run.error = "Job discovery run became stale before completion."
+
+    active_run = db_session.scalar(
+        select(JobSearchRun)
+        .where(
+            JobSearchRun.candidate_profile_id == candidate_profile.id,
+            JobSearchRun.status.in_(ACTIVE_JOB_DISCOVERY_RUN_STATUSES),
+            JobSearchRun.created_at >= stale_before,
+        )
+        .order_by(JobSearchRun.created_at.desc())
+    )
+    if active_run is not None:
+        db_session.commit()
+        return active_run, False
+
+    run = JobSearchRun(
+        candidate_profile_id=candidate_profile.id,
+        command_text=request.latest_user_message,
+        search_plan_json={},
+        provider_names=[],
+        search_mode=None,
+        status="queued",
+        total_provider_results=0,
+        candidate_pool_count=0,
+        candidate_count_after_dedupe=0,
+        replans_attempted=0,
+        model_selected_count=0,
+        saved_count=0,
+        updated_existing_count=0,
+        duplicate_count=0,
+        skipped_count=0,
+        provider_error_count=0,
+    )
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+
+    request_payload = {
+        "latest_user_message": request.latest_user_message,
+        "candidate_profile_slug": request.candidate_profile_slug,
+        "active_workspace": request.active_workspace,
+        "client_context": request.client_context,
+        "router_extracted": request.router_extracted,
+    }
+    if background_tasks is not None:
+        background_tasks.add_task(
+            run_job_discovery_background,
+            run.id,
+            candidate_profile.id,
+            request_payload,
+            session_factory=session_factory,
+        )
+    return run, True
+
+
+def run_job_discovery_background(
+    run_id: str,
+    candidate_profile_id: str,
+    request_payload: dict[str, Any],
+    *,
+    session_factory: Callable[[], Session] | None = None,
+) -> None:
+    factory = session_factory or create_session_factory()
+    with factory() as session:
+        run = session.get(JobSearchRun, run_id)
+        candidate_profile = session.get(CandidateProfile, candidate_profile_id)
+        if run is None or candidate_profile is None or run.candidate_profile_id != candidate_profile.id:
+            return
+        settings = load_settings()
+        run.status = "running"
+        run.started_at = datetime.now(timezone.utc)
+        run.error = None
+        session.commit()
+        logger.warning(
+            "Async job discovery run started: %s",
+            json.dumps(
+                {
+                    "candidateProfileId": candidate_profile.id,
+                    "runId": run.id,
+                    "status": run.status,
+                },
+                sort_keys=True,
+            ),
+        )
+        try:
+            result = run_job_discovery(
+                JobDiscoveryRequest(**request_payload),
+                db_session=session,
+                settings=settings,
+                candidate_profile=candidate_profile,
+                job_search_run_id=run.id,
+            )
+            refreshed_run = session.get(JobSearchRun, run.id)
+            if refreshed_run is not None and refreshed_run.status not in TERMINAL_JOB_DISCOVERY_RUN_STATUSES:
+                if result.status_code == 200 and result.body.get("ok"):
+                    complete_job_search_run(refreshed_run, status="completed", provider_diagnostics=[])
+                else:
+                    complete_job_search_run(
+                        refreshed_run,
+                        status="failed",
+                        provider_diagnostics=[],
+                        error=str(result.body.get("error") or "Job discovery did not complete."),
+                    )
+                session.commit()
+            logger.warning(
+                "Async job discovery run completed: %s",
+                json.dumps(
+                    {
+                        "candidateProfileId": candidate_profile.id,
+                        "runId": run.id,
+                        "status": session.get(JobSearchRun, run.id).status if session.get(JobSearchRun, run.id) is not None else None,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception as error:
+            session.rollback()
+            failed_run = session.get(JobSearchRun, run_id)
+            if failed_run is not None:
+                complete_job_search_run(
+                    failed_run,
+                    status="failed",
+                    provider_diagnostics=[],
+                    error=safe_log_preview(str(error), limit=500) or type(error).__name__,
+                )
+                session.commit()
+            logger.exception(
+                "Async job discovery run failed: %s",
+                json.dumps(
+                    {
+                        "candidateProfileId": candidate_profile_id,
+                        "errorType": type(error).__name__,
+                        "runId": run_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
 
 def run_live_source_job_discovery(
     request: JobDiscoveryRequest,
@@ -281,6 +471,7 @@ def run_live_source_job_discovery(
     current_saved_companies: list[dict[str, Any]],
     target_context: dict[str, Any],
     private_profile_context: dict[str, Any],
+    job_search_run_id: str | None = None,
 ) -> JobDiscoveryServiceResult:
     user_urls = extract_http_urls(request.latest_user_message)
     provider_names = configured_job_provider_names(settings)
@@ -316,13 +507,23 @@ def run_live_source_job_discovery(
     replan_decision = "not_evaluated"
     replans_attempted = 0
     save_result: JobDiscoverySaveResult | None = None
-    search_run = create_job_search_run(
-        db_session,
-        candidate_profile=candidate_profile,
-        command_text=request.latest_user_message,
-        search_plan=search_plan,
-        provider_names=provider_names,
-    )
+    search_run = get_existing_job_search_run(db_session, job_search_run_id, candidate_profile.id) if job_search_run_id else None
+    if search_run is None:
+        search_run = create_job_search_run(
+            db_session,
+            candidate_profile=candidate_profile,
+            command_text=request.latest_user_message,
+            search_plan=search_plan,
+            provider_names=provider_names,
+        )
+    else:
+        search_run.status = "running"
+        search_run.started_at = search_run.started_at or datetime.now(timezone.utc)
+        search_run.command_text = request.latest_user_message
+        search_run.search_plan_json = search_plan.model_dump(by_alias=True)
+        search_run.provider_names = list(provider_names)
+        search_run.search_mode = search_plan.search_mode
+        db_session.flush()
     log_job_discovery_run_started(
         settings,
         search_run=search_run,
@@ -547,6 +748,7 @@ def run_live_source_job_discovery(
     selection_result: JobCandidateSelectionResult | None = None
     search_run.search_plan_json = search_plan.model_dump(by_alias=True)
     search_run.search_mode = search_plan.search_mode
+    search_run.provider_names = list(provider_names)
     candidate_pool = build_candidate_pool_for_search_plan(
         request,
         source_results=source_results,
@@ -697,12 +899,14 @@ def run_live_source_job_discovery(
         provider_diagnostics=provider_diagnostics,
         total_provider_results=provider_result_count,
         candidate_pool_count=len(candidate_pool.entries),
+        candidate_count_after_dedupe=candidate_pool.count_after_dedupe,
         model_selected_count=len(selection_result.selected_entries) if selection_result is not None else len(saved_jobs),
         saved_count=len(saved_jobs),
         updated_existing_count=len(updated_saved_jobs),
         duplicate_count=result_payload["duplicateCount"],
         skipped_count=len(skipped_jobs),
         replans_attempted=replans_attempted,
+        provider_error_count=len(provider_errors),
     )
     db_session.commit()
     summary_level = logging.INFO
@@ -1268,6 +1472,27 @@ def run_configured_job_providers(
     for provider in providers:
         configured = provider.is_configured(settings) or provider_is_configured_for_request(provider, request, settings)
         if not configured:
+            if provider.provider_type == "ats_board":
+                logger.info(
+                    "Job discovery ATS provider skipped without board targets: %s",
+                    json.dumps(
+                        {
+                            "providerName": provider.provider_name,
+                            "providerType": provider.provider_type,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                diagnostics.append(
+                    ProviderDiagnostic(
+                        provider_name=provider.provider_name,
+                        provider_type=provider.provider_type,
+                        configured=False,
+                        attempted=False,
+                        reason="no_board_targets_available",
+                    )
+                )
+                continue
             message = f"Job discovery provider {provider.provider_name} is not configured."
             logger.warning(
                 "Job discovery provider is not configured: %s",
@@ -2136,12 +2361,17 @@ def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearc
         "total_provider_results": run.total_provider_results,
         "total_matches_reported": run.total_matches_reported,
         "candidate_pool_count": run.candidate_pool_count,
+        "candidate_count_after_dedupe": run.candidate_count_after_dedupe,
         "replans_attempted": run.replans_attempted,
         "model_selected_count": run.model_selected_count,
         "saved_count": run.saved_count,
+        "updated_existing_count": run.updated_existing_count,
         "duplicate_count": run.duplicate_count,
         "skipped_count": run.skipped_count,
+        "provider_error_count": run.provider_error_count,
         "created_at": run.created_at.isoformat() if run.created_at else None,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "queries": [
             {
                 "provider_name": query.provider_name,
@@ -2158,6 +2388,60 @@ def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearc
             for query in query_runs
         ],
     }
+
+
+def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearchQueryRun]) -> dict[str, Any]:
+    provider_error_count = run.provider_error_count or sum(1 for query in query_runs if query.error)
+    return {
+        "id": run.id,
+        "status": run.status,
+        "searchMode": run.search_mode,
+        "createdAt": run.created_at.isoformat() if run.created_at else None,
+        "startedAt": run.started_at.isoformat() if run.started_at else None,
+        "completedAt": run.completed_at.isoformat() if run.completed_at else None,
+        "providerResultCount": run.total_provider_results,
+        "candidatePoolCount": run.candidate_pool_count,
+        "candidateCountAfterDedupe": run.candidate_count_after_dedupe,
+        "modelSelectedCount": run.model_selected_count,
+        "savedCount": run.saved_count,
+        "updatedExistingCount": run.updated_existing_count,
+        "duplicateCount": run.duplicate_count,
+        "skippedCount": run.skipped_count,
+        "providerErrorCount": provider_error_count,
+        "error": safe_log_preview(run.error or "", limit=500) or None,
+        "message": build_job_search_run_status_message(run, provider_error_count=provider_error_count),
+    }
+
+
+def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_count: int) -> str:
+    if run.status in {"queued", "started"}:
+        return "Job discovery is queued and will start shortly."
+    if run.status == "running":
+        return "Job discovery is running. Saved jobs will update when the search completes."
+    if run.status == "completed":
+        return (
+            "Job discovery completed: "
+            f"{run.saved_count} new job(s) saved, "
+            f"{run.updated_existing_count} refreshed, "
+            f"{run.duplicate_count} duplicate(s), "
+            f"{run.skipped_count} skipped."
+        )
+    if run.status == "failed":
+        return "Job discovery failed. No browser replay was attempted."
+    if provider_error_count:
+        return f"Job discovery finished with {provider_error_count} provider error(s)."
+    return f"Job discovery status: {run.status}."
+
+
+def get_existing_job_search_run(session: Session, run_id: str | None, candidate_profile_id: str) -> JobSearchRun | None:
+    if not run_id:
+        return None
+    return session.scalar(
+        select(JobSearchRun).where(
+            JobSearchRun.id == run_id,
+            JobSearchRun.candidate_profile_id == candidate_profile_id,
+        )
+    )
 
 
 def create_job_search_run(
@@ -2177,12 +2461,15 @@ def create_job_search_run(
         status="started",
         total_provider_results=0,
         candidate_pool_count=0,
+        candidate_count_after_dedupe=0,
         replans_attempted=0,
         model_selected_count=0,
         saved_count=0,
         updated_existing_count=0,
         duplicate_count=0,
         skipped_count=0,
+        provider_error_count=0,
+        started_at=datetime.now(timezone.utc),
     )
     session.add(run)
     session.flush()
@@ -2228,25 +2515,34 @@ def complete_job_search_run(
     provider_diagnostics: list[ProviderDiagnostic],
     total_provider_results: int = 0,
     candidate_pool_count: int = 0,
+    candidate_count_after_dedupe: int = 0,
     replans_attempted: int = 0,
     model_selected_count: int = 0,
     saved_count: int = 0,
     updated_existing_count: int = 0,
     duplicate_count: int = 0,
     skipped_count: int = 0,
+    provider_error_count: int | None = None,
     error: str | None = None,
 ) -> None:
     run.status = status
     run.total_provider_results = total_provider_results
     run.total_matches_reported = total_matches_reported(provider_diagnostics)
     run.candidate_pool_count = candidate_pool_count
+    run.candidate_count_after_dedupe = candidate_count_after_dedupe
     run.replans_attempted = replans_attempted
     run.model_selected_count = model_selected_count
     run.saved_count = saved_count
     run.updated_existing_count = updated_existing_count
     run.duplicate_count = duplicate_count
     run.skipped_count = skipped_count
+    run.provider_error_count = (
+        provider_error_count
+        if provider_error_count is not None
+        else sum(1 for diagnostic in provider_diagnostics if diagnostic.error)
+    )
     run.error = error
+    run.started_at = run.started_at or datetime.now(timezone.utc)
     run.completed_at = datetime.now(timezone.utc)
 
 

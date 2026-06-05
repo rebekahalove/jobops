@@ -8,13 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
 import jobops_api.job_discovery.service as job_discovery_service_module
-from jobops_api.db.models import Base, CandidateCompany, CandidateSavedJob, Company, JobPosting, JobSearchQueryRun, JobSearchRun
+from jobops_api.db.models import Base, CandidateCompany, CandidateProfile, CandidateSavedJob, Company, JobPosting, JobSearchQueryRun, JobSearchRun
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.job_discovery import (
@@ -53,6 +54,7 @@ from jobops_api.job_discovery.service import (
     infer_user_constraint_terms,
     infer_job_search_role_queries,
     route_job_discovery_providers,
+    run_configured_job_providers,
     save_live_job_source_results,
     should_tolerate_partial_company_board_errors,
 )
@@ -126,6 +128,185 @@ def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> 
         assert saved_link.status == "new"
         assert saved_link.fit_summary
         assert any(job.posting_date is not None for job in session.scalars(select(JobPosting)).all())
+
+
+def test_job_search_run_status_is_scoped_to_authenticated_candidate() -> None:
+    engine = create_seeded_engine(include_second_profile=True)
+
+    with Session(engine) as session:
+        owner = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        other = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "alex-love"))
+        assert owner is not None
+        assert other is not None
+        run = JobSearchRun(
+            candidate_profile_id=owner.id,
+            command_text="find jobs",
+            search_plan_json={},
+            provider_names=[],
+            status="completed",
+            total_provider_results=19,
+            candidate_pool_count=10,
+            candidate_count_after_dedupe=8,
+            model_selected_count=3,
+            saved_count=1,
+            updated_existing_count=2,
+            duplicate_count=4,
+            skipped_count=5,
+            provider_error_count=0,
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+        payload = job_discovery_service_module.get_job_search_run_status(
+            run.id,
+            session=session,
+            auth=SimpleNamespace(candidate_profile=owner),
+        )
+        assert payload["id"] == run.id
+        assert payload["providerResultCount"] == 19
+        assert payload["candidateCountAfterDedupe"] == 8
+        assert payload["savedCount"] == 1
+
+        try:
+            job_discovery_service_module.get_job_search_run_status(
+                run.id,
+                session=session,
+                auth=SimpleNamespace(candidate_profile=other),
+            )
+        except HTTPException as error:
+            assert error.status_code == 404
+        else:
+            raise AssertionError("Expected run status read to be scoped to the owning candidate.")
+
+
+def test_start_job_discovery_run_reuses_recent_active_run() -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        active_run = JobSearchRun(
+            candidate_profile_id=profile.id,
+            command_text="find jobs",
+            search_plan_json={},
+            provider_names=[],
+            status="running",
+            total_provider_results=0,
+            candidate_pool_count=0,
+            candidate_count_after_dedupe=0,
+            model_selected_count=0,
+            saved_count=0,
+            updated_existing_count=0,
+            duplicate_count=0,
+            skipped_count=0,
+            provider_error_count=0,
+        )
+        session.add(active_run)
+        session.commit()
+        session.refresh(active_run)
+
+        run, created = job_discovery_service_module.start_job_discovery_run(
+            JobDiscoveryRequest(
+                latest_user_message="find more jobs",
+                candidate_profile_slug=profile.slug,
+            ),
+            db_session=session,
+            candidate_profile=profile,
+            background_tasks=None,
+        )
+
+        runs = list(session.scalars(select(JobSearchRun)))
+        assert created is False
+        assert run.id == active_run.id
+        assert len(runs) == 1
+
+
+def test_job_discovery_background_success_marks_run_completed(tmp_path: Path, monkeypatch) -> None:
+    engine = create_seeded_engine()
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(job_discovery_service_module, "load_settings", lambda: make_settings(tmp_path))
+
+    def fake_run_job_discovery(request, *, db_session, settings, candidate_profile=None, job_search_run_id=None):
+        assert job_search_run_id is not None
+        return JobDiscoveryServiceResult(body={"ok": True, "result": {"jobSearchRunId": job_search_run_id}}, status_code=200)
+
+    monkeypatch.setattr(job_discovery_service_module, "run_job_discovery", fake_run_job_discovery)
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        run, created = job_discovery_service_module.start_job_discovery_run(
+            JobDiscoveryRequest(latest_user_message="find jobs", candidate_profile_slug=profile.slug),
+            db_session=session,
+            candidate_profile=profile,
+            background_tasks=None,
+        )
+        assert created is True
+        run_id = run.id
+        profile_id = profile.id
+
+    job_discovery_service_module.run_job_discovery_background(
+        run_id,
+        profile_id,
+        {
+            "latest_user_message": "find jobs",
+            "candidate_profile_slug": "rebekah-love",
+            "active_workspace": "jobs",
+            "client_context": {},
+            "router_extracted": None,
+        },
+        session_factory=factory,
+    )
+
+    with Session(engine) as session:
+        run = session.get(JobSearchRun, run_id)
+        assert run is not None
+        assert run.status == "completed"
+        assert run.started_at is not None
+        assert run.completed_at is not None
+
+
+def test_job_discovery_background_failure_marks_run_failed(tmp_path: Path, monkeypatch) -> None:
+    engine = create_seeded_engine()
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(job_discovery_service_module, "load_settings", lambda: make_settings(tmp_path))
+
+    def fake_run_job_discovery(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(job_discovery_service_module, "run_job_discovery", fake_run_job_discovery)
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        run, _ = job_discovery_service_module.start_job_discovery_run(
+            JobDiscoveryRequest(latest_user_message="find jobs", candidate_profile_slug=profile.slug),
+            db_session=session,
+            candidate_profile=profile,
+            background_tasks=None,
+        )
+        run_id = run.id
+        profile_id = profile.id
+
+    job_discovery_service_module.run_job_discovery_background(
+        run_id,
+        profile_id,
+        {
+            "latest_user_message": "find jobs",
+            "candidate_profile_slug": "rebekah-love",
+            "active_workspace": "jobs",
+            "client_context": {},
+            "router_extracted": None,
+        },
+        session_factory=factory,
+    )
+
+    with Session(engine) as session:
+        run = session.get(JobSearchRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert "provider unavailable" in (run.error or "")
 
 
 def test_job_discovery_prompts_for_targets_on_generic_request(tmp_path: Path) -> None:
@@ -1029,6 +1210,35 @@ def test_greenhouse_followed_company_search_filters_each_board_by_role_query(mon
 
     assert [result.company_name for result in outcome.results] == ["Anthropic", "Hightouch"]
     assert {diagnostic.query for diagnostic in outcome.diagnostics} == {"Applied AI Engineer"}
+
+
+def test_greenhouse_without_board_targets_is_skipped_without_failing_broad_search(tmp_path: Path) -> None:
+    request = JobSearchRequest(
+        latest_user_message="Find me some jobs to apply to",
+        search_queries=["Applied AI Systems Engineer remote"],
+        results_per_provider=20,
+        current_saved_companies=[],
+        target_context={},
+        private_profile_context={},
+        user_constraints=[],
+        search_plan=JobSearchPlan(searchMode="broad", roleQueries=["Applied AI Systems Engineer"]),
+        company_names=[],
+    )
+
+    outcome = run_configured_job_providers(
+        [GreenhouseJobDiscoveryProvider()],
+        request,
+        make_settings(tmp_path, job_discovery_providers=("greenhouse",), greenhouse_board_tokens=()),
+    )
+
+    assert outcome.results == []
+    assert outcome.errors == []
+    assert len(outcome.diagnostics) == 1
+    assert outcome.diagnostics[0].provider_name == "greenhouse"
+    assert outcome.diagnostics[0].configured is False
+    assert outcome.diagnostics[0].attempted is False
+    assert outcome.diagnostics[0].error is None
+    assert outcome.diagnostics[0].reason == "no_board_targets_available"
 
 
 def test_partial_broad_provider_errors_do_not_fail_after_company_board_results() -> None:
@@ -2109,17 +2319,15 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
         )
 
         assert response.actions[0].type == "job_discovery"
-        assert response.actions[0].status == "completed"
+        assert response.actions[0].status == "running"
         assert response.target_workspace == "jobs"
         assert response.result_payload is not None
-        assert response.result_payload["jobDiscoveryMode"] == "mock"
-        assert response.result_payload["providerResultCount"] == 2
-        assert response.result_payload["jobs"][0]["job_url"].startswith(
-            ("https://example-mission-org.example.test/", "https://sample-growth-co.example.test/")
-        )
-        assert response.result_payload["jobs"][0]["added_at"]
-        assert len(session.scalars(select(JobPosting)).all()) == 2
-        assert len(session.scalars(select(CandidateSavedJob)).all()) == 2
+        assert response.result_payload["async"] is True
+        assert response.result_payload["jobSearchRunId"]
+        assert response.result_payload["status"] == "queued"
+        assert len(session.scalars(select(JobSearchRun)).all()) == 1
+        assert len(session.scalars(select(JobPosting)).all()) == 0
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
 
 
 def test_job_discovery_returns_clear_error_when_live_source_not_configured(tmp_path: Path) -> None:
@@ -2160,28 +2368,25 @@ def test_command_center_job_discovery_passes_actual_chat_transcript(tmp_path: Pa
         ),
     )
 
-    def fake_run_job_discovery(request: JobDiscoveryRequest, **kwargs) -> JobDiscoveryServiceResult:
+    def fake_start_job_discovery_run(request: JobDiscoveryRequest, **kwargs):
         captured["client_context"] = request.client_context
         captured["latest_user_message"] = request.latest_user_message
-        return JobDiscoveryServiceResult(
-            status_code=200,
-            body={
-                "ok": True,
-                "result": {
-                    "assistantMessage": "No new jobs were saved.",
-                    "jobs": [],
-                    "updatedExistingJobs": [],
-                    "skippedJobs": [],
-                    "savedCount": 0,
-                    "updatedExistingCount": 0,
-                    "skippedJobCount": 0,
-                    "createdGlobalJobCount": 0,
-                    "updatedGlobalJobCount": 0,
-                },
-            },
+        return (
+            SimpleNamespace(
+                id="run-with-context",
+                status="queued",
+                saved_count=0,
+                updated_existing_count=0,
+                duplicate_count=0,
+                skipped_count=0,
+                total_provider_results=0,
+                model_selected_count=0,
+                provider_error_count=0,
+            ),
+            True,
         )
 
-    monkeypatch.setattr(command_center_module, "run_job_discovery", fake_run_job_discovery)
+    monkeypatch.setattr(command_center_module, "start_job_discovery_run", fake_start_job_discovery_run)
     engine = create_seeded_engine()
 
     client_context = {

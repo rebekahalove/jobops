@@ -6,6 +6,7 @@ from .service import (
     list_jobs,
     router,
     run_job_discovery,
+    start_job_discovery_run,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "list_jobs",
     "router",
     "run_job_discovery",
+    "start_job_discovery_run",
 ]

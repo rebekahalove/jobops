@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 import jobops_api.command_center as command_center_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Base, CandidateCompany, ExperienceProjectDraft, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
+from jobops_api.db.models import Base, CandidateCompany, ExperienceProjectDraft, JobSearchRun, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.main import app
@@ -287,6 +287,79 @@ def test_command_stream_emits_router_status_before_result(tmp_path: Path, monkey
     assert events[1]["result"]["actions"][0]["type"] == "profile_intake"
 
 
+def test_job_discovery_stream_returns_async_run_without_inline_provider_search(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    starts: list[str] = []
+
+    monkeypatch.setattr(
+        command_center_module,
+        "run_command_router",
+        lambda *args, **kwargs: SimpleNamespace(
+            decision=command_center_module.CommandRouterOutput(
+                actionType="job_discovery",
+                confidence="high",
+                targetWorkspace="jobs",
+            ),
+            body={"ok": True},
+            status_code=200,
+            unavailable=False,
+        ),
+    )
+
+    def fake_start_job_discovery_run(request, *, db_session, candidate_profile, background_tasks, session_factory=None):
+        starts.append(request.latest_user_message)
+        return (
+            SimpleNamespace(
+                id="async-run-1",
+                status="queued",
+                saved_count=0,
+                updated_existing_count=0,
+                duplicate_count=0,
+                skipped_count=0,
+                total_provider_results=0,
+                model_selected_count=0,
+                provider_error_count=0,
+            ),
+            True,
+        )
+
+    def fail_inline_job_discovery(*args, **kwargs):
+        raise AssertionError("job discovery should not run inline in the stream")
+
+    monkeypatch.setattr(command_center_module, "start_job_discovery_run", fake_start_job_discovery_run)
+    monkeypatch.setattr(command_center_module, "run_job_discovery", fail_inline_job_discovery)
+    engine = create_seeded_engine()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        session_token = create_auth_session_token(engine)
+        with client.stream(
+            "POST",
+            "/v1/command-center/commands/stream",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={"command": "find some jobs from my companies list", "active_workspace": "jobs"},
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+    finally:
+        app.dependency_overrides.clear()
+
+    result = events[-1]["result"]
+    assert response.status_code == 200
+    assert starts == ["find some jobs from my companies list"]
+    assert result["actions"][0]["type"] == "job_discovery"
+    assert result["actions"][0]["status"] == "running"
+    assert result["actions"][0]["resultPayload"]["jobSearchRunId"] == "async-run-1"
+    assert result["actions"][0]["resultPayload"]["async"] is True
+
+
 def test_command_stream_emits_result_for_profile_intake_validation_failure(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -364,23 +437,24 @@ def test_non_stream_fallback_reuses_recent_mutating_stream_response(tmp_path: Pa
         ),
     )
 
-    def fake_run_job_discovery(request, *, db_session, settings, candidate_profile=None):
+    def fake_start_job_discovery_run(request, *, db_session, candidate_profile, background_tasks, session_factory=None):
         calls.append(request.latest_user_message)
-        return SimpleNamespace(
-            status_code=200,
-            body={
-                "ok": True,
-                "result": {
-                    "assistantMessage": "No new jobs were saved.",
-                    "jobs": [],
-                    "updatedExistingJobs": [],
-                    "skippedJobs": [],
-                    "jobSearchRunId": "stream-run-1",
-                },
-            },
+        return (
+            SimpleNamespace(
+                id="stream-run-1",
+                status="queued",
+                saved_count=0,
+                updated_existing_count=0,
+                duplicate_count=0,
+                skipped_count=0,
+                total_provider_results=0,
+                model_selected_count=0,
+                provider_error_count=0,
+            ),
+            True,
         )
 
-    monkeypatch.setattr(command_center_module, "run_job_discovery", fake_run_job_discovery)
+    monkeypatch.setattr(command_center_module, "start_job_discovery_run", fake_start_job_discovery_run)
     engine = create_seeded_engine()
 
     def override_session() -> Iterator[Session]:
