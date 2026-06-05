@@ -413,12 +413,20 @@ describe("AI command center", () => {
       new URL("../../portfolio/app/jobops/api/command-center/stream/route.ts", import.meta.url),
       "utf-8"
     );
+    const jobSearchRunWrapperSource = await readFile(
+      new URL("../../portfolio/app/jobops/api/job-search-runs/[runId]/route.ts", import.meta.url),
+      "utf-8"
+    );
     const standaloneSource = await readFile(new URL("../app/api/command-center/stream/route.ts", import.meta.url), "utf-8");
 
     expect(wrapperSource).toContain(
       'export { POST } from "../../../../../../jobops/app/api/command-center/stream/route"'
     );
     expect(wrapperSource).toContain('export const runtime = "nodejs"');
+    expect(jobSearchRunWrapperSource).toContain("Production mounts JobOps under rebekahalove.dev/jobops");
+    expect(jobSearchRunWrapperSource).toContain(
+      'export { GET } from "../../../../../../jobops/app/api/job-search-runs/[runId]/route"'
+    );
     expect(standaloneSource).toContain("/v1/command-center/commands/stream");
     expect(standaloneSource).toContain("Command-center stream proxy request.");
     expect(standaloneSource).toContain("commandLength");
