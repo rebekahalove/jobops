@@ -70,6 +70,7 @@ export function JobsList({
   const [jobs, setJobs] = useState(initialJobs);
   const [latestJobSearchRun, setLatestJobSearchRun] = useState<JobSearchRunStatus | null>(initialJobSearchRun);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
+  const [diagnosticsStatusMessage, setDiagnosticsStatusMessage] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
@@ -149,16 +150,22 @@ export function JobsList({
         }
         if (response.status === 404) {
           setLatestJobSearchRun(null);
+          setDiagnosticsStatusMessage("No recent job discovery run diagnostics found.");
           return;
         }
         if (!response.ok || !isJobSearchRunStatus(payload)) {
+          setDiagnosticsStatusMessage(`Job discovery diagnostics could not be loaded (HTTP ${response.status}).`);
           return;
         }
         setLatestJobSearchRun(payload);
+        setDiagnosticsStatusMessage(null);
         if (isActiveJobSearchRunStatus(payload.status)) {
           timeoutId = window.setTimeout(loadLatestRunStatus, 2500);
         }
       } catch {
+        if (active) {
+          setDiagnosticsStatusMessage("Job discovery diagnostics API is unavailable.");
+        }
         // Saved jobs remain usable if run diagnostics are temporarily unavailable.
       } finally {
         if (active) {
@@ -284,7 +291,7 @@ export function JobsList({
 
       {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
 
-      <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} run={latestJobSearchRun} />
+      <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} run={latestJobSearchRun} statusMessage={diagnosticsStatusMessage} />
 
       <section className="job-list" aria-labelledby="job-list-title">
         <div className="application-list-header">
@@ -444,7 +451,15 @@ export function JobsList({
   );
 }
 
-function JobDiscoveryDiagnosticsPanel({ run, isLoading }: { run: JobSearchRunStatus | null; isLoading: boolean }) {
+function JobDiscoveryDiagnosticsPanel({
+  run,
+  isLoading,
+  statusMessage
+}: {
+  run: JobSearchRunStatus | null;
+  isLoading: boolean;
+  statusMessage: string | null;
+}) {
   const diagnostics = run?.diagnostics;
   const modelReview = diagnostics?.modelReview;
   const providerRows = diagnostics?.providerDiagnostics ?? [];
@@ -453,9 +468,7 @@ function JobDiscoveryDiagnosticsPanel({ run, isLoading }: { run: JobSearchRunSta
   const explanation = diagnostics?.modelExplanation;
   const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
 
-  if (!run && !isLoading) {
-    return null;
-  }
+  const summaryText = run ? jobDiscoveryRunDigest(run) : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
 
   return (
     <section className="job-discovery-diagnostics" aria-labelledby="job-discovery-diagnostics-title">
@@ -463,7 +476,7 @@ function JobDiscoveryDiagnosticsPanel({ run, isLoading }: { run: JobSearchRunSta
         <summary>
           <span>
             <strong id="job-discovery-diagnostics-title">Discovery diagnostics</strong>
-            <small>{run ? jobDiscoveryRunDigest(run) : "Waiting for run status..."}</small>
+            <small>{summaryText}</small>
           </span>
           <span className="diagnostics-toggle-label">Details</span>
         </summary>
@@ -554,7 +567,12 @@ function JobDiscoveryDiagnosticsPanel({ run, isLoading }: { run: JobSearchRunSta
             </section>
           </div>
         ) : (
-          <p className="diagnostics-muted">Loading latest job discovery run...</p>
+          <div className="job-discovery-diagnostics-body">
+            <section className="diagnostics-section">
+              <h3>Summary</h3>
+              <p className="diagnostics-muted">{statusMessage || "Loading latest job discovery run..."}</p>
+            </section>
+          </div>
         )}
       </details>
     </section>

@@ -262,6 +262,14 @@ describe("Jobs list", () => {
     expect(html).toContain("<strong>1</strong>");
   });
 
+  it("renders a persistent job discovery diagnostics affordance before a latest run loads", () => {
+    const html = renderToStaticMarkup(<JobsList />);
+
+    expect(html).toContain("Discovery diagnostics");
+    expect(html).toContain("No recent job discovery diagnostics yet.");
+    expect(html).toContain("Details");
+  });
+
   it("renders the latest job discovery diagnostics with model explanation and scoped replan wording", () => {
     const html = renderToStaticMarkup(<JobsList initialJobSearchRun={jobSearchRunFixture()} />);
 
