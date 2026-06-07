@@ -322,11 +322,14 @@ Rules:
 - Do not overvalue generic roles unless they clearly match the user's stated role targets or profile context.
 - Distinguish an interesting company from a good role fit.
 - Return at most save_limit selected jobs.
+- assistantMessage is required and must be meaningful.
+- If selectedJobs is empty, assistantMessage must explain why no candidates were selected in plain language, grounded in candidate_jobs, skippedCandidateNotes, user constraints, target profile, and provider diagnostics.
+- Do not use generic no-op summaries such as "I reviewed the live provider candidates and selected the strongest matches."
 - Keep assistantMessage under 60 words.
 - Keep fitSummary under 140 characters.
 - Keep selectionReason under 100 characters.
 - concerns must be [] unless a short concern is essential.
-- skippedCandidateNotes may be [] and should include at most 5 items.
+- skippedCandidateNotes should include up to 5 representative skipped candidates when selectedJobs is empty.
 
 Return exactly this JSON shape:
 {
@@ -360,7 +363,7 @@ Compact retry rules because the previous selection response was truncated:
 - selectionReason max 70 characters.
 - concerns must be [].
 - skippedCandidateNotes must be [].
-- assistantMessage max 25 words.
+- assistantMessage max 25 words and must explain why no jobs were selected if selectedJobs is empty.
 - Select at most save_limit candidate IDs from candidate_jobs.
 """
 

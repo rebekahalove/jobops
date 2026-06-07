@@ -45,6 +45,21 @@ export type JobSearchRunStatus = {
   providerErrorCount: number;
   error?: string | null;
   message: string;
+  userVisibleSummary?: string | null;
+  userSummary?: string | null;
+  plannerRationale?: string | null;
+  plannerFallbackUsed?: boolean | null;
+  recentSearchesUsed?: number;
+  selectionAssistantMessage?: string | null;
+  selectionSkippedCandidateNotes?: Array<{ candidateId: string; reason: string }>;
+  selectionClarifyingQuestions?: string[];
+  replansAttempted?: number;
+  replanLimit?: number | null;
+  replanningStatus?: string | null;
+  replanningDecision?: string | null;
+  replanReason?: string | null;
+  replanReasons?: string[];
+  replanQueries?: string[];
 };
 
 export type CommandCenterProxyResponse =

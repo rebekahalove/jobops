@@ -435,6 +435,7 @@ class JobSearchRun(Base):
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
     command_text: Mapped[str] = mapped_column(Text)
     search_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    run_diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     provider_names: Mapped[list[str]] = mapped_column(JSON, default=list)
     search_mode: Mapped[str | None] = mapped_column(String(60), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="started")
