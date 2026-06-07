@@ -126,7 +126,9 @@ def get_job_search_run_status(
             .order_by(JobSearchQueryRun.created_at.desc())
         )
     )
-    return serialize_job_search_run_status(run, query_runs)
+    payload = serialize_job_search_run_status(run, query_runs)
+    log_job_search_run_status_serialized(payload)
+    return payload
 
 
 @router.post("/jobs/{saved_job_id}/archive", response_model=SavedJobActionResponse)
@@ -857,6 +859,8 @@ def run_live_source_job_discovery(
     )
     result_payload = {
         "assistantMessage": assistant_message,
+        "userVisibleSummary": run_diagnostics["userVisibleSummary"],
+        "userSummary": run_diagnostics["userSummary"],
         "jobs": saved_jobs,
         "updatedExistingJobs": updated_saved_jobs,
         "discoveredCount": len(source_results),
@@ -2444,6 +2448,10 @@ def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearc
         "providerErrorCount": provider_error_count,
         "error": safe_log_preview(run.error or "", limit=500) or None,
         "message": build_job_search_run_status_message(run, provider_error_count=provider_error_count),
+        "userVisibleSummary": clean_user_facing_explanation(
+            diagnostics.get("userVisibleSummary") or diagnostics.get("userSummary"),
+            limit=900,
+        ),
         "userSummary": clean_user_facing_explanation(diagnostics.get("userSummary"), limit=900),
         "plannerRationale": clean_user_facing_explanation(planner.get("rationale"), limit=900),
         "plannerFallbackUsed": bool(planner.get("fallbackUsed")) if "fallbackUsed" in planner else None,
@@ -2468,7 +2476,10 @@ def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_cou
         return "Job discovery is running. Saved jobs will update when the search completes."
     if run.status == "completed":
         diagnostics = run.run_diagnostics_json if isinstance(run.run_diagnostics_json, dict) else {}
-        user_summary = clean_user_facing_explanation(diagnostics.get("userSummary"), limit=900)
+        user_summary = clean_user_facing_explanation(
+            diagnostics.get("userVisibleSummary") or diagnostics.get("userSummary"),
+            limit=900,
+        )
         if user_summary:
             return user_summary
         return (
@@ -2957,6 +2968,8 @@ def build_selected_job_discovery_assistant_message(
             )
         if source_results:
             return NO_MODEL_SELECTION_EXPLANATION_FALLBACK
+        if not selected_count and not saved_count:
+            return NO_MODEL_SELECTION_EXPLANATION_FALLBACK
     if all_skipped_results:
         reason_counts = skipped_reason_code_counts(all_skipped_results)
         if reason_counts.get("duplicate_for_user") == len(all_skipped_results):
@@ -2977,8 +2990,10 @@ def build_job_search_run_diagnostics(
     replan_queries: list[str],
 ) -> dict[str, Any]:
     plan = planner_result.plan
+    user_visible_summary = clean_user_facing_explanation(assistant_message, limit=900)
     return {
-        "userSummary": clean_user_facing_explanation(assistant_message, limit=900),
+        "userVisibleSummary": user_visible_summary,
+        "userSummary": user_visible_summary,
         "planner": {
             "rationale": clean_user_facing_explanation(plan.rationale, limit=900),
             "fallbackUsed": planner_result.fallback_used,
@@ -3010,6 +3025,33 @@ def selection_assistant_message(selection_result: JobCandidateSelectionResult | 
     if not selection_result.selected_entries and message == DEFAULT_SELECTION_ASSISTANT_MESSAGE:
         return None
     return message
+
+
+def log_job_search_run_status_serialized(payload: dict[str, Any]) -> None:
+    user_visible_summary = clean_user_facing_explanation(payload.get("userVisibleSummary"), limit=240)
+    selection_message = clean_user_facing_explanation(payload.get("selectionAssistantMessage"), limit=240)
+    logger.info(
+        "Job search run status serialized: %s",
+        json.dumps(
+            {
+                "runId": payload.get("id"),
+                "status": payload.get("status"),
+                "providerResultCount": payload.get("providerResultCount"),
+                "candidatePoolCount": payload.get("candidatePoolCount"),
+                "modelSelectedCount": payload.get("modelSelectedCount"),
+                "savedCount": payload.get("savedCount"),
+                "hasUserVisibleSummary": bool(user_visible_summary),
+                "userVisibleSummaryPreview": user_visible_summary,
+                "hasSelectionAssistantMessage": bool(selection_message),
+                "selectionAssistantMessagePreview": selection_message,
+                "plannerRationalePresent": bool(payload.get("plannerRationale")),
+                "replansAttempted": payload.get("replansAttempted"),
+                "replanningDecision": payload.get("replanningDecision"),
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
 
 
 def selection_skipped_candidate_notes(selection_result: JobCandidateSelectionResult | None) -> list[dict[str, str]]:

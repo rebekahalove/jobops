@@ -2,7 +2,7 @@ import React from "react";
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AiCommandCenter, MarkdownMessage, buildCommandCenterClientContext, starterPrompts, type CommandMessage } from "./ai-command-center";
+import { AiCommandCenter, MarkdownMessage, buildCommandCenterClientContext, buildJobDiscoveryRunSummary, starterPrompts, type CommandMessage } from "./ai-command-center";
 import {
   classifyCommand,
   createPlannedAction,
@@ -259,11 +259,35 @@ describe("AI command center", () => {
   it("uses model-authored job-discovery summaries when async polling completes", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain("cleanOptionalSummary(run.userSummary) ?? cleanOptionalSummary(run.selectionAssistantMessage)");
+    expect(source).toContain("cleanOptionalSummary(run.userVisibleSummary)");
+    expect(source).toContain("cleanOptionalSummary(run.selectionAssistantMessage)");
     expect(source).toContain("modelSelectedCount: run.modelSelectedCount");
     expect(source).toContain("savedCount: run.savedCount");
+    expect(source).toContain("userVisibleSummary: run.userVisibleSummary");
     expect(source).toContain("plannerRationale: run.plannerRationale");
     expect(source).toContain("selectionAssistantMessage: run.selectionAssistantMessage");
+  });
+
+  it("prefers user-visible job-discovery summaries over deterministic counts", () => {
+    const summary = buildJobDiscoveryRunSummary({
+      id: "run-zero",
+      status: "completed",
+      providerResultCount: 37,
+      candidatePoolCount: 21,
+      candidateCountAfterDedupe: 21,
+      modelSelectedCount: 0,
+      savedCount: 0,
+      updatedExistingCount: 0,
+      duplicateCount: 16,
+      skippedCount: 21,
+      providerErrorCount: 0,
+      message: "Job discovery completed: 0 new job(s) saved, 0 refreshed, 16 duplicate(s), 21 skipped.",
+      userVisibleSummary:
+        "I found roles from followed-company boards, but none matched strongly enough to save: the candidate pool was mostly outside your target stack, too management-heavy, duplicate, or below your compensation/work-mode constraints."
+    });
+
+    expect(summary).toContain("none matched strongly enough to save");
+    expect(summary).not.toContain("0 new job(s) saved");
   });
 
   it("returns from the stream as soon as an async result event is parsed", async () => {

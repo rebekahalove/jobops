@@ -45,6 +45,7 @@ export type JobSearchRunStatus = {
   providerErrorCount: number;
   error?: string | null;
   message: string;
+  userVisibleSummary?: string | null;
   userSummary?: string | null;
   plannerRationale?: string | null;
   plannerFallbackUsed?: boolean | null;

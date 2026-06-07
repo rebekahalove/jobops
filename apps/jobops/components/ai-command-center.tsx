@@ -391,6 +391,7 @@ export function AiCommandCenter({
             duplicateCount: run.duplicateCount,
             skippedCount: run.skippedCount,
             providerErrorCount: run.providerErrorCount,
+            userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
             plannerRationale: run.plannerRationale ?? undefined,
             plannerFallbackUsed: run.plannerFallbackUsed ?? undefined,
@@ -434,6 +435,7 @@ export function AiCommandCenter({
             candidateCountAfterDedupe: run.candidateCountAfterDedupe,
             modelSelectedCount: run.modelSelectedCount,
             providerErrorCount: run.providerErrorCount,
+            userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
             plannerRationale: run.plannerRationale ?? undefined,
             plannerFallbackUsed: run.plannerFallbackUsed ?? undefined,
@@ -848,8 +850,11 @@ async function fetchJobSearchRunStatus(runId: string, apiBasePath: string): Prom
   return payload;
 }
 
-function buildJobDiscoveryRunSummary(run: JobSearchRunStatus) {
-  const modelSummary = cleanOptionalSummary(run.userSummary) ?? cleanOptionalSummary(run.selectionAssistantMessage);
+export function buildJobDiscoveryRunSummary(run: JobSearchRunStatus) {
+  const modelSummary =
+    cleanOptionalSummary(run.userVisibleSummary) ??
+    cleanOptionalSummary(run.userSummary) ??
+    cleanOptionalSummary(run.selectionAssistantMessage);
   if (modelSummary) {
     return modelSummary;
   }
