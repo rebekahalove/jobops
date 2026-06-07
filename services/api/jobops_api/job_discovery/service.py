@@ -78,6 +78,10 @@ JOB_DISCOVERY_SELECTION_CANDIDATE_PREFIX = "J"
 ACTIVE_JOB_DISCOVERY_RUN_STATUSES = {"queued", "running", "started"}
 TERMINAL_JOB_DISCOVERY_RUN_STATUSES = {"completed", "failed", "cancelled", "needs_confirmation"}
 ACTIVE_JOB_DISCOVERY_RUN_STALE_AFTER = timedelta(hours=2)
+NO_MODEL_SELECTION_EXPLANATION_FALLBACK = (
+    "No model selection explanation was returned; check diagnostics for provider counts and skipped jobs."
+)
+DEFAULT_SELECTION_ASSISTANT_MESSAGE = "I reviewed the live provider candidates and selected the strongest matches."
 
 
 router = APIRouter(prefix="/v1", tags=["jobs"], dependencies=[Depends(require_internal_api_key)])
@@ -504,6 +508,7 @@ def run_live_source_job_discovery(
     provider_diagnostics: list[ProviderDiagnostic] = []
     provider_errors: list[str] = []
     replan_reasons: list[str] = []
+    replan_queries: list[str] = []
     replan_decision = "not_evaluated"
     replans_attempted = 0
     save_result: JobDiscoverySaveResult | None = None
@@ -609,6 +614,8 @@ def run_live_source_job_discovery(
                 target_context=target_context,
                 private_profile_context=private_profile_context,
             )
+            if replans_attempted > 0:
+                replan_queries = compact_unique_strings([*replan_queries, *fresh_search_queries], limit=50)
             search_queries_used = compact_unique_strings([*search_queries_used, *fresh_search_queries], limit=50)
             log_job_discovery_provider_plan(
                 settings,
@@ -827,13 +834,29 @@ def run_live_source_job_discovery(
         for link in [*save_result.saved_links, *save_result.updated_existing_links]
         if link.job is not None and link.job.url_verification_status in {"verified", "mock_verified", "provider_unverified"}
     )
-    result_payload = {
-        "assistantMessage": build_selected_job_discovery_assistant_message(
-            selection_result,
-            save_result,
-            source_results,
-            all_skipped_results,
+    assistant_message = build_selected_job_discovery_assistant_message(
+        selection_result,
+        save_result,
+        source_results,
+        all_skipped_results,
+    )
+    run_diagnostics = build_job_search_run_diagnostics(
+        planner_result=planner_result,
+        selection_result=selection_result,
+        assistant_message=assistant_message,
+        replans_attempted=replans_attempted,
+        replan_limit=settings.job_discovery_search_replan_limit,
+        replanning_status=job_search_replanning_status(
+            replans_attempted,
+            settings.job_discovery_search_replan_limit,
+            replan_reasons,
         ),
+        replan_decision=replan_decision,
+        replan_reasons=replan_reasons,
+        replan_queries=replan_queries,
+    )
+    result_payload = {
+        "assistantMessage": assistant_message,
         "jobs": saved_jobs,
         "updatedExistingJobs": updated_saved_jobs,
         "discoveredCount": len(source_results),
@@ -855,8 +878,12 @@ def run_live_source_job_discovery(
         "searchCriteria": summarize_search_plan(search_plan),
         "recentSearchesUsed": planner_result.recent_searches_used_count,
         "plannerFallbackUsed": planner_result.fallback_used,
+        "plannerRationale": clean_user_facing_explanation(search_plan.rationale, limit=900),
         "plannerProvider": planner_result.response_provider,
         "plannerModel": planner_result.response_model,
+        "selectionAssistantMessage": selection_assistant_message(selection_result),
+        "selectionSkippedCandidateNotes": selection_skipped_candidate_notes(selection_result),
+        "selectionClarifyingQuestions": selection_clarifying_questions(selection_result),
         "searchGroundingEnabled": settings.job_discovery_search_grounding_enabled,
         "providerName": ",".join(provider_names) if provider_names else job_discovery_mode,
         "sourceName": ",".join(provider_names) if provider_names else job_discovery_mode,
@@ -873,7 +900,9 @@ def run_live_source_job_discovery(
             replan_reasons,
         ),
         "replanningDecision": replan_decision,
+        "replanReason": replan_reasons[-1] if replan_reasons else None,
         "replanReasons": replan_reasons,
+        "replanQueries": replan_queries,
         "companiesSearched": search_plan.company_names,
         "candidateCountAfterProviderNormalization": candidate_pool.count_after_provider_normalization,
         "candidateCountAfterDedupe": candidate_pool.count_after_dedupe,
@@ -907,6 +936,7 @@ def run_live_source_job_discovery(
         skipped_count=len(skipped_jobs),
         replans_attempted=replans_attempted,
         provider_error_count=len(provider_errors),
+        run_diagnostics=run_diagnostics,
     )
     db_session.commit()
     summary_level = logging.INFO
@@ -2392,6 +2422,10 @@ def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearc
 
 def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearchQueryRun]) -> dict[str, Any]:
     provider_error_count = run.provider_error_count or sum(1 for query in query_runs if query.error)
+    diagnostics = run.run_diagnostics_json if isinstance(run.run_diagnostics_json, dict) else {}
+    planner = diagnostics.get("planner") if isinstance(diagnostics.get("planner"), dict) else {}
+    selection = diagnostics.get("selection") if isinstance(diagnostics.get("selection"), dict) else {}
+    replanning = diagnostics.get("replanning") if isinstance(diagnostics.get("replanning"), dict) else {}
     return {
         "id": run.id,
         "status": run.status,
@@ -2410,6 +2444,20 @@ def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearc
         "providerErrorCount": provider_error_count,
         "error": safe_log_preview(run.error or "", limit=500) or None,
         "message": build_job_search_run_status_message(run, provider_error_count=provider_error_count),
+        "userSummary": clean_user_facing_explanation(diagnostics.get("userSummary"), limit=900),
+        "plannerRationale": clean_user_facing_explanation(planner.get("rationale"), limit=900),
+        "plannerFallbackUsed": bool(planner.get("fallbackUsed")) if "fallbackUsed" in planner else None,
+        "recentSearchesUsed": int(planner.get("recentSearchesUsedCount") or 0),
+        "selectionAssistantMessage": clean_user_facing_explanation(selection.get("assistantMessage"), limit=900),
+        "selectionSkippedCandidateNotes": selection.get("skippedCandidateNotes") if isinstance(selection.get("skippedCandidateNotes"), list) else [],
+        "selectionClarifyingQuestions": selection.get("clarifyingQuestions") if isinstance(selection.get("clarifyingQuestions"), list) else [],
+        "replansAttempted": int(replanning.get("replansAttempted") or run.replans_attempted or 0),
+        "replanLimit": replanning.get("replanLimit"),
+        "replanningStatus": clean_user_facing_explanation(replanning.get("replanningStatus"), limit=120),
+        "replanningDecision": clean_user_facing_explanation(replanning.get("replanningDecision"), limit=160),
+        "replanReason": clean_user_facing_explanation(replanning.get("replanReason"), limit=160),
+        "replanReasons": replanning.get("replanReasons") if isinstance(replanning.get("replanReasons"), list) else [],
+        "replanQueries": replanning.get("replanQueries") if isinstance(replanning.get("replanQueries"), list) else [],
     }
 
 
@@ -2419,6 +2467,10 @@ def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_cou
     if run.status == "running":
         return "Job discovery is running. Saved jobs will update when the search completes."
     if run.status == "completed":
+        diagnostics = run.run_diagnostics_json if isinstance(run.run_diagnostics_json, dict) else {}
+        user_summary = clean_user_facing_explanation(diagnostics.get("userSummary"), limit=900)
+        if user_summary:
+            return user_summary
         return (
             "Job discovery completed: "
             f"{run.saved_count} new job(s) saved, "
@@ -2523,6 +2575,7 @@ def complete_job_search_run(
     duplicate_count: int = 0,
     skipped_count: int = 0,
     provider_error_count: int | None = None,
+    run_diagnostics: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
     run.status = status
@@ -2542,6 +2595,8 @@ def complete_job_search_run(
         else sum(1 for diagnostic in provider_diagnostics if diagnostic.error)
     )
     run.error = error
+    if run_diagnostics is not None:
+        run.run_diagnostics_json = run_diagnostics
     run.started_at = run.started_at or datetime.now(timezone.utc)
     run.completed_at = datetime.now(timezone.utc)
 
@@ -2885,22 +2940,112 @@ def build_selected_job_discovery_assistant_message(
 ) -> str:
     all_skipped_results = all_skipped_results or save_result.skipped
     if selection_result is not None and selection_result.output.assistant_message:
+        model_message = selection_assistant_message(selection_result)
         selected_count = len(selection_result.selected_entries)
         saved_count = len(save_result.saved_links)
-        if saved_count:
-            return selection_result.output.assistant_message
+        if model_message:
+            if not saved_count and selected_count and save_result.skipped:
+                return (
+                    f"{model_message}\n\n"
+                    f"None were newly saved after persistence: {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
+                )
+            return model_message
         if selected_count and save_result.skipped:
             return (
                 f"The model selected {selected_count} provider-backed job candidate(s), "
                 f"but none were newly saved: {format_reason_code_counts(skipped_reason_code_counts(save_result.skipped))}."
             )
         if source_results:
-            return "The model reviewed the provider-backed candidates, but did not select any new jobs to save."
+            return NO_MODEL_SELECTION_EXPLANATION_FALLBACK
     if all_skipped_results:
         reason_counts = skipped_reason_code_counts(all_skipped_results)
         if reason_counts.get("duplicate_for_user") == len(all_skipped_results):
             return f"I found {len(all_skipped_results)} job(s) already in your Jobs list, so I did not add duplicates."
     return build_live_job_discovery_assistant_message(save_result, source_results)
+
+
+def build_job_search_run_diagnostics(
+    *,
+    planner_result: JobSearchPlannerResult,
+    selection_result: JobCandidateSelectionResult | None,
+    assistant_message: str,
+    replans_attempted: int,
+    replan_limit: int,
+    replanning_status: str,
+    replan_decision: str,
+    replan_reasons: list[str],
+    replan_queries: list[str],
+) -> dict[str, Any]:
+    plan = planner_result.plan
+    return {
+        "userSummary": clean_user_facing_explanation(assistant_message, limit=900),
+        "planner": {
+            "rationale": clean_user_facing_explanation(plan.rationale, limit=900),
+            "fallbackUsed": planner_result.fallback_used,
+            "recentSearchesUsedCount": planner_result.recent_searches_used_count,
+        },
+        "selection": {
+            "assistantMessage": selection_assistant_message(selection_result),
+            "skippedCandidateNotes": selection_skipped_candidate_notes(selection_result),
+            "clarifyingQuestions": selection_clarifying_questions(selection_result),
+        },
+        "replanning": {
+            "replansAttempted": replans_attempted,
+            "replanLimit": replan_limit,
+            "replanningStatus": replanning_status,
+            "replanningDecision": replan_decision,
+            "replanReason": replan_reasons[-1] if replan_reasons else None,
+            "replanReasons": clean_string_diagnostic_list(replan_reasons, limit=10, item_limit=160),
+            "replanQueries": clean_string_diagnostic_list(replan_queries, limit=20, item_limit=240),
+        },
+    }
+
+
+def selection_assistant_message(selection_result: JobCandidateSelectionResult | None) -> str | None:
+    if selection_result is None or selection_result.response is None:
+        return None
+    message = clean_user_facing_explanation(selection_result.output.assistant_message, limit=900)
+    if not message:
+        return None
+    if not selection_result.selected_entries and message == DEFAULT_SELECTION_ASSISTANT_MESSAGE:
+        return None
+    return message
+
+
+def selection_skipped_candidate_notes(selection_result: JobCandidateSelectionResult | None) -> list[dict[str, str]]:
+    if selection_result is None or selection_result.response is None:
+        return []
+    notes: list[dict[str, str]] = []
+    for note in selection_result.output.skipped_candidate_notes[:5]:
+        candidate_id = clean_user_facing_explanation(note.candidate_id, limit=40)
+        reason = clean_user_facing_explanation(note.reason, limit=300)
+        if candidate_id and reason:
+            notes.append({"candidateId": candidate_id, "reason": reason})
+    return notes
+
+
+def selection_clarifying_questions(selection_result: JobCandidateSelectionResult | None) -> list[str]:
+    if selection_result is None or selection_result.response is None:
+        return []
+    return clean_string_diagnostic_list(selection_result.output.clarifying_questions, limit=3, item_limit=240)
+
+
+def clean_user_facing_explanation(value: object, *, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split()).strip()
+    if not cleaned:
+        return None
+    return safe_log_preview(cleaned, limit=limit)
+
+
+def clean_string_diagnostic_list(values: list[str], *, limit: int, item_limit: int) -> list[str]:
+    cleaned: list[str] = []
+    for value in values[:limit]:
+        item = clean_user_facing_explanation(value, limit=item_limit)
+        if item:
+            cleaned.append(item)
+    return cleaned
 
 
 def format_reason_code_counts(counts: dict[str, int]) -> str:

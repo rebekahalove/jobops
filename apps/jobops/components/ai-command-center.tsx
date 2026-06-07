@@ -365,7 +365,7 @@ export function AiCommandCenter({
             : run.status === "needs_confirmation"
               ? "needs_confirmation"
               : "running";
-      const nextSummary = run.message || buildJobDiscoveryRunSummary(run);
+      const nextSummary = run.status === "completed" ? buildJobDiscoveryRunSummary(run) : run.message || buildJobDiscoveryRunSummary(run);
       let matched = false;
       const updated = current.map((action) => {
         const payloadRunId = getAsyncJobDiscoveryRunId(action);
@@ -391,6 +391,20 @@ export function AiCommandCenter({
             duplicateCount: run.duplicateCount,
             skippedCount: run.skippedCount,
             providerErrorCount: run.providerErrorCount,
+            userSummary: run.userSummary ?? undefined,
+            plannerRationale: run.plannerRationale ?? undefined,
+            plannerFallbackUsed: run.plannerFallbackUsed ?? undefined,
+            recentSearchesUsed: run.recentSearchesUsed,
+            selectionAssistantMessage: run.selectionAssistantMessage ?? undefined,
+            selectionSkippedCandidateNotes: run.selectionSkippedCandidateNotes,
+            selectionClarifyingQuestions: run.selectionClarifyingQuestions,
+            replansAttempted: run.replansAttempted,
+            replanLimit: run.replanLimit ?? undefined,
+            replanningStatus: run.replanningStatus ?? undefined,
+            replanningDecision: run.replanningDecision ?? undefined,
+            replanReason: run.replanReason ?? undefined,
+            replanReasons: run.replanReasons,
+            replanQueries: run.replanQueries,
             error: run.error ?? undefined
           }
         } satisfies PlannedCommandAction;
@@ -414,7 +428,26 @@ export function AiCommandCenter({
             savedCount: run.savedCount,
             updatedExistingCount: run.updatedExistingCount,
             duplicateCount: run.duplicateCount,
-            skippedCount: run.skippedCount
+            skippedCount: run.skippedCount,
+            providerResultCount: run.providerResultCount,
+            candidatePoolCount: run.candidatePoolCount,
+            candidateCountAfterDedupe: run.candidateCountAfterDedupe,
+            modelSelectedCount: run.modelSelectedCount,
+            providerErrorCount: run.providerErrorCount,
+            userSummary: run.userSummary ?? undefined,
+            plannerRationale: run.plannerRationale ?? undefined,
+            plannerFallbackUsed: run.plannerFallbackUsed ?? undefined,
+            recentSearchesUsed: run.recentSearchesUsed,
+            selectionAssistantMessage: run.selectionAssistantMessage ?? undefined,
+            selectionSkippedCandidateNotes: run.selectionSkippedCandidateNotes,
+            selectionClarifyingQuestions: run.selectionClarifyingQuestions,
+            replansAttempted: run.replansAttempted,
+            replanLimit: run.replanLimit ?? undefined,
+            replanningStatus: run.replanningStatus ?? undefined,
+            replanningDecision: run.replanningDecision ?? undefined,
+            replanReason: run.replanReason ?? undefined,
+            replanReasons: run.replanReasons,
+            replanQueries: run.replanQueries
           }
         },
         ...updated
@@ -816,7 +849,15 @@ async function fetchJobSearchRunStatus(runId: string, apiBasePath: string): Prom
 }
 
 function buildJobDiscoveryRunSummary(run: JobSearchRunStatus) {
+  const modelSummary = cleanOptionalSummary(run.userSummary) ?? cleanOptionalSummary(run.selectionAssistantMessage);
+  if (modelSummary) {
+    return modelSummary;
+  }
   return `Job discovery completed: ${run.savedCount} new job(s) saved, ${run.updatedExistingCount} refreshed, ${run.duplicateCount} duplicate(s), ${run.skippedCount} skipped.`;
+}
+
+function cleanOptionalSummary(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function readStoredJobDiscoveryRunId() {
@@ -1196,6 +1237,7 @@ function getJobDiscoveryDiagnostics(resultPayload: unknown) {
     textDiagnostic("Mode", payload.jobDiscoveryMode),
     textDiagnostic("Source", payload.sourceName ?? payload.providerName),
     numberDiagnostic("Provider results", payload.providerResultCount),
+    numberDiagnostic("Model selected", payload.modelSelectedCount),
     numberDiagnostic("Verified URLs", payload.verifiedUrlCount ?? payload.verifiedCount),
     numberDiagnostic("Saved", payload.savedJobCount ?? payload.savedCount),
     numberDiagnostic("Duplicates", payload.duplicateCount),

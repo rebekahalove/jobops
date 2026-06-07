@@ -256,6 +256,16 @@ describe("AI command center", () => {
     expect(source).toContain("clearStoredJobDiscoveryRunId(run.id)");
   });
 
+  it("uses model-authored job-discovery summaries when async polling completes", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("cleanOptionalSummary(run.userSummary) ?? cleanOptionalSummary(run.selectionAssistantMessage)");
+    expect(source).toContain("modelSelectedCount: run.modelSelectedCount");
+    expect(source).toContain("savedCount: run.savedCount");
+    expect(source).toContain("plannerRationale: run.plannerRationale");
+    expect(source).toContain("selectionAssistantMessage: run.selectionAssistantMessage");
+  });
+
   it("returns from the stream as soon as an async result event is parsed", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 

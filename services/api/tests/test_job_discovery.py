@@ -142,6 +142,28 @@ def test_job_search_run_status_is_scoped_to_authenticated_candidate() -> None:
             candidate_profile_id=owner.id,
             command_text="find jobs",
             search_plan_json={},
+            run_diagnostics_json={
+                "userSummary": "I found jobs, but the best matches were already saved.",
+                "planner": {
+                    "rationale": "Search followed companies for applied AI roles.",
+                    "fallbackUsed": False,
+                    "recentSearchesUsedCount": 2,
+                },
+                "selection": {
+                    "assistantMessage": "The model selected strong roles, but persistence found duplicates.",
+                    "skippedCandidateNotes": [{"candidateId": "J002", "reason": "Too generic."}],
+                    "clarifyingQuestions": [],
+                },
+                "replanning": {
+                    "replansAttempted": 1,
+                    "replanLimit": 1,
+                    "replanningStatus": "attempted",
+                    "replanningDecision": "triggered:zero_total_matches",
+                    "replanReason": "zero_total_matches",
+                    "replanReasons": ["zero_total_matches"],
+                    "replanQueries": ["Applied AI Engineer"],
+                },
+            },
             provider_names=[],
             status="completed",
             total_provider_results=19,
@@ -167,6 +189,12 @@ def test_job_search_run_status_is_scoped_to_authenticated_candidate() -> None:
         assert payload["providerResultCount"] == 19
         assert payload["candidateCountAfterDedupe"] == 8
         assert payload["savedCount"] == 1
+        assert payload["message"] == "I found jobs, but the best matches were already saved."
+        assert payload["plannerRationale"] == "Search followed companies for applied AI roles."
+        assert payload["selectionAssistantMessage"] == "The model selected strong roles, but persistence found duplicates."
+        assert payload["selectionSkippedCandidateNotes"] == [{"candidateId": "J002", "reason": "Too generic."}]
+        assert payload["replanReason"] == "zero_total_matches"
+        assert payload["replanQueries"] == ["Applied AI Engineer"]
 
         try:
             job_discovery_service_module.get_job_search_run_status(
@@ -1472,6 +1500,107 @@ def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tm
         request_payload = json.loads(captured_request.messages[-1].content)
         assert len(request_payload["candidate_jobs"]) == 2
         assert any(item["title"] == "AI Platform Engineer" for item in request_payload["candidate_jobs"])
+
+
+def test_zero_model_selection_persists_model_authored_explanation(monkeypatch, tmp_path: Path) -> None:
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "adz-1",
+                            "title": ".NET Engineering Manager",
+                            "company": {"display_name": "Followed Co"},
+                            "redirect_url": "https://jobs.example.test/dotnet-manager",
+                            "description": "Manage a .NET application team.",
+                        },
+                        {
+                            "id": "adz-2",
+                            "title": "Junior Software Engineer",
+                            "company": {"display_name": "Followed Co"},
+                            "redirect_url": "https://jobs.example.test/junior-software",
+                            "description": "Entry-level backend role below target compensation.",
+                        },
+                    ]
+                }
+            ).encode("utf-8")
+
+    class ZeroSelectionConnector:
+        def generate(self, request):
+            if request.task == "job_search_planning":
+                return fake_job_search_planner_response(role_query="Applied AI Engineer")
+            assert request.task == "job_candidate_selection"
+            payload = json.loads(request.messages[-1].content)
+            return ModelResponse(
+                text=json.dumps(
+                    {
+                        "assistantMessage": (
+                            "I found jobs at followed companies, but none matched your target profile closely: "
+                            "most were .NET management roles or below your target compensation."
+                        ),
+                        "selectedJobs": [],
+                        "skippedCandidateNotes": [
+                            {"candidateId": payload["candidate_jobs"][0]["candidateId"], "reason": "Management-focused .NET role."},
+                            {"candidateId": payload["candidate_jobs"][1]["candidateId"], "reason": "Junior role below target compensation."},
+                        ],
+                        "clarifyingQuestions": [],
+                    }
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    engine = create_seeded_engine()
+    settings = make_settings(
+        tmp_path,
+        model_provider="gemini",
+        job_discovery_source="none",
+        job_discovery_providers=("adzuna",),
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        result = run_job_discovery(
+            JobDiscoveryRequest(latest_user_message="Find applied AI jobs at followed companies.", candidate_profile_slug="rebekah-love"),
+            connector=ZeroSelectionConnector(),
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert result.body["result"]["modelSelectedCount"] == 0
+        assert result.body["result"]["savedCount"] == 0
+        assert "none matched your target profile closely" in result.body["result"]["assistantMessage"]
+        assert result.body["result"]["selectionAssistantMessage"] == result.body["result"]["assistantMessage"]
+        assert result.body["result"]["plannerRationale"] == "Fake planner response for tests."
+
+        run = session.scalar(select(JobSearchRun))
+        assert run is not None
+        payload = job_discovery_service_module.get_job_search_run_status(
+            run.id,
+            session=session,
+            auth=SimpleNamespace(candidate_profile=profile),
+        )
+        assert payload["modelSelectedCount"] == 0
+        assert payload["savedCount"] == 0
+        assert payload["userSummary"] == result.body["result"]["assistantMessage"]
+        assert payload["selectionAssistantMessage"] == result.body["result"]["assistantMessage"]
+        assert payload["plannerRationale"] == "Fake planner response for tests."
+        assert payload["selectionSkippedCandidateNotes"][0]["reason"] == "Management-focused .NET role."
 
 
 def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tmp_path: Path, caplog) -> None:
