@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { JobSearchProviderDiagnostic, JobSearchRunStatus } from "../lib/command-center-contract";
 
 export type JobBucketId = "new" | "favorites" | "applied" | "archived";
 
@@ -58,13 +59,17 @@ export type SavedJob = {
 export function JobsList({
   apiBasePath = "/api",
   workspaceBasePath = "",
-  initialJobs = []
+  initialJobs = [],
+  initialJobSearchRun = null
 }: {
   apiBasePath?: string;
   workspaceBasePath?: string;
   initialJobs?: SavedJob[];
+  initialJobSearchRun?: JobSearchRunStatus | null;
 }) {
   const [jobs, setJobs] = useState(initialJobs);
+  const [latestJobSearchRun, setLatestJobSearchRun] = useState<JobSearchRunStatus | null>(initialJobSearchRun);
+  const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
   const [pendingApplyJobId, setPendingApplyJobId] = useState<string | null>(null);
@@ -123,6 +128,53 @@ export function JobsList({
     return () => {
       active = false;
       window.removeEventListener("jobops:jobs-updated", loadJobs);
+    };
+  }, [apiBasePath]);
+
+  useEffect(() => {
+    let active = true;
+    let timeoutId: number | null = null;
+
+    async function loadLatestRunStatus() {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      setIsDiagnosticsLoading(true);
+      try {
+        const response = await fetch(`${apiBasePath}/job-search-runs/latest`, { cache: "no-store" });
+        const payload = (await response.json().catch(() => null)) as unknown;
+        if (!active) {
+          return;
+        }
+        if (response.status === 404) {
+          setLatestJobSearchRun(null);
+          return;
+        }
+        if (!response.ok || !isJobSearchRunStatus(payload)) {
+          return;
+        }
+        setLatestJobSearchRun(payload);
+        if (isActiveJobSearchRunStatus(payload.status)) {
+          timeoutId = window.setTimeout(loadLatestRunStatus, 2500);
+        }
+      } catch {
+        // Saved jobs remain usable if run diagnostics are temporarily unavailable.
+      } finally {
+        if (active) {
+          setIsDiagnosticsLoading(false);
+        }
+      }
+    }
+
+    loadLatestRunStatus();
+    window.addEventListener("jobops:jobs-updated", loadLatestRunStatus);
+    return () => {
+      active = false;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      window.removeEventListener("jobops:jobs-updated", loadLatestRunStatus);
     };
   }, [apiBasePath]);
 
@@ -231,6 +283,8 @@ export function JobsList({
       </section>
 
       {message ? <p className={`profile-workspace-message ${messageKind}`}>{message}</p> : null}
+
+      <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} run={latestJobSearchRun} />
 
       <section className="job-list" aria-labelledby="job-list-title">
         <div className="application-list-header">
@@ -390,6 +444,152 @@ export function JobsList({
   );
 }
 
+function JobDiscoveryDiagnosticsPanel({ run, isLoading }: { run: JobSearchRunStatus | null; isLoading: boolean }) {
+  const diagnostics = run?.diagnostics;
+  const modelReview = diagnostics?.modelReview;
+  const providerRows = diagnostics?.providerDiagnostics ?? [];
+  const criteria = diagnostics?.searchCriteria;
+  const replanning = diagnostics?.replanning;
+  const explanation = diagnostics?.modelExplanation;
+  const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
+
+  if (!run && !isLoading) {
+    return null;
+  }
+
+  return (
+    <section className="job-discovery-diagnostics" aria-labelledby="job-discovery-diagnostics-title">
+      <details open={isActive}>
+        <summary>
+          <span>
+            <strong id="job-discovery-diagnostics-title">Discovery diagnostics</strong>
+            <small>{run ? jobDiscoveryRunDigest(run) : "Waiting for run status..."}</small>
+          </span>
+          <span className="diagnostics-toggle-label">Details</span>
+        </summary>
+
+        {run ? (
+          <div className="job-discovery-diagnostics-body">
+            <section className="diagnostics-section">
+              <h3>Summary</h3>
+              <p>
+                {formatStatus(run.status)}
+                {" - "}
+                {run.savedCount} saved
+                {" - "}
+                {run.providerResultCount} provider results
+                {" - "}
+                {run.candidateCountAfterDedupe} deduped
+                {" - "}
+                {run.candidatePoolCount} reviewed by model
+              </p>
+              {isActive ? <p className="diagnostics-muted">Running... diagnostics will fill in as provider results arrive.</p> : null}
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Search criteria</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Mode" value={criteria?.searchMode ? formatStatus(criteria.searchMode) : "Unknown"} />
+                <DiagnosticItem label="Role queries" value={formatList(criteria?.roleQueries)} />
+                <DiagnosticItem label="Companies" value={formatList(criteria?.companyNames)} />
+                <DiagnosticItem label="Locations" value={formatList(criteria?.locations)} />
+                <DiagnosticItem label="Work modes" value={formatList(criteria?.remoteWorkModes)} />
+                <DiagnosticItem label="Salary minimum" value={formatNumber(criteria?.salaryMin) ?? "None"} />
+                <DiagnosticItem label="Exclusions" value={formatList(criteria?.excludeTerms)} />
+                <DiagnosticItem label="Max provider pages" value={formatNumber(criteria?.maxProviderPages) ?? "Unknown"} />
+              </dl>
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Providers searched</h3>
+              {providerRows.length ? (
+                <div className="diagnostics-provider-list">
+                  {providerRows.map((provider, index) => (
+                    <ProviderDiagnosticRow key={`${provider.providerName}-${provider.companyName}-${provider.queryPreview}-${index}`} provider={provider} />
+                  ))}
+                </div>
+              ) : (
+                <p className="diagnostics-muted">Waiting for provider results...</p>
+              )}
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Replanning</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Attempted" value={replanning?.replansAttempted ? "Yes" : "No"} />
+                <DiagnosticItem label="Reason" value={replanning?.displayLabel || formatList(replanning?.replanReasons)} />
+                <DiagnosticItem label="Note" value={replanning?.displayMessage || "No replanning was needed for this run."} />
+                <DiagnosticItem label="Trigger source" value={formatTriggerSource(replanning?.triggerProviderName, replanning?.triggerProviderType)} />
+                <DiagnosticItem label="Replans used" value={`${replanning?.replansAttempted ?? run.replansAttempted ?? 0} / ${replanning?.replanLimit ?? run.replanLimit ?? 0}`} />
+              </dl>
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Model review</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Deduped candidates" value={formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} />
+                <DiagnosticItem label="Sent to model" value={formatNumber(modelReview?.candidatePoolCount) ?? "0"} />
+                <DiagnosticItem label="Selected by model" value={formatNumber(modelReview?.modelSelectedCount) ?? "0"} />
+                <DiagnosticItem label="Saved" value={formatNumber(modelReview?.savedCount) ?? "0"} />
+                <DiagnosticItem label="Refreshed" value={formatNumber(modelReview?.updatedExistingCount) ?? "0"} />
+                <DiagnosticItem label="Duplicates" value={formatNumber(modelReview?.duplicateCount) ?? "0"} />
+                <DiagnosticItem label="Skipped" value={formatNumber(modelReview?.skippedCount) ?? "0"} />
+                <DiagnosticItem label="Provider errors" value={formatNumber(modelReview?.providerErrorCount) ?? "0"} />
+              </dl>
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Model explanation</h3>
+              <p>{explanation?.userVisibleSummary || explanation?.selectionAssistantMessage || run.userVisibleSummary || run.message}</p>
+              {explanation?.plannerRationale ? <p className="diagnostics-muted">Planner: {explanation.plannerRationale}</p> : null}
+              {explanation?.skippedCandidateNotes?.length ? (
+                <ul className="diagnostics-note-list">
+                  {explanation.skippedCandidateNotes.slice(0, 5).map((note) => (
+                    <li key={`${note.candidateId}-${note.reason}`}>
+                      <strong>{note.candidateId}</strong>: {note.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          </div>
+        ) : (
+          <p className="diagnostics-muted">Loading latest job discovery run...</p>
+        )}
+      </details>
+    </section>
+  );
+}
+
+function DiagnosticItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value || "None"}</dd>
+    </div>
+  );
+}
+
+function ProviderDiagnosticRow({ provider }: { provider: JobSearchProviderDiagnostic }) {
+  return (
+    <article className="diagnostics-provider-row">
+      <div>
+        <strong>{provider.companyName || provider.providerName || "Unknown provider"}</strong>
+        <span>{[provider.providerName, provider.providerType ? formatStatus(provider.providerType) : null].filter(Boolean).join(" - ")}</span>
+      </div>
+      <p>
+        {formatNumber(provider.rawResultCount ?? provider.resultCount) ?? "0"} raw /{" "}
+        {formatNumber(provider.normalizedResultCount ?? provider.resultCount) ?? "0"} matched
+        {provider.totalMatches !== null && provider.totalMatches !== undefined ? ` - ${provider.totalMatches} total matches` : ""}
+        {provider.page ? ` - page ${provider.page}` : ""}
+      </p>
+      {provider.queryPreview ? <small>Query: {provider.queryPreview}</small> : null}
+      {provider.boardToken ? <small>Board token: {provider.boardToken}</small> : null}
+      {provider.errorSummary ? <small className="diagnostics-error">Error: {provider.errorSummary}</small> : null}
+    </article>
+  );
+}
+
 const jobEmptyStates: Record<JobBucketId, { title: string; body: string }> = {
   new: {
     title: "No new jobs.",
@@ -439,6 +639,56 @@ export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
   const counts = buildJobBucketCounts(jobs);
   return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
+}
+
+function isJobSearchRunStatus(value: unknown): value is JobSearchRunStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.id === "string" &&
+    typeof payload.status === "string" &&
+    typeof payload.providerResultCount === "number" &&
+    typeof payload.candidateCountAfterDedupe === "number" &&
+    typeof payload.modelSelectedCount === "number" &&
+    typeof payload.savedCount === "number" &&
+    typeof payload.duplicateCount === "number" &&
+    typeof payload.skippedCount === "number" &&
+    typeof payload.message === "string"
+  );
+}
+
+function isActiveJobSearchRunStatus(status: string) {
+  return ["queued", "started", "running"].includes(status);
+}
+
+function jobDiscoveryRunDigest(run: JobSearchRunStatus) {
+  return [
+    formatStatus(run.status),
+    `${run.savedCount} saved`,
+    `${run.providerResultCount} provider results`,
+    `${run.modelSelectedCount} model selected`,
+    `${run.duplicateCount} duplicate`,
+    `${run.skippedCount} skipped`
+  ].join(" - ");
+}
+
+function formatList(values?: string[] | null) {
+  if (!values || values.length === 0) {
+    return "None";
+  }
+  return values.join(", ");
+}
+
+function formatNumber(value?: number | null) {
+  return typeof value === "number" ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value) : null;
+}
+
+function formatTriggerSource(providerName?: string | null, providerType?: string | null) {
+  const name = providerName && providerName !== "unknown" ? providerName : "Unknown source";
+  const type = providerType && providerType !== "unknown" ? formatStatus(providerType) : null;
+  return type ? `${name} (${type})` : name;
 }
 
 function isFavoriteJobStatus(status: string) {

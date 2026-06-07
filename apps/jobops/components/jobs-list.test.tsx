@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import JobsPage from "../app/jobs/page";
 import { JobsList, buildJobBucketCounts, jobBucket, sortJobsForBucket, type SavedJob } from "./jobs-list";
+import type { JobSearchRunStatus } from "../lib/command-center-contract";
 import MountedJobsPage from "../../portfolio/app/jobops/jobs/page";
 
 describe("Jobs list", () => {
@@ -261,6 +262,23 @@ describe("Jobs list", () => {
     expect(html).toContain("<strong>1</strong>");
   });
 
+  it("renders the latest job discovery diagnostics with model explanation and scoped replan wording", () => {
+    const html = renderToStaticMarkup(<JobsList initialJobSearchRun={jobSearchRunFixture()} />);
+
+    expect(html).toContain("Discovery diagnostics");
+    expect(html).toContain("Completed - 0 saved - 28 provider results - 0 model selected - 16 duplicate - 21 skipped");
+    expect(html).toContain("Search criteria");
+    expect(html).toContain("Applied AI Engineer");
+    expect(html).toContain("Providers searched");
+    expect(html).toContain("Anthropic");
+    expect(html).toContain("Greenhouse - Ats board");
+    expect(html).toContain("Broad search reported 0 total matches");
+    expect(html).toContain("Broad search reported 0 total matches, while company board searches returned candidates.");
+    expect(html).toContain("Model review");
+    expect(html).toContain("Model explanation");
+    expect(html).toContain("I found roles from followed-company boards, but none matched strongly enough to save.");
+  });
+
   it("renders favorite and unfavorite actions for active unapplied jobs", () => {
     const newHtml = renderToStaticMarkup(
       <JobsList
@@ -302,6 +320,104 @@ describe("Jobs list", () => {
     expect(sortJobsForBucket(jobs, "favorites").map((job) => job.id)).toEqual(["older", "newer"]);
   });
 });
+
+function jobSearchRunFixture(overrides: Partial<JobSearchRunStatus> = {}): JobSearchRunStatus {
+  return {
+    id: "run-1",
+    status: "completed",
+    searchMode: "followed_companies",
+    providerResultCount: 28,
+    candidatePoolCount: 12,
+    candidateCountAfterDedupe: 12,
+    modelSelectedCount: 0,
+    savedCount: 0,
+    updatedExistingCount: 0,
+    duplicateCount: 16,
+    skippedCount: 21,
+    providerErrorCount: 0,
+    startedAt: "2026-06-06T12:00:00Z",
+    completedAt: "2026-06-06T12:02:00Z",
+    error: null,
+    message: "I found roles from followed-company boards, but none matched strongly enough to save.",
+    userVisibleSummary: "I found roles from followed-company boards, but none matched strongly enough to save.",
+    replansAttempted: 1,
+    replanLimit: 1,
+    replanningStatus: "attempted",
+    replanningDecision: "triggered:zero_total_matches",
+    replanReason: "zero_total_matches",
+    replanReasons: ["zero_total_matches"],
+    replanQueries: ["Applied AI Engineer"],
+    diagnostics: {
+      searchCriteria: {
+        searchMode: "followed_companies",
+        roleQueries: ["Applied AI Engineer"],
+        companyNames: ["Anthropic"],
+        locations: ["Remote US"],
+        remoteWorkModes: ["remote"],
+        salaryMin: 150000,
+        excludeTerms: ["management"],
+        maxProviderPages: 2
+      },
+      providerDiagnostics: [
+        {
+          providerName: "adzuna",
+          providerType: "broad_search",
+          attempted: true,
+          configured: true,
+          queryPreview: "Applied AI Engineer",
+          rawResultCount: 0,
+          resultCount: 0,
+          normalizedResultCount: 0,
+          totalMatches: 0,
+          page: 1
+        },
+        {
+          providerName: "Greenhouse",
+          providerType: "ats_board",
+          companyName: "Anthropic",
+          boardToken: "anthropic",
+          attempted: true,
+          configured: true,
+          rawResultCount: 28,
+          resultCount: 28,
+          normalizedResultCount: 28
+        }
+      ],
+      replanning: {
+        replansAttempted: 1,
+        replanLimit: 1,
+        replanReasons: ["zero_total_matches"],
+        replanningDecision: "triggered:zero_total_matches",
+        replanQueries: ["Applied AI Engineer"],
+        displayLabel: "Broad search reported 0 total matches",
+        displayMessage: "Broad search reported 0 total matches, while company board searches returned candidates.",
+        triggerProviderName: "adzuna",
+        triggerProviderType: "broad_search",
+        companyBoardsReturnedCandidates: true,
+        providerResultsExisted: true,
+        candidatePoolExisted: true
+      },
+      modelReview: {
+        candidateCountAfterDedupe: 12,
+        candidatePoolCount: 12,
+        modelSelectedCount: 0,
+        savedCount: 0,
+        updatedExistingCount: 0,
+        duplicateCount: 16,
+        skippedCount: 21,
+        providerErrorCount: 0
+      },
+      modelExplanation: {
+        userVisibleSummary: "I found roles from followed-company boards, but none matched strongly enough to save.",
+        userSummary: "I found roles from followed-company boards, but none matched strongly enough to save.",
+        plannerRationale: "Search followed company boards and broad providers for applied AI roles.",
+        selectionAssistantMessage: "I found roles from followed-company boards, but none matched strongly enough to save.",
+        skippedCandidateNotes: [{ candidateId: "CAND-1", reason: "Management-heavy role." }]
+      }
+    },
+    ...overrides
+  };
+}
 
 function jobFixture(overrides: Partial<SavedJob> = {}): SavedJob {
   return {

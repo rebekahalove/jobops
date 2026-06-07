@@ -4,6 +4,7 @@ import json
 import logging
 import urllib.error
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -197,6 +198,10 @@ def test_job_search_run_status_is_scoped_to_authenticated_candidate() -> None:
         assert payload["selectionSkippedCandidateNotes"] == [{"candidateId": "J002", "reason": "Too generic."}]
         assert payload["replanReason"] == "zero_total_matches"
         assert payload["replanQueries"] == ["Applied AI Engineer"]
+        assert payload["diagnostics"]["modelExplanation"]["plannerRationale"] == "Search followed companies for applied AI roles."
+        assert payload["diagnostics"]["modelExplanation"]["selectionAssistantMessage"] == "The model selected strong roles, but persistence found duplicates."
+        assert payload["diagnostics"]["modelReview"]["modelSelectedCount"] == 3
+        assert payload["diagnostics"]["replanning"]["replanReasons"] == ["zero_total_matches"]
 
         try:
             job_discovery_service_module.get_job_search_run_status(
@@ -208,6 +213,208 @@ def test_job_search_run_status_is_scoped_to_authenticated_candidate() -> None:
             assert error.status_code == 404
         else:
             raise AssertionError("Expected run status read to be scoped to the owning candidate.")
+
+
+def test_job_search_run_status_exposes_provider_scoped_diagnostics_without_sensitive_payloads() -> None:
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        owner = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert owner is not None
+        run = JobSearchRun(
+            candidate_profile_id=owner.id,
+            command_text="find jobs",
+            search_plan_json={
+                "searchMode": "followed_companies",
+                "roleQueries": ["Applied AI Engineer"],
+                "companyNames": ["Anthropic"],
+                "locations": ["Remote US"],
+                "remoteWorkModes": ["remote"],
+                "salaryMin": 150000,
+                "excludeTerms": ["management"],
+                "providerStrategy": {"maxProviderPages": 2},
+            },
+            run_diagnostics_json={
+                "userVisibleSummary": (
+                    "I found roles from followed-company boards, but none matched strongly enough to save."
+                ),
+                "planner": {
+                    "rationale": "Search followed company boards and broad providers for applied AI roles.",
+                    "fallbackUsed": False,
+                    "recentSearchesUsedCount": 0,
+                },
+                "selection": {
+                    "assistantMessage": (
+                        "I found roles from followed-company boards, but none matched strongly enough to save."
+                    ),
+                    "skippedCandidateNotes": [{"candidateId": "CAND-1", "reason": "Management-heavy role."}],
+                    "clarifyingQuestions": [],
+                },
+                "replanning": {
+                    "replansAttempted": 1,
+                    "replanLimit": 1,
+                    "replanningStatus": "attempted",
+                    "replanningDecision": "triggered:zero_total_matches",
+                    "replanReason": "zero_total_matches",
+                    "replanReasons": ["zero_total_matches"],
+                    "replanQueries": ["Applied AI Engineer"],
+                },
+                "providerDiagnostics": [
+                    {
+                        "providerName": "adzuna",
+                        "providerType": "broad_search",
+                        "configured": True,
+                        "attempted": True,
+                        "query": "Applied AI Engineer",
+                        "requestCriteria": {
+                            "what": "Applied AI Engineer",
+                            "where": "Remote US",
+                            "app_id": "hidden-app-id",
+                            "app_key": "hidden-app-key",
+                            "session_cookie": "hidden-cookie",
+                            "authorization": "Bearer hidden-token",
+                        },
+                        "rawResultCount": 0,
+                        "resultCount": 0,
+                        "normalizedResultCount": 0,
+                        "totalMatches": 0,
+                        "page": 1,
+                    },
+                    {
+                        "providerName": "Greenhouse",
+                        "providerType": "ats_board",
+                        "companyName": "Anthropic",
+                        "boardToken": "anthropic",
+                        "configured": True,
+                        "attempted": True,
+                        "rawResultCount": 28,
+                        "resultCount": 28,
+                        "normalizedResultCount": 28,
+                    },
+                ],
+            },
+            provider_names=["adzuna", "greenhouse"],
+            status="completed",
+            total_provider_results=28,
+            candidate_pool_count=12,
+            candidate_count_after_dedupe=12,
+            model_selected_count=0,
+            saved_count=0,
+            updated_existing_count=0,
+            duplicate_count=16,
+            skipped_count=21,
+            provider_error_count=0,
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+        payload = job_discovery_service_module.get_job_search_run_status(
+            run.id,
+            session=session,
+            auth=SimpleNamespace(candidate_profile=owner),
+        )
+
+        diagnostics = payload["diagnostics"]
+        assert diagnostics["searchCriteria"]["roleQueries"] == ["Applied AI Engineer"]
+        assert diagnostics["searchCriteria"]["salaryMin"] == 150000
+        assert diagnostics["modelReview"]["modelSelectedCount"] == 0
+        assert diagnostics["modelExplanation"]["selectionAssistantMessage"] == (
+            "I found roles from followed-company boards, but none matched strongly enough to save."
+        )
+        assert diagnostics["replanning"]["displayLabel"] == "Broad search reported 0 total matches"
+        assert diagnostics["replanning"]["displayMessage"] == (
+            "Broad search reported 0 total matches, while company board searches returned candidates."
+        )
+        assert diagnostics["replanning"]["triggerProviderName"] == "adzuna"
+        assert diagnostics["replanning"]["triggerProviderType"] == "broad_search"
+        assert diagnostics["replanning"]["companyBoardsReturnedCandidates"] is True
+        assert diagnostics["replanning"]["providerResultsExisted"] is True
+        assert diagnostics["replanning"]["candidatePoolExisted"] is True
+        adzuna_diagnostics = diagnostics["providerDiagnostics"][0]
+        assert adzuna_diagnostics["requestCriteria"] == {
+            "what": "Applied AI Engineer",
+            "where": "Remote US",
+        }
+        serialized = json.dumps(payload, sort_keys=True)
+        assert "hidden-app-id" not in serialized
+        assert "hidden-app-key" not in serialized
+        assert "hidden-cookie" not in serialized
+        assert "hidden-token" not in serialized
+
+
+def test_latest_job_search_run_status_returns_newest_authenticated_run() -> None:
+    engine = create_seeded_engine(include_second_profile=True)
+
+    with Session(engine) as session:
+        owner = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        other = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "alex-love"))
+        assert owner is not None
+        assert other is not None
+        older_run = JobSearchRun(
+            candidate_profile_id=owner.id,
+            command_text="find older jobs",
+            search_plan_json={},
+            run_diagnostics_json={"userVisibleSummary": "Older run."},
+            provider_names=[],
+            status="completed",
+            total_provider_results=1,
+            candidate_pool_count=1,
+            candidate_count_after_dedupe=1,
+            model_selected_count=1,
+            saved_count=1,
+            updated_existing_count=0,
+            duplicate_count=0,
+            skipped_count=0,
+            provider_error_count=0,
+        )
+        latest_run = JobSearchRun(
+            candidate_profile_id=owner.id,
+            command_text="find latest jobs",
+            search_plan_json={},
+            run_diagnostics_json={"userVisibleSummary": "Latest run."},
+            provider_names=[],
+            status="completed",
+            total_provider_results=2,
+            candidate_pool_count=2,
+            candidate_count_after_dedupe=2,
+            model_selected_count=0,
+            saved_count=0,
+            updated_existing_count=0,
+            duplicate_count=2,
+            skipped_count=0,
+            provider_error_count=0,
+        )
+        other_run = JobSearchRun(
+            candidate_profile_id=other.id,
+            command_text="find other jobs",
+            search_plan_json={},
+            run_diagnostics_json={"userVisibleSummary": "Other run."},
+            provider_names=[],
+            status="completed",
+            total_provider_results=99,
+            candidate_pool_count=99,
+            candidate_count_after_dedupe=99,
+            model_selected_count=99,
+            saved_count=99,
+            updated_existing_count=0,
+            duplicate_count=0,
+            skipped_count=0,
+            provider_error_count=0,
+        )
+        session.add_all([older_run, latest_run, other_run])
+        session.flush()
+        latest_run.created_at = older_run.created_at + timedelta(seconds=1)
+        session.commit()
+
+        payload = job_discovery_service_module.get_latest_job_search_run_status(
+            session=session,
+            auth=SimpleNamespace(candidate_profile=owner),
+        )
+
+        assert payload["id"] == latest_run.id
+        assert payload["userVisibleSummary"] == "Latest run."
+        assert payload["providerResultCount"] == 2
 
 
 def test_start_job_discovery_run_reuses_recent_active_run() -> None:

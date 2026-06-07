@@ -60,6 +60,74 @@ export type JobSearchRunStatus = {
   replanReason?: string | null;
   replanReasons?: string[];
   replanQueries?: string[];
+  diagnostics?: JobSearchRunDiagnostics;
+};
+
+export type JobSearchRunDiagnostics = {
+  searchCriteria?: {
+    searchMode?: string | null;
+    roleQueries?: string[];
+    companyNames?: string[];
+    locations?: string[];
+    remoteWorkModes?: string[];
+    salaryMin?: number | null;
+    excludeTerms?: string[];
+    maxProviderPages?: number | null;
+  };
+  providerDiagnostics?: JobSearchProviderDiagnostic[];
+  modelReview?: {
+    candidateCountAfterDedupe?: number;
+    candidatePoolCount?: number;
+    modelSelectedCount?: number;
+    savedCount?: number;
+    updatedExistingCount?: number;
+    duplicateCount?: number;
+    skippedCount?: number;
+    providerErrorCount?: number;
+  };
+  modelExplanation?: {
+    userVisibleSummary?: string | null;
+    userSummary?: string | null;
+    plannerRationale?: string | null;
+    selectionAssistantMessage?: string | null;
+    skippedCandidateNotes?: Array<{ candidateId: string; reason: string }>;
+  };
+  replanning?: {
+    replansAttempted?: number | null;
+    replanLimit?: number | null;
+    replanReasons?: string[];
+    replanningDecision?: string | null;
+    replanQueries?: string[];
+    displayLabel?: string | null;
+    displayMessage?: string | null;
+    triggerProviderName?: string | null;
+    triggerProviderType?: string | null;
+    companyBoardsReturnedCandidates?: boolean;
+    providerResultsExisted?: boolean;
+    candidatePoolExisted?: boolean;
+  };
+};
+
+export type JobSearchProviderDiagnostic = {
+  providerName?: string | null;
+  providerType?: string | null;
+  companyName?: string | null;
+  boardToken?: string | null;
+  attempted?: boolean;
+  configured?: boolean;
+  queryPreview?: string | null;
+  requestCriteria?: Record<string, unknown> | null;
+  rawResultCount?: number | null;
+  resultCount?: number | null;
+  normalizedResultCount?: number | null;
+  dedupedResultCount?: number | null;
+  candidateCountAfterFilters?: number | null;
+  totalMatches?: number | null;
+  page?: number | null;
+  pagesAttempted?: number | null;
+  errorSummary?: string | null;
+  searchMode?: string | null;
+  reason?: string | null;
 };
 
 export type CommandCenterProxyResponse =
