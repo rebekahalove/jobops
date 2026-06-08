@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import JobsPage from "../app/jobs/page";
-import { JobsList, buildJobBucketCounts, jobBucket, sortJobsForBucket, type SavedJob } from "./jobs-list";
+import { JobDiscoveryDiagnostics, JobsList, buildJobBucketCounts, jobBucket, sortJobsForBucket, type SavedJob } from "./jobs-list";
 import type { JobSearchRunStatus } from "../lib/command-center-contract";
 import MountedJobsPage from "../../portfolio/app/jobops/jobs/page";
 
@@ -263,7 +263,7 @@ describe("Jobs list", () => {
   });
 
   it("renders a persistent job discovery diagnostics affordance before a latest run loads", () => {
-    const html = renderToStaticMarkup(<JobsList />);
+    const html = renderToStaticMarkup(<JobDiscoveryDiagnostics />);
 
     expect(html).toContain("Discovery diagnostics");
     expect(html).toContain("No recent job discovery diagnostics yet.");
@@ -271,15 +271,25 @@ describe("Jobs list", () => {
   });
 
   it("renders the latest job discovery diagnostics with model explanation and scoped replan wording", () => {
-    const html = renderToStaticMarkup(<JobsList initialJobSearchRun={jobSearchRunFixture()} />);
+    const html = renderToStaticMarkup(<JobDiscoveryDiagnostics initialRun={jobSearchRunFixture()} />);
 
     expect(html).toContain("Discovery diagnostics");
-    expect(html).toContain("Completed - 0 saved - 28 provider results - 0 model selected - 16 duplicate - 21 skipped");
-    expect(html).toContain("Search criteria");
+    expect(html).toContain("Completed - 0 saved - 0 model selected - 12 sent to model - 12 unique candidates - 28 provider matches");
+    expect(html).toContain("Initial search plan");
     expect(html).toContain("Applied AI Engineer");
-    expect(html).toContain("Providers searched");
+    expect(html).toContain("Provider search timeline");
+    expect(html).toContain("Initial search");
+    expect(html).toContain("adzuna - Broad search");
+    expect(html).not.toContain("adzuna - Broad search - query");
+    expect(html).toContain("Query");
+    expect(html).toContain("AI Engineer");
+    expect(html).toContain("Where");
+    expect(html).toContain("Remote US");
     expect(html).toContain("Anthropic");
-    expect(html).toContain("Greenhouse - Ats board");
+    expect(html).toContain("Greenhouse - ATS board - Anthropic");
+    expect(html).toContain("Board token");
+    expect(html).toContain("Replan 1");
+    expect(html).toContain("Next query");
     expect(html).toContain("Broad search reported 0 total matches");
     expect(html).toContain("Broad search reported 0 total matches, while company board searches returned candidates.");
     expect(html).toContain("Model review");
@@ -372,7 +382,15 @@ function jobSearchRunFixture(overrides: Partial<JobSearchRunStatus> = {}): JobSe
           providerType: "broad_search",
           attempted: true,
           configured: true,
-          queryPreview: "Applied AI Engineer",
+          queryPreview: "AI Engineer",
+          requestCriteria: {
+            what: "AI Engineer",
+            where: "Remote US",
+            whatExclude: "manager",
+            country: "us",
+            page: 1,
+            resultsPerPage: 17
+          },
           rawResultCount: 0,
           resultCount: 0,
           normalizedResultCount: 0,
@@ -386,6 +404,39 @@ function jobSearchRunFixture(overrides: Partial<JobSearchRunStatus> = {}): JobSe
           boardToken: "anthropic",
           attempted: true,
           configured: true,
+          queryPreview: "AI Engineer",
+          rawResultCount: 0,
+          resultCount: 0,
+          normalizedResultCount: 0
+        },
+        {
+          providerName: "adzuna",
+          providerType: "broad_search",
+          attempted: true,
+          configured: true,
+          queryPreview: "Applied AI Engineer",
+          requestCriteria: {
+            what: "Applied AI Engineer",
+            where: "Remote US",
+            whatExclude: "manager",
+            country: "us",
+            page: 1,
+            resultsPerPage: 17
+          },
+          rawResultCount: 0,
+          resultCount: 0,
+          normalizedResultCount: 0,
+          totalMatches: 0,
+          page: 1
+        },
+        {
+          providerName: "Greenhouse",
+          providerType: "ats_board",
+          companyName: "Anthropic",
+          boardToken: "anthropic",
+          attempted: true,
+          configured: true,
+          queryPreview: "Applied AI Engineer",
           rawResultCount: 28,
           resultCount: 28,
           normalizedResultCount: 28

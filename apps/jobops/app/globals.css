@@ -56,6 +56,11 @@ textarea {
   padding: 24px 0 0;
 }
 
+.workspace-diagnostics {
+  width: var(--workspace-width);
+  margin: 14px auto 0;
+}
+
 .top-bar {
   display: flex;
   align-items: center;
@@ -2664,38 +2669,89 @@ input:disabled {
 .diagnostics-provider-list,
 .diagnostics-note-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
-.diagnostics-provider-row {
+.diagnostics-initial-row,
+.diagnostics-provider-row,
+.diagnostics-replan-row {
   display: grid;
-  gap: 6px;
+  gap: 3px;
+  min-width: 0;
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fafcfd;
-  padding: 10px 12px;
+  padding: 7px 10px;
 }
 
-.diagnostics-provider-row div {
+.diagnostics-initial-row {
+  background: #ffffff;
+}
+
+.diagnostics-replan-row {
+  border-style: dashed;
+  background: var(--surface-strong);
+}
+
+.diagnostics-event-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
-.diagnostics-provider-row strong {
+.diagnostics-initial-row strong,
+.diagnostics-provider-row strong,
+.diagnostics-replan-row strong {
   color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.diagnostics-provider-row span {
+.diagnostics-initial-row span,
+.diagnostics-provider-row span,
+.diagnostics-replan-row span {
   flex: 0 0 auto;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.74rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.diagnostics-provider-row p {
+.diagnostics-event-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
   color: var(--ink);
-  font-size: 0.92rem;
+  margin: 0;
+  overflow: visible;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.diagnostics-event-meta span {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  align-items: baseline;
+  color: var(--ink);
+}
+
+.diagnostics-event-meta span + span::before {
+  color: var(--muted);
+  content: "|";
+  margin-right: 6px;
+}
+
+.diagnostics-event-meta strong {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .diagnostics-error {

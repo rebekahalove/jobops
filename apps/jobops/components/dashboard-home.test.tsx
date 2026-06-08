@@ -26,6 +26,8 @@ describe("JobOps dashboard shell", () => {
     expect(html).toContain("AI command center");
     expect(html).toContain("Log out");
     expect(html).toContain('action="/api/dashboard-auth/logout"');
+    expect(html).toContain("Discovery diagnostics");
+    expect(html).toContain("No recent job discovery diagnostics yet.");
     expect(html).toContain("JobOps alpha · dev · build local");
   });
 
