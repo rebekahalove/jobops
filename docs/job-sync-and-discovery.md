@@ -47,13 +47,13 @@ If a provider record does not include the stable provider id expected for that p
 Examples:
 
 - Adzuna: provider country endpoint, API path, page, `what`, `where`, `what_exclude`, `results_per_page`, content type, and sync key.
-- Greenhouse: board token, API URL, `content=true`, and sync key.
+- Greenhouse: board token, list API URL, `content=true`, retrieve-job URL template, `questions=true`, `pay_transparency=true`, and sync key.
 
 Never store provider secrets in diagnostics: no app ids, app keys, cookies, auth headers, bearer tokens, or private profile dumps.
 
 ## Provider Behavior
 
-Greenhouse board sync refreshes a board token through the public jobs API with `content=true`. Each returned job gets a `job_listing_sources` row tied to the board token and provider job id.
+Greenhouse board sync refreshes a board token through the public jobs API with `content=true`, then retrieves each job with `questions=true` and `pay_transparency=true`. Each returned job gets a `job_listing_sources` row tied to the board token and provider job id. The source metadata retains the full list-job payload and retrieve-job payload, including application questions, location questions, compliance/demographic question objects, exposed job metadata, departments, offices, language, requisition/internal IDs, and pay ranges.
 
 Adzuna broad sync signatures include provider country, location, and query text. Adzuna country is carried per sync request, so later inventory refreshes can support US, GB, and other provider endpoints without a single global country assumption.
 

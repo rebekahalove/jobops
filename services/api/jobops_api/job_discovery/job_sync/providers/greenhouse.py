@@ -3,7 +3,7 @@ from __future__ import annotations
 import urllib.error
 from collections.abc import Iterable
 
-from ...provider_utils import clean_text_value, fetch_json, html_to_text, infer_remote_mode, nested_get, parse_datetime_value, safe_provider_raw_metadata
+from ...provider_utils import clean_text_value, fetch_json, html_to_text, infer_remote_mode, nested_get, parse_datetime_value
 from ...providers.greenhouse import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
 from ..base import BaseJobSyncProvider
 from ..models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, NormalizedJobListing, normalize_job_sync_location
@@ -21,6 +21,7 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
             if not board_token:
                 continue
             api_url = canonical_greenhouse_jobs_api_url(board_token)
+            retrieve_url_template = f"{api_url}/{{job_id}}"
             requests.append(
                 JobSyncRequest(
                     sync_key=build_greenhouse_sync_key(board_token),
@@ -33,6 +34,9 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
                         "boardToken": board_token,
                         "apiUrl": api_url,
                         "content": True,
+                        "retrieveJobApiUrlTemplate": retrieve_url_template,
+                        "retrieveJobQuestions": True,
+                        "retrieveJobPayTransparency": True,
                         "syncKey": build_greenhouse_sync_key(board_token),
                     },
                 )
@@ -48,7 +52,21 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         except urllib.error.HTTPError:
             raise
         raw_jobs = payload.get("jobs") if isinstance(payload, dict) else []
-        return raw_jobs if isinstance(raw_jobs, list) else []
+        if not isinstance(raw_jobs, list):
+            return []
+        return [self.fetch_job_detail(request, raw_job) for raw_job in raw_jobs]
+
+    def fetch_job_detail(self, request: JobSyncRequest, raw_job: object) -> object:
+        if not isinstance(raw_job, dict) or not request.ats_board_token:
+            return raw_job
+        provider_job_id = clean_text_value(raw_job.get("id"))
+        if not provider_job_id:
+            return raw_job
+        url = f"{canonical_greenhouse_jobs_api_url(request.ats_board_token)}/{provider_job_id}"
+        detail = fetch_json(url, params={"questions": "true", "pay_transparency": "true"})
+        if not isinstance(detail, dict):
+            return raw_job
+        return merge_greenhouse_job_payloads(list_job=raw_job, retrieve_job=detail)
 
     def normalize_provider_record(
         self,
@@ -101,8 +119,19 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
             source_location=request.display_location,
             source_country=request.provider_country,
             raw_location=location_raw,
-            raw_metadata_json=safe_provider_raw_metadata(raw),
+            raw_metadata_json=copy_greenhouse_raw_metadata(raw),
             source_updated_at=source_updated_at,
             source_status="active",
         )
         return listing, source
+
+
+def merge_greenhouse_job_payloads(*, list_job: dict[str, object], retrieve_job: dict[str, object]) -> dict[str, object]:
+    merged = {**list_job, **retrieve_job}
+    merged["job_board_list_payload"] = list_job
+    merged["job_board_retrieve_payload"] = retrieve_job
+    return merged
+
+
+def copy_greenhouse_raw_metadata(raw: dict[str, object]) -> dict[str, object]:
+    return dict(raw)

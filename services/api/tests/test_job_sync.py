@@ -31,6 +31,7 @@ from jobops_api.job_discovery.job_sync import (
     upsert_job_listing_from_provider_record,
 )
 from jobops_api.job_discovery.job_sync.providers.adzuna import AdzunaJobSyncProvider
+from jobops_api.job_discovery.job_sync.providers.greenhouse import GreenhouseJobSyncProvider
 
 
 def test_greenhouse_same_board_and_provider_job_id_updates_existing_listing() -> None:
@@ -70,6 +71,77 @@ def test_greenhouse_distinct_provider_job_ids_preserve_distinct_same_title_jobs(
 
         assert len(session.scalars(select(JobListing)).all()) == 2
         assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
+def test_greenhouse_fetches_retrieve_job_payload_with_application_questions(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    list_job = greenhouse_list_job_raw()
+    retrieve_job = greenhouse_retrieve_job_raw()
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [list_job], "meta": {"total": 1}}
+        if url.endswith("/jobs/44444"):
+            return retrieve_job
+        raise AssertionError(f"Unexpected Greenhouse URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+
+    records = list(provider.fetch_provider_records(request))
+
+    assert records == [
+        {
+            **list_job,
+            **retrieve_job,
+            "job_board_list_payload": list_job,
+            "job_board_retrieve_payload": retrieve_job,
+        }
+    ]
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        (
+            "https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444",
+            {"questions": "true", "pay_transparency": "true"},
+        ),
+    ]
+    assert request.criteria_json["retrieveJobQuestions"] is True
+    assert request.criteria_json["retrieveJobPayTransparency"] is True
+
+
+def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None:
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    raw = {
+        **greenhouse_list_job_raw(),
+        **greenhouse_retrieve_job_raw(),
+        "job_board_list_payload": greenhouse_list_job_raw(),
+        "job_board_retrieve_payload": greenhouse_retrieve_job_raw(),
+    }
+
+    normalized = provider.normalize_provider_record(raw, request)
+
+    assert normalized is not None
+    listing_record, source = normalized
+    assert listing_record.title == "Product Engineer"
+    assert source.source_provider == "greenhouse"
+    assert source.provider_job_id == "44444"
+    assert source.source_result_id == "vaulttec:44444"
+    assert source.raw_metadata_json == raw
+    assert source.raw_metadata_json["internal_job_id"] == 55555
+    assert source.raw_metadata_json["requisition_id"] == "50"
+    assert source.raw_metadata_json["language"] == "en"
+    assert source.raw_metadata_json["metadata"] == [{"id": 12345, "name": "Field Name", "value_type": "text", "value": "Some value"}]
+    assert source.raw_metadata_json["departments"] == greenhouse_list_job_raw()["departments"]
+    assert source.raw_metadata_json["offices"] == greenhouse_list_job_raw()["offices"]
+    assert source.raw_metadata_json["questions"][1]["label"] == "Resume"
+    assert source.raw_metadata_json["location_questions"][0]["label"] == "Location"
+    assert source.raw_metadata_json["compliance"][0]["label"] == "Veteran Status"
+    assert source.raw_metadata_json["data_compliance"][0]["type"] == "gdpr"
+    assert source.raw_metadata_json["demographic_questions"]["questions"][0]["label"] == "Favorite Color"
+    assert source.raw_metadata_json["pay_input_ranges"][0]["currency_type"] == "USD"
 
 
 def test_adzuna_same_provider_job_id_updates_existing_listing() -> None:
@@ -419,6 +491,113 @@ def greenhouse_source(*, provider_job_id: str, board_token: str) -> JobListingSo
         raw_metadata_json={"id": provider_job_id},
         source_status="active",
     )
+
+
+def greenhouse_list_job_raw() -> dict[str, object]:
+    return {
+        "id": 44444,
+        "internal_job_id": 55555,
+        "title": "Product Engineer",
+        "updated_at": "2013-07-02T19:39:23Z",
+        "requisition_id": "50",
+        "location": {"name": "San Francisco, CA"},
+        "absolute_url": "https://boards.greenhouse.io/vaulttec/jobs/44444",
+        "language": "en",
+        "metadata": None,
+        "content": "This is the job description.",
+        "departments": [
+            {
+                "id": 13583,
+                "name": "Department of Departments",
+                "parent_id": None,
+                "child_ids": [13585],
+            }
+        ],
+        "offices": [
+            {
+                "id": 8304,
+                "name": "East Coast",
+                "location": "United States",
+                "parent_id": None,
+                "child_ids": [8787],
+            }
+        ],
+    }
+
+
+def greenhouse_retrieve_job_raw() -> dict[str, object]:
+    return {
+        "id": 44444,
+        "title": "Product Engineer",
+        "updated_at": "2013-07-02T19:39:23Z",
+        "requisition_id": "50",
+        "location": {"name": "San Francisco, CA"},
+        "content": "This is the job description.",
+        "absolute_url": "https://boards.greenhouse.io/vaulttec/jobs/44444",
+        "language": "en",
+        "internal_job_id": 55555,
+        "location_questions": [
+            {
+                "label": "Location",
+                "fields": [{"name": "location", "type": "input_text", "values": []}],
+                "required": True,
+            }
+        ],
+        "questions": [
+            {
+                "required": True,
+                "label": "First Name",
+                "fields": [{"name": "first_name", "type": "input_text"}],
+            },
+            {
+                "required": True,
+                "label": "Resume",
+                "fields": [
+                    {"name": "resume", "type": "input_file"},
+                    {"name": "resume_text", "type": "textarea"},
+                ],
+            },
+        ],
+        "metadata": [{"id": 12345, "name": "Field Name", "value_type": "text", "value": "Some value"}],
+        "compliance": [
+            {
+                "required": False,
+                "label": "Veteran Status",
+                "fields": [{"name": "eeoc_veteran_status", "type": "multi_value_single_select", "values": []}],
+            }
+        ],
+        "data_compliance": [
+            {
+                "type": "gdpr",
+                "requires_consent": True,
+                "requires_processing_consent": True,
+                "requires_retention_consent": True,
+                "retention_period": 12345,
+            }
+        ],
+        "demographic_questions": {
+            "header": "Diversity and Inclusion at Acme Corp.",
+            "description": "<p>Acme Corp. is dedicated to...</p>",
+            "questions": [
+                {
+                    "id": 1,
+                    "label": "Favorite Color",
+                    "required": False,
+                    "type": "multi_value_multi_select",
+                    "answer_options": [{"id": 100, "label": "Red", "free_form": False}],
+                }
+            ],
+        },
+        "pay_input_ranges": [
+            {
+                "min_cents": 5000000,
+                "max_cents": 7500000,
+                "currency_type": "USD",
+                "title": "NYC Salary Range",
+                "blurb": "In order to provide transparency...",
+            }
+        ],
+    }
 
 
 def adzuna_source(*, provider_job_id: str, source_url: str | None = None) -> JobListingSourceRecord:
