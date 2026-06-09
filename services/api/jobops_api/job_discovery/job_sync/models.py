@@ -107,6 +107,7 @@ class JobSyncPlan:
 @dataclass(frozen=True)
 class JobSyncResult:
     request: JobSyncRequest
+    status: str = "completed"
     raw_result_count: int = 0
     normalized_count: int = 0
     created_count: int = 0
@@ -114,6 +115,7 @@ class JobSyncResult:
     closed_count: int = 0
     failed_normalization_count: int = 0
     error: str | None = None
+    diagnostics_json: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

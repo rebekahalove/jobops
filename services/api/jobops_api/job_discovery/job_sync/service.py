@@ -43,17 +43,21 @@ def build_adzuna_sync_key(provider_country: str, location_key: str | None, query
 
 
 def is_sync_fresh(session: Session, sync_key: str, *, freshness_hours: int = 24) -> bool:
-    latest_completed = session.scalar(
-        select(JobSyncRun.completed_at)
-        .where(JobSyncRun.sync_key == sync_key, JobSyncRun.status == "completed", JobSyncRun.completed_at.is_not(None))
-        .order_by(JobSyncRun.completed_at.desc())
-        .limit(1)
-    )
+    latest_completed = latest_completed_sync_at(session, sync_key)
     if latest_completed is None:
         return False
     if latest_completed.tzinfo is None:
         latest_completed = latest_completed.replace(tzinfo=UTC)
     return latest_completed >= datetime.now(UTC) - timedelta(hours=freshness_hours)
+
+
+def latest_completed_sync_at(session: Session, sync_key: str) -> datetime | None:
+    return session.scalar(
+        select(JobSyncRun.completed_at)
+        .where(JobSyncRun.sync_key == sync_key, JobSyncRun.status == "completed", JobSyncRun.completed_at.is_not(None))
+        .order_by(JobSyncRun.completed_at.desc())
+        .limit(1)
+    )
 
 
 def upsert_job_listing_from_provider_record(
@@ -133,8 +137,8 @@ def record_job_sync_run(session: Session, result: JobSyncResult) -> JobSyncRun:
         provider_where=request.provider_where,
         query_text=request.query_text,
         query_kind=request.query_kind,
-        criteria_json=sanitize_criteria_json(request.criteria_json),
-        status="failed" if result.error else "completed",
+        criteria_json=sanitize_criteria_json({**request.criteria_json, **result.diagnostics_json}),
+        status="failed" if result.error else result.status,
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
         raw_result_count=result.raw_result_count,

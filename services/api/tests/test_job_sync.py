@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import urllib.error
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -19,6 +20,7 @@ from jobops_api.db.models import (
     Tenant,
 )
 from jobops_api.job_discovery.job_sync import (
+    BaseJobSyncProvider,
     JobListingSourceRecord,
     JobSyncRequest,
     JobSyncResult,
@@ -98,6 +100,7 @@ def test_greenhouse_fetches_retrieve_job_payload_with_application_questions(monk
             **retrieve_job,
             "job_board_list_payload": list_job,
             "job_board_retrieve_payload": retrieve_job,
+            "job_board_retrieve_request": greenhouse_retrieve_request("vaulttec", "44444"),
         }
     ]
     assert requested == [
@@ -119,6 +122,7 @@ def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None
         **greenhouse_retrieve_job_raw(),
         "job_board_list_payload": greenhouse_list_job_raw(),
         "job_board_retrieve_payload": greenhouse_retrieve_job_raw(),
+        "job_board_retrieve_request": greenhouse_retrieve_request("vaulttec", "44444"),
     }
 
     normalized = provider.normalize_provider_record(raw, request)
@@ -142,6 +146,110 @@ def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None
     assert source.raw_metadata_json["data_compliance"][0]["type"] == "gdpr"
     assert source.raw_metadata_json["demographic_questions"]["questions"][0]["label"] == "Favorite Color"
     assert source.raw_metadata_json["pay_input_ranges"][0]["currency_type"] == "USD"
+    assert source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "44444")
+
+
+def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    first_list_job = greenhouse_list_job_raw(job_id=44444, title="Product Engineer")
+    second_list_job = greenhouse_list_job_raw(job_id=55555, title="Data Engineer")
+    first_detail = greenhouse_retrieve_job_raw(job_id=44444, title="Product Engineer")
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [first_list_job, second_list_job], "meta": {"total": 2}}
+        if url.endswith("/jobs/44444"):
+            return first_detail
+        if url.endswith("/jobs/55555"):
+            raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+        raise AssertionError(f"Unexpected Greenhouse URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = provider.refresh_inventory(session, request, freshness_hours=0)
+        sources = session.scalars(select(JobListingSource).order_by(JobListingSource.provider_job_id)).all()
+        run = session.scalar(select(JobSyncRun))
+
+    assert result.raw_result_count == 2
+    assert result.normalized_count == 2
+    assert result.created_count == 2
+    assert result.diagnostics_json == {
+        "detailRequestsAttempted": 2,
+        "detailRequestsSucceeded": 1,
+        "detailRequestsFailed": 1,
+        "detailRequestsSkipped": 0,
+    }
+    assert run is not None
+    assert run.criteria_json["detailRequestsAttempted"] == 2
+    assert run.criteria_json["detailRequestsSucceeded"] == 1
+    assert run.criteria_json["detailRequestsFailed"] == 1
+    assert len(sources) == 2
+    failed_source = next(source for source in sources if source.provider_job_id == "55555")
+    assert failed_source.raw_metadata_json["job_board_list_payload"] == second_list_job
+    assert failed_source.raw_metadata_json["job_board_retrieve_payload"] is None
+    assert failed_source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "55555")
+    assert failed_source.raw_metadata_json["job_board_retrieve_error"] == {
+        "type": "HTTPError",
+        "message": "Greenhouse retrieve-job request failed.",
+        "status": 404,
+    }
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/55555", {"questions": "true", "pay_transparency": "true"}),
+    ]
+
+
+def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    first_list_job = greenhouse_list_job_raw(job_id=44444, title="Product Engineer")
+    second_list_job = greenhouse_list_job_raw(job_id=55555, title="Data Engineer")
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [first_list_job, second_list_job], "meta": {"total": 2}}
+        if url.endswith("/jobs/44444"):
+            return greenhouse_retrieve_job_raw(job_id=44444, title="Product Engineer")
+        raise AssertionError(f"Unexpected Greenhouse detail fetch beyond guardrail: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider(max_detail_requests=1)
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = provider.refresh_inventory(session, request, freshness_hours=0)
+        sources = session.scalars(select(JobListingSource).order_by(JobListingSource.provider_job_id)).all()
+        run = session.scalar(select(JobSyncRun))
+
+    assert result.normalized_count == 2
+    assert result.diagnostics_json == {
+        "detailRequestsAttempted": 1,
+        "detailRequestsSucceeded": 1,
+        "detailRequestsFailed": 0,
+        "detailRequestsSkipped": 1,
+    }
+    assert run is not None
+    assert run.criteria_json["maxDetailRequests"] == 1
+    assert run.criteria_json["detailRequestsSkipped"] == 1
+    assert len(sources) == 2
+    skipped_source = next(source for source in sources if source.provider_job_id == "55555")
+    assert skipped_source.raw_metadata_json["job_board_retrieve_payload"] is None
+    assert skipped_source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "55555")
+    assert skipped_source.raw_metadata_json["job_board_retrieve_skipped"] == {
+        "reason": "max_detail_requests_reached",
+        "maxDetailRequests": 1,
+    }
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+    ]
 
 
 def test_adzuna_same_provider_job_id_updates_existing_listing() -> None:
@@ -267,6 +375,42 @@ def test_adzuna_similar_jobs_with_different_provider_ids_do_not_merge() -> None:
         assert len(session.scalars(select(JobListing)).all()) == 2
 
 
+def test_greenhouse_same_provider_job_id_on_different_boards_does_not_merge() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="company-a"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="company-b"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
+def test_cross_provider_same_job_shape_does_not_merge() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="acme"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=adzuna_source(provider_job_id="123"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
 def test_provider_record_without_id_is_rejected_without_url_identity() -> None:
     engine = create_engine_for_job_sync_tests()
     source_url = "https://jobs.example.test/postings/42?utm_source=newsletter"
@@ -349,6 +493,75 @@ def test_sync_freshness_counts_only_recent_completed_runs() -> None:
         )
         session.commit()
         assert is_sync_fresh(session, sync_key) is True
+
+
+def test_refresh_inventory_records_skipped_fresh_without_defining_freshness() -> None:
+    class OneRecordProvider(BaseJobSyncProvider):
+        provider_name = "test_provider"
+        provider_type = "broad_search"
+
+        def build_sync_plan(self):
+            return None
+
+        def fetch_provider_records(self, request: JobSyncRequest):
+            return [{"id": "sync-1"}]
+
+        def normalize_provider_record(self, raw: object, request: JobSyncRequest):
+            return (
+                listing(title="Applied AI Engineer"),
+                JobListingSourceRecord(
+                    source_provider=self.provider_name,
+                    provider_type=self.provider_type,
+                    provider_job_id="sync-1",
+                    source_result_id="sync-1",
+                    source_url="https://provider.example.test/jobs/sync-1",
+                    raw_metadata_json={"id": "sync-1"},
+                    source_status="active",
+                ),
+            )
+
+    engine = create_engine_for_job_sync_tests()
+    request = JobSyncRequest(
+        sync_key="test-provider:broad:remote-us:applied-ai-engineer",
+        provider_name="test_provider",
+        provider_type="broad_search",
+        sync_kind="broad_search",
+        criteria_json={"apiPath": "/jobs/search", "what": "Applied AI Engineer"},
+    )
+    provider = OneRecordProvider()
+    with Session(engine) as session:
+        first = provider.refresh_inventory(session, request)
+        second = provider.refresh_inventory(session, request, freshness_hours=24)
+        runs = session.scalars(select(JobSyncRun).order_by(JobSyncRun.created_at.asc())).all()
+
+        assert first.status == "completed"
+        assert second.status == "skipped_fresh"
+        assert len(runs) == 2
+        assert runs[0].status == "completed"
+        assert runs[1].status == "skipped_fresh"
+        assert runs[1].raw_result_count == 0
+        assert runs[1].normalized_count == 0
+        assert runs[1].criteria_json["apiPath"] == "/jobs/search"
+        assert runs[1].criteria_json["what"] == "Applied AI Engineer"
+        assert runs[1].criteria_json["skipReason"] == "fresh"
+        assert runs[1].criteria_json["freshnessHours"] == 24
+        assert runs[1].criteria_json["latestCompletedAt"]
+        assert is_sync_fresh(session, request.sync_key) is True
+
+        skipped_only_key = "test-provider:broad:skipped-only"
+        record_job_sync_run(
+            session,
+            JobSyncResult(
+                request=JobSyncRequest(
+                    sync_key=skipped_only_key,
+                    provider_name="test_provider",
+                    provider_type="broad_search",
+                    sync_kind="broad_search",
+                ),
+                status="skipped_fresh",
+            ),
+        )
+        assert is_sync_fresh(session, skipped_only_key) is False
 
 
 def test_sync_key_construction_and_location_normalization() -> None:
@@ -493,15 +706,15 @@ def greenhouse_source(*, provider_job_id: str, board_token: str) -> JobListingSo
     )
 
 
-def greenhouse_list_job_raw() -> dict[str, object]:
+def greenhouse_list_job_raw(*, job_id: int = 44444, title: str = "Product Engineer", board_token: str = "vaulttec") -> dict[str, object]:
     return {
-        "id": 44444,
-        "internal_job_id": 55555,
-        "title": "Product Engineer",
+        "id": job_id,
+        "internal_job_id": job_id + 11111,
+        "title": title,
         "updated_at": "2013-07-02T19:39:23Z",
         "requisition_id": "50",
         "location": {"name": "San Francisco, CA"},
-        "absolute_url": "https://boards.greenhouse.io/vaulttec/jobs/44444",
+        "absolute_url": f"https://boards.greenhouse.io/{board_token}/jobs/{job_id}",
         "language": "en",
         "metadata": None,
         "content": "This is the job description.",
@@ -525,17 +738,17 @@ def greenhouse_list_job_raw() -> dict[str, object]:
     }
 
 
-def greenhouse_retrieve_job_raw() -> dict[str, object]:
+def greenhouse_retrieve_job_raw(*, job_id: int = 44444, title: str = "Product Engineer", board_token: str = "vaulttec") -> dict[str, object]:
     return {
-        "id": 44444,
-        "title": "Product Engineer",
+        "id": job_id,
+        "title": title,
         "updated_at": "2013-07-02T19:39:23Z",
         "requisition_id": "50",
         "location": {"name": "San Francisco, CA"},
         "content": "This is the job description.",
-        "absolute_url": "https://boards.greenhouse.io/vaulttec/jobs/44444",
+        "absolute_url": f"https://boards.greenhouse.io/{board_token}/jobs/{job_id}",
         "language": "en",
-        "internal_job_id": 55555,
+        "internal_job_id": job_id + 11111,
         "location_questions": [
             {
                 "label": "Location",
@@ -597,6 +810,13 @@ def greenhouse_retrieve_job_raw() -> dict[str, object]:
                 "blurb": "In order to provide transparency...",
             }
         ],
+    }
+
+
+def greenhouse_retrieve_request(board_token: str, job_id: str) -> dict[str, object]:
+    return {
+        "url": f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}",
+        "params": {"questions": "true", "pay_transparency": "true"},
     }
 
 

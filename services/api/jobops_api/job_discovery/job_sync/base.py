@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from sqlalchemy.orm import Session
 
 from .models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, JobSyncResult, NormalizedJobListing
-from .service import is_sync_fresh, record_job_sync_run, upsert_job_listing_from_provider_record
+from .service import is_sync_fresh, latest_completed_sync_at, record_job_sync_run, upsert_job_listing_from_provider_record
 
 
 class BaseJobSyncProvider(ABC):
@@ -19,6 +19,9 @@ class BaseJobSyncProvider(ABC):
 
     def is_request_fresh(self, session: Session, request: JobSyncRequest, *, freshness_hours: int = 24) -> bool:
         return is_sync_fresh(session, request.sync_key, freshness_hours=freshness_hours)
+
+    def refresh_diagnostics(self, request: JobSyncRequest) -> dict[str, object]:
+        return {}
 
     @abstractmethod
     def fetch_provider_records(self, request: JobSyncRequest) -> Iterable[object]:
@@ -40,7 +43,18 @@ class BaseJobSyncProvider(ABC):
         freshness_hours: int = 24,
     ) -> JobSyncResult:
         if self.is_request_fresh(session, request, freshness_hours=freshness_hours):
-            return JobSyncResult(request=request)
+            latest_completed = latest_completed_sync_at(session, request.sync_key)
+            sync_result = JobSyncResult(
+                request=request,
+                status="skipped_fresh",
+                diagnostics_json={
+                    "skipReason": "fresh",
+                    "freshnessHours": freshness_hours,
+                    "latestCompletedAt": latest_completed.isoformat() if latest_completed else None,
+                },
+            )
+            record_job_sync_run(session, sync_result)
+            return sync_result
 
         raw_records = list(self.fetch_provider_records(request))
         created_count = 0
@@ -66,6 +80,7 @@ class BaseJobSyncProvider(ABC):
             created_count=created_count,
             updated_count=updated_count,
             failed_normalization_count=failed_normalization_count,
+            diagnostics_json=self.refresh_diagnostics(request),
         )
         record_job_sync_run(session, sync_result)
         return sync_result

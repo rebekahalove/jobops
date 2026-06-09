@@ -13,6 +13,14 @@ from ..service import build_greenhouse_sync_key
 class GreenhouseJobSyncProvider(BaseJobSyncProvider):
     provider_name = "greenhouse"
     provider_type = "ats_board"
+    detail_request_params = {"questions": "true", "pay_transparency": "true"}
+
+    def __init__(self, *, max_detail_requests: int | None = None) -> None:
+        self.max_detail_requests = max_detail_requests
+        self.detail_requests_attempted = 0
+        self.detail_requests_succeeded = 0
+        self.detail_requests_failed = 0
+        self.detail_requests_skipped = 0
 
     def build_sync_plan(self, board_tokens: Iterable[str]) -> JobSyncPlan:
         requests: list[JobSyncRequest] = []
@@ -37,15 +45,25 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
                         "retrieveJobApiUrlTemplate": retrieve_url_template,
                         "retrieveJobQuestions": True,
                         "retrieveJobPayTransparency": True,
+                        "maxDetailRequests": self.max_detail_requests,
                         "syncKey": build_greenhouse_sync_key(board_token),
                     },
                 )
             )
         return JobSyncPlan(requests=tuple(requests))
 
+    def refresh_diagnostics(self, request: JobSyncRequest) -> dict[str, object]:
+        return {
+            "detailRequestsAttempted": self.detail_requests_attempted,
+            "detailRequestsSucceeded": self.detail_requests_succeeded,
+            "detailRequestsFailed": self.detail_requests_failed,
+            "detailRequestsSkipped": self.detail_requests_skipped,
+        }
+
     def fetch_provider_records(self, request: JobSyncRequest) -> Iterable[object]:
         if not request.ats_board_token:
             raise ValueError("Greenhouse Job Sync requests require ats_board_token.")
+        self.reset_detail_counts()
         url = canonical_greenhouse_jobs_api_url(request.ats_board_token)
         try:
             payload = fetch_json(url, params={"content": "true"})
@@ -63,10 +81,56 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         if not provider_job_id:
             return raw_job
         url = f"{canonical_greenhouse_jobs_api_url(request.ats_board_token)}/{provider_job_id}"
-        detail = fetch_json(url, params={"questions": "true", "pay_transparency": "true"})
+        detail_request = greenhouse_detail_request(url)
+        if self.max_detail_requests is not None and self.detail_requests_attempted >= self.max_detail_requests:
+            self.detail_requests_skipped += 1
+            return merge_greenhouse_job_payloads(
+                list_job=raw_job,
+                retrieve_job=None,
+                retrieve_request=detail_request,
+                retrieve_skipped={
+                    "reason": "max_detail_requests_reached",
+                    "maxDetailRequests": self.max_detail_requests,
+                },
+            )
+        self.detail_requests_attempted += 1
+        try:
+            detail = fetch_json(url, params=self.detail_request_params)
+        except urllib.error.HTTPError as error:
+            self.detail_requests_failed += 1
+            return merge_greenhouse_job_payloads(
+                list_job=raw_job,
+                retrieve_job=None,
+                retrieve_request=detail_request,
+                retrieve_error=safe_greenhouse_detail_error(error),
+            )
+        except Exception as error:
+            self.detail_requests_failed += 1
+            return merge_greenhouse_job_payloads(
+                list_job=raw_job,
+                retrieve_job=None,
+                retrieve_request=detail_request,
+                retrieve_error=safe_greenhouse_detail_error(error),
+            )
         if not isinstance(detail, dict):
-            return raw_job
-        return merge_greenhouse_job_payloads(list_job=raw_job, retrieve_job=detail)
+            self.detail_requests_failed += 1
+            return merge_greenhouse_job_payloads(
+                list_job=raw_job,
+                retrieve_job=None,
+                retrieve_request=detail_request,
+                retrieve_error={
+                    "type": type(detail).__name__,
+                    "message": "Greenhouse retrieve-job response was not a JSON object.",
+                },
+            )
+        self.detail_requests_succeeded += 1
+        return merge_greenhouse_job_payloads(list_job=raw_job, retrieve_job=detail, retrieve_request=detail_request)
+
+    def reset_detail_counts(self) -> None:
+        self.detail_requests_attempted = 0
+        self.detail_requests_succeeded = 0
+        self.detail_requests_failed = 0
+        self.detail_requests_skipped = 0
 
     def normalize_provider_record(
         self,
@@ -126,12 +190,39 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         return listing, source
 
 
-def merge_greenhouse_job_payloads(*, list_job: dict[str, object], retrieve_job: dict[str, object]) -> dict[str, object]:
-    merged = {**list_job, **retrieve_job}
+def merge_greenhouse_job_payloads(
+    *,
+    list_job: dict[str, object],
+    retrieve_job: dict[str, object] | None,
+    retrieve_request: dict[str, object],
+    retrieve_error: dict[str, object] | None = None,
+    retrieve_skipped: dict[str, object] | None = None,
+) -> dict[str, object]:
+    merged = {**list_job, **(retrieve_job or {})}
     merged["job_board_list_payload"] = list_job
     merged["job_board_retrieve_payload"] = retrieve_job
+    merged["job_board_retrieve_request"] = retrieve_request
+    if retrieve_error is not None:
+        merged["job_board_retrieve_error"] = retrieve_error
+    if retrieve_skipped is not None:
+        merged["job_board_retrieve_skipped"] = retrieve_skipped
     return merged
 
 
 def copy_greenhouse_raw_metadata(raw: dict[str, object]) -> dict[str, object]:
     return dict(raw)
+
+
+def greenhouse_detail_request(url: str) -> dict[str, object]:
+    return {"url": url, "params": dict(GreenhouseJobSyncProvider.detail_request_params)}
+
+
+def safe_greenhouse_detail_error(error: Exception) -> dict[str, object]:
+    detail: dict[str, object] = {
+        "type": type(error).__name__,
+        "message": "Greenhouse retrieve-job request failed.",
+    }
+    status = getattr(error, "code", None)
+    if isinstance(status, int):
+        detail["status"] = status
+    return detail
