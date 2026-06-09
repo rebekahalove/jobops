@@ -88,7 +88,6 @@ def upgrade() -> None:
         sa.Column("source_url", sa.Text(), nullable=True),
         sa.Column("apply_url", sa.Text(), nullable=True),
         sa.Column("canonical_url", sa.Text(), nullable=True),
-        sa.Column("url_fingerprint", sa.String(length=64), nullable=True),
         sa.Column("source_query", sa.Text(), nullable=True),
         sa.Column("source_location", sa.Text(), nullable=True),
         sa.Column("source_country", sa.String(length=16), nullable=True),
@@ -117,7 +116,6 @@ def upgrade() -> None:
         ["source_provider", "last_seen_at"],
     )
     op.create_index("ix_job_listing_sources_provider_query", "job_listing_sources", ["source_provider", "source_query"])
-    op.create_index("ix_job_listing_sources_url_fingerprint", "job_listing_sources", ["url_fingerprint"])
     op.create_index(
         "uq_job_listing_sources_greenhouse_identity",
         "job_listing_sources",
@@ -138,15 +136,6 @@ def upgrade() -> None:
         sqlite_where=sa.text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
         postgresql_where=sa.text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
     )
-    op.create_index(
-        "uq_job_listing_sources_provider_url_fingerprint",
-        "job_listing_sources",
-        ["source_provider", "url_fingerprint"],
-        unique=True,
-        sqlite_where=sa.text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
-        postgresql_where=sa.text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
-    )
-
     op.create_table(
         "job_sync_runs",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -202,10 +191,8 @@ def downgrade() -> None:
     op.drop_index("ix_job_sync_runs_sync_key_completed", table_name="job_sync_runs")
     op.drop_table("job_sync_runs")
 
-    op.drop_index("uq_job_listing_sources_provider_url_fingerprint", table_name="job_listing_sources")
     op.drop_index("uq_job_listing_sources_provider_job_id", table_name="job_listing_sources")
     op.drop_index("uq_job_listing_sources_greenhouse_identity", table_name="job_listing_sources")
-    op.drop_index("ix_job_listing_sources_url_fingerprint", table_name="job_listing_sources")
     op.drop_index("ix_job_listing_sources_provider_query", table_name="job_listing_sources")
     op.drop_index("ix_job_listing_sources_provider_last_seen", table_name="job_listing_sources")
     op.drop_index("ix_job_listing_sources_ats_board_active", table_name="job_listing_sources")

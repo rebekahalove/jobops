@@ -90,7 +90,6 @@ class JobListingSourceRecord:
     source_url: str | None = None
     apply_url: str | None = None
     canonical_url: str | None = None
-    url_fingerprint: str | None = None
     source_query: str | None = None
     source_location: str | None = None
     source_country: str | None = None

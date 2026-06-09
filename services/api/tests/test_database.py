@@ -142,7 +142,6 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
         "provider_job_id",
         "ats_provider",
         "ats_board_token",
-        "url_fingerprint",
         "source_query",
         "raw_metadata_json",
         "last_synced_at",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -24,12 +25,12 @@ from jobops_api.job_discovery.job_sync import (
     NormalizedJobListing,
     build_adzuna_sync_key,
     build_greenhouse_sync_key,
-    compute_url_fingerprint,
     is_sync_fresh,
     normalize_job_sync_location,
     record_job_sync_run,
     upsert_job_listing_from_provider_record,
 )
+from jobops_api.job_discovery.job_sync.providers.adzuna import AdzunaJobSyncProvider
 
 
 def test_greenhouse_same_board_and_provider_job_id_updates_existing_listing() -> None:
@@ -73,21 +74,108 @@ def test_greenhouse_distinct_provider_job_ids_preserve_distinct_same_title_jobs(
 
 def test_adzuna_same_provider_job_id_updates_existing_listing() -> None:
     engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
     with Session(engine) as session:
+        first_normalized = provider.normalize_provider_record(
+            adzuna_raw(id="adz-1", title="AI Platform Engineer", redirect_url="https://adzuna.example.test/a?tracking=1"),
+            request,
+        )
+        second_normalized = provider.normalize_provider_record(
+            adzuna_raw(id="adz-1", title="Staff AI Platform Engineer", redirect_url="https://adzuna.example.test/b?tracking=2"),
+            request,
+        )
+        assert first_normalized is not None
+        assert second_normalized is not None
         first = upsert_job_listing_from_provider_record(
             session,
-            listing=listing(title="AI Platform Engineer"),
-            source=adzuna_source(provider_job_id="adz-1"),
+            listing=first_normalized[0],
+            source=first_normalized[1],
         )
         second = upsert_job_listing_from_provider_record(
             session,
-            listing=listing(title="Staff AI Platform Engineer"),
-            source=adzuna_source(provider_job_id="adz-1"),
+            listing=second_normalized[0],
+            source=second_normalized[1],
         )
 
         assert first.job_listing_id == second.job_listing_id
         assert second.updated is True
+        source = session.scalar(select(JobListingSource))
+        assert source is not None
+        assert source.source_provider == "adzuna"
+        assert source.provider_job_id == "adz-1"
+        assert source.source_result_id == "adz-1"
         assert len(session.scalars(select(JobListing)).all()) == 1
+
+
+def test_adzuna_same_id_with_different_redirect_url_updates_same_listing() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    with Session(engine) as session:
+        first_normalized = provider.normalize_provider_record(
+            adzuna_raw(id=99, redirect_url="https://adzuna.example.test/redirect?job=99&tracking=one"),
+            request,
+        )
+        second_normalized = provider.normalize_provider_record(
+            adzuna_raw(id=99, redirect_url="https://adzuna.example.test/redirect?job=99&tracking=two"),
+            request,
+        )
+        assert first_normalized is not None
+        assert second_normalized is not None
+
+        first = upsert_job_listing_from_provider_record(session, listing=first_normalized[0], source=first_normalized[1])
+        second = upsert_job_listing_from_provider_record(session, listing=second_normalized[0], source=second_normalized[1])
+
+        assert first.job_listing_id == second.job_listing_id
+        assert len(session.scalars(select(JobListing)).all()) == 1
+        source = session.scalar(select(JobListingSource))
+        assert source is not None
+        assert source.provider_job_id == "99"
+        assert source.source_result_id == "99"
+        assert source.source_url == "https://adzuna.example.test/redirect?job=99&tracking=two"
+
+
+def test_adzuna_source_record_retains_raw_api_response_fields() -> None:
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    raw = {
+        "salary_is_predicted": "1",
+        "created": "2026-06-03T09:44:54Z",
+        "category": {
+            "__CLASS__": "Adzuna::API::Response::Category",
+            "tag": "healthcare-nursing-jobs",
+            "label": "Healthcare & Nursing Jobs",
+        },
+        "redirect_url": "https://www.adzuna.com/land/ad/5750706638?se=Hnuptc5j8RGxEpABevI5bA&utm_medium=api&utm_source=eba7774e&v=2ED33E8F08AE7E2AD65CF6F23FE1D9958955A52A",
+        "salary_min": 60680.7,
+        "company": {
+            "__CLASS__": "Adzuna::API::Response::Company",
+            "display_name": "Mission Hospital",
+        },
+        "salary_max": 60680.7,
+        "title": "Psych Emergency Room Registered Nurse",
+        "adref": "eyJhbGciOiJIUzI1NiJ9.eyJpIjoiNTc1MDcwNjYzOCIsInMiOiJIbnVwdGM1ajhSR3hFcEFCZXZJNWJBIn0.6ZYmkcKaeRL0AY16rllVb7wMytXI7WMxwSqS2cSTETQ",
+        "longitude": -82.555682,
+        "__CLASS__": "Adzuna::API::Response::Job",
+        "latitude": 35.596321,
+        "description": "Do you have the career opportunities as a Psych ED Registered Nurse you want?",
+        "location": {
+            "display_name": "Asheville, Buncombe County",
+            "area": ["US", "North Carolina", "Buncombe County", "Asheville"],
+            "__CLASS__": "Adzuna::API::Response::Location",
+        },
+        "id": "5750706638",
+    }
+
+    normalized = provider.normalize_provider_record(raw, request)
+
+    assert normalized is not None
+    _listing, source = normalized
+    assert source.source_provider == "adzuna"
+    assert source.provider_job_id == "5750706638"
+    assert source.source_result_id == "5750706638"
+    assert source.raw_metadata_json == raw
 
 
 def test_adzuna_similar_jobs_with_different_provider_ids_do_not_merge() -> None:
@@ -107,31 +195,40 @@ def test_adzuna_similar_jobs_with_different_provider_ids_do_not_merge() -> None:
         assert len(session.scalars(select(JobListing)).all()) == 2
 
 
-def test_url_fingerprint_fallback_is_used_only_when_provider_id_is_absent() -> None:
+def test_provider_record_without_id_is_rejected_without_url_identity() -> None:
     engine = create_engine_for_job_sync_tests()
     source_url = "https://jobs.example.test/postings/42?utm_source=newsletter"
-    same_source_url = "http://jobs.example.test/postings/42"
     with Session(engine) as session:
-        first = upsert_job_listing_from_provider_record(
-            session,
-            listing=listing(title="Fallback Identity Engineer"),
-            source=adzuna_source(provider_job_id=None, source_url=source_url),
-        )
-        second = upsert_job_listing_from_provider_record(
-            session,
-            listing=listing(title="Fallback Identity Engineer Updated"),
-            source=adzuna_source(provider_job_id=None, source_url=same_source_url),
-        )
-        third = upsert_job_listing_from_provider_record(
-            session,
-            listing=listing(title="Provider ID Wins Engineer"),
-            source=adzuna_source(provider_job_id="adz-42", source_url=same_source_url),
-        )
+        with pytest.raises(ValueError, match="stable provider job id"):
+            upsert_job_listing_from_provider_record(
+                session,
+                listing=listing(title="No Identity Engineer"),
+                source=generic_source(provider_job_id=None, source_url=source_url),
+            )
 
-        assert first.job_listing_id == second.job_listing_id
-        assert third.job_listing_id != first.job_listing_id
-        assert compute_url_fingerprint(source_url) == compute_url_fingerprint(same_source_url)
-        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert session.scalars(select(JobListing)).all() == []
+
+
+def test_adzuna_record_without_id_is_failed_normalization() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    raw_without_id = adzuna_raw(id=None, redirect_url="https://adzuna.example.test/redirect?job=missing&tracking=one")
+    raw_without_id.pop("id")
+
+    assert provider.normalize_provider_record(raw_without_id, request) is None
+
+    class MissingIdAdzunaProvider(AdzunaJobSyncProvider):
+        def fetch_provider_records(self, request: JobSyncRequest):
+            return [raw_without_id]
+
+    with Session(engine) as session:
+        result = MissingIdAdzunaProvider().refresh_inventory(session, request)
+
+        assert result.raw_result_count == 1
+        assert result.normalized_count == 0
+        assert result.failed_normalization_count == 1
+        assert session.scalars(select(JobListing)).all() == []
 
 
 def test_sync_freshness_counts_only_recent_completed_runs() -> None:
@@ -324,17 +421,73 @@ def greenhouse_source(*, provider_job_id: str, board_token: str) -> JobListingSo
     )
 
 
-def adzuna_source(*, provider_job_id: str | None, source_url: str | None = None) -> JobListingSourceRecord:
+def adzuna_source(*, provider_job_id: str, source_url: str | None = None) -> JobListingSourceRecord:
+    resolved_url = source_url or f"https://adzuna.example.test/jobs/{provider_job_id}"
     return JobListingSourceRecord(
         source_provider="adzuna",
         provider_type="broad_search",
         provider_job_id=provider_job_id,
         source_result_id=provider_job_id,
-        source_url=source_url or f"https://adzuna.example.test/jobs/{provider_job_id or 'fallback'}",
-        apply_url=source_url or f"https://adzuna.example.test/jobs/{provider_job_id or 'fallback'}",
-        canonical_url=source_url or f"https://adzuna.example.test/jobs/{provider_job_id or 'fallback'}",
+        source_url=resolved_url,
+        apply_url=resolved_url,
+        canonical_url=resolved_url,
         source_query="Applied AI Engineer",
         source_country="us",
         raw_metadata_json={"id": provider_job_id},
         source_status="active",
     )
+
+
+def generic_source(*, provider_job_id: str | None, source_url: str) -> JobListingSourceRecord:
+    return JobListingSourceRecord(
+        source_provider="provider_without_ids",
+        provider_type="broad_search",
+        provider_job_id=provider_job_id,
+        source_result_id=provider_job_id,
+        source_url=source_url,
+        apply_url=source_url,
+        canonical_url=source_url,
+        source_query="Applied AI Engineer",
+        source_country="us",
+        raw_metadata_json={},
+        source_status="active",
+    )
+
+
+def adzuna_sync_request() -> JobSyncRequest:
+    return JobSyncRequest(
+        sync_key=build_adzuna_sync_key("us", "remote-us", "Applied AI Engineer"),
+        provider_name="adzuna",
+        provider_type="broad_search",
+        sync_kind="broad_search",
+        provider_country="us",
+        display_location="Remote US",
+        query_text="Applied AI Engineer",
+        criteria_json={
+            "providerCountry": "us",
+            "apiPath": "/v1/api/jobs/us/search/1",
+            "page": 1,
+            "what": "Applied AI Engineer",
+            "where": None,
+            "resultsPerPage": 50,
+            "contentType": "application/json",
+            "syncKey": build_adzuna_sync_key("us", "remote-us", "Applied AI Engineer"),
+        },
+    )
+
+
+def adzuna_raw(
+    *,
+    id: object,
+    title: str = "Applied AI Engineer",
+    redirect_url: str = "https://adzuna.example.test/redirect?job=1&tracking=one",
+) -> dict[str, object]:
+    return {
+        "id": id,
+        "title": title,
+        "company": {"display_name": "Acme AI"},
+        "redirect_url": redirect_url,
+        "description": "Applied AI role",
+        "location": {"display_name": "Remote US"},
+        "created": "2026-06-01T12:00:00Z",
+    }

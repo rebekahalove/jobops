@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,33 +40,6 @@ def build_adzuna_sync_key(provider_country: str, location_key: str | None, query
     location = normalize_sync_key_text(location_key)
     query = normalize_sync_key_text(query_text)
     return f"adzuna:broad:{country}:{location}:{query}"
-
-
-def compute_url_fingerprint(url: str | None) -> str | None:
-    normalized = normalize_url_for_fingerprint(url)
-    if not normalized:
-        return None
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def normalize_url_for_fingerprint(url: str | None) -> str | None:
-    if not url:
-        return None
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    hostname = (parsed.hostname or "").casefold()
-    netloc = hostname
-    if parsed.port:
-        netloc = f"{hostname}:{parsed.port}"
-    path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/") or "/"
-    query_pairs = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if not key.casefold().startswith("utm_") and key.casefold() not in {"fbclid", "gclid", "mc_cid", "mc_eid"}
-    ]
-    query = urlencode(sorted(query_pairs))
-    return urlunparse(("https", netloc, path, "", query, ""))
 
 
 def is_sync_fresh(session: Session, sync_key: str, *, freshness_hours: int = 24) -> bool:
@@ -125,9 +96,6 @@ def find_existing_job_listing_source(session: Session, source: JobListingSourceR
     provider = source.source_provider
     provider_job_id = clean_identity_value(source.provider_job_id)
     ats_board_token = clean_identity_value(source.ats_board_token)
-    url_fingerprint = source.url_fingerprint or compute_url_fingerprint(
-        source.source_url or source.apply_url or source.canonical_url
-    )
 
     if provider == "greenhouse" and ats_board_token and provider_job_id:
         return session.scalar(
@@ -144,15 +112,7 @@ def find_existing_job_listing_source(session: Session, source: JobListingSourceR
                 JobListingSource.provider_job_id == provider_job_id,
             )
         )
-    if url_fingerprint:
-        return session.scalar(
-            select(JobListingSource).where(
-                JobListingSource.source_provider == provider,
-                JobListingSource.provider_job_id.is_(None),
-                JobListingSource.url_fingerprint == url_fingerprint,
-            )
-        )
-    raise ValueError("Provider record must include a provider job id or an individual posting URL.")
+    raise ValueError("Provider record must include a stable provider job id.")
 
 
 def record_job_sync_run(session: Session, result: JobSyncResult) -> JobSyncRun:
@@ -242,9 +202,6 @@ def apply_listing_fields(job_listing: JobListing, listing: NormalizedJobListing,
 
 
 def apply_source_fields(job_listing_source: JobListingSource, source: JobListingSourceRecord, *, synced_at: datetime) -> None:
-    url_fingerprint = source.url_fingerprint or compute_url_fingerprint(
-        source.source_url or source.apply_url or source.canonical_url
-    )
     for name in (
         "source_provider",
         "provider_type",
@@ -263,7 +220,6 @@ def apply_source_fields(job_listing_source: JobListingSource, source: JobListing
         "source_updated_at",
     ):
         setattr(job_listing_source, name, getattr(source, name))
-    job_listing_source.url_fingerprint = url_fingerprint
     job_listing_source.last_seen_at = synced_at
     job_listing_source.last_synced_at = synced_at
     job_listing_source.is_active = source.source_status not in {"closed", "expired", "inactive"}

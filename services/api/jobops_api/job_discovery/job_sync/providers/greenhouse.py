@@ -7,7 +7,7 @@ from ...provider_utils import clean_text_value, fetch_json, html_to_text, infer_
 from ...providers.greenhouse import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
 from ..base import BaseJobSyncProvider
 from ..models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, NormalizedJobListing, normalize_job_sync_location
-from ..service import build_greenhouse_sync_key, compute_url_fingerprint
+from ..service import build_greenhouse_sync_key
 
 
 class GreenhouseJobSyncProvider(BaseJobSyncProvider):
@@ -61,7 +61,7 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         source_url = clean_text_value(raw.get("absolute_url"))
         provider_job_id = clean_text_value(raw.get("id"))
         company_name = request.company_name or request.ats_board_token.replace("-", " ").replace("_", " ").title()
-        if not title or not company_name or not source_url:
+        if not title or not company_name or not source_url or not provider_job_id:
             return None
         full_description = html_to_text(str(raw.get("content") or "")) or None
         location_raw = clean_text_value(nested_get(raw, "location", "name"))
@@ -97,7 +97,6 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
             source_url=source_url,
             apply_url=source_url,
             canonical_url=source_url,
-            url_fingerprint=compute_url_fingerprint(source_url) if not provider_job_id else None,
             source_query=request.query_text,
             source_location=request.display_location,
             source_country=request.provider_country,

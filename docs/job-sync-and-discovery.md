@@ -37,9 +37,8 @@ Provider identity rules:
 
 - Greenhouse: `source_provider + ats_board_token + provider_job_id`.
 - Adzuna: `source_provider + provider_job_id`.
-- Provider fallback: when a stable provider id is absent, use an individual posting URL fingerprint where available.
 
-The URL fingerprint fallback is conservative. It is not used to merge records that already have provider ids, and it should not be used when the only URL is a generic company careers page shared by many jobs.
+If a provider record does not include the stable provider id expected for that provider, treat it as failed normalization. Do not use job URLs for identity.
 
 ## Provider Request Diagnostics
 

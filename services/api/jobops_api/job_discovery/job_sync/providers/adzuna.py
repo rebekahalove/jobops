@@ -12,7 +12,6 @@ from ...provider_utils import (
     nested_get,
     parse_datetime_value,
     parse_whole_currency_amount,
-    safe_provider_raw_metadata,
 )
 from ..base import BaseJobSyncProvider
 from ..models import (
@@ -25,7 +24,7 @@ from ..models import (
     normalize_job_sync_location,
     normalize_provider_country,
 )
-from ..service import build_adzuna_sync_key, compute_url_fingerprint, normalize_sync_key_text
+from ..service import build_adzuna_sync_key, normalize_sync_key_text
 
 
 class AdzunaJobSyncProvider(BaseJobSyncProvider):
@@ -99,7 +98,9 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
         if not title or not company_name or not source_url:
             return None
         provider_country = normalize_provider_country(request.provider_country) or "us"
-        provider_job_id = clean_text_value(raw.get("id"))
+        provider_job_id = clean_text_value(raw["id"]) if "id" in raw else None
+        if not provider_job_id:
+            return None
         salary_currency = infer_adzuna_currency_code(provider_country)
         salary_min = parse_whole_currency_amount(raw.get("salary_min"))
         salary_max = parse_whole_currency_amount(raw.get("salary_max"))
@@ -140,16 +141,23 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
             source_url=source_url,
             apply_url=source_url,
             canonical_url=source_url,
-            url_fingerprint=compute_url_fingerprint(source_url) if not provider_job_id else None,
             source_query=request.query_text,
             source_location=request.display_location,
             source_country=provider_country,
             raw_location=location_raw,
-            raw_metadata_json=safe_provider_raw_metadata(raw),
+            raw_metadata_json=copy_adzuna_raw_metadata(raw),
             source_updated_at=created,
             source_status="active",
         )
         return listing, source
+
+
+def copy_adzuna_raw_metadata(raw: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in raw.items()
+        if key.casefold() not in {"app_id", "app_key", "authorization", "cookie", "cookies", "token"}
+    }
 
 
 def build_adzuna_broad_sync_signature(

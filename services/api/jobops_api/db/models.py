@@ -492,7 +492,6 @@ class JobListingSource(Base, TimestampMixin):
         Index("ix_job_listing_sources_ats_board_active", "ats_provider", "ats_board_token", "is_active"),
         Index("ix_job_listing_sources_provider_last_seen", "source_provider", "last_seen_at"),
         Index("ix_job_listing_sources_provider_query", "source_provider", "source_query"),
-        Index("ix_job_listing_sources_url_fingerprint", "url_fingerprint"),
         Index(
             "uq_job_listing_sources_greenhouse_identity",
             "source_provider",
@@ -514,14 +513,6 @@ class JobListingSource(Base, TimestampMixin):
             sqlite_where=text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
             postgresql_where=text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
         ),
-        Index(
-            "uq_job_listing_sources_provider_url_fingerprint",
-            "source_provider",
-            "url_fingerprint",
-            unique=True,
-            sqlite_where=text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
-            postgresql_where=text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
-        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -535,7 +526,6 @@ class JobListingSource(Base, TimestampMixin):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     apply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    url_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_country: Mapped[str | None] = mapped_column(String(16), nullable=True)

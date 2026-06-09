@@ -12,7 +12,6 @@ from .models import (
 from .service import (
     build_adzuna_sync_key,
     build_greenhouse_sync_key,
-    compute_url_fingerprint,
     is_sync_fresh,
     normalize_sync_key_text,
     record_job_sync_run,
@@ -30,7 +29,6 @@ __all__ = [
     "NormalizedJobListing",
     "build_adzuna_sync_key",
     "build_greenhouse_sync_key",
-    "compute_url_fingerprint",
     "is_sync_fresh",
     "normalize_job_sync_location",
     "normalize_sync_key_text",
