@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from sqlalchemy.orm import Session
+
 from ...provider_utils import (
     clean_text_value,
     fetch_json,
@@ -24,6 +26,7 @@ from ..models import (
     normalize_job_sync_location,
     normalize_provider_country,
 )
+from ..location_resolver import job_sync_location_from_mapping, resolve_provider_location_mapping
 from ..service import build_adzuna_sync_key, normalize_sync_key_text
 
 
@@ -42,6 +45,7 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
         provider_country: str,
         locations: Iterable[str | None],
         queries: Iterable[str],
+        db_session: Session,
         results_per_page: int | None = None,
     ) -> JobSyncPlan:
         country = normalize_provider_country(provider_country) or "us"
@@ -51,8 +55,14 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
             if not query_text:
                 continue
             for raw_location in locations:
-                location = normalize_job_sync_location(raw_location, default_provider_country=country)
-                signature = build_adzuna_broad_sync_signature(country, location, query_text)
+                mapping = resolve_provider_location_mapping(
+                    db_session,
+                    provider_name=self.provider_name,
+                    display_location=raw_location,
+                    default_provider_country=country,
+                )
+                location = job_sync_location_from_mapping(mapping.job_location_target, mapping)
+                signature = build_adzuna_broad_sync_signature(location.provider_country or country, location, query_text)
                 request = build_adzuna_sync_request(
                     signature,
                     location=location,
@@ -166,7 +176,7 @@ def build_adzuna_broad_sync_signature(
     query_text: str,
 ) -> BroadJobSyncSignature:
     country = normalize_provider_country(provider_country) or location.provider_country
-    location_key = normalize_sync_key_text(location.provider_where or location.display_location or location.provider_country)
+    location_key = normalize_sync_key_text(location.normalized_key or location.provider_where or location.display_location or location.provider_country)
     sync_key = build_adzuna_sync_key(country, location_key, query_text)
     return BroadJobSyncSignature(
         provider_country=country,
@@ -204,6 +214,12 @@ def build_adzuna_sync_request(
             "page": max(1, page),
             "what": query_text,
             "where": location.provider_where,
+            "displayLocation": location.display_location,
+            "normalizedLocationKey": location.normalized_key,
+            "jobLocationTargetId": location.target_id,
+            "providerLocationMappingId": location.provider_mapping_id,
+            "locationConfidence": location.provider_mapping_confidence or location.location_confidence,
+            "locationVerificationStatus": location.provider_mapping_status,
             "whatExclude": what_exclude,
             "resultsPerPage": max(1, min(results_per_page, 50)),
             "contentType": "application/json",

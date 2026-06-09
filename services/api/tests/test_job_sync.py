@@ -15,6 +15,8 @@ from jobops_api.db.models import (
     CandidateSavedJob,
     JobListing,
     JobListingSource,
+    JobLocationTarget,
+    JobProviderLocationMapping,
     JobPosting,
     JobSyncRun,
     Tenant,
@@ -28,10 +30,13 @@ from jobops_api.job_discovery.job_sync import (
     build_adzuna_sync_key,
     build_greenhouse_sync_key,
     is_sync_fresh,
+    normalize_location_key,
     normalize_job_sync_location,
     record_job_sync_run,
+    resolve_provider_location_mapping,
     upsert_job_listing_from_provider_record,
 )
+import jobops_api.cli as cli_module
 from jobops_api.job_discovery.job_sync.providers.adzuna import AdzunaJobSyncProvider
 from jobops_api.job_discovery.job_sync.providers.greenhouse import GreenhouseJobSyncProvider
 
@@ -564,9 +569,119 @@ def test_refresh_inventory_records_skipped_fresh_without_defining_freshness() ->
         assert is_sync_fresh(session, skipped_only_key) is False
 
 
+def test_known_location_resolves_from_stored_mapping() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        mapping = resolve_provider_location_mapping(
+            session,
+            provider_name="adzuna",
+            display_location="Remote UK",
+            default_provider_country="us",
+        )
+
+        assert mapping.provider_country == "gb"
+        assert mapping.provider_where is None
+        assert mapping.confidence == "high"
+        assert mapping.verification_status == "verified"
+        assert mapping.job_location_target.normalized_key == "remote-uk"
+        assert len(session.scalars(select(JobLocationTarget)).all()) == 5
+
+
+def test_unknown_location_creates_low_confidence_needs_review_mapping() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        mapping = resolve_provider_location_mapping(
+            session,
+            provider_name="adzuna",
+            display_location="Atlantis",
+            default_provider_country="gb",
+        )
+
+        assert mapping.provider_country == "gb"
+        assert mapping.provider_where == "Atlantis"
+        assert mapping.confidence == "low"
+        assert mapping.verification_status == "needs_review"
+        assert mapping.diagnostics_json["providerCountrySource"] == "default_provider_country"
+        assert mapping.job_location_target.normalized_key == "atlantis"
+        assert mapping.job_location_target.country_code is None
+        assert mapping.job_location_target.verification_status == "needs_review"
+
+
+def test_adzuna_sync_plan_uses_resolved_location_mapping() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    with Session(engine) as session:
+        request = provider.build_sync_plan(
+            provider_country="us",
+            locations=["Manchester, UK"],
+            queries=["Applied AI Engineer"],
+            db_session=session,
+        ).requests[0]
+
+        assert request.sync_key == "adzuna:broad:gb:manchester-uk:applied-ai-engineer"
+        assert request.provider_country == "gb"
+        assert request.provider_where == "Manchester"
+        assert request.display_location == "Manchester, UK"
+        assert request.criteria_json["providerCountry"] == "gb"
+        assert request.criteria_json["where"] == "Manchester"
+        assert request.criteria_json["normalizedLocationKey"] == "manchester-uk"
+        assert request.criteria_json["locationConfidence"] == "high"
+        assert request.criteria_json["locationVerificationStatus"] == "verified"
+
+
+def test_low_confidence_location_mapping_appears_in_adzuna_request_criteria() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    with Session(engine) as session:
+        request = provider.build_sync_plan(
+            provider_country="gb",
+            locations=["Atlantis"],
+            queries=["Applied AI Engineer"],
+            db_session=session,
+        ).requests[0]
+
+        assert request.sync_key == "adzuna:broad:gb:atlantis:applied-ai-engineer"
+        assert request.criteria_json["normalizedLocationKey"] == "atlantis"
+        assert request.criteria_json["where"] == "Atlantis"
+        assert request.criteria_json["locationConfidence"] == "low"
+        assert request.criteria_json["locationVerificationStatus"] == "needs_review"
+        assert request.criteria_json["providerLocationMappingId"]
+
+
+def test_location_mapping_maintenance_update_marks_mapping_verified(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        mapping = resolve_provider_location_mapping(
+            session,
+            provider_name="adzuna",
+            display_location="Atlantis",
+            default_provider_country="gb",
+        )
+        mapping_id = mapping.id
+        session.commit()
+
+    monkeypatch.setattr(cli_module, "create_db_engine", lambda: engine)
+    cli_module.update_job_location_mapping_command(
+        mapping_id=mapping_id,
+        provider_country="us",
+        provider_where="Atlantis, Georgia",
+        confidence="high",
+        verification_status="verified",
+    )
+
+    with Session(engine) as session:
+        updated = session.get(JobProviderLocationMapping, mapping_id)
+        assert updated is not None
+        assert updated.provider_country == "us"
+        assert updated.provider_where == "Atlantis, Georgia"
+        assert updated.confidence == "high"
+        assert updated.verification_status == "verified"
+
+
 def test_sync_key_construction_and_location_normalization() -> None:
     assert build_greenhouse_sync_key("Anthropic/") == "greenhouse:board:anthropic"
     assert build_adzuna_sync_key("GB", "London", "Applied AI Engineer") == "adzuna:broad:gb:london:applied-ai-engineer"
+    assert normalize_location_key("Manchester, UK") == "manchester-uk"
 
     remote_us = normalize_job_sync_location("Remote US")
     remote_uk = normalize_job_sync_location("Remote UK")

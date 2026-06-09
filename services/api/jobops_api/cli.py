@@ -7,10 +7,24 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from jobops_api.auth import USER_TYPE_ADMIN, USER_TYPE_USER, create_alpha_invite, normalize_email, normalize_user_type, seed_initial_user
-from jobops_api.db.models import Application, ApplicationEvent, CandidateCompany, CandidateProfile, CommandInteractionLog, JobRole, Tenant, User, UserSession, WorkspaceMembership
+from jobops_api.db.models import (
+    Application,
+    ApplicationEvent,
+    CandidateCompany,
+    CandidateProfile,
+    CommandInteractionLog,
+    JobLocationTarget,
+    JobProviderLocationMapping,
+    JobRole,
+    Tenant,
+    User,
+    UserSession,
+    WorkspaceMembership,
+)
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
 from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
+from jobops_api.job_discovery.job_sync.location_resolver import ensure_initial_job_location_mappings
 from jobops_api.profile_seed import load_public_seed_profile
 
 
@@ -62,6 +76,23 @@ def main() -> None:
     )
     greenhouse_parser.add_argument("--candidate-slug", default="rebekah-love")
 
+    list_location_mappings_parser = subparsers.add_parser(
+        "list-job-location-mappings",
+        help="List Job Sync provider location mappings needing review or maintenance.",
+    )
+    list_location_mappings_parser.add_argument("--status", default="needs_review")
+    list_location_mappings_parser.add_argument("--provider-name", default=None)
+
+    update_location_mapping_parser = subparsers.add_parser(
+        "update-job-location-mapping",
+        help="Update a Job Sync provider location mapping after review.",
+    )
+    update_location_mapping_parser.add_argument("--mapping-id", required=True)
+    update_location_mapping_parser.add_argument("--provider-country", default=None)
+    update_location_mapping_parser.add_argument("--provider-where", default=None)
+    update_location_mapping_parser.add_argument("--confidence", default=None)
+    update_location_mapping_parser.add_argument("--verification-status", default="verified")
+
     inspect_parser = subparsers.add_parser("inspect-alpha-workspaces", help="Print users, workspaces, and profile ids.")
     inspect_parser.add_argument("--workspace-slug", default=None)
 
@@ -103,6 +134,16 @@ def main() -> None:
         )
     elif args.command == "seed-greenhouse-companies":
         seed_greenhouse_companies_command(candidate_slug=args.candidate_slug)
+    elif args.command == "list-job-location-mappings":
+        list_job_location_mappings_command(status=args.status, provider_name=args.provider_name)
+    elif args.command == "update-job-location-mapping":
+        update_job_location_mapping_command(
+            mapping_id=args.mapping_id,
+            provider_country=args.provider_country,
+            provider_where=args.provider_where,
+            confidence=args.confidence,
+            verification_status=args.verification_status,
+        )
     elif args.command == "inspect-alpha-workspaces":
         inspect_alpha_workspaces_command(workspace_slug=args.workspace_slug)
     elif args.command == "reset-test-workspace":
@@ -178,6 +219,61 @@ def seed_greenhouse_companies_command(*, candidate_slug: str) -> None:
         links = upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=candidate_profile.id)
         session.commit()
         print(f"Upserted {len(links)} Greenhouse company link(s) for candidate profile: {candidate_slug}")
+
+
+def list_job_location_mappings_command(*, status: str, provider_name: str | None) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        ensure_initial_job_location_mappings(session)
+        statement = (
+            select(JobProviderLocationMapping, JobLocationTarget)
+            .join(JobLocationTarget, JobLocationTarget.id == JobProviderLocationMapping.job_location_target_id)
+            .order_by(JobLocationTarget.display_name.asc(), JobProviderLocationMapping.provider_name.asc())
+        )
+        if status:
+            statement = statement.where(JobProviderLocationMapping.verification_status == status)
+        if provider_name:
+            statement = statement.where(JobProviderLocationMapping.provider_name == provider_name)
+        rows = list(session.execute(statement))
+        session.commit()
+    if not rows:
+        print("No Job Sync location mappings matched.")
+        return
+    for mapping, target in rows:
+        print(
+            f"{mapping.id} | target={target.display_name} ({target.normalized_key}) | "
+            f"provider={mapping.provider_name} country={mapping.provider_country or '-'} "
+            f"where={mapping.provider_where or '-'} confidence={mapping.confidence} "
+            f"status={mapping.verification_status}"
+        )
+
+
+def update_job_location_mapping_command(
+    *,
+    mapping_id: str,
+    provider_country: str | None,
+    provider_where: str | None,
+    confidence: str | None,
+    verification_status: str,
+) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        mapping = session.get(JobProviderLocationMapping, mapping_id)
+        if mapping is None:
+            raise SystemExit(f"Job provider location mapping not found: {mapping_id}")
+        if provider_country is not None:
+            mapping.provider_country = provider_country.strip().casefold() or None
+        if provider_where is not None:
+            mapping.provider_where = provider_where.strip() or None
+        if confidence is not None:
+            mapping.confidence = confidence.strip() or mapping.confidence
+        mapping.verification_status = verification_status.strip() or mapping.verification_status
+        session.commit()
+        print(
+            f"Updated mapping {mapping.id}: provider={mapping.provider_name} "
+            f"country={mapping.provider_country or '-'} where={mapping.provider_where or '-'} "
+            f"confidence={mapping.confidence} status={mapping.verification_status}"
+        )
 
 
 def resolve_password_arg(password: str | None, prompt_password: bool) -> str:

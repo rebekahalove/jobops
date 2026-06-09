@@ -21,6 +21,11 @@ class JobSyncLocation:
     location_country: str | None = None
     location_metro: str | None = None
     location_confidence: str | None = None
+    normalized_key: str | None = None
+    target_id: str | None = None
+    provider_mapping_id: str | None = None
+    provider_mapping_confidence: str | None = None
+    provider_mapping_status: str | None = None
 
 
 @dataclass(frozen=True)
