@@ -56,6 +56,11 @@ textarea {
   padding: 24px 0 0;
 }
 
+.workspace-diagnostics {
+  width: var(--workspace-width);
+  margin: 14px auto 0;
+}
+
 .top-bar {
   display: flex;
   align-items: center;
@@ -2553,6 +2558,209 @@ input:disabled {
   background: var(--surface-strong);
   color: var(--accent-strong);
   font-weight: 800;
+}
+
+.job-discovery-diagnostics details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0;
+}
+
+.job-discovery-diagnostics summary {
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+  list-style: none;
+  padding: 16px 20px;
+}
+
+.job-discovery-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+.job-discovery-diagnostics summary > span:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.job-discovery-diagnostics summary strong {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.job-discovery-diagnostics summary small,
+.diagnostics-muted,
+.diagnostics-provider-row small {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.diagnostics-toggle-label {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.job-discovery-diagnostics details[open] .diagnostics-toggle-label {
+  color: var(--muted);
+}
+
+.job-discovery-diagnostics-body {
+  display: grid;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding: 18px 20px 20px;
+}
+
+.diagnostics-section {
+  display: grid;
+  gap: 10px;
+}
+
+.diagnostics-section + .diagnostics-section {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.diagnostics-section h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.96rem;
+}
+
+.diagnostics-section p {
+  margin: 0;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.diagnostics-grid div {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.diagnostics-grid dt {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.diagnostics-grid dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.diagnostics-provider-list,
+.diagnostics-note-list {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnostics-initial-row,
+.diagnostics-provider-row,
+.diagnostics-replan-row {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcfd;
+  padding: 7px 10px;
+}
+
+.diagnostics-initial-row {
+  background: #ffffff;
+}
+
+.diagnostics-replan-row {
+  border-style: dashed;
+  background: var(--surface-strong);
+}
+
+.diagnostics-event-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.diagnostics-initial-row strong,
+.diagnostics-provider-row strong,
+.diagnostics-replan-row strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.diagnostics-initial-row span,
+.diagnostics-provider-row span,
+.diagnostics-replan-row span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.diagnostics-event-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--ink);
+  margin: 0;
+  overflow: visible;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.diagnostics-event-meta span {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  align-items: baseline;
+  color: var(--ink);
+}
+
+.diagnostics-event-meta span + span::before {
+  color: var(--muted);
+  content: "|";
+  margin-right: 6px;
+}
+
+.diagnostics-event-meta strong {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.diagnostics-error {
+  color: #9f1239;
+}
+
+.diagnostics-note-list {
+  margin: 0;
+  padding-left: 18px;
 }
 
 .queue-tabs {

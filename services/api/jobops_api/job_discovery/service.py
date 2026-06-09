@@ -105,6 +105,31 @@ def list_jobs(
     return [serialize_saved_job(link, application=application_by_job_id.get(link.job_id)) for link in links]
 
 
+@router.get("/job-search-runs/latest")
+def get_latest_job_search_run_status(
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    run = session.scalar(
+        select(JobSearchRun)
+        .where(JobSearchRun.candidate_profile_id == auth.candidate_profile.id)
+        .order_by(JobSearchRun.created_at.desc())
+        .limit(1)
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Job search run not found.")
+    query_runs = list(
+        session.scalars(
+            select(JobSearchQueryRun)
+            .where(JobSearchQueryRun.job_search_run_id == run.id)
+            .order_by(JobSearchQueryRun.created_at.desc())
+        )
+    )
+    payload = serialize_job_search_run_status(run, query_runs)
+    log_job_search_run_status_serialized(payload)
+    return payload
+
+
 @router.get("/job-search-runs/{run_id}")
 def get_job_search_run_status(
     run_id: str,
@@ -846,6 +871,7 @@ def run_live_source_job_discovery(
         planner_result=planner_result,
         selection_result=selection_result,
         assistant_message=assistant_message,
+        provider_diagnostics=provider_diagnostics,
         replans_attempted=replans_attempted,
         replan_limit=settings.job_discovery_search_replan_limit,
         replanning_status=job_search_replanning_status(
@@ -2430,7 +2456,7 @@ def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearc
     planner = diagnostics.get("planner") if isinstance(diagnostics.get("planner"), dict) else {}
     selection = diagnostics.get("selection") if isinstance(diagnostics.get("selection"), dict) else {}
     replanning = diagnostics.get("replanning") if isinstance(diagnostics.get("replanning"), dict) else {}
-    return {
+    status_payload = {
         "id": run.id,
         "status": run.status,
         "searchMode": run.search_mode,
@@ -2467,6 +2493,13 @@ def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearc
         "replanReasons": replanning.get("replanReasons") if isinstance(replanning.get("replanReasons"), list) else [],
         "replanQueries": replanning.get("replanQueries") if isinstance(replanning.get("replanQueries"), list) else [],
     }
+    status_payload["diagnostics"] = build_serialized_job_search_run_diagnostics(
+        run,
+        query_runs,
+        status_payload=status_payload,
+        stored_diagnostics=diagnostics,
+    )
+    return status_payload
 
 
 def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_count: int) -> str:
@@ -2494,6 +2527,236 @@ def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_cou
     if provider_error_count:
         return f"Job discovery finished with {provider_error_count} provider error(s)."
     return f"Job discovery status: {run.status}."
+
+
+def build_serialized_job_search_run_diagnostics(
+    run: JobSearchRun,
+    query_runs: list[JobSearchQueryRun],
+    *,
+    status_payload: dict[str, Any],
+    stored_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    provider_diagnostics = stored_diagnostics.get("providerDiagnostics")
+    provider_rows = (
+        sanitize_provider_diagnostics_for_status(provider_diagnostics)
+        if isinstance(provider_diagnostics, list)
+        else provider_diagnostics_from_query_runs(query_runs)
+    )
+    replanning = status_payload_replanning(status_payload, provider_rows, run)
+    return {
+        "searchCriteria": build_status_search_criteria(run.search_plan_json if isinstance(run.search_plan_json, dict) else {}),
+        "providerDiagnostics": provider_rows,
+        "modelReview": {
+            "candidateCountAfterDedupe": run.candidate_count_after_dedupe,
+            "candidatePoolCount": run.candidate_pool_count,
+            "modelSelectedCount": run.model_selected_count,
+            "savedCount": run.saved_count,
+            "updatedExistingCount": run.updated_existing_count,
+            "duplicateCount": run.duplicate_count,
+            "skippedCount": run.skipped_count,
+            "providerErrorCount": status_payload.get("providerErrorCount", run.provider_error_count),
+        },
+        "modelExplanation": {
+            "userVisibleSummary": status_payload.get("userVisibleSummary"),
+            "userSummary": status_payload.get("userSummary"),
+            "plannerRationale": status_payload.get("plannerRationale"),
+            "selectionAssistantMessage": status_payload.get("selectionAssistantMessage"),
+            "skippedCandidateNotes": status_payload.get("selectionSkippedCandidateNotes") or [],
+        },
+        "replanning": replanning,
+    }
+
+
+def build_status_search_criteria(search_plan: dict[str, Any]) -> dict[str, Any]:
+    strategy = search_plan.get("providerStrategy") if isinstance(search_plan.get("providerStrategy"), dict) else {}
+    return {
+        "searchMode": clean_user_facing_explanation(search_plan.get("searchMode") or search_plan.get("search_mode"), limit=80),
+        "roleQueries": clean_string_diagnostic_list(coerce_diagnostic_string_list(search_plan.get("roleQueries") or search_plan.get("role_queries")), limit=12, item_limit=160),
+        "companyNames": clean_string_diagnostic_list(coerce_diagnostic_string_list(search_plan.get("companyNames") or search_plan.get("company_names")), limit=50, item_limit=180),
+        "locations": clean_string_diagnostic_list(coerce_diagnostic_string_list(search_plan.get("locations")), limit=12, item_limit=120),
+        "remoteWorkModes": clean_string_diagnostic_list(coerce_diagnostic_string_list(search_plan.get("remoteWorkModes") or search_plan.get("remote_work_modes")), limit=5, item_limit=80),
+        "salaryMin": search_plan.get("salaryMin") if isinstance(search_plan.get("salaryMin"), int) else None,
+        "excludeTerms": clean_string_diagnostic_list(coerce_diagnostic_string_list(search_plan.get("excludeTerms") or search_plan.get("exclude_terms")), limit=20, item_limit=120),
+        "maxProviderPages": strategy.get("maxProviderPages") if isinstance(strategy.get("maxProviderPages"), int) else None,
+    }
+
+
+def sanitize_provider_diagnostics_for_status(values: list[object]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in values[:200]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "providerName": clean_user_facing_explanation(item.get("providerName") or item.get("provider_name"), limit=120),
+                "providerType": clean_user_facing_explanation(item.get("providerType") or item.get("provider_type"), limit=80),
+                "companyName": clean_user_facing_explanation(item.get("companyName") or item.get("company_name"), limit=240),
+                "boardToken": clean_user_facing_explanation(item.get("boardToken") or item.get("board_token"), limit=120),
+                "attempted": bool(item.get("attempted")),
+                "configured": bool(item.get("configured")),
+                "queryPreview": clean_user_facing_explanation(item.get("query"), limit=180),
+                "requestCriteria": sanitize_request_criteria(item.get("requestCriteria") or item.get("request_criteria")),
+                "rawResultCount": diagnostic_int(item.get("rawResultCount")),
+                "resultCount": diagnostic_int(item.get("resultCount")) or 0,
+                "normalizedResultCount": diagnostic_int(item.get("normalizedResultCount")),
+                "dedupedResultCount": diagnostic_int(item.get("dedupedResultCount")),
+                "candidateCountAfterFilters": diagnostic_int(item.get("candidateCountAfterFilters")),
+                "totalMatches": diagnostic_int(item.get("totalMatches")),
+                "page": diagnostic_int(item.get("page")),
+                "pagesAttempted": diagnostic_int(item.get("pagesAttempted")),
+                "errorSummary": clean_user_facing_explanation(item.get("error"), limit=240),
+                "searchMode": clean_user_facing_explanation(item.get("searchMode") or item.get("search_mode"), limit=120),
+                "reason": clean_user_facing_explanation(item.get("reason"), limit=160),
+            }
+        )
+    return rows
+
+
+def provider_diagnostics_from_query_runs(query_runs: list[JobSearchQueryRun]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for query in query_runs[:200]:
+        rows.append(
+            {
+                "providerName": query.provider_name,
+                "providerType": provider_type_for_name(query.provider_name),
+                "companyName": query.company_name,
+                "boardToken": None,
+                "attempted": True,
+                "configured": True,
+                "queryPreview": safe_log_preview(query.query or "", limit=180) or None,
+                "requestCriteria": None,
+                "rawResultCount": query.raw_result_count,
+                "resultCount": query.normalized_result_count,
+                "normalizedResultCount": query.normalized_result_count,
+                "dedupedResultCount": query.deduped_result_count,
+                "candidateCountAfterFilters": query.candidate_count_after_filters,
+                "totalMatches": query.total_matches,
+                "page": query.page,
+                "pagesAttempted": None,
+                "errorSummary": safe_log_preview(query.error or "", limit=240) or None,
+                "searchMode": None,
+                "reason": None,
+            }
+        )
+    return rows
+
+
+def sanitize_request_criteria(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    safe: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = clean_user_facing_explanation(str(key), limit=80)
+        if not key_text or is_sensitive_diagnostic_key(key_text):
+            continue
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            safe[key_text] = clean_user_facing_explanation(item, limit=180) if isinstance(item, str) else item
+    return safe or None
+
+
+def diagnostic_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def is_sensitive_diagnostic_key(key: str) -> bool:
+    normalized = key.casefold().replace("-", "_")
+    if normalized in {"app_id", "app_key", "api_key", "authorization", "cookie", "key", "password", "secret", "token"}:
+        return True
+    return any(marker in normalized for marker in ("_secret", "_token", "_cookie", "_password", "_api_key", "_app_key"))
+
+
+def status_payload_replanning(
+    status_payload: dict[str, Any],
+    provider_rows: list[dict[str, Any]],
+    run: JobSearchRun,
+) -> dict[str, Any]:
+    reasons = status_payload.get("replanReasons") if isinstance(status_payload.get("replanReasons"), list) else []
+    decision = clean_user_facing_explanation(status_payload.get("replanningDecision"), limit=160)
+    display = build_replanning_display(provider_rows, reasons, decision, run)
+    return {
+        "replansAttempted": status_payload.get("replansAttempted"),
+        "replanLimit": status_payload.get("replanLimit"),
+        "replanReasons": clean_string_diagnostic_list(coerce_diagnostic_string_list(reasons), limit=10, item_limit=160),
+        "replanningDecision": decision,
+        "replanQueries": status_payload.get("replanQueries") if isinstance(status_payload.get("replanQueries"), list) else [],
+        "displayLabel": display["label"],
+        "displayMessage": display["message"],
+        "triggerProviderName": display["providerName"],
+        "triggerProviderType": display["providerType"],
+        "companyBoardsReturnedCandidates": display["companyBoardsReturnedCandidates"],
+        "providerResultsExisted": run.total_provider_results > 0,
+        "candidatePoolExisted": run.candidate_pool_count > 0 or run.candidate_count_after_dedupe > 0,
+    }
+
+
+def build_replanning_display(
+    provider_rows: list[dict[str, Any]],
+    reasons: list[object],
+    decision: str | None,
+    run: JobSearchRun,
+) -> dict[str, Any]:
+    reason_texts = [str(reason) for reason in reasons if str(reason)]
+    primary_reason = reason_texts[-1] if reason_texts else (decision.split(":", 1)[1] if decision and ":" in decision else None)
+    zero_match_row = next((row for row in provider_rows if row.get("totalMatches") == 0), None)
+    board_candidates = any(row.get("providerType") == "ats_board" and int(row.get("resultCount") or 0) > 0 for row in provider_rows)
+    if primary_reason == "zero_total_matches":
+        provider_name = clean_user_facing_explanation((zero_match_row or {}).get("providerName"), limit=120)
+        provider_type = clean_user_facing_explanation((zero_match_row or {}).get("providerType"), limit=80)
+        if board_candidates:
+            label = "Provider-reported zero total matches"
+            if provider_type == "broad_search" or provider_name:
+                label = "Broad search reported 0 total matches"
+            message = (
+                "Broad search reported 0 total matches, while company board searches returned candidates."
+                if provider_type == "broad_search" or not provider_name
+                else f"{provider_name} reported 0 total matches, while company board searches returned candidates."
+            )
+        elif run.total_provider_results > 0:
+            label = "Provider-reported zero total matches"
+            message = (
+                f"{provider_name or 'A provider'} reported 0 total matches, but other provider results existed."
+            )
+        else:
+            label = "All searched providers reported 0 total matches"
+            message = "Replan triggered because searched providers reported 0 total matches."
+        return {
+            "label": label,
+            "message": message,
+            "providerName": provider_name or "unknown",
+            "providerType": provider_type or "unknown",
+            "companyBoardsReturnedCandidates": board_candidates,
+        }
+    if primary_reason:
+        return {
+            "label": format_replan_reason_label(primary_reason),
+            "message": f"Replan decision: {format_replan_reason_label(primary_reason)}.",
+            "providerName": clean_user_facing_explanation((zero_match_row or {}).get("providerName"), limit=120) or "unknown",
+            "providerType": clean_user_facing_explanation((zero_match_row or {}).get("providerType"), limit=80) or "unknown",
+            "companyBoardsReturnedCandidates": board_candidates,
+        }
+    return {
+        "label": "No replanning needed",
+        "message": "No replanning was needed for this run.",
+        "providerName": "unknown",
+        "providerType": "unknown",
+        "companyBoardsReturnedCandidates": board_candidates,
+    }
+
+
+def format_replan_reason_label(reason: str) -> str:
+    return reason.replace("_", " ").capitalize()
+
+
+def coerce_diagnostic_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value]
+    return []
 
 
 def get_existing_job_search_run(session: Session, run_id: str | None, candidate_profile_id: str) -> JobSearchRun | None:
@@ -2982,6 +3245,7 @@ def build_job_search_run_diagnostics(
     planner_result: JobSearchPlannerResult,
     selection_result: JobCandidateSelectionResult | None,
     assistant_message: str,
+    provider_diagnostics: list[ProviderDiagnostic],
     replans_attempted: int,
     replan_limit: int,
     replanning_status: str,
@@ -3004,6 +3268,10 @@ def build_job_search_run_diagnostics(
             "skippedCandidateNotes": selection_skipped_candidate_notes(selection_result),
             "clarifyingQuestions": selection_clarifying_questions(selection_result),
         },
+        "providerDiagnostics": [
+            diagnostic.to_dict()
+            for diagnostic in provider_diagnostics[:200]
+        ],
         "replanning": {
             "replansAttempted": replans_attempted,
             "replanLimit": replan_limit,

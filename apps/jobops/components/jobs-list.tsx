@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { JobSearchProviderDiagnostic, JobSearchRunStatus } from "../lib/command-center-contract";
 
 export type JobBucketId = "new" | "favorites" | "applied" | "archived";
 
@@ -390,6 +391,276 @@ export function JobsList({
   );
 }
 
+export function JobDiscoveryDiagnostics({
+  apiBasePath = "/api",
+  initialRun = null
+}: {
+  apiBasePath?: string;
+  initialRun?: JobSearchRunStatus | null;
+}) {
+  const [latestJobSearchRun, setLatestJobSearchRun] = useState<JobSearchRunStatus | null>(initialRun);
+  const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
+  const [diagnosticsStatusMessage, setDiagnosticsStatusMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let timeoutId: number | null = null;
+
+    async function loadLatestRunStatus() {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      setIsDiagnosticsLoading(true);
+      try {
+        const response = await fetch(`${apiBasePath}/job-search-runs/latest`, { cache: "no-store" });
+        const payload = (await response.json().catch(() => null)) as unknown;
+        if (!active) {
+          return;
+        }
+        if (response.status === 404) {
+          setLatestJobSearchRun(null);
+          setDiagnosticsStatusMessage("No recent job discovery run diagnostics found.");
+          return;
+        }
+        if (!response.ok || !isJobSearchRunStatus(payload)) {
+          setDiagnosticsStatusMessage(`Job discovery diagnostics could not be loaded (HTTP ${response.status}).`);
+          return;
+        }
+        setLatestJobSearchRun(payload);
+        setDiagnosticsStatusMessage(null);
+        if (isActiveJobSearchRunStatus(payload.status)) {
+          timeoutId = window.setTimeout(loadLatestRunStatus, 2500);
+        }
+      } catch {
+        if (active) {
+          setDiagnosticsStatusMessage("Job discovery diagnostics API is unavailable.");
+        }
+      } finally {
+        if (active) {
+          setIsDiagnosticsLoading(false);
+        }
+      }
+    }
+
+    loadLatestRunStatus();
+    window.addEventListener("jobops:jobs-updated", loadLatestRunStatus);
+    return () => {
+      active = false;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      window.removeEventListener("jobops:jobs-updated", loadLatestRunStatus);
+    };
+  }, [apiBasePath]);
+
+  return <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} run={latestJobSearchRun} statusMessage={diagnosticsStatusMessage} />;
+}
+
+function JobDiscoveryDiagnosticsPanel({
+  run,
+  isLoading,
+  statusMessage
+}: {
+  run: JobSearchRunStatus | null;
+  isLoading: boolean;
+  statusMessage: string | null;
+}) {
+  const diagnostics = run?.diagnostics;
+  const modelReview = diagnostics?.modelReview;
+  const providerRows = diagnostics?.providerDiagnostics ?? [];
+  const criteria = diagnostics?.searchCriteria;
+  const replanning = diagnostics?.replanning;
+  const explanation = diagnostics?.modelExplanation;
+  const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
+  const providerTimeline = buildProviderSearchTimeline(providerRows, replanning, criteria);
+
+  const summaryText = run ? jobDiscoveryRunDigest(run) : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
+
+  return (
+    <section className="job-discovery-diagnostics" aria-labelledby="job-discovery-diagnostics-title">
+      <details open={isActive}>
+        <summary>
+          <span>
+            <strong id="job-discovery-diagnostics-title">Discovery diagnostics</strong>
+            <small>{summaryText}</small>
+          </span>
+          <span className="diagnostics-toggle-label">Details</span>
+        </summary>
+
+        {run ? (
+          <div className="job-discovery-diagnostics-body">
+            <section className="diagnostics-section">
+              <h3>Summary</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Status" value={formatStatus(run.status)} />
+                <DiagnosticItem label="Saved jobs" value={`${formatNumber(run.savedCount) ?? "0"} newly saved`} />
+                <DiagnosticItem label="Provider matches" value={`${formatNumber(run.providerResultCount) ?? "0"} normalized jobs returned by providers`} />
+                <DiagnosticItem label="Unique candidates" value={`${formatNumber(run.candidateCountAfterDedupe) ?? "0"} after URL/title dedupe`} />
+                <DiagnosticItem label="Sent to model" value={`${formatNumber(run.candidatePoolCount) ?? "0"} candidates in final review pool`} />
+                <DiagnosticItem label="Selected by model" value={`${formatNumber(run.modelSelectedCount) ?? "0"} jobs recommended to save`} />
+              </dl>
+              {isActive ? <p className="diagnostics-muted">Running... diagnostics will fill in as provider results arrive.</p> : null}
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Initial search plan</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Mode" value={criteria?.searchMode ? formatStatus(criteria.searchMode) : "Unknown"} />
+                <DiagnosticItem label="Role queries" value={formatList(criteria?.roleQueries)} />
+                <DiagnosticItem label="Companies" value={formatList(criteria?.companyNames)} />
+                <DiagnosticItem label="Locations" value={formatList(criteria?.locations)} />
+                <DiagnosticItem label="Work modes" value={formatList(criteria?.remoteWorkModes)} />
+                <DiagnosticItem label="Salary minimum" value={formatNumber(criteria?.salaryMin) ?? "None"} />
+                <DiagnosticItem label="Exclusions" value={formatList(criteria?.excludeTerms)} />
+                <DiagnosticItem label="Max provider pages" value={formatNumber(criteria?.maxProviderPages) ?? "Unknown"} />
+              </dl>
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Provider search timeline</h3>
+              {providerTimeline.length ? (
+                <div className="diagnostics-provider-list">
+                  {providerTimeline.map((entry, index) => (
+                    entry.type === "initial" ? (
+                      <InitialSearchTimelineRow criteria={entry.criteria} key={`initial-search-${index}`} />
+                    ) : entry.type === "replan" ? (
+                      <ReplanTimelineRow event={entry} key={`replan-${entry.attempt}-${entry.query}-${index}`} />
+                    ) : (
+                      <ProviderDiagnosticRow
+                        key={`${entry.provider.providerName}-${entry.provider.companyName}-${entry.provider.queryPreview}-${index}`}
+                        provider={entry.provider}
+                      />
+                    )
+                  ))}
+                </div>
+              ) : (
+                <p className="diagnostics-muted">Waiting for provider results...</p>
+              )}
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Model review</h3>
+              <dl className="diagnostics-grid">
+                <DiagnosticItem label="Unique candidates" value={`${formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} after provider result dedupe`} />
+                <DiagnosticItem label="Sent to model" value={`${formatNumber(modelReview?.candidatePoolCount) ?? "0"} final candidates`} />
+                <DiagnosticItem label="Selected by model" value={`${formatNumber(modelReview?.modelSelectedCount) ?? "0"} save recommendations`} />
+                <DiagnosticItem label="Saved" value={`${formatNumber(modelReview?.savedCount) ?? "0"} new saved jobs`} />
+                <DiagnosticItem label="Refreshed" value={`${formatNumber(modelReview?.updatedExistingCount) ?? "0"} existing saved jobs refreshed`} />
+                <DiagnosticItem label="Duplicates" value={`${formatNumber(modelReview?.duplicateCount) ?? "0"} already-saved or duplicate save attempts`} />
+                <DiagnosticItem label="Skipped" value={`${formatNumber(modelReview?.skippedCount) ?? "0"} provider/model candidates not saved`} />
+                <DiagnosticItem label="Provider errors" value={formatNumber(modelReview?.providerErrorCount) ?? "0"} />
+              </dl>
+            </section>
+
+            <section className="diagnostics-section">
+              <h3>Model explanation</h3>
+              <p>{explanation?.userVisibleSummary || explanation?.selectionAssistantMessage || run.userVisibleSummary || run.message}</p>
+              {explanation?.plannerRationale ? <p className="diagnostics-muted">Planner: {explanation.plannerRationale}</p> : null}
+              {explanation?.skippedCandidateNotes?.length ? (
+                <ul className="diagnostics-note-list">
+                  {explanation.skippedCandidateNotes.slice(0, 5).map((note) => (
+                    <li key={`${note.candidateId}-${note.reason}`}>
+                      <strong>{note.candidateId}</strong>: {note.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          </div>
+        ) : (
+          <div className="job-discovery-diagnostics-body">
+            <section className="diagnostics-section">
+              <h3>Summary</h3>
+              <p className="diagnostics-muted">{statusMessage || "Loading latest job discovery run..."}</p>
+            </section>
+          </div>
+        )}
+      </details>
+    </section>
+  );
+}
+
+function DiagnosticItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value || "None"}</dd>
+    </div>
+  );
+}
+
+type JobSearchReplanningDiagnostics = NonNullable<NonNullable<JobSearchRunStatus["diagnostics"]>["replanning"]>;
+type JobSearchCriteriaDiagnostics = NonNullable<NonNullable<JobSearchRunStatus["diagnostics"]>["searchCriteria"]>;
+type ProviderTimelineEntry =
+  | { type: "initial"; criteria: JobSearchCriteriaDiagnostics }
+  | { type: "provider"; provider: JobSearchProviderDiagnostic }
+  | {
+      type: "replan";
+      attempt: number;
+      label: string;
+      message: string;
+      query: string | null;
+      triggerSource: string;
+    };
+
+function ProviderDiagnosticRow({ provider }: { provider: JobSearchProviderDiagnostic }) {
+  const details = providerSearchDetails(provider);
+  const stats = providerSearchStats(provider);
+
+  return (
+    <article className="diagnostics-provider-row">
+      <div className="diagnostics-event-header">
+        <strong>{providerSearchTitle(provider)}</strong>
+        <span>
+          {[providerHeaderSearchIdentity(provider), stats].filter(Boolean).join(" - ")}
+        </span>
+      </div>
+      <div className="diagnostics-event-meta">
+        {details.length ? details.map((item) => <CompactDetailItem item={item} key={`${item.label}-${item.value}`} />) : <span>No search criteria recorded.</span>}
+      </div>
+    </article>
+  );
+}
+
+function InitialSearchTimelineRow({ criteria }: { criteria: JobSearchCriteriaDiagnostics }) {
+  return (
+    <article className="diagnostics-initial-row">
+      <div className="diagnostics-event-header">
+        <strong>Initial search</strong>
+        <span>{criteria.searchMode ? formatStatus(criteria.searchMode) : "Search plan"}</span>
+      </div>
+      <div className="diagnostics-event-meta">
+        {initialSearchDetails(criteria).map((item) => <CompactDetailItem item={item} key={`${item.label}-${item.value}`} />)}
+      </div>
+    </article>
+  );
+}
+
+function ReplanTimelineRow({ event }: { event: Extract<ProviderTimelineEntry, { type: "replan" }> }) {
+  return (
+    <article className="diagnostics-replan-row">
+      <div className="diagnostics-event-header">
+        <strong>Replan {event.attempt}</strong>
+        <span>{event.triggerSource}</span>
+      </div>
+      <div className="diagnostics-event-meta">
+        <CompactDetailItem item={{ label: "message", value: event.message }} />
+        <CompactDetailItem item={{ label: "reason", value: event.label }} />
+        {event.query ? <CompactDetailItem item={{ label: "Next query", value: event.query }} /> : null}
+      </div>
+    </article>
+  );
+}
+
+function CompactDetailItem({ item }: { item: { label: string; value: string } }) {
+  return (
+    <span>
+      <strong>{item.label}:</strong> {item.value}
+    </span>
+  );
+}
+
 const jobEmptyStates: Record<JobBucketId, { title: string; body: string }> = {
   new: {
     title: "No new jobs.",
@@ -439,6 +710,226 @@ export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
   const counts = buildJobBucketCounts(jobs);
   return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
+}
+
+function isJobSearchRunStatus(value: unknown): value is JobSearchRunStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.id === "string" &&
+    typeof payload.status === "string" &&
+    typeof payload.providerResultCount === "number" &&
+    typeof payload.candidateCountAfterDedupe === "number" &&
+    typeof payload.modelSelectedCount === "number" &&
+    typeof payload.savedCount === "number" &&
+    typeof payload.duplicateCount === "number" &&
+    typeof payload.skippedCount === "number" &&
+    typeof payload.message === "string"
+  );
+}
+
+function isActiveJobSearchRunStatus(status: string) {
+  return ["queued", "started", "running"].includes(status);
+}
+
+function jobDiscoveryRunDigest(run: JobSearchRunStatus) {
+  return [
+    formatStatus(run.status),
+    `${run.savedCount} saved`,
+    `${run.modelSelectedCount} model selected`,
+    `${run.candidatePoolCount} sent to model`,
+    `${run.candidateCountAfterDedupe} unique candidates`,
+    `${run.providerResultCount} provider matches`
+  ].join(" - ");
+}
+
+function buildProviderSearchTimeline(
+  providers: JobSearchProviderDiagnostic[],
+  replanning?: JobSearchReplanningDiagnostics,
+  criteria?: JobSearchCriteriaDiagnostics
+): ProviderTimelineEntry[] {
+  const initialEntries: ProviderTimelineEntry[] = criteria ? [{ type: "initial", criteria }] : [];
+  if (!replanning?.replansAttempted || replanning.replansAttempted < 1) {
+    return [...initialEntries, ...providers.map((provider) => ({ type: "provider" as const, provider }))];
+  }
+
+  const queries = replanning.replanQueries ?? [];
+  const reasons = replanning.replanReasons ?? [];
+  const entries: ProviderTimelineEntry[] = [...initialEntries];
+  const insertedAttempts = new Set<number>();
+
+  providers.forEach((provider) => {
+    const matchedAttempt = firstUninsertedReplanAttemptForProvider(provider, queries, insertedAttempts);
+    if (matchedAttempt !== null) {
+      entries.push(buildReplanTimelineEntry(replanning, matchedAttempt, queries[matchedAttempt - 1] ?? null, reasons[matchedAttempt - 1] ?? null));
+      insertedAttempts.add(matchedAttempt);
+    }
+    entries.push({ type: "provider", provider });
+  });
+
+  const attempts = replanning.replansAttempted ?? queries.length;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (!insertedAttempts.has(attempt)) {
+      entries.push(buildReplanTimelineEntry(replanning, attempt, queries[attempt - 1] ?? null, reasons[attempt - 1] ?? null));
+    }
+  }
+
+  return entries;
+}
+
+function firstUninsertedReplanAttemptForProvider(provider: JobSearchProviderDiagnostic, queries: string[], insertedAttempts: Set<number>) {
+  const providerQuery = normalizeSearchText(provider.queryPreview);
+  if (!providerQuery) {
+    return null;
+  }
+  for (let index = 0; index < queries.length; index += 1) {
+    const attempt = index + 1;
+    const replanQuery = normalizeSearchText(queries[index]);
+    if (!insertedAttempts.has(attempt) && replanQuery && providerQuery.includes(replanQuery)) {
+      return attempt;
+    }
+  }
+  return null;
+}
+
+function buildReplanTimelineEntry(
+  replanning: JobSearchReplanningDiagnostics,
+  attempt: number,
+  query: string | null,
+  reason: string | null
+): Extract<ProviderTimelineEntry, { type: "replan" }> {
+  const label = replanning.displayLabel || (reason ? formatStatus(reason) : "Replan triggered");
+  return {
+    type: "replan",
+    attempt,
+    label,
+    message: replanning.displayMessage || "JobOps adjusted the search plan before continuing provider searches.",
+    query,
+    triggerSource: formatTriggerSource(replanning.triggerProviderName, replanning.triggerProviderType)
+  };
+}
+
+function providerSearchStats(provider: JobSearchProviderDiagnostic) {
+  return [
+    `${formatNumber(provider.rawResultCount ?? provider.resultCount) ?? "0"} raw`,
+    `${formatNumber(provider.normalizedResultCount ?? provider.resultCount) ?? "0"} matched`,
+    provider.totalMatches !== null && provider.totalMatches !== undefined ? `${formatNumber(provider.totalMatches) ?? "0"} total` : null,
+    provider.page ? `page ${formatNumber(provider.page)}` : null
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function providerSearchTitle(provider: JobSearchProviderDiagnostic) {
+  if (provider.providerType === "ats_board") {
+    return [
+      provider.providerName || "ATS board",
+      "ATS board",
+      provider.companyName
+    ].filter(Boolean).join(" - ");
+  }
+  return [
+    provider.providerName || "Provider search",
+    provider.providerType ? formatStatus(provider.providerType) : null
+  ].filter(Boolean).join(" - ");
+}
+
+function providerHeaderSearchIdentity(provider: JobSearchProviderDiagnostic) {
+  if (provider.providerType === "ats_board" || provider.providerType === "broad_search") {
+    return null;
+  }
+  return [
+    provider.queryPreview ? `Query: ${provider.queryPreview}` : null,
+    provider.searchMode ? `Mode: ${formatStatus(provider.searchMode)}` : null,
+    provider.companyName ? `Company: ${provider.companyName}` : null,
+    provider.boardToken ? `Board: ${provider.boardToken}` : null
+  ].filter(Boolean).join(" - ");
+}
+
+function providerSearchDetails(provider: JobSearchProviderDiagnostic) {
+  const criteria = provider.requestCriteria ?? {};
+  const items: Array<{ label: string; value: string }> = [];
+  addCriteriaItem(items, "Query", provider.queryPreview || criteriaString(criteria.what));
+  if (provider.providerType !== "ats_board" && provider.providerType !== "broad_search") {
+    addCriteriaItem(items, "Provider", provider.providerName ?? null);
+    addCriteriaItem(items, "Type", provider.providerType ? formatStatus(provider.providerType) : null);
+  }
+  if (provider.providerType !== "ats_board") {
+    addCriteriaItem(items, "Where", criteriaString(criteria.where));
+    addCriteriaItem(items, "Exclude", criteriaString(criteria.whatExclude));
+    addCriteriaItem(items, "Company", provider.companyName ?? null);
+    addCriteriaItem(items, "Country", criteriaString(criteria.country));
+  }
+  if (provider.providerType !== "ats_board" && provider.providerType !== "broad_search") {
+    addCriteriaItem(items, "Mode", provider.searchMode ? formatStatus(provider.searchMode) : null);
+    addCriteriaItem(items, "Raw", formatNumber(provider.rawResultCount));
+    addCriteriaItem(items, "Matched", formatNumber(provider.normalizedResultCount ?? provider.resultCount));
+  }
+  addCriteriaItem(items, "Board token", provider.boardToken ?? null);
+  addCriteriaItem(items, "Attempted", provider.attempted === undefined ? null : provider.attempted ? "yes" : "no");
+  addCriteriaItem(items, "Configured", provider.configured === undefined ? null : provider.configured ? "yes" : "no");
+  addCriteriaItem(items, "Total", formatNumber(provider.totalMatches));
+  addCriteriaItem(items, "Deduped", formatNumber(provider.dedupedResultCount));
+  addCriteriaItem(items, "After filters", formatNumber(provider.candidateCountAfterFilters));
+  addCriteriaItem(items, "Page", formatNumber(provider.page ?? criteriaNumber(criteria.page)));
+  addCriteriaItem(items, "Pages attempted", formatNumber(provider.pagesAttempted));
+  addCriteriaItem(items, "Results/page", formatNumber(criteriaNumber(criteria.resultsPerPage)));
+  addCriteriaItem(items, "Reason", provider.reason ?? null);
+  addCriteriaItem(items, "Error", provider.errorSummary ?? null);
+  return items;
+}
+
+function initialSearchDetails(criteria: JobSearchCriteriaDiagnostics) {
+  const items: Array<{ label: string; value: string }> = [];
+  addCriteriaItem(items, "Mode", criteria.searchMode ? formatStatus(criteria.searchMode) : null);
+  addCriteriaItem(items, "Role queries", formatList(criteria.roleQueries));
+  addCriteriaItem(items, "Companies", formatList(criteria.companyNames));
+  addCriteriaItem(items, "Locations", formatList(criteria.locations));
+  addCriteriaItem(items, "Work modes", formatList(criteria.remoteWorkModes));
+  addCriteriaItem(items, "Salary minimum", formatNumber(criteria.salaryMin));
+  addCriteriaItem(items, "Exclusions", formatList(criteria.excludeTerms));
+  addCriteriaItem(items, "Max provider pages", formatNumber(criteria.maxProviderPages));
+  return items.length ? items : [{ label: "Plan", value: "No initial search criteria recorded." }];
+}
+
+function addCriteriaItem(items: Array<{ label: string; value: string }>, label: string, value?: string | null) {
+  if (value && value !== "None") {
+    items.push({ label, value });
+  }
+}
+
+function criteriaString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function criteriaNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return null;
+}
+
+function normalizeSearchText(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, " ") : "";
+}
+
+function formatList(values?: string[] | null) {
+  if (!values || values.length === 0) {
+    return "None";
+  }
+  return values.join(", ");
+}
+
+function formatNumber(value?: number | null) {
+  return typeof value === "number" ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value) : null;
+}
+
+function formatTriggerSource(providerName?: string | null, providerType?: string | null) {
+  const name = providerName && providerName !== "unknown" ? providerName : "Unknown source";
+  const type = providerType && providerType !== "unknown" ? formatStatus(providerType) : null;
+  return type ? `${name} (${type})` : name;
 }
 
 function isFavoriteJobStatus(status: string) {

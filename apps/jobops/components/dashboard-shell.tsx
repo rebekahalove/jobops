@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AiCommandCenter } from "./ai-command-center";
+import { JobDiscoveryDiagnostics } from "./jobs-list";
 import { dashboardWorkflows } from "../lib/workflows";
 import { getWorkspaceRoute } from "../lib/command-center-actions";
 import type { WorkspaceTab } from "../lib/command-center-actions";
@@ -83,6 +84,9 @@ export function DashboardShell({
             );
           })}
         </nav>
+      </div>
+      <div className="workspace-content workspace-diagnostics" aria-label="Job discovery diagnostics">
+        <JobDiscoveryDiagnostics apiBasePath={apiBasePath} />
       </div>
       <div className="workspace-content" aria-label="Active workspace content">
         {children}
