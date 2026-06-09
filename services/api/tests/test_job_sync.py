@@ -1,0 +1,892 @@
+from __future__ import annotations
+
+import urllib.error
+from datetime import UTC, date, datetime, timedelta
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+
+from jobops_api.db.models import (
+    Application,
+    Base,
+    CandidateProfile,
+    CandidateSavedJob,
+    JobListing,
+    JobListingSource,
+    JobPosting,
+    JobSyncRun,
+    Tenant,
+)
+from jobops_api.job_discovery.job_sync import (
+    BaseJobSyncProvider,
+    JobListingSourceRecord,
+    JobSyncRequest,
+    JobSyncResult,
+    NormalizedJobListing,
+    build_adzuna_sync_key,
+    build_greenhouse_sync_key,
+    is_sync_fresh,
+    normalize_job_sync_location,
+    record_job_sync_run,
+    upsert_job_listing_from_provider_record,
+)
+from jobops_api.job_discovery.job_sync.providers.adzuna import AdzunaJobSyncProvider
+from jobops_api.job_discovery.job_sync.providers.greenhouse import GreenhouseJobSyncProvider
+
+
+def test_greenhouse_same_board_and_provider_job_id_updates_existing_listing() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        first = upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer"),
+            source=greenhouse_source(provider_job_id="123", board_token="anthropic"),
+        )
+        second = upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Senior Applied AI Engineer"),
+            source=greenhouse_source(provider_job_id="123", board_token="anthropic"),
+        )
+
+        assert first.created is True
+        assert second.updated is True
+        assert session.scalar(select(JobListing).where(JobListing.id == first.job_listing_id)).title == "Senior Applied AI Engineer"
+        assert len(session.scalars(select(JobListing)).all()) == 1
+        assert len(session.scalars(select(JobListingSource)).all()) == 1
+
+
+def test_greenhouse_distinct_provider_job_ids_preserve_distinct_same_title_jobs() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="anthropic"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="456", board_token="anthropic"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
+def test_greenhouse_fetches_retrieve_job_payload_with_application_questions(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    list_job = greenhouse_list_job_raw()
+    retrieve_job = greenhouse_retrieve_job_raw()
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [list_job], "meta": {"total": 1}}
+        if url.endswith("/jobs/44444"):
+            return retrieve_job
+        raise AssertionError(f"Unexpected Greenhouse URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+
+    records = list(provider.fetch_provider_records(request))
+
+    assert records == [
+        {
+            **list_job,
+            **retrieve_job,
+            "job_board_list_payload": list_job,
+            "job_board_retrieve_payload": retrieve_job,
+            "job_board_retrieve_request": greenhouse_retrieve_request("vaulttec", "44444"),
+        }
+    ]
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        (
+            "https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444",
+            {"questions": "true", "pay_transparency": "true"},
+        ),
+    ]
+    assert request.criteria_json["retrieveJobQuestions"] is True
+    assert request.criteria_json["retrieveJobPayTransparency"] is True
+
+
+def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None:
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    raw = {
+        **greenhouse_list_job_raw(),
+        **greenhouse_retrieve_job_raw(),
+        "job_board_list_payload": greenhouse_list_job_raw(),
+        "job_board_retrieve_payload": greenhouse_retrieve_job_raw(),
+        "job_board_retrieve_request": greenhouse_retrieve_request("vaulttec", "44444"),
+    }
+
+    normalized = provider.normalize_provider_record(raw, request)
+
+    assert normalized is not None
+    listing_record, source = normalized
+    assert listing_record.title == "Product Engineer"
+    assert source.source_provider == "greenhouse"
+    assert source.provider_job_id == "44444"
+    assert source.source_result_id == "vaulttec:44444"
+    assert source.raw_metadata_json == raw
+    assert source.raw_metadata_json["internal_job_id"] == 55555
+    assert source.raw_metadata_json["requisition_id"] == "50"
+    assert source.raw_metadata_json["language"] == "en"
+    assert source.raw_metadata_json["metadata"] == [{"id": 12345, "name": "Field Name", "value_type": "text", "value": "Some value"}]
+    assert source.raw_metadata_json["departments"] == greenhouse_list_job_raw()["departments"]
+    assert source.raw_metadata_json["offices"] == greenhouse_list_job_raw()["offices"]
+    assert source.raw_metadata_json["questions"][1]["label"] == "Resume"
+    assert source.raw_metadata_json["location_questions"][0]["label"] == "Location"
+    assert source.raw_metadata_json["compliance"][0]["label"] == "Veteran Status"
+    assert source.raw_metadata_json["data_compliance"][0]["type"] == "gdpr"
+    assert source.raw_metadata_json["demographic_questions"]["questions"][0]["label"] == "Favorite Color"
+    assert source.raw_metadata_json["pay_input_ranges"][0]["currency_type"] == "USD"
+    assert source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "44444")
+
+
+def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    first_list_job = greenhouse_list_job_raw(job_id=44444, title="Product Engineer")
+    second_list_job = greenhouse_list_job_raw(job_id=55555, title="Data Engineer")
+    first_detail = greenhouse_retrieve_job_raw(job_id=44444, title="Product Engineer")
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [first_list_job, second_list_job], "meta": {"total": 2}}
+        if url.endswith("/jobs/44444"):
+            return first_detail
+        if url.endswith("/jobs/55555"):
+            raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+        raise AssertionError(f"Unexpected Greenhouse URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider()
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = provider.refresh_inventory(session, request, freshness_hours=0)
+        sources = session.scalars(select(JobListingSource).order_by(JobListingSource.provider_job_id)).all()
+        run = session.scalar(select(JobSyncRun))
+
+    assert result.raw_result_count == 2
+    assert result.normalized_count == 2
+    assert result.created_count == 2
+    assert result.diagnostics_json == {
+        "detailRequestsAttempted": 2,
+        "detailRequestsSucceeded": 1,
+        "detailRequestsFailed": 1,
+        "detailRequestsSkipped": 0,
+    }
+    assert run is not None
+    assert run.criteria_json["detailRequestsAttempted"] == 2
+    assert run.criteria_json["detailRequestsSucceeded"] == 1
+    assert run.criteria_json["detailRequestsFailed"] == 1
+    assert len(sources) == 2
+    failed_source = next(source for source in sources if source.provider_job_id == "55555")
+    assert failed_source.raw_metadata_json["job_board_list_payload"] == second_list_job
+    assert failed_source.raw_metadata_json["job_board_retrieve_payload"] is None
+    assert failed_source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "55555")
+    assert failed_source.raw_metadata_json["job_board_retrieve_error"] == {
+        "type": "HTTPError",
+        "message": "Greenhouse retrieve-job request failed.",
+        "status": 404,
+    }
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/55555", {"questions": "true", "pay_transparency": "true"}),
+    ]
+
+
+def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+    first_list_job = greenhouse_list_job_raw(job_id=44444, title="Product Engineer")
+    second_list_job = greenhouse_list_job_raw(job_id=55555, title="Data Engineer")
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/jobs"):
+            return {"jobs": [first_list_job, second_list_job], "meta": {"total": 2}}
+        if url.endswith("/jobs/44444"):
+            return greenhouse_retrieve_job_raw(job_id=44444, title="Product Engineer")
+        raise AssertionError(f"Unexpected Greenhouse detail fetch beyond guardrail: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    provider = GreenhouseJobSyncProvider(max_detail_requests=1)
+    request = provider.build_sync_plan(["vaulttec"]).requests[0]
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = provider.refresh_inventory(session, request, freshness_hours=0)
+        sources = session.scalars(select(JobListingSource).order_by(JobListingSource.provider_job_id)).all()
+        run = session.scalar(select(JobSyncRun))
+
+    assert result.normalized_count == 2
+    assert result.diagnostics_json == {
+        "detailRequestsAttempted": 1,
+        "detailRequestsSucceeded": 1,
+        "detailRequestsFailed": 0,
+        "detailRequestsSkipped": 1,
+    }
+    assert run is not None
+    assert run.criteria_json["maxDetailRequests"] == 1
+    assert run.criteria_json["detailRequestsSkipped"] == 1
+    assert len(sources) == 2
+    skipped_source = next(source for source in sources if source.provider_job_id == "55555")
+    assert skipped_source.raw_metadata_json["job_board_retrieve_payload"] is None
+    assert skipped_source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "55555")
+    assert skipped_source.raw_metadata_json["job_board_retrieve_skipped"] == {
+        "reason": "max_detail_requests_reached",
+        "maxDetailRequests": 1,
+    }
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+    ]
+
+
+def test_adzuna_same_provider_job_id_updates_existing_listing() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    with Session(engine) as session:
+        first_normalized = provider.normalize_provider_record(
+            adzuna_raw(id="adz-1", title="AI Platform Engineer", redirect_url="https://adzuna.example.test/a?tracking=1"),
+            request,
+        )
+        second_normalized = provider.normalize_provider_record(
+            adzuna_raw(id="adz-1", title="Staff AI Platform Engineer", redirect_url="https://adzuna.example.test/b?tracking=2"),
+            request,
+        )
+        assert first_normalized is not None
+        assert second_normalized is not None
+        first = upsert_job_listing_from_provider_record(
+            session,
+            listing=first_normalized[0],
+            source=first_normalized[1],
+        )
+        second = upsert_job_listing_from_provider_record(
+            session,
+            listing=second_normalized[0],
+            source=second_normalized[1],
+        )
+
+        assert first.job_listing_id == second.job_listing_id
+        assert second.updated is True
+        source = session.scalar(select(JobListingSource))
+        assert source is not None
+        assert source.source_provider == "adzuna"
+        assert source.provider_job_id == "adz-1"
+        assert source.source_result_id == "adz-1"
+        assert len(session.scalars(select(JobListing)).all()) == 1
+
+
+def test_adzuna_same_id_with_different_redirect_url_updates_same_listing() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    with Session(engine) as session:
+        first_normalized = provider.normalize_provider_record(
+            adzuna_raw(id=99, redirect_url="https://adzuna.example.test/redirect?job=99&tracking=one"),
+            request,
+        )
+        second_normalized = provider.normalize_provider_record(
+            adzuna_raw(id=99, redirect_url="https://adzuna.example.test/redirect?job=99&tracking=two"),
+            request,
+        )
+        assert first_normalized is not None
+        assert second_normalized is not None
+
+        first = upsert_job_listing_from_provider_record(session, listing=first_normalized[0], source=first_normalized[1])
+        second = upsert_job_listing_from_provider_record(session, listing=second_normalized[0], source=second_normalized[1])
+
+        assert first.job_listing_id == second.job_listing_id
+        assert len(session.scalars(select(JobListing)).all()) == 1
+        source = session.scalar(select(JobListingSource))
+        assert source is not None
+        assert source.provider_job_id == "99"
+        assert source.source_result_id == "99"
+        assert source.source_url == "https://adzuna.example.test/redirect?job=99&tracking=two"
+
+
+def test_adzuna_source_record_retains_raw_api_response_fields() -> None:
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    raw = {
+        "salary_is_predicted": "1",
+        "created": "2026-06-03T09:44:54Z",
+        "category": {
+            "__CLASS__": "Adzuna::API::Response::Category",
+            "tag": "healthcare-nursing-jobs",
+            "label": "Healthcare & Nursing Jobs",
+        },
+        "redirect_url": "https://www.adzuna.com/land/ad/5750706638?se=Hnuptc5j8RGxEpABevI5bA&utm_medium=api&utm_source=eba7774e&v=2ED33E8F08AE7E2AD65CF6F23FE1D9958955A52A",
+        "salary_min": 60680.7,
+        "company": {
+            "__CLASS__": "Adzuna::API::Response::Company",
+            "display_name": "Mission Hospital",
+        },
+        "salary_max": 60680.7,
+        "title": "Psych Emergency Room Registered Nurse",
+        "adref": "eyJhbGciOiJIUzI1NiJ9.eyJpIjoiNTc1MDcwNjYzOCIsInMiOiJIbnVwdGM1ajhSR3hFcEFCZXZJNWJBIn0.6ZYmkcKaeRL0AY16rllVb7wMytXI7WMxwSqS2cSTETQ",
+        "longitude": -82.555682,
+        "__CLASS__": "Adzuna::API::Response::Job",
+        "latitude": 35.596321,
+        "description": "Do you have the career opportunities as a Psych ED Registered Nurse you want?",
+        "location": {
+            "display_name": "Asheville, Buncombe County",
+            "area": ["US", "North Carolina", "Buncombe County", "Asheville"],
+            "__CLASS__": "Adzuna::API::Response::Location",
+        },
+        "id": "5750706638",
+    }
+
+    normalized = provider.normalize_provider_record(raw, request)
+
+    assert normalized is not None
+    _listing, source = normalized
+    assert source.source_provider == "adzuna"
+    assert source.provider_job_id == "5750706638"
+    assert source.source_result_id == "5750706638"
+    assert source.raw_metadata_json == raw
+
+
+def test_adzuna_similar_jobs_with_different_provider_ids_do_not_merge() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="London, UK"),
+            source=adzuna_source(provider_job_id="adz-1"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="London, UK"),
+            source=adzuna_source(provider_job_id="adz-2"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+
+
+def test_greenhouse_same_provider_job_id_on_different_boards_does_not_merge() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="company-a"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="company-b"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
+def test_cross_provider_same_job_shape_does_not_merge() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=greenhouse_source(provider_job_id="123", board_token="acme"),
+        )
+        upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Applied AI Engineer", company_name="Acme AI", location_display="Remote US"),
+            source=adzuna_source(provider_job_id="123"),
+        )
+
+        assert len(session.scalars(select(JobListing)).all()) == 2
+        assert len(session.scalars(select(JobListingSource)).all()) == 2
+
+
+def test_provider_record_without_id_is_rejected_without_url_identity() -> None:
+    engine = create_engine_for_job_sync_tests()
+    source_url = "https://jobs.example.test/postings/42?utm_source=newsletter"
+    with Session(engine) as session:
+        with pytest.raises(ValueError, match="stable provider job id"):
+            upsert_job_listing_from_provider_record(
+                session,
+                listing=listing(title="No Identity Engineer"),
+                source=generic_source(provider_job_id=None, source_url=source_url),
+            )
+
+        assert session.scalars(select(JobListing)).all() == []
+
+
+def test_adzuna_record_without_id_is_failed_normalization() -> None:
+    engine = create_engine_for_job_sync_tests()
+    provider = AdzunaJobSyncProvider()
+    request = adzuna_sync_request()
+    raw_without_id = adzuna_raw(id=None, redirect_url="https://adzuna.example.test/redirect?job=missing&tracking=one")
+    raw_without_id.pop("id")
+
+    assert provider.normalize_provider_record(raw_without_id, request) is None
+
+    class MissingIdAdzunaProvider(AdzunaJobSyncProvider):
+        def fetch_provider_records(self, request: JobSyncRequest):
+            return [raw_without_id]
+
+    with Session(engine) as session:
+        result = MissingIdAdzunaProvider().refresh_inventory(session, request)
+
+        assert result.raw_result_count == 1
+        assert result.normalized_count == 0
+        assert result.failed_normalization_count == 1
+        assert session.scalars(select(JobListing)).all() == []
+
+
+def test_sync_freshness_counts_only_recent_completed_runs() -> None:
+    engine = create_engine_for_job_sync_tests()
+    sync_key = build_greenhouse_sync_key("anthropic")
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        session.add(
+            JobSyncRun(
+                sync_key=sync_key,
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                sync_kind="company_board",
+                status="failed",
+                started_at=now - timedelta(hours=1),
+                completed_at=now - timedelta(hours=1),
+            )
+        )
+        session.commit()
+        assert is_sync_fresh(session, sync_key) is False
+
+        session.add(
+            JobSyncRun(
+                sync_key=sync_key,
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                sync_kind="company_board",
+                status="completed",
+                started_at=now - timedelta(hours=25),
+                completed_at=now - timedelta(hours=25),
+            )
+        )
+        session.commit()
+        assert is_sync_fresh(session, sync_key) is False
+
+        session.add(
+            JobSyncRun(
+                sync_key=sync_key,
+                provider_name="greenhouse",
+                provider_type="ats_board",
+                sync_kind="company_board",
+                status="completed",
+                started_at=now - timedelta(hours=2),
+                completed_at=now - timedelta(hours=2),
+            )
+        )
+        session.commit()
+        assert is_sync_fresh(session, sync_key) is True
+
+
+def test_refresh_inventory_records_skipped_fresh_without_defining_freshness() -> None:
+    class OneRecordProvider(BaseJobSyncProvider):
+        provider_name = "test_provider"
+        provider_type = "broad_search"
+
+        def build_sync_plan(self):
+            return None
+
+        def fetch_provider_records(self, request: JobSyncRequest):
+            return [{"id": "sync-1"}]
+
+        def normalize_provider_record(self, raw: object, request: JobSyncRequest):
+            return (
+                listing(title="Applied AI Engineer"),
+                JobListingSourceRecord(
+                    source_provider=self.provider_name,
+                    provider_type=self.provider_type,
+                    provider_job_id="sync-1",
+                    source_result_id="sync-1",
+                    source_url="https://provider.example.test/jobs/sync-1",
+                    raw_metadata_json={"id": "sync-1"},
+                    source_status="active",
+                ),
+            )
+
+    engine = create_engine_for_job_sync_tests()
+    request = JobSyncRequest(
+        sync_key="test-provider:broad:remote-us:applied-ai-engineer",
+        provider_name="test_provider",
+        provider_type="broad_search",
+        sync_kind="broad_search",
+        criteria_json={"apiPath": "/jobs/search", "what": "Applied AI Engineer"},
+    )
+    provider = OneRecordProvider()
+    with Session(engine) as session:
+        first = provider.refresh_inventory(session, request)
+        second = provider.refresh_inventory(session, request, freshness_hours=24)
+        runs = session.scalars(select(JobSyncRun).order_by(JobSyncRun.created_at.asc())).all()
+
+        assert first.status == "completed"
+        assert second.status == "skipped_fresh"
+        assert len(runs) == 2
+        assert runs[0].status == "completed"
+        assert runs[1].status == "skipped_fresh"
+        assert runs[1].raw_result_count == 0
+        assert runs[1].normalized_count == 0
+        assert runs[1].criteria_json["apiPath"] == "/jobs/search"
+        assert runs[1].criteria_json["what"] == "Applied AI Engineer"
+        assert runs[1].criteria_json["skipReason"] == "fresh"
+        assert runs[1].criteria_json["freshnessHours"] == 24
+        assert runs[1].criteria_json["latestCompletedAt"]
+        assert is_sync_fresh(session, request.sync_key) is True
+
+        skipped_only_key = "test-provider:broad:skipped-only"
+        record_job_sync_run(
+            session,
+            JobSyncResult(
+                request=JobSyncRequest(
+                    sync_key=skipped_only_key,
+                    provider_name="test_provider",
+                    provider_type="broad_search",
+                    sync_kind="broad_search",
+                ),
+                status="skipped_fresh",
+            ),
+        )
+        assert is_sync_fresh(session, skipped_only_key) is False
+
+
+def test_sync_key_construction_and_location_normalization() -> None:
+    assert build_greenhouse_sync_key("Anthropic/") == "greenhouse:board:anthropic"
+    assert build_adzuna_sync_key("GB", "London", "Applied AI Engineer") == "adzuna:broad:gb:london:applied-ai-engineer"
+
+    remote_us = normalize_job_sync_location("Remote US")
+    remote_uk = normalize_job_sync_location("Remote UK")
+    louisville = normalize_job_sync_location("Louisville, KY")
+    london = normalize_job_sync_location("London, UK")
+
+    assert remote_us.provider_country == "us"
+    assert remote_us.provider_where is None
+    assert remote_uk.provider_country == "gb"
+    assert louisville.provider_country == "us"
+    assert louisville.provider_where == "Louisville, Kentucky"
+    assert london.provider_country == "gb"
+    assert london.provider_where == "London"
+
+
+def test_record_job_sync_run_stores_request_diagnostics_without_secrets() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        run = record_job_sync_run(
+            session,
+            JobSyncResult(
+                request=JobSyncRequest(
+                    sync_key=build_adzuna_sync_key("us", "remote-us", "Applied AI Engineer"),
+                    provider_name="adzuna",
+                    provider_type="broad_search",
+                    sync_kind="broad_search",
+                    provider_country="us",
+                    display_location="Remote US",
+                    query_text="Applied AI Engineer",
+                    criteria_json={
+                        "apiPath": "/v1/api/jobs/us/search/1",
+                        "what": "Applied AI Engineer",
+                        "where": None,
+                        "app_id": "secret-app-id",
+                        "app_key": "secret-app-key",
+                    },
+                ),
+                raw_result_count=10,
+                normalized_count=9,
+                created_count=8,
+                updated_count=1,
+            ),
+        )
+
+        assert run.criteria_json == {
+            "apiPath": "/v1/api/jobs/us/search/1",
+            "what": "Applied AI Engineer",
+            "where": None,
+        }
+
+
+def test_job_sync_models_do_not_break_existing_applied_application_relationships() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        tenant = Tenant(name="Tenant", slug="tenant")
+        profile = CandidateProfile(
+            tenant=tenant,
+            slug="candidate",
+            display_name="Candidate",
+            headline="Applied AI Engineer",
+            summary="",
+            profile_status="draft",
+        )
+        posting = JobPosting(
+            title="Applied AI Engineer",
+            company_name="Acme AI",
+            job_url="https://jobs.example.test/1",
+            normalized_url="https://jobs.example.test/1",
+            source="manual",
+        )
+        saved_job = CandidateSavedJob(candidate_profile=profile, job=posting, status="saved")
+        application = Application(
+            candidate_profile=profile,
+            job=posting,
+            saved_job=saved_job,
+            company_name="Acme AI",
+            job_title="Applied AI Engineer",
+            job_url="https://jobs.example.test/1",
+            status="applied",
+            date_applied=date(2026, 6, 1),
+        )
+        session.add(application)
+        session.commit()
+
+        loaded = session.scalar(select(Application).where(Application.id == application.id))
+        assert loaded is not None
+        assert loaded.job.id == posting.id
+        assert loaded.saved_job.id == saved_job.id
+        assert loaded.status == "applied"
+
+
+def create_engine_for_job_sync_tests():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    return engine
+
+
+def listing(
+    *,
+    title: str,
+    company_name: str = "Acme AI",
+    location_display: str = "Remote US",
+) -> NormalizedJobListing:
+    return NormalizedJobListing(
+        title=title,
+        company_name=company_name,
+        canonical_url="https://jobs.example.test/default",
+        apply_url="https://jobs.example.test/default",
+        source_url="https://jobs.example.test/default",
+        location_raw=location_display,
+        location_display=location_display,
+        location_country="US",
+        remote_work_mode="remote",
+        employment_type="full_time",
+        source_updated_at=datetime.now(UTC),
+        source_status="active",
+    )
+
+
+def greenhouse_source(*, provider_job_id: str, board_token: str) -> JobListingSourceRecord:
+    return JobListingSourceRecord(
+        source_provider="greenhouse",
+        provider_type="ats_board",
+        provider_job_id=provider_job_id,
+        source_result_id=f"{board_token}:{provider_job_id}",
+        ats_provider="greenhouse",
+        ats_board_token=board_token,
+        source_url=f"https://boards.greenhouse.io/{board_token}/jobs/{provider_job_id}",
+        apply_url=f"https://boards.greenhouse.io/{board_token}/jobs/{provider_job_id}",
+        canonical_url=f"https://boards.greenhouse.io/{board_token}/jobs/{provider_job_id}",
+        raw_metadata_json={"id": provider_job_id},
+        source_status="active",
+    )
+
+
+def greenhouse_list_job_raw(*, job_id: int = 44444, title: str = "Product Engineer", board_token: str = "vaulttec") -> dict[str, object]:
+    return {
+        "id": job_id,
+        "internal_job_id": job_id + 11111,
+        "title": title,
+        "updated_at": "2013-07-02T19:39:23Z",
+        "requisition_id": "50",
+        "location": {"name": "San Francisco, CA"},
+        "absolute_url": f"https://boards.greenhouse.io/{board_token}/jobs/{job_id}",
+        "language": "en",
+        "metadata": None,
+        "content": "This is the job description.",
+        "departments": [
+            {
+                "id": 13583,
+                "name": "Department of Departments",
+                "parent_id": None,
+                "child_ids": [13585],
+            }
+        ],
+        "offices": [
+            {
+                "id": 8304,
+                "name": "East Coast",
+                "location": "United States",
+                "parent_id": None,
+                "child_ids": [8787],
+            }
+        ],
+    }
+
+
+def greenhouse_retrieve_job_raw(*, job_id: int = 44444, title: str = "Product Engineer", board_token: str = "vaulttec") -> dict[str, object]:
+    return {
+        "id": job_id,
+        "title": title,
+        "updated_at": "2013-07-02T19:39:23Z",
+        "requisition_id": "50",
+        "location": {"name": "San Francisco, CA"},
+        "content": "This is the job description.",
+        "absolute_url": f"https://boards.greenhouse.io/{board_token}/jobs/{job_id}",
+        "language": "en",
+        "internal_job_id": job_id + 11111,
+        "location_questions": [
+            {
+                "label": "Location",
+                "fields": [{"name": "location", "type": "input_text", "values": []}],
+                "required": True,
+            }
+        ],
+        "questions": [
+            {
+                "required": True,
+                "label": "First Name",
+                "fields": [{"name": "first_name", "type": "input_text"}],
+            },
+            {
+                "required": True,
+                "label": "Resume",
+                "fields": [
+                    {"name": "resume", "type": "input_file"},
+                    {"name": "resume_text", "type": "textarea"},
+                ],
+            },
+        ],
+        "metadata": [{"id": 12345, "name": "Field Name", "value_type": "text", "value": "Some value"}],
+        "compliance": [
+            {
+                "required": False,
+                "label": "Veteran Status",
+                "fields": [{"name": "eeoc_veteran_status", "type": "multi_value_single_select", "values": []}],
+            }
+        ],
+        "data_compliance": [
+            {
+                "type": "gdpr",
+                "requires_consent": True,
+                "requires_processing_consent": True,
+                "requires_retention_consent": True,
+                "retention_period": 12345,
+            }
+        ],
+        "demographic_questions": {
+            "header": "Diversity and Inclusion at Acme Corp.",
+            "description": "<p>Acme Corp. is dedicated to...</p>",
+            "questions": [
+                {
+                    "id": 1,
+                    "label": "Favorite Color",
+                    "required": False,
+                    "type": "multi_value_multi_select",
+                    "answer_options": [{"id": 100, "label": "Red", "free_form": False}],
+                }
+            ],
+        },
+        "pay_input_ranges": [
+            {
+                "min_cents": 5000000,
+                "max_cents": 7500000,
+                "currency_type": "USD",
+                "title": "NYC Salary Range",
+                "blurb": "In order to provide transparency...",
+            }
+        ],
+    }
+
+
+def greenhouse_retrieve_request(board_token: str, job_id: str) -> dict[str, object]:
+    return {
+        "url": f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}",
+        "params": {"questions": "true", "pay_transparency": "true"},
+    }
+
+
+def adzuna_source(*, provider_job_id: str, source_url: str | None = None) -> JobListingSourceRecord:
+    resolved_url = source_url or f"https://adzuna.example.test/jobs/{provider_job_id}"
+    return JobListingSourceRecord(
+        source_provider="adzuna",
+        provider_type="broad_search",
+        provider_job_id=provider_job_id,
+        source_result_id=provider_job_id,
+        source_url=resolved_url,
+        apply_url=resolved_url,
+        canonical_url=resolved_url,
+        source_query="Applied AI Engineer",
+        source_country="us",
+        raw_metadata_json={"id": provider_job_id},
+        source_status="active",
+    )
+
+
+def generic_source(*, provider_job_id: str | None, source_url: str) -> JobListingSourceRecord:
+    return JobListingSourceRecord(
+        source_provider="provider_without_ids",
+        provider_type="broad_search",
+        provider_job_id=provider_job_id,
+        source_result_id=provider_job_id,
+        source_url=source_url,
+        apply_url=source_url,
+        canonical_url=source_url,
+        source_query="Applied AI Engineer",
+        source_country="us",
+        raw_metadata_json={},
+        source_status="active",
+    )
+
+
+def adzuna_sync_request() -> JobSyncRequest:
+    return JobSyncRequest(
+        sync_key=build_adzuna_sync_key("us", "remote-us", "Applied AI Engineer"),
+        provider_name="adzuna",
+        provider_type="broad_search",
+        sync_kind="broad_search",
+        provider_country="us",
+        display_location="Remote US",
+        query_text="Applied AI Engineer",
+        criteria_json={
+            "providerCountry": "us",
+            "apiPath": "/v1/api/jobs/us/search/1",
+            "page": 1,
+            "what": "Applied AI Engineer",
+            "where": None,
+            "resultsPerPage": 50,
+            "contentType": "application/json",
+            "syncKey": build_adzuna_sync_key("us", "remote-us", "Applied AI Engineer"),
+        },
+    )
+
+
+def adzuna_raw(
+    *,
+    id: object,
+    title: str = "Applied AI Engineer",
+    redirect_url: str = "https://adzuna.example.test/redirect?job=1&tracking=one",
+) -> dict[str, object]:
+    return {
+        "id": id,
+        "title": title,
+        "company": {"display_name": "Acme AI"},
+        "redirect_url": redirect_url,
+        "description": "Applied AI role",
+        "location": {"display_name": "Remote US"},
+        "created": "2026-06-01T12:00:00Z",
+    }

@@ -112,6 +112,55 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "job_id" in application_columns
     assert "saved_job_id" in application_columns
     assert "target_company_id" not in application_columns
+    assert "job_listings" in inspector.get_table_names()
+    assert "job_listing_sources" in inspector.get_table_names()
+    assert "job_sync_runs" in inspector.get_table_names()
+    job_listing_columns = {column["name"] for column in inspector.get_columns("job_listings")}
+    assert {
+        "title",
+        "company_id",
+        "company_name",
+        "canonical_url",
+        "apply_url",
+        "source_url",
+        "location_raw",
+        "location_display",
+        "location_country",
+        "remote_work_mode",
+        "salary_min",
+        "salary_max",
+        "source_updated_at",
+        "last_synced_at",
+        "is_active",
+        "source_status",
+    }.issubset(job_listing_columns)
+    job_listing_source_columns = {column["name"] for column in inspector.get_columns("job_listing_sources")}
+    assert {
+        "job_listing_id",
+        "source_provider",
+        "provider_type",
+        "provider_job_id",
+        "ats_provider",
+        "ats_board_token",
+        "source_query",
+        "raw_metadata_json",
+        "last_synced_at",
+        "is_active",
+    }.issubset(job_listing_source_columns)
+    job_sync_run_columns = {column["name"] for column in inspector.get_columns("job_sync_runs")}
+    assert {
+        "sync_key",
+        "provider_name",
+        "provider_type",
+        "sync_kind",
+        "provider_country",
+        "provider_where",
+        "query_text",
+        "criteria_json",
+        "completed_at",
+        "created_count",
+        "updated_count",
+    }.issubset(job_sync_run_columns)
 
 
 def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, monkeypatch) -> None:
