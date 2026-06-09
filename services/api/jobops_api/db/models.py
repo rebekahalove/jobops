@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -309,6 +309,7 @@ class Company(Base, TimestampMixin):
 
     candidate_links: Mapped[list[CandidateCompany]] = relationship(back_populates="company", cascade="all, delete-orphan")
     job_postings: Mapped[list[JobPosting]] = relationship(back_populates="company")
+    job_listings: Mapped[list[JobListing]] = relationship(back_populates="company")
     job_roles: Mapped[list[JobRole]] = relationship(back_populates="company")
     applications: Mapped[list[Application]] = relationship(back_populates="company")
 
@@ -422,6 +423,181 @@ class CandidateSavedJob(Base, TimestampMixin):
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
     job: Mapped[JobPosting] = relationship(back_populates="saved_links")
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
+
+
+class JobListing(Base, TimestampMixin):
+    __tablename__ = "job_listings"
+    __table_args__ = (
+        Index("ix_job_listings_active_last_seen", "is_active", "last_seen_at"),
+        Index("ix_job_listings_active_source_updated", "is_active", "source_updated_at"),
+        Index("ix_job_listings_company_active", "company_id", "is_active"),
+        Index("ix_job_listings_company_name_active", "company_name", "is_active"),
+        Index(
+            "ix_job_listings_location_active",
+            "location_country",
+            "location_region",
+            "location_city",
+            "is_active",
+        ),
+        Index("ix_job_listings_location_metro_active", "location_metro", "is_active"),
+        Index("ix_job_listings_remote_active", "remote_work_mode", "is_active"),
+        Index("ix_job_listings_posting_date", "posting_date"),
+        Index("ix_job_listings_title", "title"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(240))
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
+    company_name: Mapped[str] = mapped_column(String(240))
+    canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location_display: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    location_city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    location_region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    location_country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    location_metro: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    location_confidence: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    remote_work_mode: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    employment_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    salary_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    salary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    company: Mapped[Company | None] = relationship(back_populates="job_listings")
+    sources: Mapped[list[JobListingSource]] = relationship(
+        back_populates="job_listing",
+        cascade="all, delete-orphan",
+    )
+
+
+class JobListingSource(Base, TimestampMixin):
+    __tablename__ = "job_listing_sources"
+    __table_args__ = (
+        Index("ix_job_listing_sources_job_listing", "job_listing_id"),
+        Index("ix_job_listing_sources_provider_active", "source_provider", "is_active"),
+        Index("ix_job_listing_sources_ats_board_active", "ats_provider", "ats_board_token", "is_active"),
+        Index("ix_job_listing_sources_provider_last_seen", "source_provider", "last_seen_at"),
+        Index("ix_job_listing_sources_provider_query", "source_provider", "source_query"),
+        Index("ix_job_listing_sources_url_fingerprint", "url_fingerprint"),
+        Index(
+            "uq_job_listing_sources_greenhouse_identity",
+            "source_provider",
+            "ats_board_token",
+            "provider_job_id",
+            unique=True,
+            sqlite_where=text(
+                "source_provider = 'greenhouse' AND ats_board_token IS NOT NULL AND provider_job_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "source_provider = 'greenhouse' AND ats_board_token IS NOT NULL AND provider_job_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_job_listing_sources_provider_job_id",
+            "source_provider",
+            "provider_job_id",
+            unique=True,
+            sqlite_where=text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
+            postgresql_where=text("provider_job_id IS NOT NULL AND source_provider <> 'greenhouse'"),
+        ),
+        Index(
+            "uq_job_listing_sources_provider_url_fingerprint",
+            "source_provider",
+            "url_fingerprint",
+            unique=True,
+            sqlite_where=text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
+            postgresql_where=text("provider_job_id IS NULL AND url_fingerprint IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_listing_id: Mapped[str] = mapped_column(ForeignKey("job_listings.id", ondelete="CASCADE"))
+    source_provider: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    provider_job_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_result_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    ats_provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    ats_board_token: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_country: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    raw_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    job_listing: Mapped[JobListing] = relationship(back_populates="sources")
+
+
+class JobSyncRun(Base, TimestampMixin):
+    __tablename__ = "job_sync_runs"
+    __table_args__ = (
+        Index("ix_job_sync_runs_sync_key_completed", "sync_key", "completed_at"),
+        Index("ix_job_sync_runs_provider_completed", "provider_name", "completed_at"),
+        Index("ix_job_sync_runs_status_started", "status", "started_at"),
+        Index("ix_job_sync_runs_ats_board_completed", "ats_provider", "ats_board_token", "completed_at"),
+        Index(
+            "ix_job_sync_runs_provider_request_completed",
+            "provider_name",
+            "provider_country",
+            "provider_where",
+            "query_text",
+            "completed_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    sync_key: Mapped[str] = mapped_column(Text)
+    provider_name: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    sync_kind: Mapped[str] = mapped_column(String(80))
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    ats_provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    ats_board_token: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    provider_country: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    target_country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    target_location_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    display_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_where: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    criteria_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(40), default="started")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    normalized_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    closed_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_normalization_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    company: Mapped[Company | None] = relationship()
 
 
 class JobSearchRun(Base):

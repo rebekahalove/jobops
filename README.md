@@ -105,6 +105,7 @@ For local multi-service development, run the portfolio, dashboard, and API in se
 - [Initial Data Model](docs/data-model.md)
 - [Candidate Profile Intake](docs/candidate-profile-intake.md)
 - [Conversation-First Profile Workspace](docs/profile-workspace-design.md)
+- [Job Sync and Discovery](docs/job-sync-and-discovery.md)
 - [Model Connectors](docs/model-connectors.md)
 - [Environment Configuration](docs/environment.md)
 - [First Milestone](docs/milestone-01.md)
