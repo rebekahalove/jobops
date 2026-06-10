@@ -24,8 +24,10 @@ from jobops_api.db.models import (
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
 from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
+from jobops_api.job_discovery.job_sync.greenhouse_service import sync_greenhouse_boards
 from jobops_api.job_discovery.job_sync.location_resolver import ensure_initial_job_location_mappings
 from jobops_api.profile_seed import load_public_seed_profile
+from jobops_api.settings import load_settings
 
 
 def main() -> None:
@@ -75,6 +77,17 @@ def main() -> None:
         help="Upsert known Greenhouse-backed companies for a candidate profile.",
     )
     greenhouse_parser.add_argument("--candidate-slug", default="rebekah-love")
+
+    greenhouse_sync_parser = subparsers.add_parser(
+        "sync-greenhouse-job-boards",
+        help="Run Greenhouse full-board Job Sync without candidate-facing discovery.",
+    )
+    greenhouse_sync_parser.add_argument("--board-token", action="append", default=[])
+    greenhouse_sync_parser.add_argument("--candidate-slug", default=None)
+    greenhouse_sync_parser.add_argument("--all-configured", action="store_true")
+    greenhouse_sync_parser.add_argument("--force", action="store_true")
+    greenhouse_sync_parser.add_argument("--freshness-hours", type=int, default=24)
+    greenhouse_sync_parser.add_argument("--max-detail-requests", type=int, default=None)
 
     list_location_mappings_parser = subparsers.add_parser(
         "list-job-location-mappings",
@@ -134,6 +147,15 @@ def main() -> None:
         )
     elif args.command == "seed-greenhouse-companies":
         seed_greenhouse_companies_command(candidate_slug=args.candidate_slug)
+    elif args.command == "sync-greenhouse-job-boards":
+        sync_greenhouse_job_boards_command(
+            board_tokens=args.board_token,
+            candidate_slug=args.candidate_slug,
+            all_configured=args.all_configured,
+            force=args.force,
+            freshness_hours=args.freshness_hours,
+            max_detail_requests=args.max_detail_requests,
+        )
     elif args.command == "list-job-location-mappings":
         list_job_location_mappings_command(status=args.status, provider_name=args.provider_name)
     elif args.command == "update-job-location-mapping":
@@ -219,6 +241,65 @@ def seed_greenhouse_companies_command(*, candidate_slug: str) -> None:
         links = upsert_greenhouse_companies_for_candidate(session, candidate_profile_id=candidate_profile.id)
         session.commit()
         print(f"Upserted {len(links)} Greenhouse company link(s) for candidate profile: {candidate_slug}")
+
+
+def sync_greenhouse_job_boards_command(
+    *,
+    board_tokens: list[str],
+    candidate_slug: str | None,
+    all_configured: bool,
+    force: bool,
+    freshness_hours: int,
+    max_detail_requests: int | None,
+) -> None:
+    if not board_tokens and not candidate_slug and not all_configured:
+        raise SystemExit("Pass --board-token, --candidate-slug, or --all-configured.")
+    engine = create_db_engine()
+    settings = load_settings()
+    with Session(engine) as session:
+        candidate_profile_id = None
+        if candidate_slug:
+            candidate_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == candidate_slug))
+            if candidate_profile is None:
+                raise SystemExit(f"Candidate profile not found: {candidate_slug}")
+            candidate_profile_id = candidate_profile.id
+        results = sync_greenhouse_boards(
+            session,
+            settings=settings,
+            candidate_profile_id=candidate_profile_id,
+            board_tokens=board_tokens,
+            include_configured=all_configured,
+            force=force,
+            freshness_hours=freshness_hours,
+            max_detail_requests=max_detail_requests,
+        )
+        session.commit()
+    if not results:
+        print("No Greenhouse board sync targets matched.")
+        return
+    for result in results:
+        print(format_greenhouse_sync_result(result))
+
+
+def format_greenhouse_sync_result(result) -> str:
+    diagnostics = result.diagnostics_json
+    request = result.request
+    if result.status == "skipped_fresh":
+        return (
+            f"{request.sync_key} skipped_fresh "
+            f"latest_completed_at={diagnostics.get('latestCompletedAt') or '-'}"
+        )
+    if result.status == "failed":
+        return f"{request.sync_key} failed error={result.error or '-'}"
+    return (
+        f"{request.sync_key} {result.status} raw={result.raw_result_count} "
+        f"normalized={result.normalized_count} created={result.created_count} "
+        f"updated={result.updated_count} closed={result.closed_count} "
+        f"failed={result.failed_normalization_count} "
+        f"detail={diagnostics.get('detailRequestsSucceeded', 0)}/{diagnostics.get('detailRequestsAttempted', 0)} "
+        f"failed_detail={diagnostics.get('detailRequestsFailed', 0)} "
+        f"skipped_detail={diagnostics.get('detailRequestsSkippedByGuardrail', 0)}"
+    )
 
 
 def list_job_location_mappings_command(*, status: str, provider_name: str | None) -> None:

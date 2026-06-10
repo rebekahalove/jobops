@@ -122,3 +122,42 @@ def test_seed_greenhouse_companies_cli_passes_candidate_slug(monkeypatch):
     cli.main()
 
     assert calls == [{"candidate_slug": "rebekah-love"}]
+
+
+def test_sync_greenhouse_job_boards_cli_passes_options(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "sync-greenhouse-job-boards",
+            "--board-token",
+            "anthropic",
+            "--board-token",
+            "hightouch",
+            "--candidate-slug",
+            "rebekah-love",
+            "--all-configured",
+            "--force",
+            "--freshness-hours",
+            "12",
+            "--max-detail-requests",
+            "10",
+        ],
+    )
+    monkeypatch.setattr(cli, "sync_greenhouse_job_boards_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls == [
+        {
+            "board_tokens": ["anthropic", "hightouch"],
+            "candidate_slug": "rebekah-love",
+            "all_configured": True,
+            "force": True,
+            "freshness_hours": 12,
+            "max_detail_requests": 10,
+        }
+    ]
