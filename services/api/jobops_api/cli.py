@@ -16,6 +16,7 @@ from jobops_api.db.models import (
     JobLocationTarget,
     JobProviderLocationMapping,
     JobRole,
+    JobSyncSignature,
     Tenant,
     User,
     UserSession,
@@ -24,6 +25,7 @@ from jobops_api.db.models import (
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
 from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
+from jobops_api.job_discovery.job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync_signature
 from jobops_api.job_discovery.job_sync.greenhouse_service import sync_greenhouse_boards
 from jobops_api.job_discovery.job_sync.location_resolver import ensure_initial_job_location_mappings
 from jobops_api.profile_seed import load_public_seed_profile
@@ -88,6 +90,40 @@ def main() -> None:
     greenhouse_sync_parser.add_argument("--force", action="store_true")
     greenhouse_sync_parser.add_argument("--freshness-hours", type=int, default=24)
     greenhouse_sync_parser.add_argument("--max-detail-requests", type=int, default=None)
+
+    upsert_adzuna_signature_parser = subparsers.add_parser(
+        "upsert-adzuna-sync-signature",
+        help="Create or update an Adzuna broad Job Sync signature from explicit criteria.",
+    )
+    upsert_adzuna_signature_parser.add_argument("--query", required=True)
+    upsert_adzuna_signature_parser.add_argument("--location", default=None)
+    upsert_adzuna_signature_parser.add_argument("--provider-country", default=None)
+    upsert_adzuna_signature_parser.add_argument("--provider-where", default=None)
+    upsert_adzuna_signature_parser.add_argument("--query-kind", default="manual")
+    upsert_adzuna_signature_parser.add_argument("--source", default="cli")
+    upsert_adzuna_signature_parser.add_argument("--results-per-page", type=int, default=50)
+    upsert_adzuna_signature_parser.add_argument("--max-pages", type=int, default=1)
+    upsert_adzuna_signature_parser.add_argument("--freshness-hours", type=int, default=24)
+    upsert_adzuna_signature_parser.add_argument("--enabled", dest="enabled", action="store_true", default=True)
+    upsert_adzuna_signature_parser.add_argument("--disabled", dest="enabled", action="store_false")
+    upsert_adzuna_signature_parser.add_argument("--created-by", default=None)
+
+    list_adzuna_signatures_parser = subparsers.add_parser(
+        "list-adzuna-sync-signatures",
+        help="List persisted Adzuna broad Job Sync signatures.",
+    )
+    list_adzuna_signatures_parser.add_argument("--status", default=None)
+    list_adzuna_signatures_parser.add_argument("--enabled-only", action="store_true")
+
+    sync_adzuna_signatures_parser = subparsers.add_parser(
+        "sync-adzuna-job-signatures",
+        help="Refresh persisted Adzuna broad Job Sync signatures.",
+    )
+    sync_adzuna_signatures_parser.add_argument("--signature-id", action="append", default=[])
+    sync_adzuna_signatures_parser.add_argument("--all-enabled", action="store_true")
+    sync_adzuna_signatures_parser.add_argument("--force", action="store_true")
+    sync_adzuna_signatures_parser.add_argument("--freshness-hours", type=int, default=None)
+    sync_adzuna_signatures_parser.add_argument("--max-pages", type=int, default=None)
 
     list_location_mappings_parser = subparsers.add_parser(
         "list-job-location-mappings",
@@ -155,6 +191,30 @@ def main() -> None:
             force=args.force,
             freshness_hours=args.freshness_hours,
             max_detail_requests=args.max_detail_requests,
+        )
+    elif args.command == "upsert-adzuna-sync-signature":
+        upsert_adzuna_sync_signature_command(
+            query=args.query,
+            location=args.location,
+            provider_country=args.provider_country,
+            provider_where=args.provider_where,
+            query_kind=args.query_kind,
+            source=args.source,
+            results_per_page=args.results_per_page,
+            max_pages=args.max_pages,
+            freshness_hours=args.freshness_hours,
+            enabled=args.enabled,
+            created_by=args.created_by,
+        )
+    elif args.command == "list-adzuna-sync-signatures":
+        list_adzuna_sync_signatures_command(status=args.status, enabled_only=args.enabled_only)
+    elif args.command == "sync-adzuna-job-signatures":
+        sync_adzuna_job_signatures_command(
+            signature_ids=args.signature_id,
+            all_enabled=args.all_enabled,
+            force=args.force,
+            freshness_hours=args.freshness_hours,
+            max_pages=args.max_pages,
         )
     elif args.command == "list-job-location-mappings":
         list_job_location_mappings_command(status=args.status, provider_name=args.provider_name)
@@ -299,6 +359,116 @@ def format_greenhouse_sync_result(result) -> str:
         f"detail={diagnostics.get('detailRequestsSucceeded', 0)}/{diagnostics.get('detailRequestsAttempted', 0)} "
         f"failed_detail={diagnostics.get('detailRequestsFailed', 0)} "
         f"skipped_detail={diagnostics.get('detailRequestsSkippedByGuardrail', 0)}"
+    )
+
+
+def upsert_adzuna_sync_signature_command(
+    *,
+    query: str,
+    location: str | None,
+    provider_country: str | None,
+    provider_where: str | None,
+    query_kind: str,
+    source: str,
+    results_per_page: int,
+    max_pages: int,
+    freshness_hours: int,
+    enabled: bool,
+    created_by: str | None,
+) -> None:
+    if not location and not provider_country:
+        raise SystemExit("Pass --location or --provider-country.")
+    engine = create_db_engine()
+    with Session(engine) as session:
+        signature = upsert_adzuna_sync_signature(
+            session,
+            query_text=query,
+            display_location=location,
+            provider_country=provider_country,
+            provider_where=provider_where,
+            query_kind=query_kind,
+            source=source,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+            freshness_hours=freshness_hours,
+            enabled=enabled,
+            created_by=created_by,
+        )
+        session.commit()
+        print(format_adzuna_signature(signature))
+
+
+def list_adzuna_sync_signatures_command(*, status: str | None, enabled_only: bool) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        statement = select(JobSyncSignature).where(JobSyncSignature.provider_name == "adzuna")
+        if status:
+            statement = statement.where(JobSyncSignature.verification_status == status)
+        if enabled_only:
+            statement = statement.where(JobSyncSignature.enabled.is_(True))
+        signatures = list(session.scalars(statement.order_by(JobSyncSignature.created_at.asc(), JobSyncSignature.sync_key.asc())).all())
+    if not signatures:
+        print("No Adzuna sync signatures matched.")
+        return
+    for signature in signatures:
+        print(format_adzuna_signature(signature))
+
+
+def sync_adzuna_job_signatures_command(
+    *,
+    signature_ids: list[str],
+    all_enabled: bool,
+    force: bool,
+    freshness_hours: int | None,
+    max_pages: int | None,
+) -> None:
+    if not signature_ids and not all_enabled:
+        raise SystemExit("Pass --signature-id or --all-enabled.")
+    engine = create_db_engine()
+    settings = load_settings()
+    with Session(engine) as session:
+        results = sync_adzuna_signatures(
+            session,
+            settings=settings,
+            signature_ids=signature_ids or None,
+            enabled_only=all_enabled,
+            force=force,
+            freshness_hours=freshness_hours,
+            max_pages=max_pages,
+        )
+        session.commit()
+    if not results:
+        print("No Adzuna sync signatures matched.")
+        return
+    for result in results:
+        print(format_adzuna_sync_result(result))
+
+
+def format_adzuna_signature(signature: JobSyncSignature) -> str:
+    return (
+        f"{signature.id} | {signature.sync_key} | query={signature.query_text} "
+        f"location={signature.display_location or '-'} country={signature.provider_country or '-'} "
+        f"where={signature.provider_where or '-'} enabled={signature.enabled} "
+        f"status={signature.verification_status} last_completed_at={signature.last_completed_at or '-'} "
+        f"last_status={signature.last_status or '-'} raw={signature.last_raw_result_count} "
+        f"normalized={signature.last_normalized_count} created={signature.last_created_count} "
+        f"updated={signature.last_updated_count}"
+    )
+
+
+def format_adzuna_sync_result(result) -> str:
+    diagnostics = result.diagnostics_json
+    request = result.request
+    if result.status == "skipped_fresh":
+        return f"{request.sync_key} skipped_fresh latest_completed_at={diagnostics.get('latestCompletedAt') or '-'}"
+    if result.status in {"failed", "skipped"}:
+        reason = result.error or diagnostics.get("skipReason") or "-"
+        return f"{request.sync_key} {result.status} reason={reason}"
+    return (
+        f"{request.sync_key} {result.status} raw={result.raw_result_count} "
+        f"normalized={result.normalized_count} created={result.created_count} "
+        f"updated={result.updated_count} failed={result.failed_normalization_count} "
+        f"pages={diagnostics.get('pagesFetched', 0)} reported_count={diagnostics.get('providerReportedCount') or '-'}"
     )
 
 

@@ -603,6 +603,61 @@ class JobListingSource(Base, TimestampMixin):
     job_listing: Mapped[JobListing] = relationship(back_populates="sources")
 
 
+class JobSyncSignature(Base, TimestampMixin):
+    __tablename__ = "job_sync_signatures"
+    __table_args__ = (
+        UniqueConstraint("sync_key", name="uq_job_sync_signatures_sync_key"),
+        Index("ix_job_sync_signatures_provider_enabled", "provider_name", "enabled"),
+        Index("ix_job_sync_signatures_provider_completed", "provider_name", "last_completed_at"),
+        Index(
+            "ix_job_sync_signatures_provider_request",
+            "provider_name",
+            "provider_country",
+            "provider_where",
+            "query_text",
+        ),
+        Index("ix_job_sync_signatures_location_target", "job_location_target_id"),
+        Index("ix_job_sync_signatures_location_mapping", "job_provider_location_mapping_id"),
+        Index("ix_job_sync_signatures_status_enabled", "verification_status", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider_name: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    sync_kind: Mapped[str] = mapped_column(String(80))
+    sync_key: Mapped[str] = mapped_column(Text)
+    query_text: Mapped[str] = mapped_column(Text)
+    query_kind: Mapped[str] = mapped_column(String(80), default="manual")
+    job_location_target_id: Mapped[str | None] = mapped_column(ForeignKey("job_location_targets.id", ondelete="SET NULL"), nullable=True)
+    job_provider_location_mapping_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_provider_location_mappings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider_country: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider_where: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_location_key: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    results_per_page: Mapped[int] = mapped_column(Integer, default=50)
+    max_pages: Mapped[int] = mapped_column(Integer, default=1)
+    freshness_hours: Mapped[int] = mapped_column(Integer, default=24)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    verification_status: Mapped[str] = mapped_column(String(40), default="verified")
+    source: Mapped[str] = mapped_column(String(80), default="cli")
+    created_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_raw_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_normalized_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_created_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criteria_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    job_location_target: Mapped[JobLocationTarget | None] = relationship()
+    job_provider_location_mapping: Mapped[JobProviderLocationMapping | None] = relationship()
+
+
 class JobSyncRun(Base, TimestampMixin):
     __tablename__ = "job_sync_runs"
     __table_args__ = (
@@ -610,6 +665,7 @@ class JobSyncRun(Base, TimestampMixin):
         Index("ix_job_sync_runs_provider_completed", "provider_name", "completed_at"),
         Index("ix_job_sync_runs_status_started", "status", "started_at"),
         Index("ix_job_sync_runs_ats_board_completed", "ats_provider", "ats_board_token", "completed_at"),
+        Index("ix_job_sync_runs_signature", "job_sync_signature_id"),
         Index(
             "ix_job_sync_runs_provider_request_completed",
             "provider_name",
@@ -621,6 +677,7 @@ class JobSyncRun(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_sync_signature_id: Mapped[str | None] = mapped_column(ForeignKey("job_sync_signatures.id", ondelete="SET NULL"), nullable=True)
     sync_key: Mapped[str] = mapped_column(Text)
     provider_name: Mapped[str] = mapped_column(String(120))
     provider_type: Mapped[str] = mapped_column(String(60))
@@ -649,6 +706,7 @@ class JobSyncRun(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     company: Mapped[Company | None] = relationship()
+    job_sync_signature: Mapped[JobSyncSignature | None] = relationship()
 
 
 class JobSearchRun(Base):

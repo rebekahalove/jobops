@@ -161,3 +161,112 @@ def test_sync_greenhouse_job_boards_cli_passes_options(monkeypatch):
             "max_detail_requests": 10,
         }
     ]
+
+
+def test_upsert_adzuna_sync_signature_cli_passes_options(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "upsert-adzuna-sync-signature",
+            "--query",
+            "AI",
+            "--location",
+            "Remote UK",
+            "--provider-country",
+            "gb",
+            "--provider-where",
+            "Remote",
+            "--query-kind",
+            "broad_term",
+            "--source",
+            "cli",
+            "--results-per-page",
+            "25",
+            "--max-pages",
+            "2",
+            "--freshness-hours",
+            "12",
+            "--disabled",
+            "--created-by",
+            "tester",
+        ],
+    )
+    monkeypatch.setattr(cli, "upsert_adzuna_sync_signature_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls == [
+        {
+            "query": "AI",
+            "location": "Remote UK",
+            "provider_country": "gb",
+            "provider_where": "Remote",
+            "query_kind": "broad_term",
+            "source": "cli",
+            "results_per_page": 25,
+            "max_pages": 2,
+            "freshness_hours": 12,
+            "enabled": False,
+            "created_by": "tester",
+        }
+    ]
+
+
+def test_list_adzuna_sync_signatures_cli_passes_filters(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "list-adzuna-sync-signatures",
+            "--status",
+            "needs_review",
+            "--enabled-only",
+        ],
+    )
+    monkeypatch.setattr(cli, "list_adzuna_sync_signatures_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls == [{"status": "needs_review", "enabled_only": True}]
+
+
+def test_sync_adzuna_job_signatures_cli_passes_options(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "sync-adzuna-job-signatures",
+            "--signature-id",
+            "sig-1",
+            "--signature-id",
+            "sig-2",
+            "--force",
+            "--freshness-hours",
+            "6",
+            "--max-pages",
+            "1",
+        ],
+    )
+    monkeypatch.setattr(cli, "sync_adzuna_job_signatures_command", lambda **kwargs: calls.append(kwargs))
+
+    cli.main()
+
+    assert calls == [
+        {
+            "signature_ids": ["sig-1", "sig-2"],
+            "all_enabled": False,
+            "force": True,
+            "freshness_hours": 6,
+            "max_pages": 1,
+        }
+    ]

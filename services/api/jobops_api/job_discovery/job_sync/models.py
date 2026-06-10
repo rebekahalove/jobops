@@ -42,6 +42,7 @@ class JobSyncRequest:
     provider_name: str
     provider_type: ProviderType | str
     sync_kind: SyncKind | str
+    job_sync_signature_id: str | None = None
     company_id: str | None = None
     company_name: str | None = None
     ats_provider: str | None = None
