@@ -35,6 +35,15 @@ ADZUNA_COUNTRY_CURRENCY_CODES = {
 }
 
 
+def normalize_provider_country(value: str | None) -> str | None:
+    cleaned = (value or "").strip().casefold()
+    if cleaned in {"uk", "gb", "gbr", "united kingdom", "great britain"}:
+        return "gb"
+    if cleaned in {"us", "usa", "united states", "united states of america"}:
+        return "us"
+    return cleaned or None
+
+
 def fetch_json(url: str, *, params: dict[str, object] | None = None) -> Any:
     query = urlencode(
         [(key, str(value)) for key, value in (params or {}).items() if value is not None and str(value) != ""],

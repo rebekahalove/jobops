@@ -120,6 +120,7 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     job_listing_columns = {column["name"] for column in inspector.get_columns("job_listings")}
     assert {
         "title",
+        "job_location_target_id",
         "company_id",
         "company_name",
         "canonical_url",

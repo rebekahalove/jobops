@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db.models import JobLocationTarget, JobProviderLocationMapping
-from .models import JobSyncLocation, normalize_provider_country
+from ..provider_utils import normalize_provider_country
+from .models import JobSyncLocation
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ def resolve_or_create_job_location_target(
     display_location: str | None,
     *,
     source: str = "auto",
+    provider_country: str | None = None,
 ) -> JobLocationTarget:
     ensure_initial_job_location_mappings(session)
     display = clean_display_location(display_location)
@@ -170,7 +172,9 @@ def resolve_or_create_job_location_target(
         target.last_seen_at = now
         session.flush()
         return target
-    inferred_country = country_code_for_provider_country(infer_provider_country(display))
+    inferred_country = country_code_for_provider_country(
+        infer_provider_country(display, default_provider_country=provider_country)
+    )
     target = JobLocationTarget(
         display_name=display,
         normalized_key=normalized_key,
@@ -232,6 +236,91 @@ def resolve_provider_location_mapping(
     return mapping
 
 
+def resolve_or_create_job_location_from_provider_payload(
+    session: Session,
+    *,
+    provider_name: str,
+    raw_display_location: str | None,
+    provider_location_payload: dict[str, Any] | None = None,
+    provider_country: str | None = None,
+    source: str = "provider_job_location",
+) -> JobLocationTarget:
+    if provider_name == "adzuna" and provider_location_payload:
+        area = provider_location_payload.get("area")
+        if isinstance(area, list) and area:
+            country_code = normalize_country_code(area[0])
+            region = clean_optional_text(area[1]) if len(area) > 1 else None
+            city = clean_optional_text(area[-1]) if len(area) > 1 else None
+            display = f"{city}, {region}" if city and region else clean_display_location(raw_display_location)
+            normalized_key = normalize_location_key(" ".join(part for part in (city, region, country_code) if part))
+            return resolve_or_create_structured_job_location_target(
+                session,
+                display_name=display,
+                normalized_key=normalized_key,
+                location_kind="city" if city else "raw",
+                city=city,
+                region=region,
+                country_code=country_code,
+                country_name=country_name_for_code(country_code),
+                raw_input=raw_display_location,
+                confidence="medium",
+                verification_status="provider_inferred",
+                source=source,
+            )
+    return resolve_or_create_job_location_target(
+        session,
+        raw_display_location,
+        source=source,
+        provider_country=provider_country,
+    )
+
+
+def resolve_or_create_structured_job_location_target(
+    session: Session,
+    *,
+    display_name: str,
+    normalized_key: str,
+    location_kind: str,
+    city: str | None,
+    region: str | None,
+    country_code: str | None,
+    country_name: str | None,
+    raw_input: str | None,
+    confidence: str,
+    verification_status: str,
+    source: str,
+) -> JobLocationTarget:
+    ensure_initial_job_location_mappings(session)
+    target = session.scalar(select(JobLocationTarget).where(JobLocationTarget.normalized_key == normalized_key))
+    now = datetime.now(UTC)
+    if target is None:
+        target = JobLocationTarget(
+            display_name=display_name,
+            normalized_key=normalized_key,
+            location_kind=location_kind,
+            city=city,
+            region=region,
+            country_code=country_code,
+            country_name=country_name,
+            raw_inputs_json=[raw_input] if raw_input else [display_name],
+            confidence=confidence,
+            verification_status=verification_status,
+            source=source,
+            last_seen_at=now,
+        )
+        session.add(target)
+        session.flush()
+        return target
+    raw_inputs = list(target.raw_inputs_json or [])
+    for value in (raw_input, display_name):
+        if value and value not in raw_inputs:
+            raw_inputs.append(value)
+    target.raw_inputs_json = raw_inputs
+    target.last_seen_at = now
+    session.flush()
+    return target
+
+
 def job_sync_location_from_mapping(
     target: JobLocationTarget,
     mapping: JobProviderLocationMapping,
@@ -258,6 +347,13 @@ def job_sync_location_from_mapping(
 def clean_display_location(value: str | None) -> str:
     cleaned = " ".join((value or "Any location").replace(",", ", ").split()).strip(" ,")
     return cleaned or "Any location"
+
+
+def clean_optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).split()).strip()
+    return cleaned or None
 
 
 def infer_location_kind(value: str | None) -> str:
@@ -303,6 +399,16 @@ def country_code_for_provider_country(provider_country: str | None) -> str | Non
     if provider_country == "us":
         return "US"
     return provider_country.upper() if provider_country else None
+
+
+def normalize_country_code(value: object) -> str | None:
+    cleaned = clean_optional_text(value)
+    if not cleaned:
+        return None
+    provider_country = normalize_provider_country(cleaned)
+    if provider_country:
+        return country_code_for_provider_country(provider_country)
+    return cleaned.upper()
 
 
 def country_name_for_code(country_code: str | None) -> str | None:

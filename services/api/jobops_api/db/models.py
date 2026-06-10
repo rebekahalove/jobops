@@ -489,6 +489,7 @@ class JobListing(Base, TimestampMixin):
         Index("ix_job_listings_active_last_seen", "is_active", "last_seen_at"),
         Index("ix_job_listings_active_source_updated", "is_active", "source_updated_at"),
         Index("ix_job_listings_company_active", "company_id", "is_active"),
+        Index("ix_job_listings_location_target_active", "job_location_target_id", "is_active"),
         Index("ix_job_listings_company_name_active", "company_name", "is_active"),
         Index(
             "ix_job_listings_location_active",
@@ -505,6 +506,7 @@ class JobListing(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(String(240))
+    job_location_target_id: Mapped[str | None] = mapped_column(ForeignKey("job_location_targets.id", ondelete="SET NULL"), nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
     canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -536,6 +538,7 @@ class JobListing(Base, TimestampMixin):
     source_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     company: Mapped[Company | None] = relationship(back_populates="job_listings")
+    job_location_target: Mapped[JobLocationTarget | None] = relationship()
     sources: Mapped[list[JobListingSource]] = relationship(
         back_populates="job_listing",
         cascade="all, delete-orphan",

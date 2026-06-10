@@ -7,11 +7,11 @@ from .models import (
     JobSyncRequest,
     JobSyncResult,
     NormalizedJobListing,
-    normalize_job_sync_location,
 )
 from .location_resolver import (
     infer_provider_country,
     normalize_location_key,
+    resolve_or_create_job_location_from_provider_payload,
     resolve_or_create_job_location_target,
     resolve_provider_location_mapping,
 )
@@ -36,9 +36,9 @@ __all__ = [
     "build_adzuna_sync_key",
     "build_greenhouse_sync_key",
     "is_sync_fresh",
-    "normalize_job_sync_location",
     "infer_provider_country",
     "normalize_location_key",
+    "resolve_or_create_job_location_from_provider_payload",
     "resolve_or_create_job_location_target",
     "resolve_provider_location_mapping",
     "normalize_sync_key_text",

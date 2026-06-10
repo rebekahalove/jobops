@@ -32,6 +32,8 @@ class BaseJobSyncProvider(ABC):
         self,
         raw: object,
         request: JobSyncRequest,
+        *,
+        session: Session,
     ) -> tuple[NormalizedJobListing, JobListingSourceRecord] | None:
         """Convert a provider record into listing and provenance records."""
 
@@ -63,7 +65,7 @@ class BaseJobSyncProvider(ABC):
         normalized_count = 0
 
         for raw in raw_records:
-            normalized = self.normalize_provider_record(raw, request)
+            normalized = self.normalize_provider_record(raw, request, session=session)
             if normalized is None:
                 failed_normalization_count += 1
                 continue
