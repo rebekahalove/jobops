@@ -68,7 +68,7 @@ Job Sync uses data-backed location targets and provider mappings instead of hard
 - `job_location_targets`: normalized user-facing location targets such as `remote-uk`, `louisville-ky`, or `manchester-uk`.
 - `job_provider_location_mappings`: provider-specific request values such as Adzuna `provider_country` and `provider_where`.
 
-Seeded starter mappings cover Remote US, Remote UK, Louisville KY, London UK, and Manchester UK. New locations are auto-created with low confidence and `needs_review` status. Unknown locations do not fail sync planning; they produce an inferred provider mapping when possible and surface confidence/review metadata in Adzuna request criteria. Adzuna does not default unresolved locations to the US: if a mapping does not have a provider country, the mapping remains reviewable instead of generating a `/jobs/us` request.
+Seeded starter mappings cover Remote US, Remote UK, Louisville KY, London UK, and Manchester UK. New locations are auto-created with low confidence and `needs_review` status. Unknown locations can produce an inferred provider mapping when an explicit sync country hint is supplied, and those requests surface confidence/review metadata in Adzuna criteria. Adzuna does not default unresolved locations to the US: provider country must come from the resolved location mapping or explicit sync criteria. If neither source can resolve a country, planning fails clearly instead of generating a `/jobs/us` request.
 
 Adzuna sync requests carry provider country, provider where, display location, normalized location key, mapping id, confidence, and verification status. Exact provider request values remain in `criteria_json`.
 

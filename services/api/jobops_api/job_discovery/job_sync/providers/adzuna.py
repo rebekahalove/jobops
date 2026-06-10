@@ -12,11 +12,11 @@ from ...provider_utils import (
     infer_adzuna_currency_code,
     infer_remote_mode,
     nested_get,
-    normalize_provider_country,
     parse_datetime_value,
     parse_whole_currency_amount,
 )
 from ..base import BaseJobSyncProvider
+from ..location_country import normalize_provider_country_code
 from ..models import (
     BroadJobSyncSignature,
     JobListingSourceRecord,
@@ -51,7 +51,7 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
         db_session: Session,
         results_per_page: int | None = None,
     ) -> JobSyncPlan:
-        country = normalize_provider_country(provider_country)
+        country_hint = normalize_provider_country_code(provider_country)
         requests: list[JobSyncRequest] = []
         for query in queries:
             query_text = " ".join((query or "").split()).strip()
@@ -62,11 +62,14 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
                     db_session,
                     provider_name=self.provider_name,
                     display_location=raw_location,
-                    default_provider_country=country,
+                    default_provider_country=country_hint,
                 )
                 location = job_sync_location_from_mapping(mapping.job_location_target, mapping)
                 if not location.provider_country:
-                    continue
+                    raise ValueError(
+                        "Adzuna provider country could not be resolved for location "
+                        f"{location.display_location or raw_location!r}."
+                    )
                 signature = build_adzuna_broad_sync_signature(location.provider_country, location, query_text)
                 request = build_adzuna_sync_request(
                     signature,
@@ -81,7 +84,7 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
     def fetch_provider_records(self, request: JobSyncRequest) -> Iterable[object]:
         if not self.app_id or not self.app_key:
             raise ValueError("Adzuna Job Sync requires app_id and app_key.")
-        provider_country = normalize_provider_country(request.provider_country)
+        provider_country = normalize_provider_country_code(request.provider_country)
         if not provider_country:
             raise ValueError("Adzuna Job Sync requests require provider_country.")
         page = int(request.criteria_json.get("page") or 1)
@@ -121,7 +124,7 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
         if not provider_job_id:
             return None
         location_payload = raw.get("location") if isinstance(raw.get("location"), dict) else None
-        provider_country = infer_adzuna_provider_country_from_location(location_payload) or normalize_provider_country(
+        provider_country = infer_adzuna_provider_country_from_location(location_payload) or normalize_provider_country_code(
             request.provider_country
         )
         salary_currency = infer_adzuna_currency_code(provider_country) if provider_country else None
@@ -196,7 +199,7 @@ def infer_adzuna_provider_country_from_location(location_payload: object) -> str
     area = location_payload.get("area")
     if not isinstance(area, list) or not area:
         return None
-    return normalize_provider_country(str(area[0]))
+    return normalize_provider_country_code(str(area[0]))
 
 
 def build_adzuna_broad_sync_signature(
@@ -204,7 +207,7 @@ def build_adzuna_broad_sync_signature(
     location: JobSyncLocation,
     query_text: str,
 ) -> BroadJobSyncSignature:
-    country = normalize_provider_country(provider_country)
+    country = normalize_provider_country_code(provider_country)
     if not country:
         raise ValueError("Adzuna broad sync signatures require provider_country.")
     location_key = normalize_sync_key_text(location.normalized_key or location.provider_where or location.display_location or location.provider_country)

@@ -677,6 +677,7 @@ def test_adzuna_sync_plan_uses_resolved_location_mapping() -> None:
         assert manchester.provider_where == "Manchester"
         assert manchester.display_location == "Manchester, UK"
         assert manchester.criteria_json["providerCountry"] == "gb"
+        assert manchester.criteria_json["apiPath"] == "/v1/api/jobs/gb/search/1"
         assert manchester.criteria_json["where"] == "Manchester"
         assert manchester.criteria_json["normalizedLocationKey"] == "manchester-uk"
         assert manchester.criteria_json["locationConfidence"] == "high"
@@ -685,6 +686,7 @@ def test_adzuna_sync_plan_uses_resolved_location_mapping() -> None:
         assert louisville.sync_key == "adzuna:broad:us:louisville-ky:applied-ai-engineer"
         assert louisville.provider_country == "us"
         assert louisville.provider_where == "Louisville, Kentucky"
+        assert louisville.criteria_json["apiPath"] == "/v1/api/jobs/us/search/1"
         assert louisville.criteria_json["normalizedLocationKey"] == "louisville-ky"
 
 
@@ -700,6 +702,8 @@ def test_low_confidence_location_mapping_appears_in_adzuna_request_criteria() ->
         ).requests[0]
 
         assert request.sync_key == "adzuna:broad:gb:atlantis:applied-ai-engineer"
+        assert request.provider_country == "gb"
+        assert request.criteria_json["apiPath"] == "/v1/api/jobs/gb/search/1"
         assert request.criteria_json["normalizedLocationKey"] == "atlantis"
         assert request.criteria_json["where"] == "Atlantis"
         assert request.criteria_json["locationConfidence"] == "low"
@@ -711,19 +715,19 @@ def test_adzuna_unknown_location_without_country_does_not_default_to_us() -> Non
     engine = create_engine_for_job_sync_tests()
     provider = AdzunaJobSyncProvider()
     with Session(engine) as session:
-        plan = provider.build_sync_plan(
-            provider_country=None,
-            locations=["Atlantis"],
-            queries=["Applied AI Engineer"],
-            db_session=session,
-        )
+        with pytest.raises(ValueError, match="provider country could not be resolved"):
+            provider.build_sync_plan(
+                provider_country=None,
+                locations=["Atlantis"],
+                queries=["Applied AI Engineer"],
+                db_session=session,
+            )
         mapping = session.scalar(
             select(JobProviderLocationMapping)
             .join(JobLocationTarget, JobLocationTarget.id == JobProviderLocationMapping.job_location_target_id)
             .where(JobLocationTarget.normalized_key == "atlantis")
         )
 
-        assert plan.requests == ()
         assert mapping is not None
         assert mapping.provider_country is None
         assert mapping.provider_where == "Atlantis"

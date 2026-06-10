@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db.models import JobLocationTarget, JobProviderLocationMapping
-from ..provider_utils import normalize_provider_country
+from .location_country import normalize_provider_country_code
 from .models import JobSyncLocation
 
 
@@ -107,7 +107,7 @@ def infer_provider_country(value: str | None, *, default_provider_country: str |
         return "us"
     if re.search(r"\b[a-z]+ ky\b", cleaned):
         return "us"
-    return normalize_provider_country(default_provider_country)
+    return normalize_provider_country_code(default_provider_country)
 
 
 def ensure_initial_job_location_mappings(session: Session) -> None:
@@ -218,7 +218,7 @@ def resolve_provider_location_mapping(
         "normalizedLocationKey": target.normalized_key,
         "needsReviewReason": "No verified provider location mapping existed.",
     }
-    if target.country_code is None and normalize_provider_country(default_provider_country):
+    if target.country_code is None and normalize_provider_country_code(default_provider_country):
         diagnostics["providerCountrySource"] = "default_provider_country"
     mapping = JobProviderLocationMapping(
         job_location_target_id=target.id,
@@ -405,7 +405,7 @@ def normalize_country_code(value: object) -> str | None:
     cleaned = clean_optional_text(value)
     if not cleaned:
         return None
-    provider_country = normalize_provider_country(cleaned)
+    provider_country = normalize_provider_country_code(cleaned)
     if provider_country:
         return country_code_for_provider_country(provider_country)
     return cleaned.upper()
