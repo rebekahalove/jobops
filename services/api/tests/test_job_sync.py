@@ -100,7 +100,7 @@ def test_greenhouse_fetches_retrieve_job_payload_with_application_questions(monk
             return retrieve_job
         raise AssertionError(f"Unexpected Greenhouse URL: {url}")
 
-    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fake_fetch_json)
     provider = GreenhouseJobSyncProvider()
     request = provider.build_sync_plan(["vaulttec"]).requests[0]
 
@@ -208,7 +208,7 @@ def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkey
             raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
         raise AssertionError(f"Unexpected Greenhouse URL: {url}")
 
-    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fake_fetch_json)
     provider = GreenhouseJobSyncProvider()
     request = provider.build_sync_plan(["vaulttec"]).requests[0]
     engine = create_engine_for_job_sync_tests()
@@ -226,6 +226,7 @@ def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkey
         "detailRequestsSucceeded": 1,
         "detailRequestsFailed": 1,
         "detailRequestsSkippedByGuardrail": 0,
+        "listJobsResponseValid": True,
     }
     assert run is not None
     assert run.criteria_json["detailRequestsAttempted"] == 2
@@ -261,7 +262,7 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
             return greenhouse_retrieve_job_raw(job_id=44444, title="Product Engineer")
         raise AssertionError(f"Unexpected Greenhouse detail fetch beyond guardrail: {url}")
 
-    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fake_fetch_json)
     provider = GreenhouseJobSyncProvider(max_detail_requests=1)
     request = provider.build_sync_plan(["vaulttec"]).requests[0]
     engine = create_engine_for_job_sync_tests()
@@ -277,6 +278,7 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
         "detailRequestsSucceeded": 1,
         "detailRequestsFailed": 0,
         "detailRequestsSkippedByGuardrail": 1,
+        "listJobsResponseValid": True,
     }
     assert run is not None
     assert run.criteria_json["maxDetailRequests"] == 1
@@ -403,7 +405,7 @@ def test_greenhouse_sync_service_respects_freshness(monkeypatch) -> None:
         def fail_if_called(url: str, *, params: dict[str, object] | None = None):
             raise AssertionError(f"Fresh sync should not call Greenhouse API: {url}")
 
-        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fail_if_called)
+        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fail_if_called)
         second = sync_greenhouse_boards(session, settings=settings, include_configured=True)[0]
         runs = session.scalars(select(JobSyncRun).order_by(JobSyncRun.created_at.asc())).all()
         fresh = is_sync_fresh(session, "greenhouse:board:vaulttec")
@@ -542,7 +544,7 @@ def test_greenhouse_failed_list_request_does_not_mark_jobs_closed(monkeypatch) -
         def fail_list_jobs(url: str, *, params: dict[str, object] | None = None):
             raise urllib.error.HTTPError(url, 500, "Boom", hdrs=None, fp=None)
 
-        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fail_list_jobs)
+        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fail_list_jobs)
         with pytest.raises(urllib.error.HTTPError):
             sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)
         source = session.scalar(select(JobListingSource))
@@ -1209,7 +1211,7 @@ def install_greenhouse_fetch_mock(
             )
         raise AssertionError(f"Unexpected Greenhouse URL: {url}")
 
-    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fake_fetch_json)
     return requested
 
 
