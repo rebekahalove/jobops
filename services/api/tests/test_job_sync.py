@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import urllib.error
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -11,8 +12,10 @@ from sqlalchemy.pool import StaticPool
 from jobops_api.db.models import (
     Application,
     Base,
+    CandidateCompany,
     CandidateProfile,
     CandidateSavedJob,
+    Company,
     JobListing,
     JobListingSource,
     JobLocationTarget,
@@ -32,14 +35,17 @@ from jobops_api.job_discovery.job_sync import (
     is_sync_fresh,
     normalize_location_key,
     record_job_sync_run,
+    resolve_greenhouse_board_sync_targets,
     resolve_provider_location_mapping,
+    sync_greenhouse_boards,
     upsert_job_listing_from_provider_record,
 )
 import jobops_api.cli as cli_module
 import jobops_api.job_discovery.job_sync as job_sync_module
 import jobops_api.job_discovery.job_sync.models as job_sync_models
 from jobops_api.job_discovery.job_sync.providers.adzuna import AdzunaJobSyncProvider
-from jobops_api.job_discovery.job_sync.providers.greenhouse import GreenhouseJobSyncProvider
+from jobops_api.job_discovery.job_sync.providers.greenhouse import GreenhouseBoardSyncTarget, GreenhouseJobSyncProvider
+from jobops_api.settings import Settings
 
 
 def test_greenhouse_same_board_and_provider_job_id_updates_existing_listing() -> None:
@@ -219,7 +225,7 @@ def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkey
         "detailRequestsAttempted": 2,
         "detailRequestsSucceeded": 1,
         "detailRequestsFailed": 1,
-        "detailRequestsSkipped": 0,
+        "detailRequestsSkippedByGuardrail": 0,
     }
     assert run is not None
     assert run.criteria_json["detailRequestsAttempted"] == 2
@@ -270,11 +276,11 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
         "detailRequestsAttempted": 1,
         "detailRequestsSucceeded": 1,
         "detailRequestsFailed": 0,
-        "detailRequestsSkipped": 1,
+        "detailRequestsSkippedByGuardrail": 1,
     }
     assert run is not None
     assert run.criteria_json["maxDetailRequests"] == 1
-    assert run.criteria_json["detailRequestsSkipped"] == 1
+    assert run.criteria_json["detailRequestsSkippedByGuardrail"] == 1
     assert len(sources) == 2
     skipped_source = next(source for source in sources if source.provider_job_id == "55555")
     assert skipped_source.raw_metadata_json["job_board_retrieve_payload"] is None
@@ -287,6 +293,303 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
         ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
         ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
     ]
+
+
+def test_greenhouse_sync_plan_accepts_company_targets_and_dedupes_tokens() -> None:
+    provider = GreenhouseJobSyncProvider()
+
+    plan = provider.build_sync_plan(
+        [
+            GreenhouseBoardSyncTarget(
+                board_token="vaulttec",
+                company_id="company-1",
+                company_name="Vault-Tec",
+                source="configured_company_board_token",
+            ),
+            "vaulttec",
+        ]
+    )
+
+    assert len(plan.requests) == 1
+    request = plan.requests[0]
+    assert request.sync_key == "greenhouse:board:vaulttec"
+    assert request.company_id == "company-1"
+    assert request.company_name == "Vault-Tec"
+    assert request.criteria_json["targetSource"] == "configured_company_board_token"
+
+
+def test_greenhouse_sync_service_syncs_full_board(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    requested = install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[
+            greenhouse_list_job_raw(job_id=44444, title="Product Engineer"),
+            greenhouse_list_job_raw(job_id=55555, title="Data Engineer"),
+        ],
+    )
+
+    with Session(engine) as session:
+        results = sync_greenhouse_boards(
+            session,
+            settings=job_sync_settings(greenhouse_board_tokens=("vaulttec",)),
+            include_configured=True,
+        )
+        listings = session.scalars(select(JobListing).order_by(JobListing.title)).all()
+        sources = session.scalars(select(JobListingSource).order_by(JobListingSource.provider_job_id)).all()
+        run = session.scalar(select(JobSyncRun))
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "completed"
+    assert result.raw_result_count == 2
+    assert result.normalized_count == 2
+    assert result.created_count == 2
+    assert result.closed_count == 0
+    assert len(listings) == 2
+    assert len(sources) == 2
+    assert run is not None
+    assert run.status == "completed"
+    assert run.raw_result_count == 2
+    assert run.criteria_json["apiUrl"] == "https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs"
+    assert run.criteria_json["retrieveJobQuestions"] is True
+    assert run.criteria_json["retrieveJobPayTransparency"] is True
+    assert run.criteria_json["detailRequestsAttempted"] == 2
+    assert requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/55555", {"questions": "true", "pay_transparency": "true"}),
+    ]
+
+
+def test_greenhouse_sync_service_counts_missing_job_id_as_failed_normalization(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    missing_id_job = greenhouse_list_job_raw(job_id=55555, title="No Id Engineer")
+    missing_id_job.pop("id")
+    install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer"), missing_id_job],
+    )
+
+    with Session(engine) as session:
+        result = sync_greenhouse_boards(
+            session,
+            settings=job_sync_settings(greenhouse_board_tokens=("vaulttec",)),
+            include_configured=True,
+        )[0]
+        listings = session.scalars(select(JobListing)).all()
+        sources = session.scalars(select(JobListingSource)).all()
+
+    assert result.raw_result_count == 2
+    assert result.normalized_count == 1
+    assert result.failed_normalization_count == 1
+    assert len(listings) == 1
+    assert len(sources) == 1
+
+
+def test_greenhouse_sync_service_respects_freshness(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    requested = install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer")],
+    )
+    settings = job_sync_settings(greenhouse_board_tokens=("vaulttec",))
+
+    with Session(engine) as session:
+        first = sync_greenhouse_boards(session, settings=settings, include_configured=True)[0]
+
+        def fail_if_called(url: str, *, params: dict[str, object] | None = None):
+            raise AssertionError(f"Fresh sync should not call Greenhouse API: {url}")
+
+        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fail_if_called)
+        second = sync_greenhouse_boards(session, settings=settings, include_configured=True)[0]
+        runs = session.scalars(select(JobSyncRun).order_by(JobSyncRun.created_at.asc())).all()
+        fresh = is_sync_fresh(session, "greenhouse:board:vaulttec")
+
+    assert first.status == "completed"
+    assert second.status == "skipped_fresh"
+    assert second.diagnostics_json["skipReason"] == "fresh"
+    assert len(requested) == 2
+    assert [run.status for run in runs] == ["completed", "skipped_fresh"]
+    assert fresh is True
+
+
+def test_greenhouse_sync_service_force_refresh_ignores_freshness(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    settings = job_sync_settings(greenhouse_board_tokens=("vaulttec",))
+    first_requested = install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer")],
+    )
+
+    with Session(engine) as session:
+        first = sync_greenhouse_boards(session, settings=settings, include_configured=True)[0]
+        second_requested = install_greenhouse_fetch_mock(
+            monkeypatch,
+            board_token="vaulttec",
+            jobs=[greenhouse_list_job_raw(job_id=44444, title="Senior Product Engineer")],
+        )
+        second = sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)[0]
+        listing = session.scalar(select(JobListing))
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert len(first_requested) == 2
+    assert len(second_requested) == 2
+    assert listing is not None
+    assert listing.title == "Senior Product Engineer"
+
+
+def test_greenhouse_sync_service_preserves_company_metadata(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer")],
+    )
+
+    with Session(engine) as session:
+        results = sync_greenhouse_boards(
+            session,
+            settings=job_sync_settings(greenhouse_company_boards={"Vault-Tec": "vaulttec"}),
+            include_configured=True,
+        )
+        listing_record = session.scalar(select(JobListing))
+        run = session.scalar(select(JobSyncRun))
+
+    assert results[0].status == "completed"
+    assert listing_record is not None
+    assert listing_record.company_name == "Vault-Tec"
+    assert run is not None
+    assert run.company_name == "Vault-Tec"
+
+
+def test_greenhouse_sync_service_marks_missing_jobs_closed_and_reactivates(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    settings = job_sync_settings(greenhouse_board_tokens=("vaulttec",))
+
+    with Session(engine) as session:
+        install_greenhouse_fetch_mock(
+            monkeypatch,
+            board_token="vaulttec",
+            jobs=[
+                greenhouse_list_job_raw(job_id=1, title="One"),
+                greenhouse_list_job_raw(job_id=2, title="Two"),
+                greenhouse_list_job_raw(job_id=3, title="Three"),
+            ],
+        )
+        first = sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)[0]
+
+        install_greenhouse_fetch_mock(
+            monkeypatch,
+            board_token="vaulttec",
+            jobs=[greenhouse_list_job_raw(job_id=1, title="One"), greenhouse_list_job_raw(job_id=3, title="Three")],
+        )
+        second = sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)[0]
+        closed_source = session.scalar(select(JobListingSource).where(JobListingSource.provider_job_id == "2"))
+        assert closed_source is not None
+        closed_listing_id = closed_source.job_listing_id
+        closed_listing = session.get(JobListing, closed_listing_id)
+        closed_source_is_active = closed_source.is_active
+        closed_source_reason = closed_source.close_reason
+        closed_listing_is_active = closed_listing.is_active if closed_listing else None
+        closed_listing_reason = closed_listing.close_reason if closed_listing else None
+
+        install_greenhouse_fetch_mock(
+            monkeypatch,
+            board_token="vaulttec",
+            jobs=[
+                greenhouse_list_job_raw(job_id=1, title="One"),
+                greenhouse_list_job_raw(job_id=2, title="Two Again"),
+                greenhouse_list_job_raw(job_id=3, title="Three"),
+            ],
+        )
+        third = sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)[0]
+        reactivated_source = session.scalar(select(JobListingSource).where(JobListingSource.provider_job_id == "2"))
+        reactivated_listing = session.get(JobListing, closed_listing_id)
+
+    assert first.created_count == 3
+    assert second.closed_count == 1
+    assert closed_listing is not None
+    assert closed_source_is_active is False
+    assert closed_source_reason == "missing_from_latest_greenhouse_board_sync"
+    assert closed_listing_is_active is False
+    assert closed_listing_reason == "missing_from_latest_greenhouse_board_sync"
+    assert third.updated_count == 3
+    assert reactivated_source is not None
+    assert reactivated_source.is_active is True
+    assert reactivated_source.closed_at is None
+    assert reactivated_listing is not None
+    assert reactivated_listing.is_active is True
+    assert reactivated_listing.closed_at is None
+
+
+def test_greenhouse_failed_list_request_does_not_mark_jobs_closed(monkeypatch) -> None:
+    engine = create_engine_for_job_sync_tests()
+    settings = job_sync_settings(greenhouse_board_tokens=("vaulttec",))
+    install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer")],
+    )
+
+    with Session(engine) as session:
+        sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)
+
+        def fail_list_jobs(url: str, *, params: dict[str, object] | None = None):
+            raise urllib.error.HTTPError(url, 500, "Boom", hdrs=None, fp=None)
+
+        monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fail_list_jobs)
+        with pytest.raises(urllib.error.HTTPError):
+            sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)
+        source = session.scalar(select(JobListingSource))
+        listing_record = session.scalar(select(JobListing))
+
+    assert source is not None
+    assert source.is_active is True
+    assert source.closed_at is None
+    assert listing_record is not None
+    assert listing_record.is_active is True
+
+
+def test_greenhouse_sync_target_resolution_includes_candidate_company_board() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        tenant = Tenant(name="Tenant", slug="tenant")
+        profile = CandidateProfile(
+            tenant=tenant,
+            slug="candidate",
+            display_name="Candidate",
+            headline="Applied AI Engineer",
+            summary="",
+            profile_status="draft",
+        )
+        company = Company(
+            name="Vault-Tec",
+            normalized_name="vault tec",
+            greenhouse_board_token="vaulttec",
+        )
+        session.add(CandidateCompany(candidate_profile=profile, company=company))
+        session.flush()
+
+        targets = resolve_greenhouse_board_sync_targets(
+            session,
+            settings=job_sync_settings(),
+            candidate_profile_id=profile.id,
+            include_configured=False,
+        )
+
+    assert targets == (
+        GreenhouseBoardSyncTarget(
+            board_token="vaulttec",
+            company_id=company.id,
+            company_name="Vault-Tec",
+            source="candidate_company_board_token",
+        ),
+    )
 
 
 def test_adzuna_same_provider_job_id_updates_existing_listing() -> None:
@@ -858,6 +1161,56 @@ def create_engine_for_job_sync_tests():
     )
     Base.metadata.create_all(engine)
     return engine
+
+
+def job_sync_settings(
+    *,
+    greenhouse_board_tokens: tuple[str, ...] = (),
+    greenhouse_company_boards: dict[str, str] | None = None,
+) -> Settings:
+    return Settings(
+        app_env="test",
+        model_provider="mock",
+        default_model="mock",
+        cheap_model="mock",
+        gemini_api_key=None,
+        profile_intake_save_artifacts=False,
+        profile_intake_save_raw_text=False,
+        company_discovery_search_grounding_enabled=False,
+        database_url=None,
+        repo_root=Path(__file__).resolve().parents[2],
+        greenhouse_board_tokens=greenhouse_board_tokens,
+        greenhouse_company_boards=greenhouse_company_boards,
+    )
+
+
+def install_greenhouse_fetch_mock(
+    monkeypatch,
+    *,
+    board_token: str,
+    jobs: list[dict[str, object]],
+) -> list[tuple[str, dict[str, object] | None]]:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url == f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs":
+            return {"jobs": jobs, "meta": {"total": len(jobs)}}
+        prefix = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/"
+        if url.startswith(prefix):
+            job_id = int(url.removeprefix(prefix))
+            list_job = next((job for job in jobs if str(job.get("id")) == str(job_id)), None)
+            if list_job is None:
+                raise AssertionError(f"Unexpected Greenhouse detail URL: {url}")
+            return greenhouse_retrieve_job_raw(
+                job_id=job_id,
+                title=str(list_job.get("title") or "Product Engineer"),
+                board_token=board_token,
+            )
+        raise AssertionError(f"Unexpected Greenhouse URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.fetch_json", fake_fetch_json)
+    return requested
 
 
 def listing(

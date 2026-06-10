@@ -57,7 +57,17 @@ Greenhouse board sync refreshes a board token through the public jobs API with `
 
 Each returned job gets a `job_listing_sources` row tied to the board token and provider job id. The source metadata retains the full list-job payload, retrieve-job payload when available, and exact per-job retrieve request values. Successful detail payloads include application questions, location questions, compliance/demographic question objects, exposed job metadata, departments, offices, language, requisition/internal IDs, and pay ranges. Failed or guardrail-skipped detail retrieval stores a concise safe error or skip object in source metadata without stack traces, headers, cookies, or secrets.
 
-Greenhouse run diagnostics include detail request counts: attempted, succeeded, failed, and skipped by guardrail.
+Greenhouse full-board Job Sync can be run independently of candidate-facing discovery. Board targets can come from configured board tokens, configured company board mappings, or candidate company records with Greenhouse board metadata. Greenhouse sync does not role-filter jobs and does not create candidate saved-job rows.
+
+Greenhouse run diagnostics include detail request counts: attempted, succeeded, failed, and skipped by guardrail. After a successful list-jobs response, any previously active Greenhouse source for that board token whose job id is missing from the latest list response is marked inactive/closed. The associated synced listing is closed when it has no other active sources. If a closed Greenhouse job reappears later, its source and listing are reactivated. No stale/closed marking runs when the list-jobs request fails.
+
+Manual Greenhouse Job Sync examples:
+
+```powershell
+python -m jobops_api.cli sync-greenhouse-job-boards --board-token anthropic --force
+python -m jobops_api.cli sync-greenhouse-job-boards --candidate-slug rebekah-love
+python -m jobops_api.cli sync-greenhouse-job-boards --all-configured
+```
 
 Adzuna broad sync signatures include provider country, location, and query text. Adzuna country is carried per sync request, so later inventory refreshes can support US, GB, and other provider endpoints without a single global country assumption.
 

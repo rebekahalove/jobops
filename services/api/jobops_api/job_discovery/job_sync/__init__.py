@@ -1,4 +1,5 @@
 from .base import BaseJobSyncProvider
+from .greenhouse_service import resolve_greenhouse_board_sync_targets, sync_greenhouse_boards
 from .location_country import normalize_provider_country_code
 from .models import (
     BroadJobSyncSignature,
@@ -34,6 +35,8 @@ __all__ = [
     "JobSyncRequest",
     "JobSyncResult",
     "NormalizedJobListing",
+    "resolve_greenhouse_board_sync_targets",
+    "sync_greenhouse_boards",
     "build_adzuna_sync_key",
     "build_greenhouse_sync_key",
     "is_sync_fresh",
