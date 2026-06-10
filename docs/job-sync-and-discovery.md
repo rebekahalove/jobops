@@ -61,6 +61,8 @@ Greenhouse full-board Job Sync can be run independently of candidate-facing disc
 
 Greenhouse run diagnostics include detail request counts: attempted, succeeded, failed, and skipped by guardrail. After a successful valid list-jobs response, any previously active Greenhouse source for that board token whose job id is missing from the latest list response is marked inactive/closed. A valid empty `jobs: []` response can close old board jobs, but malformed list responses do not trigger stale/closed marking. The associated synced listing is closed when it has no other active sources. If a closed Greenhouse job reappears later, its source and listing are reactivated. No stale/closed marking runs when the list-jobs request fails.
 
+Greenhouse sync records a failed `job_sync_runs` row for a board-level list failure or malformed list response and continues syncing later board targets in the same service call.
+
 Manual Greenhouse Job Sync examples:
 
 ```powershell

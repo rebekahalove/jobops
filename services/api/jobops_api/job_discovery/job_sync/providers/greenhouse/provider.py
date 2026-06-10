@@ -56,16 +56,10 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
 
     def build_sync_plan(self, board_tokens: Iterable[str | GreenhouseBoardSyncTarget]) -> JobSyncPlan:
         requests: list[JobSyncRequest] = []
-        seen: set[str] = set()
-        for raw_target in board_tokens:
-            target = normalize_greenhouse_board_sync_target(raw_target)
+        for target in dedupe_greenhouse_board_sync_targets(board_tokens):
             board_token = target.board_token
             if not board_token:
                 continue
-            dedupe_key = board_token.casefold()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
             api_url = canonical_greenhouse_jobs_api_url(board_token)
             retrieve_url_template = f"{api_url}/{{job_id}}"
             requests.append(
@@ -151,7 +145,7 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
                 },
             )
             record_job_sync_run(session, sync_result)
-            raise
+            return sync_result
 
         created_count = 0
         updated_count = 0
@@ -210,3 +204,28 @@ def normalize_greenhouse_board_sync_target(raw_target: str | GreenhouseBoardSync
             source=raw_target.source,
         )
     return GreenhouseBoardSyncTarget(board_token=normalize_greenhouse_board_token(raw_target), source="bare_board_token")
+
+
+def dedupe_greenhouse_board_sync_targets(
+    targets: Iterable[str | GreenhouseBoardSyncTarget],
+) -> tuple[GreenhouseBoardSyncTarget, ...]:
+    deduped: list[GreenhouseBoardSyncTarget] = []
+    seen_index_by_key: dict[str, int] = {}
+    for raw_target in targets:
+        target = normalize_greenhouse_board_sync_target(raw_target)
+        token = target.board_token
+        key = token.casefold()
+        if not token:
+            continue
+        if key in seen_index_by_key:
+            existing_index = seen_index_by_key[key]
+            if greenhouse_target_metadata_score(target) > greenhouse_target_metadata_score(deduped[existing_index]):
+                deduped[existing_index] = target
+            continue
+        seen_index_by_key[key] = len(deduped)
+        deduped.append(target)
+    return tuple(deduped)
+
+
+def greenhouse_target_metadata_score(target: GreenhouseBoardSyncTarget) -> int:
+    return int(bool(target.company_name)) + (2 * int(bool(target.company_id)))

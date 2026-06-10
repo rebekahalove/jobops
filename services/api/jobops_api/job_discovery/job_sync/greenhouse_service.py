@@ -114,19 +114,27 @@ def dedupe_greenhouse_board_sync_targets(
     targets: Iterable[GreenhouseBoardSyncTarget],
 ) -> tuple[GreenhouseBoardSyncTarget, ...]:
     deduped: list[GreenhouseBoardSyncTarget] = []
-    seen: set[str] = set()
+    seen_index_by_key: dict[str, int] = {}
     for target in targets:
         token = normalize_greenhouse_board_token(target.board_token)
         key = token.casefold()
-        if not token or key in seen:
+        if not token:
             continue
-        seen.add(key)
-        deduped.append(
-            GreenhouseBoardSyncTarget(
-                board_token=token,
-                company_id=target.company_id,
-                company_name=target.company_name,
-                source=target.source,
-            )
+        normalized_target = GreenhouseBoardSyncTarget(
+            board_token=token,
+            company_id=target.company_id,
+            company_name=target.company_name,
+            source=target.source,
         )
+        if key in seen_index_by_key:
+            existing_index = seen_index_by_key[key]
+            if greenhouse_target_metadata_score(normalized_target) > greenhouse_target_metadata_score(deduped[existing_index]):
+                deduped[existing_index] = normalized_target
+            continue
+        seen_index_by_key[key] = len(deduped)
+        deduped.append(normalized_target)
     return tuple(deduped)
+
+
+def greenhouse_target_metadata_score(target: GreenhouseBoardSyncTarget) -> int:
+    return int(bool(target.company_name)) + (2 * int(bool(target.company_id)))

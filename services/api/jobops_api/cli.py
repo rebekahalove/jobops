@@ -289,6 +289,8 @@ def format_greenhouse_sync_result(result) -> str:
             f"{request.sync_key} skipped_fresh "
             f"latest_completed_at={diagnostics.get('latestCompletedAt') or '-'}"
         )
+    if result.status == "failed":
+        return f"{request.sync_key} failed error={result.error or '-'}"
     return (
         f"{request.sync_key} {result.status} raw={result.raw_result_count} "
         f"normalized={result.normalized_count} created={result.created_count} "

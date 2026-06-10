@@ -545,11 +545,13 @@ def test_greenhouse_failed_list_request_does_not_mark_jobs_closed(monkeypatch) -
             raise urllib.error.HTTPError(url, 500, "Boom", hdrs=None, fp=None)
 
         monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.greenhouse.client.fetch_json", fail_list_jobs)
-        with pytest.raises(urllib.error.HTTPError):
-            sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)
+        result = sync_greenhouse_boards(session, settings=settings, include_configured=True, force=True)[0]
         source = session.scalar(select(JobListingSource))
         listing_record = session.scalar(select(JobListing))
 
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "HTTP Error 500" in result.error
     assert source is not None
     assert source.is_active is True
     assert source.closed_at is None
