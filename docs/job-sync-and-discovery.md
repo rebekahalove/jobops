@@ -63,13 +63,22 @@ Adzuna broad sync signatures include provider country, location, and query text.
 
 ## Location Normalization
 
-This branch adds a small provider-aware location foundation, not a geocoder. Raw provider locations are stored separately from normalized fields.
+Job Sync uses data-backed location targets and provider mappings instead of hardcoded location cases. When a user target location or command location needs provider search values, Job Sync resolves or creates:
 
-Supported seed cases:
+- `job_location_targets`: normalized user-facing location targets such as `remote-uk`, `louisville-ky`, or `manchester-uk`.
+- `job_provider_location_mappings`: provider-specific request values such as Adzuna `provider_country` and `provider_where`.
 
-- `Remote US` -> provider country `us`.
-- `Remote UK` -> provider country `gb`.
-- `Louisville, KY` -> provider country `us`, provider where `Louisville, Kentucky`.
-- `London, UK` -> provider country `gb`, provider where `London`.
+Seeded starter mappings cover Remote US, Remote UK, Louisville KY, London UK, and Manchester UK. New locations are auto-created with low confidence and `needs_review` status. Unknown locations can produce an inferred provider mapping when an explicit sync country hint is supplied, and those requests surface confidence/review metadata in Adzuna criteria. Adzuna does not default unresolved locations to the US: provider country must come from the resolved location mapping or explicit sync criteria. If neither source can resolve a country, planning fails clearly instead of generating a `/jobs/us` request.
 
-Unknown locations are preserved as raw/display values with low confidence for later enrichment.
+Adzuna sync requests carry provider country, provider where, display location, normalized location key, mapping id, confidence, and verification status. Exact provider request values remain in `criteria_json`.
+
+Provider-returned job locations are also resolved into `job_location_targets`. Structured Adzuna `location.area` values populate city, region, and country with medium confidence; text-only provider locations, such as Greenhouse `location.name`, are stored as low-confidence targets until reviewed. Raw provider job location values remain on `job_listings.location_raw` and `job_listing_sources.raw_location`, and the full provider payload remains in source metadata.
+
+Location mappings can be reviewed with CLI maintenance commands:
+
+```powershell
+python -m jobops_api.cli list-job-location-mappings --status needs_review
+python -m jobops_api.cli update-job-location-mapping --mapping-id <id> --provider-country gb --provider-where Manchester --confidence high --verification-status verified
+```
+
+Raw provider job locations are still stored separately on synced listings and source records.

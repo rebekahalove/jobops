@@ -3,10 +3,13 @@ from __future__ import annotations
 import urllib.error
 from collections.abc import Iterable
 
+from sqlalchemy.orm import Session
+
 from ...provider_utils import clean_text_value, fetch_json, html_to_text, infer_remote_mode, nested_get, parse_datetime_value
 from ...providers.greenhouse import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
 from ..base import BaseJobSyncProvider
-from ..models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, NormalizedJobListing, normalize_job_sync_location
+from ..location_resolver import resolve_or_create_job_location_from_provider_payload
+from ..models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, NormalizedJobListing
 from ..service import build_greenhouse_sync_key
 
 
@@ -136,6 +139,8 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         self,
         raw: object,
         request: JobSyncRequest,
+        *,
+        session: Session,
     ) -> tuple[NormalizedJobListing, JobListingSourceRecord] | None:
         if not isinstance(raw, dict) or not request.ats_board_token:
             return None
@@ -147,22 +152,30 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
             return None
         full_description = html_to_text(str(raw.get("content") or "")) or None
         location_raw = clean_text_value(nested_get(raw, "location", "name"))
-        location = normalize_job_sync_location(location_raw, default_provider_country="us")
+        location_payload = raw.get("location") if isinstance(raw.get("location"), dict) else None
+        location_target = resolve_or_create_job_location_from_provider_payload(
+            session,
+            provider_name=self.provider_name,
+            raw_display_location=location_raw,
+            provider_location_payload=location_payload,
+            provider_country=request.provider_country,
+        )
         source_updated_at = parse_datetime_value(raw.get("updated_at"))
         listing = NormalizedJobListing(
             title=title,
             company_name=company_name,
+            job_location_target_id=location_target.id,
             company_id=request.company_id,
             canonical_url=source_url,
             apply_url=source_url,
             source_url=source_url,
             location_raw=location_raw,
-            location_display=location.display_location or location_raw,
-            location_city=location.location_city,
-            location_region=location.location_region,
-            location_country=location.location_country,
-            location_metro=location.location_metro,
-            location_confidence=location.location_confidence,
+            location_display=location_target.display_name or location_raw,
+            location_city=location_target.city,
+            location_region=location_target.region,
+            location_country=location_target.country_code,
+            location_metro=location_target.city,
+            location_confidence=location_target.confidence,
             remote_work_mode=infer_remote_mode(f"{title} {full_description or ''}"),
             full_description=full_description,
             description_excerpt=full_description[:600] if full_description else None,

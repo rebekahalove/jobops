@@ -21,6 +21,11 @@ class JobSyncLocation:
     location_country: str | None = None
     location_metro: str | None = None
     location_confidence: str | None = None
+    normalized_key: str | None = None
+    target_id: str | None = None
+    provider_mapping_id: str | None = None
+    provider_mapping_confidence: str | None = None
+    provider_mapping_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,7 @@ class JobSyncRequest:
 class NormalizedJobListing:
     title: str
     company_name: str
+    job_location_target_id: str | None = None
     company_id: str | None = None
     canonical_url: str | None = None
     apply_url: str | None = None
@@ -124,72 +130,3 @@ class JobListingUpsertResult:
     job_listing_source_id: str
     created: bool
     updated: bool
-
-
-def normalize_job_sync_location(value: str | None, *, default_provider_country: str = "us") -> JobSyncLocation:
-    cleaned = " ".join((value or "").replace(",", ", ").split()).strip(" ,")
-    key = cleaned.casefold()
-    default_country = normalize_provider_country(default_provider_country) or "us"
-    if not cleaned:
-        return JobSyncLocation(display_location=None, provider_country=default_country, provider_where=None)
-    if key in {"remote us", "remote usa", "remote united states", "united states remote", "us remote"}:
-        return JobSyncLocation(
-            display_location="Remote US",
-            provider_country="us",
-            provider_where=None,
-            target_country="United States",
-            target_location_kind="remote_country",
-            location_country="US",
-            location_confidence="high",
-        )
-    if key in {"remote uk", "remote gb", "remote united kingdom", "united kingdom remote", "uk remote"}:
-        return JobSyncLocation(
-            display_location="Remote UK",
-            provider_country="gb",
-            provider_where=None,
-            target_country="United Kingdom",
-            target_location_kind="remote_country",
-            location_country="GB",
-            location_confidence="high",
-        )
-    if key in {"louisville ky", "louisville, ky", "louisville kentucky", "louisville, kentucky"}:
-        return JobSyncLocation(
-            display_location="Louisville, KY",
-            provider_country="us",
-            provider_where="Louisville, Kentucky",
-            target_country="United States",
-            target_location_kind="city",
-            location_city="Louisville",
-            location_region="KY",
-            location_country="US",
-            location_metro="Louisville",
-            location_confidence="high",
-        )
-    if key in {"london uk", "london, uk", "london gb", "london, gb", "london united kingdom", "london, united kingdom"}:
-        return JobSyncLocation(
-            display_location="London, UK",
-            provider_country="gb",
-            provider_where="London",
-            target_country="United Kingdom",
-            target_location_kind="city",
-            location_city="London",
-            location_country="GB",
-            location_metro="London",
-            location_confidence="high",
-        )
-    return JobSyncLocation(
-        display_location=cleaned,
-        provider_country=default_country,
-        provider_where=cleaned,
-        target_location_kind="raw",
-        location_confidence="low",
-    )
-
-
-def normalize_provider_country(value: str | None) -> str | None:
-    cleaned = (value or "").strip().casefold()
-    if cleaned in {"uk", "gb", "gbr", "united kingdom", "great britain"}:
-        return "gb"
-    if cleaned in {"us", "usa", "united states", "united states of america"}:
-        return "us"
-    return cleaned or None

@@ -169,6 +169,7 @@ def sanitize_criteria_json(criteria: dict[str, Any]) -> dict[str, Any]:
 def apply_listing_fields(job_listing: JobListing, listing: NormalizedJobListing, *, synced_at: datetime) -> None:
     for name in (
         "title",
+        "job_location_target_id",
         "company_id",
         "company_name",
         "canonical_url",

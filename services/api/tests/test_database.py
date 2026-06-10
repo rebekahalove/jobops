@@ -115,9 +115,12 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "job_listings" in inspector.get_table_names()
     assert "job_listing_sources" in inspector.get_table_names()
     assert "job_sync_runs" in inspector.get_table_names()
+    assert "job_location_targets" in inspector.get_table_names()
+    assert "job_provider_location_mappings" in inspector.get_table_names()
     job_listing_columns = {column["name"] for column in inspector.get_columns("job_listings")}
     assert {
         "title",
+        "job_location_target_id",
         "company_id",
         "company_name",
         "canonical_url",
@@ -161,6 +164,29 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
         "created_count",
         "updated_count",
     }.issubset(job_sync_run_columns)
+    job_location_target_columns = {column["name"] for column in inspector.get_columns("job_location_targets")}
+    assert {
+        "display_name",
+        "normalized_key",
+        "location_kind",
+        "city",
+        "region",
+        "country_code",
+        "confidence",
+        "verification_status",
+        "raw_inputs_json",
+    }.issubset(job_location_target_columns)
+    provider_location_mapping_columns = {column["name"] for column in inspector.get_columns("job_provider_location_mappings")}
+    assert {
+        "job_location_target_id",
+        "provider_name",
+        "provider_country",
+        "provider_where",
+        "display_location",
+        "confidence",
+        "verification_status",
+        "diagnostics_json",
+    }.issubset(provider_location_mapping_columns)
 
 
 def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, monkeypatch) -> None:

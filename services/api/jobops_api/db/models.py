@@ -425,12 +425,71 @@ class CandidateSavedJob(Base, TimestampMixin):
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
 
 
+class JobLocationTarget(Base, TimestampMixin):
+    __tablename__ = "job_location_targets"
+    __table_args__ = (
+        UniqueConstraint("normalized_key", name="uq_job_location_targets_normalized_key"),
+        Index("ix_job_location_targets_normalized_key", "normalized_key"),
+        Index("ix_job_location_targets_country_code", "country_code"),
+        Index("ix_job_location_targets_verification_status", "verification_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    display_name: Mapped[str] = mapped_column(String(240))
+    normalized_key: Mapped[str] = mapped_column(String(240))
+    location_kind: Mapped[str] = mapped_column(String(80), default="raw")
+    city: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    country_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    country_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    raw_inputs_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    confidence: Mapped[str] = mapped_column(String(40), default="low")
+    verification_status: Mapped[str] = mapped_column(String(40), default="needs_review")
+    source: Mapped[str] = mapped_column(String(80), default="auto")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    provider_mappings: Mapped[list[JobProviderLocationMapping]] = relationship(
+        back_populates="job_location_target",
+        cascade="all, delete-orphan",
+    )
+
+
+class JobProviderLocationMapping(Base, TimestampMixin):
+    __tablename__ = "job_provider_location_mappings"
+    __table_args__ = (
+        UniqueConstraint("job_location_target_id", "provider_name", name="uq_job_provider_location_mappings_target_provider"),
+        Index(
+            "ix_job_provider_location_mappings_provider_request",
+            "provider_name",
+            "provider_country",
+            "provider_where",
+        ),
+        Index("ix_job_provider_location_mappings_target", "job_location_target_id"),
+        Index("ix_job_provider_location_mappings_verification_status", "verification_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_location_target_id: Mapped[str] = mapped_column(ForeignKey("job_location_targets.id", ondelete="CASCADE"))
+    provider_name: Mapped[str] = mapped_column(String(120))
+    provider_country: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider_where: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_location: Mapped[str] = mapped_column(String(240))
+    confidence: Mapped[str] = mapped_column(String(40), default="low")
+    verification_status: Mapped[str] = mapped_column(String(40), default="needs_review")
+    source: Mapped[str] = mapped_column(String(80), default="auto")
+    diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    job_location_target: Mapped[JobLocationTarget] = relationship(back_populates="provider_mappings")
+
+
 class JobListing(Base, TimestampMixin):
     __tablename__ = "job_listings"
     __table_args__ = (
         Index("ix_job_listings_active_last_seen", "is_active", "last_seen_at"),
         Index("ix_job_listings_active_source_updated", "is_active", "source_updated_at"),
         Index("ix_job_listings_company_active", "company_id", "is_active"),
+        Index("ix_job_listings_location_target_active", "job_location_target_id", "is_active"),
         Index("ix_job_listings_company_name_active", "company_name", "is_active"),
         Index(
             "ix_job_listings_location_active",
@@ -447,6 +506,7 @@ class JobListing(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(String(240))
+    job_location_target_id: Mapped[str | None] = mapped_column(ForeignKey("job_location_targets.id", ondelete="SET NULL"), nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
     canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -478,6 +538,7 @@ class JobListing(Base, TimestampMixin):
     source_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     company: Mapped[Company | None] = relationship(back_populates="job_listings")
+    job_location_target: Mapped[JobLocationTarget | None] = relationship()
     sources: Mapped[list[JobListingSource]] = relationship(
         back_populates="job_listing",
         cascade="all, delete-orphan",
