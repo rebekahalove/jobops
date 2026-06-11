@@ -395,7 +395,7 @@ def upsert_adzuna_sync_signature_command(
             created_by=created_by,
         )
         session.commit()
-        print(format_adzuna_signature(signature))
+        print(format_adzuna_signature_upsert(signature))
 
 
 def list_adzuna_sync_signatures_command(*, status: str | None, enabled_only: bool) -> None:
@@ -445,30 +445,68 @@ def sync_adzuna_job_signatures_command(
 
 
 def format_adzuna_signature(signature: JobSyncSignature) -> str:
+    criteria = signature.criteria_json or {}
     return (
         f"{signature.id} | {signature.sync_key} | query={signature.query_text} "
-        f"location={signature.display_location or '-'} country={signature.provider_country or '-'} "
-        f"where={signature.provider_where or '-'} enabled={signature.enabled} "
-        f"status={signature.verification_status} last_completed_at={signature.last_completed_at or '-'} "
+        f"location={signature.display_location or '-'} provider_country={signature.provider_country or '-'} "
+        f"provider_where={signature.provider_where or '-'} enabled={signature.enabled} "
+        f"status={signature.verification_status} api_path={criteria.get('apiPath') or '-'} "
+        f"what={criteria.get('what') or signature.query_text or '-'} where={criteria.get('where') or '-'} "
+        f"max_pages={signature.max_pages} results_per_page={signature.results_per_page} "
+        f"last_completed_at={signature.last_completed_at or '-'} "
         f"last_status={signature.last_status or '-'} raw={signature.last_raw_result_count} "
         f"normalized={signature.last_normalized_count} created={signature.last_created_count} "
         f"updated={signature.last_updated_count}"
     )
 
 
+def format_adzuna_signature_upsert(signature: JobSyncSignature) -> str:
+    criteria = signature.criteria_json or {}
+    return "\n".join(
+        [
+            "Adzuna sync signature upserted.",
+            f"id: {signature.id}",
+            f"sync_key: {signature.sync_key}",
+            f"query: {signature.query_text}",
+            f"location: {signature.display_location or '-'}",
+            f"provider_country: {signature.provider_country or '-'}",
+            f"provider_where: {signature.provider_where or '-'}",
+            f"enabled: {signature.enabled}",
+            f"verification_status: {signature.verification_status}",
+            f"api_path: {criteria.get('apiPath') or '-'}",
+            f"what: {criteria.get('what') or signature.query_text or '-'}",
+            f"where: {criteria.get('where') or '-'}",
+            f"max_pages: {signature.max_pages}",
+            f"results_per_page: {signature.results_per_page}",
+            "",
+            "No provider API call was made. To fetch jobs, run:",
+            (
+                "python -m jobops_api.cli sync-adzuna-job-signatures "
+                f"--signature-id {signature.id} --force --max-pages {signature.max_pages}"
+            ),
+        ]
+    )
+
+
 def format_adzuna_sync_result(result) -> str:
     diagnostics = result.diagnostics_json
     request = result.request
+    criteria = request.criteria_json or {}
+    api_path = criteria.get("apiPath") or "-"
+    what = criteria.get("what") or request.query_text or "-"
+    where = criteria.get("where") or request.provider_where or "-"
     if result.status == "skipped_fresh":
         return f"{request.sync_key} skipped_fresh latest_completed_at={diagnostics.get('latestCompletedAt') or '-'}"
-    if result.status in {"failed", "skipped"}:
-        reason = result.error or diagnostics.get("skipReason") or "-"
-        return f"{request.sync_key} {result.status} reason={reason}"
+    if result.status == "failed":
+        return f"{request.sync_key} failed api={api_path} error={result.error or '-'}"
+    if result.status == "skipped":
+        return f"{request.sync_key} skipped api={api_path} reason={diagnostics.get('skipReason') or '-'}"
     return (
-        f"{request.sync_key} {result.status} raw={result.raw_result_count} "
-        f"normalized={result.normalized_count} created={result.created_count} "
-        f"updated={result.updated_count} failed={result.failed_normalization_count} "
-        f"pages={diagnostics.get('pagesFetched', 0)} reported_count={diagnostics.get('providerReportedCount') or '-'}"
+        f"{request.sync_key} {result.status} api={api_path} what={what} where={where} "
+        f"pages={diagnostics.get('pagesFetched', criteria.get('maxPages') or 0)} "
+        f"provider_count={diagnostics.get('providerReportedCount') or '-'} raw={result.raw_result_count} "
+        f"normalized={result.normalized_count} created={result.created_count} updated={result.updated_count} "
+        f"failed={result.failed_normalization_count}"
     )
 
 

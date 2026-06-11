@@ -98,6 +98,10 @@ python -m jobops_api.cli sync-adzuna-job-signatures --all-enabled
 python -m jobops_api.cli sync-adzuna-job-signatures --signature-id <id> --force --max-pages 1
 ```
 
+`upsert-adzuna-sync-signature` creates or updates the durable signature only. It does not call Adzuna, so raw/normalized/created/updated counts remain unchanged until `sync-adzuna-job-signatures` runs. The upsert output prints a request preview, including API path, query, location, page count, and the exact follow-up sync command.
+
+For known mappings such as Remote UK, `provider_country` is resolved from `job_provider_location_mappings`; users should not need to pass `--provider-country gb`.
+
 Adzuna request diagnostics include exact non-secret values: provider country, API path, `what`, `where`, `what_exclude`, `results_per_page`, page, max pages, sync key, signature id, display location, normalized location key, mapping ids, confidence/status, provider-reported count/mean, and per-page returned counts. Diagnostics never include `app_id`, `app_key`, auth headers, cookies, or private profile payloads.
 
 Adzuna paging is bounded by the signature or CLI/service override. `results_per_page` defaults to 50 and `max_pages` defaults to 1. Broad searches can report large totals; Job Sync records provider-reported totals for diagnostics but fetches only configured pages.

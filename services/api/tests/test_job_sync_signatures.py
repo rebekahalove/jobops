@@ -26,10 +26,15 @@ def test_upsert_adzuna_signature_for_remote_uk_creates_stable_sync_key() -> None
 
         assert signature.provider_name == "adzuna"
         assert signature.provider_country == "gb"
+        assert signature.provider_where is None
+        assert signature.display_location == "Remote UK"
         assert signature.normalized_location_key == "remote-uk"
         assert signature.sync_key == "adzuna:broad:gb:remote-uk:ai"
+        assert signature.enabled is True
+        assert signature.verification_status == "verified"
         assert signature.criteria_json["what"] == "AI"
         assert signature.criteria_json["providerCountry"] == "gb"
+        assert signature.criteria_json["apiPath"] == "/v1/api/jobs/gb/search/1"
         assert signature.criteria_json["maxPages"] == 2
         assert signature.criteria_json["jobSyncSignatureId"] == signature.id
 

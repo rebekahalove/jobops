@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import sys
 
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+
 from jobops_api import cli
+from jobops_api.db.models import Base
+from jobops_api.job_discovery.job_sync.models import JobSyncRequest, JobSyncResult
 
 
 def test_seed_initial_user_cli_passes_password_and_reset_flag(monkeypatch):
@@ -216,6 +221,48 @@ def test_upsert_adzuna_sync_signature_cli_passes_options(monkeypatch):
     ]
 
 
+def test_upsert_adzuna_sync_signature_cli_output_explains_signature_preview(monkeypatch, capsys):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(cli, "create_db_engine", lambda: engine)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jobops-api",
+            "upsert-adzuna-sync-signature",
+            "--query",
+            "AI",
+            "--location",
+            "Remote UK",
+            "--query-kind",
+            "broad_term",
+            "--max-pages",
+            "1",
+        ],
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert "Adzuna sync signature upserted." in output
+    assert "sync_key: adzuna:broad:gb:remote-uk:ai" in output
+    assert "provider_country: gb" in output
+    assert "provider_where: -" in output
+    assert "api_path: /v1/api/jobs/gb/search/1" in output
+    assert "what: AI" in output
+    assert "where: -" in output
+    assert "max_pages: 1" in output
+    assert "results_per_page: 50" in output
+    assert "No provider API call was made" in output
+    assert "sync-adzuna-job-signatures --signature-id" in output
+    assert "--force --max-pages 1" in output
+
+
 def test_list_adzuna_sync_signatures_cli_passes_filters(monkeypatch):
     calls = []
 
@@ -270,3 +317,39 @@ def test_sync_adzuna_job_signatures_cli_passes_options(monkeypatch):
             "max_pages": 1,
         }
     ]
+
+
+def test_format_adzuna_sync_result_shows_provider_refresh_details():
+    result = JobSyncResult(
+        request=JobSyncRequest(
+            sync_key="adzuna:broad:gb:remote-uk:ai",
+            provider_name="adzuna",
+            provider_type="broad_search",
+            sync_kind="broad_search",
+            provider_country="gb",
+            query_text="AI",
+            criteria_json={
+                "apiPath": "/v1/api/jobs/gb/search/1",
+                "what": "AI",
+                "where": None,
+                "maxPages": 1,
+            },
+        ),
+        status="completed",
+        raw_result_count=50,
+        normalized_count=49,
+        created_count=12,
+        updated_count=37,
+        diagnostics_json={
+            "pagesFetched": 1,
+            "providerReportedCount": 123,
+        },
+    )
+
+    output = cli.format_adzuna_sync_result(result)
+
+    assert output == (
+        "adzuna:broad:gb:remote-uk:ai completed api=/v1/api/jobs/gb/search/1 "
+        "what=AI where=- pages=1 provider_count=123 raw=50 normalized=49 "
+        "created=12 updated=37 failed=0"
+    )
