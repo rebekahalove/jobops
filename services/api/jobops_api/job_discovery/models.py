@@ -396,7 +396,8 @@ class JobSearchPlannerResult:
 class SavedJobResponse(BaseModel):
     id: str
     candidate_profile_id: str
-    job_id: str
+    job_id: str | None
+    job_listing_id: str | None = None
     title: str
     company_name: str
     job_url: str
@@ -446,7 +447,7 @@ class SavedJobResponse(BaseModel):
 
 class SavedJobActionResponse(BaseModel):
     ok: bool = True
-    job_id: str
+    job_id: str | None
     saved_job_id: str
     job_archived: bool = False
     job_restored: bool = False

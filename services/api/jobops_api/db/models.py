@@ -403,26 +403,73 @@ class CandidateSavedJob(Base, TimestampMixin):
     __tablename__ = "candidate_saved_jobs"
     __table_args__ = (
         UniqueConstraint("candidate_profile_id", "job_id", name="uq_candidate_saved_jobs_profile_job"),
+        Index(
+            "uq_candidate_saved_jobs_profile_listing",
+            "candidate_profile_id",
+            "job_listing_id",
+            unique=True,
+            sqlite_where=text("job_listing_id IS NOT NULL"),
+            postgresql_where=text("job_listing_id IS NOT NULL"),
+        ),
         Index("ix_candidate_saved_jobs_profile_added", "candidate_profile_id", "added_at"),
         Index("ix_candidate_saved_jobs_profile_status_added", "candidate_profile_id", "status", "added_at"),
+        Index("ix_candidate_saved_jobs_profile_status", "candidate_profile_id", "status"),
+        Index("ix_candidate_saved_jobs_profile_listing", "candidate_profile_id", "job_listing_id"),
+        Index("ix_candidate_saved_jobs_job_listing", "job_listing_id"),
+        Index("ix_candidate_saved_jobs_search_run", "job_search_run_id"),
+        Index("ix_candidate_saved_jobs_last_model_reviewed", "last_model_reviewed_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
-    job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=True)
+    job_listing_id: Mapped[str | None] = mapped_column(ForeignKey("job_listings.id", ondelete="CASCADE"), nullable=True)
+    job_search_run_id: Mapped[str | None] = mapped_column(ForeignKey("job_search_runs.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="new")
     fit_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_command: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovery_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_model_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_decision_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_review_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     archived_by_action: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
-    job: Mapped[JobPosting] = relationship(back_populates="saved_links")
+    job: Mapped[JobPosting | None] = relationship(back_populates="saved_links")
+    job_listing: Mapped[JobListing | None] = relationship()
+    job_search_run: Mapped[JobSearchRun | None] = relationship()
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
+    rejection_reasons: Mapped[list[CandidateJobRejectionReason]] = relationship(
+        back_populates="candidate_job",
+        cascade="all, delete-orphan",
+    )
+
+
+class CandidateJobRejectionReason(Base):
+    __tablename__ = "candidate_job_rejection_reasons"
+    __table_args__ = (
+        Index("ix_candidate_job_rejection_reasons_candidate_job", "candidate_job_id", "active"),
+        Index("ix_candidate_job_rejection_reasons_reason_active", "reason_code", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_job_id: Mapped[str] = mapped_column(ForeignKey("candidate_saved_jobs.id", ondelete="CASCADE"))
+    reason_code: Mapped[str] = mapped_column(String(80))
+    affected_field: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reset_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reset_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    candidate_job: Mapped[CandidateSavedJob] = relationship(back_populates="rejection_reasons")
 
 
 class JobLocationTarget(Base, TimestampMixin):

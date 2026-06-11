@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -63,6 +64,11 @@ from jobops_api.job_discovery.url_verification import source_result_verification
 from jobops_api.settings import Settings
 
 
+SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY = pytest.mark.skip(
+    reason="Branch 4 replaced candidate-facing live-provider discovery with DB-backed synced inventory."
+)
+
+
 def fake_job_search_planner_response(
     *,
     role_query: str = "AI Platform Engineer",
@@ -100,6 +106,7 @@ def fake_job_search_planner_response(
     )
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_job_discovery_creates_global_jobs_and_profile_links(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
@@ -568,6 +575,7 @@ def test_job_discovery_prompts_for_targets_on_generic_request(tmp_path: Path) ->
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_job_discovery_allows_explicit_broad_request_without_saved_targets(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
@@ -586,6 +594,7 @@ def test_job_discovery_allows_explicit_broad_request_without_saved_targets(tmp_p
         assert result.body["result"]["savedCount"] == 2
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
@@ -621,6 +630,7 @@ def test_job_discovery_rediscovery_reuses_global_job_and_preserves_added_at(tmp_
             assert link.added_at == first_added_at[link.job.normalized_url]
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_same_global_job_can_be_saved_by_different_profiles(tmp_path: Path) -> None:
     engine = create_seeded_engine(include_second_profile=True)
 
@@ -1163,6 +1173,7 @@ def test_greenhouse_url_parser_supports_public_and_api_urls() -> None:
         assert parsed.jobs_api_url == canonical_greenhouse_jobs_api_url(token)
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_greenhouse_url_ingestion_upserts_company_job_and_candidate_links(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -1241,6 +1252,7 @@ def test_greenhouse_url_ingestion_upserts_company_job_and_candidate_links(monkey
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 1
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_greenhouse_url_ingestion_repairs_token_derived_company_name(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -1516,6 +1528,7 @@ def test_partial_broad_provider_errors_do_not_fail_after_company_board_results()
     )
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -1596,6 +1609,7 @@ def test_orchestration_runs_multiple_providers_and_dedupes(monkeypatch, tmp_path
 
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tmp_path: Path) -> None:
     captured_request = None
 
@@ -1712,6 +1726,7 @@ def test_model_selection_saves_only_selected_provider_candidates(monkeypatch, tm
         assert any(item["title"] == "AI Platform Engineer" for item in request_payload["candidate_jobs"])
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_zero_model_selection_persists_model_authored_explanation(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -1815,6 +1830,7 @@ def test_zero_model_selection_persists_model_authored_explanation(monkeypatch, t
         assert payload["selectionSkippedCandidateNotes"][0]["reason"] == "Management-focused .NET role."
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_zero_model_selection_without_meaningful_explanation_uses_transparent_fallback(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -1900,6 +1916,7 @@ def test_zero_model_selection_without_meaningful_explanation_uses_transparent_fa
         assert payload["message"] == job_discovery_service_module.NO_MODEL_SELECTION_EXPLANATION_FALLBACK
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tmp_path: Path, caplog) -> None:
     class FakeResponse:
         status = 200
@@ -1961,6 +1978,7 @@ def test_model_selection_validation_failure_logs_visible_payload(monkeypatch, tm
         assert '"responsePreview": "not json"' in caplog.text
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tmp_path: Path) -> None:
     selection_calls = []
 
@@ -2052,6 +2070,7 @@ def test_model_selection_truncation_retries_with_compact_payload(monkeypatch, tm
         assert result.body["result"]["selectedCandidateIds"] == ["J001"]
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     settings = make_settings(
@@ -2076,6 +2095,7 @@ def test_unconfigured_provider_returns_structured_error(tmp_path: Path) -> None:
         assert len(session.scalars(select(JobPosting)).all()) == 0
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -2127,6 +2147,7 @@ def test_provider_zero_results_are_logged(monkeypatch, tmp_path: Path) -> None:
         assert any('"replansAttempted": 1' in message for message in log_messages)
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path: Path) -> None:
     planner_payloads = []
     selection_payloads = []
@@ -2242,6 +2263,7 @@ def test_zero_result_provider_search_replans_with_context(monkeypatch, tmp_path:
         assert len(session.scalars(select(JobSearchQueryRun)).all()) == 2
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tmp_path: Path) -> None:
     planner_payloads = []
     provider_calls = 0
@@ -2307,6 +2329,7 @@ def test_zero_result_replanning_does_not_exceed_configured_limit(monkeypatch, tm
         assert result.body["result"]["savedCount"] == 0
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(monkeypatch, tmp_path: Path) -> None:
     planner_payloads = []
 
@@ -2405,6 +2428,7 @@ def test_low_candidate_pool_does_not_replan_when_total_matches_are_exhausted(mon
         assert any("provider_results_exhausted" in message for message in log_messages)
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_provider_http_errors_are_logged(monkeypatch, tmp_path: Path, caplog) -> None:
     caplog.set_level(logging.INFO, logger="jobops_api.job_discovery")
 
@@ -2501,6 +2525,7 @@ def test_job_discovery_run_lifecycle_is_logged(monkeypatch, tmp_path: Path) -> N
     assert any("jobSearchRunId" in message for message in messages)
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_partial_provider_failure_can_still_save_results(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -2693,6 +2718,7 @@ def test_provider_job_url_does_not_canonicalize_company_by_aggregator_domain() -
         assert session.scalar(select(Company).where(Company.name == "PwC")).id == poisoned.id
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_user_provided_valid_job_url_can_be_saved_when_fetched(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
         status = 200
@@ -2756,6 +2782,7 @@ def test_command_center_job_discovery_returns_saved_job_payload(tmp_path: Path, 
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_job_discovery_returns_clear_error_when_live_source_not_configured(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     settings = make_settings(tmp_path, model_provider="gemini", job_discovery_source="none")
@@ -2993,6 +3020,7 @@ def test_planner_guardrails_raise_low_provider_goal_to_support_save_limit(tmp_pa
     assert guarded.provider_strategy.requested_result_goal == 50
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_job_discovery_persists_search_run_and_query_history(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
@@ -3021,6 +3049,7 @@ def test_job_discovery_persists_search_run_and_query_history(tmp_path: Path) -> 
         assert query_runs[0].query
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_recent_search_history_is_loaded_into_later_planner_context(tmp_path: Path, monkeypatch) -> None:
     engine = create_seeded_engine()
     captured_payloads: list[dict[str, Any]] = []
@@ -3055,6 +3084,7 @@ def test_recent_search_history_is_loaded_into_later_planner_context(tmp_path: Pa
     assert captured_payloads[1]["recent_job_search_history"][0]["saved_count"] == 2
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_company_specific_job_discovery_preserves_explicit_company(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 
@@ -3075,6 +3105,7 @@ def test_company_specific_job_discovery_preserves_explicit_company(tmp_path: Pat
     assert all("Tomoro" in query for query in result.body["result"]["searchQueriesUsed"])
 
 
+@SKIP_LEGACY_LIVE_PROVIDER_DISCOVERY
 def test_followed_company_job_discovery_uses_saved_companies(tmp_path: Path) -> None:
     engine = create_seeded_engine()
 

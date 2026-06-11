@@ -1,10 +1,10 @@
 # Job Sync and Discovery
 
-JobOps now separates provider/API inventory refresh work from candidate-facing job discovery.
+JobOps separates provider/API inventory refresh work from candidate-facing job discovery.
 
 ## Job Sync
 
-Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching, but this branch does not replace the current candidate-facing live discovery flow.
+Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching. Candidate-facing discovery now searches this synced inventory instead of calling live provider search adapters directly.
 
 Job Sync uses four core database tables:
 
@@ -15,13 +15,30 @@ Job Sync uses four core database tables:
 
 `job_sync_signatures` are desired sync sources. `job_sync_runs` are history. A broad provider search should be refreshed because a signature row says so, not because a broad term is hard-coded in source code, migrations, or seed data.
 
-Existing `job_postings`, `candidate_saved_jobs`, and `applications` remain in place in this branch so applied jobs and application relationships stay intact. `JobPosting` should be revisited in a later migration as the candidate-facing workflows move to synced inventory. `CandidateSavedJob` should also be revisited for an eventual rename such as `CandidateJob` or `CandidateJobListEntry`, but that is deferred to avoid disturbing applied-job links.
+Existing `job_postings`, `candidate_saved_jobs`, and `applications` remain in place so applied jobs and application relationships stay intact. `candidate_saved_jobs.job_id` continues to support older live-provider saved jobs and applications. DB-backed discovery writes `candidate_saved_jobs.job_listing_id` for synced inventory entries and preserves application links that still point at `job_postings`.
 
 ## Candidate-Facing Discovery
 
-The current candidate-facing job discovery behavior still uses the existing live provider adapters under `services/api/jobops_api/job_discovery/providers/`. Greenhouse still fetches boards and locally filters by role query. Adzuna still performs live broad searches from the request query and location values.
+Candidate-facing job discovery keeps the existing chat/run shell and `job_search_runs`, but the internals now use DB-backed synced inventory:
 
-Future branches can move candidate-facing discovery to DB-backed search over `job_listings`, then use live provider calls as a refresh path when sync data is stale or missing.
+- The planner emits a structured JSON search plan, not SQL.
+- The query builder translates the plan into SQLAlchemy queries over `job_listings`, `job_listing_sources`, and candidate job-list state.
+- Supported query scopes are `new_to_candidate`, `candidate_jobs_list`, and `all_accessible_jobs`.
+- The reviewer model chooses which synced jobs should be added to the candidate job list and which should be recorded as model rejected.
+- Chat-facing summaries use the reviewer-provided `userVisibleSummary`.
+
+The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search, enabled Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
+
+Model-rejected synced jobs are retained as candidate job-list rows with `status="model_rejected"` and active `candidate_job_rejection_reasons`. They are hidden from the normal candidate-facing job list until reset. This keeps review history available without presenting rejected jobs as saved jobs.
+
+Model rejection reasons can be reset with:
+
+```powershell
+python -m jobops_api.cli reset-model-rejected-jobs --candidate-slug rebekah-love
+python -m jobops_api.cli reset-model-rejected-jobs --candidate-slug rebekah-love --reason location
+```
+
+Resetting all active rejection reasons for a model-rejected job returns that row to `status="new"` so it can be reconsidered by later discovery.
 
 ## 24-Hour Sync Policy
 
@@ -86,7 +103,7 @@ Adzuna broad-provider Job Sync is signature-driven. A persisted `job_sync_signat
 - Freshness settings and last refresh metadata.
 - Safe request criteria for diagnostics.
 
-No production broad terms are seeded or assumed. CLI calls can create signatures from explicit user-supplied terms now; later planner work can create model-planned signatures.
+No production broad terms are seeded or assumed. CLI calls can create signatures from explicit user-supplied terms, and DB-backed candidate discovery may create model-planned signatures only from explicit structured plan criteria.
 
 Manual Adzuna signature examples:
 
@@ -133,3 +150,7 @@ python -m jobops_api.cli update-job-location-mapping --mapping-id <id> --provide
 ```
 
 Raw provider job locations are still stored separately on synced listings and source records.
+
+## Branch 5 TODO
+
+Adzuna inventory depth is still bounded by signature paging settings. Branch 5 should improve Adzuna pagination and inventory-depth strategy so DB-backed candidate discovery can reason about when broad-provider inventory is shallow, stale, or under-sampled before asking the model to review a pool.
