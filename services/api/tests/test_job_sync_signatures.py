@@ -155,9 +155,12 @@ def test_sync_stale_adzuna_signature_fetches_pages_upserts_jobs_and_updates_sign
         assert "app_key" not in str(run.criteria_json)
         assert refreshed is not None
         assert refreshed.last_status == "completed"
+        assert refreshed.last_attempted_at is not None
         assert refreshed.last_completed_at is not None
         assert refreshed.last_raw_result_count == 2
         assert refreshed.last_normalized_count == 2
+        assert refreshed.last_created_count == 2
+        assert refreshed.last_updated_count == 0
         assert requested == [
             ("https://api.adzuna.com/v1/api/jobs/gb/search/1", {"what": "AI", "where": "Manchester", "results_per_page": 50}),
             ("https://api.adzuna.com/v1/api/jobs/gb/search/2", {"what": "AI", "where": "Manchester", "results_per_page": 50}),
@@ -173,7 +176,14 @@ def test_fresh_adzuna_signature_records_skipped_without_api_call(monkeypatch) ->
     monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.adzuna.client.fetch_json", fail_fetch_json)
     with Session(engine) as session:
         signature = upsert_adzuna_sync_signature(session, query_text="AI", display_location="Remote UK")
-        signature.last_completed_at = datetime.now(UTC)
+        prior_completed_at = datetime.now(UTC)
+        signature.last_completed_at = prior_completed_at
+        signature.last_status = "completed"
+        signature.last_raw_result_count = 50
+        signature.last_normalized_count = 49
+        signature.last_created_count = 12
+        signature.last_updated_count = 37
+        signature.last_error = None
         results = sync_adzuna_signatures(
             session,
             settings=adzuna_settings(),
@@ -181,11 +191,59 @@ def test_fresh_adzuna_signature_records_skipped_without_api_call(monkeypatch) ->
             enabled_only=False,
         )
         run = session.scalar(select(JobSyncRun))
+        refreshed = session.get(JobSyncSignature, signature.id)
 
         assert results[0].status == "skipped_fresh"
         assert run is not None
         assert run.status == "skipped_fresh"
         assert run.job_sync_signature_id == signature.id
+        assert run.raw_result_count == 0
+        assert refreshed is not None
+        assert refreshed.last_status == "skipped_fresh"
+        assert refreshed.last_attempted_at is not None
+        assert refreshed.last_completed_at == prior_completed_at
+        assert refreshed.last_raw_result_count == 50
+        assert refreshed.last_normalized_count == 49
+        assert refreshed.last_created_count == 12
+        assert refreshed.last_updated_count == 37
+        assert refreshed.last_error is None
+
+
+def test_disabled_adzuna_signature_skip_preserves_successful_counts() -> None:
+    engine = create_engine_for_signature_tests()
+
+    with Session(engine) as session:
+        signature = upsert_adzuna_sync_signature(session, query_text="AI", display_location="Remote UK")
+        prior_completed_at = datetime.now(UTC)
+        signature.enabled = False
+        signature.last_completed_at = prior_completed_at
+        signature.last_status = "completed"
+        signature.last_raw_result_count = 50
+        signature.last_normalized_count = 49
+        signature.last_created_count = 12
+        signature.last_updated_count = 37
+        results = sync_adzuna_signatures(
+            session,
+            settings=adzuna_settings(),
+            signature_ids=[signature.id],
+            enabled_only=False,
+        )
+        run = session.scalar(select(JobSyncRun))
+        refreshed = session.get(JobSyncSignature, signature.id)
+
+        assert results[0].status == "skipped"
+        assert run is not None
+        assert run.status == "skipped"
+        assert run.raw_result_count == 0
+        assert refreshed is not None
+        assert refreshed.last_status == "skipped"
+        assert refreshed.last_attempted_at is not None
+        assert refreshed.last_completed_at == prior_completed_at
+        assert refreshed.last_raw_result_count == 50
+        assert refreshed.last_normalized_count == 49
+        assert refreshed.last_created_count == 12
+        assert refreshed.last_updated_count == 37
+        assert refreshed.last_error is None
 
 
 def test_force_refresh_calls_adzuna_even_when_signature_is_fresh(monkeypatch) -> None:
@@ -232,6 +290,47 @@ def test_failed_adzuna_signature_does_not_abort_later_signature(monkeypatch) -> 
         assert [result.status for result in results] == ["failed", "completed"]
         assert [run.status for run in runs] == ["failed", "completed"]
         assert len(listings) == 1
+
+
+def test_failed_adzuna_signature_preserves_successful_counts(monkeypatch) -> None:
+    engine = create_engine_for_signature_tests()
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.adzuna.client.fetch_json", fake_fetch_json)
+    with Session(engine) as session:
+        signature = upsert_adzuna_sync_signature(session, query_text="AI", display_location="Remote UK")
+        prior_completed_at = datetime.now(UTC)
+        signature.last_completed_at = prior_completed_at
+        signature.last_status = "completed"
+        signature.last_raw_result_count = 50
+        signature.last_normalized_count = 49
+        signature.last_created_count = 12
+        signature.last_updated_count = 37
+        results = sync_adzuna_signatures(
+            session,
+            settings=adzuna_settings(),
+            signature_ids=[signature.id],
+            enabled_only=False,
+            force=True,
+        )
+        run = session.scalar(select(JobSyncRun))
+        refreshed = session.get(JobSyncSignature, signature.id)
+
+        assert results[0].status == "failed"
+        assert run is not None
+        assert run.status == "failed"
+        assert run.raw_result_count == 0
+        assert refreshed is not None
+        assert refreshed.last_status == "failed"
+        assert refreshed.last_error == "provider unavailable"
+        assert refreshed.last_attempted_at is not None
+        assert refreshed.last_completed_at == prior_completed_at
+        assert refreshed.last_raw_result_count == 50
+        assert refreshed.last_normalized_count == 49
+        assert refreshed.last_created_count == 12
+        assert refreshed.last_updated_count == 37
 
 
 def test_missing_adzuna_id_fails_normalization_during_signature_sync(monkeypatch) -> None:

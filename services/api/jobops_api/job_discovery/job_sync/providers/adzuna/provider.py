@@ -293,9 +293,9 @@ def apply_signature_refresh_result(signature: JobSyncSignature, result: JobSyncR
     signature.last_attempted_at = now
     signature.last_status = result.status
     signature.last_error = result.error
-    signature.last_raw_result_count = result.raw_result_count
-    signature.last_normalized_count = result.normalized_count
-    signature.last_created_count = result.created_count
-    signature.last_updated_count = result.updated_count
     if result.status == "completed" and result.error is None:
         signature.last_completed_at = now
+        signature.last_raw_result_count = result.raw_result_count
+        signature.last_normalized_count = result.normalized_count
+        signature.last_created_count = result.created_count
+        signature.last_updated_count = result.updated_count

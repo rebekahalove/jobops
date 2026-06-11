@@ -102,6 +102,8 @@ Adzuna request diagnostics include exact non-secret values: provider country, AP
 
 Adzuna paging is bounded by the signature or CLI/service override. `results_per_page` defaults to 50 and `max_pages` defaults to 1. Broad searches can report large totals; Job Sync records provider-reported totals for diagnostics but fetches only configured pages.
 
+For `job_sync_signatures`, `last_attempted_at` and `last_status` describe the latest sync attempt. `last_completed_at` and the last count fields describe the latest successful completed refresh and are not reset by skipped or failed attempts.
+
 Adzuna raw results must include provider `id`. Missing `id` fails normalization; redirect URLs are not used as fallback identity. Adzuna broad searches do not mark jobs closed merely because a job is absent from a later broad search response, because broad provider searches are not exhaustive enough for strict stale marking.
 
 Adzuna country is carried per sync request, so inventory refreshes can support US, GB, and other provider endpoints without a global country assumption.
