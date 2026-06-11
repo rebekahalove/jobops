@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from ...model_connector import ModelConnector, ModelMessage, ModelRequest
@@ -26,10 +27,11 @@ class JobReviewSelector:
         if connector is not None:
             try:
                 response = connector.generate(model_request)
-                return parse_review_response(response.text)
-            except Exception:
-                pass
-        return deterministic_review(bounded_pool, max_selected=max_selected)
+                parsed = parse_review_response(response.text)
+                return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True})
+            except Exception as exc:
+                return safe_review_unavailable(bounded_pool, reason=f"connector_error:{exc.__class__.__name__}")
+        return safe_review_unavailable(bounded_pool, reason="connector_unavailable")
 
     def build_model_request(
         self,
@@ -64,32 +66,81 @@ class JobReviewSelector:
         )
 
 
-def deterministic_review(job_pool: list[JobPoolEntry], *, max_selected: int) -> JobReviewResult:
-    selected_entries = job_pool[: max(0, max_selected)]
-    rejected_entries = job_pool[max(0, max_selected) :]
-    selected = tuple(
-        SelectedJobDecision(
-            job_listing_id=entry.job_listing_id,
-            rationale=f"{entry.title} at {entry.company_name} matched the synced-job search.",
-            match_highlights=tuple(value for value in (entry.location_display, entry.remote_work_mode) if value),
-        )
-        for entry in selected_entries
-    )
-    rejected = tuple(
-        RejectedJobDecision(
-            job_listing_id=entry.job_listing_id,
-            reason_codes=("other",),
-            explanation="Not selected in this bounded model review batch.",
-        )
-        for entry in rejected_entries
-    )
-    if selected:
-        summary = f"I found {len(job_pool)} synced jobs, reviewed {len(job_pool)}, and added {len(selected)} to your jobs list."
-    elif job_pool:
-        summary = f"I found {len(job_pool)} jobs to review, but did not add any."
+def safe_review_unavailable(job_pool: list[JobPoolEntry], *, reason: str) -> JobReviewResult:
+    if job_pool:
+        summary = "I found synced jobs to review, but model review did not complete, so I did not add jobs to your list."
     else:
         summary = "I did not find synced jobs that matched this request yet."
-    return JobReviewResult(user_visible_summary=summary, selected_jobs=selected, rejected_jobs=rejected)
+    return JobReviewResult(
+        user_visible_summary=summary,
+        selected_jobs=(),
+        rejected_jobs=(),
+        diagnostics={
+            "modelReviewCompleted": False,
+            "modelReviewFallback": True,
+            "modelReviewFailureReason": reason,
+            "jobPoolCount": len(job_pool),
+        },
+    )
+
+
+def validate_review_result(review: JobReviewResult, reviewed_job_listing_ids: tuple[str, ...]) -> JobReviewResult:
+    reviewed_ids = set(reviewed_job_listing_ids)
+    selected: list[SelectedJobDecision] = []
+    selected_ids: set[str] = set()
+    rejected_by_id: dict[str, RejectedJobDecision] = {}
+    invalid_selected_ids: list[str] = []
+    invalid_rejected_ids: list[str] = []
+    duplicate_decision_count = 0
+    selected_wins_conflict_count = 0
+
+    for decision in review.selected_jobs:
+        job_listing_id = decision.job_listing_id
+        if job_listing_id not in reviewed_ids:
+            invalid_selected_ids.append(job_listing_id)
+            continue
+        if job_listing_id in selected_ids:
+            duplicate_decision_count += 1
+            continue
+        selected.append(decision)
+        selected_ids.add(job_listing_id)
+
+    for decision in review.rejected_jobs:
+        job_listing_id = decision.job_listing_id
+        if job_listing_id not in reviewed_ids:
+            invalid_rejected_ids.append(job_listing_id)
+            continue
+        if job_listing_id in selected_ids:
+            selected_wins_conflict_count += 1
+            continue
+        normalized = RejectedJobDecision(
+            job_listing_id=job_listing_id,
+            reason_codes=tuple(normalize_reason_codes(decision.reason_codes)),
+            explanation=decision.explanation,
+        )
+        existing = rejected_by_id.get(job_listing_id)
+        if existing is not None:
+            duplicate_decision_count += 1
+            rejected_by_id[job_listing_id] = RejectedJobDecision(
+                job_listing_id=job_listing_id,
+                reason_codes=tuple(normalize_reason_codes((*existing.reason_codes, *normalized.reason_codes))),
+                explanation=existing.explanation or normalized.explanation,
+            )
+            continue
+        rejected_by_id[job_listing_id] = normalized
+
+    validation_diagnostics = {
+        "invalidSelectedJobIds": invalid_selected_ids,
+        "invalidRejectedJobIds": invalid_rejected_ids,
+        "duplicateDecisionCount": duplicate_decision_count,
+        "selectedWinsConflictCount": selected_wins_conflict_count,
+    }
+    return replace(
+        review,
+        selected_jobs=tuple(selected),
+        rejected_jobs=tuple(rejected_by_id.values()),
+        diagnostics={**review.diagnostics, "reviewValidation": validation_diagnostics},
+    )
 
 
 def parse_review_response(raw_text: str) -> JobReviewResult:
@@ -117,6 +168,7 @@ def parse_review_response(raw_text: str) -> JobReviewResult:
         selected_jobs=selected,
         rejected_jobs=rejected,
         criteria_adjustment_suggestion=parsed.get("criteriaAdjustmentSuggestion") or {},
+        diagnostics={"modelReviewCompleted": True},
     )
 
 

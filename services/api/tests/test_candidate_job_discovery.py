@@ -124,7 +124,7 @@ def test_repository_records_rejection_reasons_and_reset_restores_job() -> None:
 
         session.refresh(link)
         assert reset_count == 2
-        assert link.status == "new"
+        assert link.status == "model_rejection_reset"
         assert all(not reason.active for reason in active_reasons)
 
 
@@ -173,6 +173,15 @@ def test_run_job_discovery_uses_db_inventory_response_shape(tmp_path: Path, monk
 
         monkeypatch.setattr(candidate_service_module.CandidateJobDiscoveryService, "ensure_inventory", lambda self, **kwargs: ())
         monkeypatch.setattr(job_discovery_service_module, "should_prompt_for_discovery_targets", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            candidate_service_module.JobReviewSelector,
+            "review",
+            lambda self, *args, job_pool, **kwargs: JobReviewResult(
+                user_visible_summary="I found one strong synced job.",
+                selected_jobs=(SelectedJobDecision(job_listing_id=job_pool[0].job_listing_id, rationale="Strong match."),),
+                diagnostics={"modelReviewCompleted": True},
+            ),
+        )
         result = run_job_discovery(
             JobDiscoveryRequest(latest_user_message="Find AI platform engineer jobs.", candidate_profile_slug=profile.slug),
             db_session=session,

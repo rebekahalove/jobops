@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...db.models import CandidateSavedJob, JobListing, JobListingSource
 from .models import DbJobSearchPlan, DbJobSearchQuery, JobPoolEntry
+from .statuses import DISCOVERY_BLOCKING_STATUSES, HIDDEN_JOB_STATUSES, MODEL_REJECTED_STATUS
 
 
 class JobListingQueryBuilder:
@@ -84,6 +85,7 @@ class JobListingQueryBuilder:
                 ~exists().where(
                     CandidateSavedJob.candidate_profile_id == candidate_profile_id,
                     CandidateSavedJob.job_listing_id == JobListing.id,
+                    CandidateSavedJob.status.in_(DISCOVERY_BLOCKING_STATUSES),
                 )
             )
         elif job_scope == "candidate_jobs_list":
@@ -91,13 +93,13 @@ class JobListingQueryBuilder:
                 CandidateSavedJob.candidate_profile_id == candidate_profile_id
             )
             if not query.include_model_rejected:
-                statement = statement.where(CandidateSavedJob.status != "model_rejected")
+                statement = statement.where(CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES))
         elif job_scope == "all_accessible_jobs" and not query.include_model_rejected:
             statement = statement.where(
                 ~exists().where(
                     CandidateSavedJob.candidate_profile_id == candidate_profile_id,
                     CandidateSavedJob.job_listing_id == JobListing.id,
-                    CandidateSavedJob.status == "model_rejected",
+                    CandidateSavedJob.status == MODEL_REJECTED_STATUS,
                 )
             )
 

@@ -11,6 +11,51 @@ from .models import DbJobSearchPlan, DbJobSearchQuery
 from .prompts import DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
 
 
+ALL_ACCESSIBLE_JOB_REQUEST_PHRASES = (
+    "all jobs",
+    "existing and new jobs",
+    "new and saved jobs",
+    "everything available",
+)
+
+EXISTING_JOB_LIST_REQUEST_PHRASES = (
+    "show me the jobs",
+    "which jobs did you find",
+    "what jobs did you add",
+    "show me the jobs you found",
+    "show me my jobs",
+    "show me my jobs list",
+    "what is on my jobs list",
+    "which saved jobs should i apply to",
+    "show saved jobs",
+    "my saved jobs",
+    "jobs already on my list",
+    "jobs i already saved",
+    "review my jobs",
+    "saved jobs",
+    "jobs list",
+)
+
+EXISTING_JOB_LIST_REQUEST_PREFIXES = (
+    "which jobs",
+    "what jobs",
+)
+
+NEW_JOB_DISCOVERY_REQUEST_PHRASES = (
+    "find jobs",
+    "find new jobs",
+    "give me jobs",
+    "give me some jobs",
+    "give me jobs to apply to",
+    "find jobs to apply to",
+    "show me some jobs",
+    "find roles",
+    "find me roles",
+    "look for jobs",
+    "discover jobs",
+)
+
+
 class DbJobSearchPlanner:
     def plan(
         self,
@@ -89,12 +134,36 @@ def deterministic_plan_from_request(request: JobDiscoveryRequest) -> DbJobSearch
 
 
 def infer_scope(message: str) -> str:
-    cleaned = message.casefold()
-    if any(phrase in cleaned for phrase in ("saved jobs", "my jobs", "jobs list", "already saved", "apply to")):
-        return "candidate_jobs_list"
-    if "all jobs" in cleaned or "existing and new" in cleaned:
+    if is_all_accessible_jobs_request(message):
         return "all_accessible_jobs"
+    if is_existing_jobs_list_request(message):
+        return "candidate_jobs_list"
     return "new_to_candidate"
+
+
+def is_all_accessible_jobs_request(message: str) -> bool:
+    cleaned = normalize_scope_text(message)
+    return phrase_matches(cleaned, ALL_ACCESSIBLE_JOB_REQUEST_PHRASES)
+
+
+def is_existing_jobs_list_request(message: str) -> bool:
+    cleaned = normalize_scope_text(message)
+    if phrase_matches(cleaned, EXISTING_JOB_LIST_REQUEST_PHRASES):
+        return True
+    return any(cleaned == prefix or cleaned.startswith(f"{prefix} ") for prefix in EXISTING_JOB_LIST_REQUEST_PREFIXES)
+
+
+def is_new_job_discovery_request(message: str) -> bool:
+    cleaned = normalize_scope_text(message)
+    return phrase_matches(cleaned, NEW_JOB_DISCOVERY_REQUEST_PHRASES)
+
+
+def normalize_scope_text(message: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9+#.\s-]", " ", message.casefold()).split())
+
+
+def phrase_matches(cleaned_message: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in cleaned_message for phrase in phrases)
 
 
 def extract_search_terms(message: str) -> list[str]:

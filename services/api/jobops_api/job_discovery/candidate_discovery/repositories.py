@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from ...db.models import CandidateJobRejectionReason, CandidateSavedJob, JobListing
 from .models import JobReviewResult, RejectedJobDecision, SelectedJobDecision
 from .rejection_reasons import normalize_reason_codes, resettable_field_for_reason
+from .statuses import MODEL_REJECTED_STATUS, MODEL_REJECTION_RESET_STATUS
 
 
 class CandidateJobRepository:
@@ -76,7 +77,7 @@ class CandidateJobRepository:
         now = datetime.now(UTC)
         link = self.get_or_create_link(candidate_profile_id, decision.job_listing_id)
         link.job_search_run_id = job_search_run_id
-        link.status = "model_rejected"
+        link.status = MODEL_REJECTED_STATUS
         link.model_decision_summary = decision.explanation
         link.model_review_snapshot_json = {
             "decision": "rejected",
@@ -154,8 +155,8 @@ class ModelRejectionService:
                 reason.reset_reason = reset_reason
                 reason.reset_by = reset_by
                 reset_count += 1
-            if link.status == "model_rejected" and not any(reason.active for reason in link.rejection_reasons):
-                link.status = "new"
+            if link.status == MODEL_REJECTED_STATUS and not any(reason.active for reason in link.rejection_reasons):
+                link.status = MODEL_REJECTION_RESET_STATUS
                 link.model_rejected_at = None
         self.session.flush()
         return reset_count

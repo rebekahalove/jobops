@@ -29,6 +29,8 @@ Candidate-facing job discovery keeps the existing chat/run shell and `job_search
 
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search, enabled Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 
+Deterministic scope inference treats phrases like `which jobs`, `what jobs`, and `show me the jobs` as requests for the existing candidate jobs list. Phrases like `jobs to apply to`, `find jobs to apply to`, and `give me some jobs` are new discovery unless the user explicitly references saved, listed, already-surfaced, or existing jobs. `all_accessible_jobs` is reserved for explicit combined requests such as `all jobs`, `existing and new jobs`, or `new and saved jobs`.
+
 Model-rejected synced jobs are retained as candidate job-list rows with `status="model_rejected"` and active `candidate_job_rejection_reasons`. They are hidden from the normal candidate-facing job list until reset. This keeps review history available without presenting rejected jobs as saved jobs.
 
 Model rejection reasons can be reset with:
@@ -38,7 +40,11 @@ python -m jobops_api.cli reset-model-rejected-jobs --candidate-slug rebekah-love
 python -m jobops_api.cli reset-model-rejected-jobs --candidate-slug rebekah-love --reason location
 ```
 
-Resetting all active rejection reasons for a model-rejected job returns that row to `status="new"` so it can be reconsidered by later discovery.
+Resetting all active rejection reasons for a model-rejected job moves that row to `status="model_rejection_reset"`. This keeps it hidden from the normal jobs list while making it eligible for future `new_to_candidate` model review. Resetting rejections does not make a job visible as a selected or saved job.
+
+If model review does not complete, DB-backed discovery does not auto-add the first synced jobs as a fallback. The run diagnostics report the database pool counts and model review fallback reason, but selected and rejected counts remain zero.
+
+Model-selected and model-rejected `jobListingId` values are validated against the bounded job pool actually sent for review. Unknown IDs are ignored, duplicate decisions are deduped, and if the same job is both selected and rejected, the selected decision wins and no active rejection reason is created for that job.
 
 ## 24-Hour Sync Policy
 

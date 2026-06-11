@@ -69,6 +69,7 @@ from .models import (
 from .candidate_discovery.models import CandidateDiscoveryResult
 from .candidate_discovery.service import CandidateJobDiscoveryService, serialize_plan as serialize_db_backed_search_plan
 from .candidate_discovery.diagnostics import format_candidate_discovery_diagnostics
+from .candidate_discovery.statuses import HIDDEN_JOB_STATUSES
 from .planning import select_job_search_plan_with_model
 from .selection import (
     apply_model_selection_to_source_result,
@@ -114,7 +115,7 @@ def list_jobs(
         )
         .where(
             CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id,
-            CandidateSavedJob.status != "model_rejected",
+            CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
         )
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
     )
@@ -3031,7 +3032,10 @@ def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) ->
                 selectinload(CandidateSavedJob.job),
                 selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
             )
-            .where(CandidateSavedJob.candidate_profile_id == candidate_profile_id)
+            .where(
+                CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+                CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
+            )
             .order_by(CandidateSavedJob.added_at.desc())
             .limit(50)
         )

@@ -87,6 +87,7 @@ class JobReviewResult:
     selected_jobs: tuple[SelectedJobDecision, ...] = ()
     rejected_jobs: tuple[RejectedJobDecision, ...] = ()
     criteria_adjustment_suggestion: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

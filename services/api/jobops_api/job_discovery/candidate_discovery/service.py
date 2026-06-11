@@ -18,7 +18,7 @@ from .models import CandidateDiscoveryResult, DbJobSearchPlan, JobPoolEntry
 from .planner import DbJobSearchPlanner
 from .query_builder import JobListingQueryBuilder, job_listing_to_pool_entry
 from .repositories import CandidateJobRepository, rejection_reason_counts
-from .reviewer import JobReviewSelector
+from .reviewer import JobReviewSelector, validate_review_result
 
 
 class CandidateJobDiscoveryService:
@@ -79,6 +79,8 @@ class CandidateJobDiscoveryService:
             job_pool=pool_entries,
             max_selected=self.settings.job_discovery_save_limit,
         )
+        review = validate_review_result(review, tuple(entry.job_listing_id for entry in pool_entries))
+        model_review_completed = bool(review.diagnostics.get("modelReviewCompleted", True))
         repository = CandidateJobRepository(self.session)
         selected_links, updated_links, rejected_links = repository.apply_review_result(
             candidate_profile_id=candidate_profile.id,
@@ -90,10 +92,11 @@ class CandidateJobDiscoveryService:
             job_sync_results=tuple(job_sync_results),
             query_counts=query_counts,
             unique_job_pool_count=len(job_listings),
-            jobs_reviewed_count=len(pool_entries),
+            jobs_reviewed_count=len(pool_entries) if model_review_completed else 0,
             added_count=len(selected_links),
             rejected_count=len(rejected_links),
             rejection_reason_counts=reason_counts,
+            review_diagnostics=review.diagnostics,
         )
         run.status = "completed"
         run.completed_at = datetime.now(UTC)
@@ -118,7 +121,7 @@ class CandidateJobDiscoveryService:
             job_sync_results=tuple(job_sync_results),
             query_counts=query_counts,
             unique_job_pool_count=len(job_listings),
-            jobs_reviewed_count=len(pool_entries),
+            jobs_reviewed_count=len(pool_entries) if model_review_completed else 0,
             added_count=len(selected_links),
             updated_count=len(updated_links),
             rejected_count=len(rejected_links),

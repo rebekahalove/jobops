@@ -12,6 +12,7 @@ def build_candidate_discovery_diagnostics(
     added_count: int,
     rejected_count: int,
     rejection_reason_counts: dict[str, int],
+    review_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sync_runs = [
         {
@@ -47,6 +48,7 @@ def build_candidate_discovery_diagnostics(
             "recordedModelRejections": rejected_count,
             "topRejectionReasonCounts": rejection_reason_counts,
             "rejectionReasonCounts": rejection_reason_counts,
+            **(review_diagnostics or {}),
         },
     }
 
@@ -74,4 +76,6 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     lines.append(f"- Jobs reviewed by model: {review.get('jobsReviewedByModel', 0)}")
     lines.append(f"- Added to candidate jobs list: {review.get('addedToCandidateJobsList', 0)}")
     lines.append(f"- Recorded model rejections: {review.get('recordedModelRejections', 0)}")
+    if review.get("modelReviewFallback"):
+        lines.append(f"- Model review fallback: {review.get('modelReviewFailureReason') or 'unknown'}")
     return "\n".join(lines)

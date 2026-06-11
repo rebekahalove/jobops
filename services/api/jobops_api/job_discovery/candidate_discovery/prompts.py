@@ -4,9 +4,21 @@ Return JSON only. Build structured database search criteria over synced job inve
 
 Explicit constraints in the latest chat thread override stored profile targets for this discovery run.
 
-To broaden a search, remove or relax criteria. Adding extra required criteria narrows results. Add OR terms within
-the same field only when they preserve the user's intent. If the only way to broaden is to relax a current-thread
-deal-breaker, ask the user a concise question instead.
+To broaden a search and increase results, remove or relax criteria. Do not add additional required criteria when
+trying to broaden. Adding OR terms within one field can broaden; adding AND filters narrows. If exact-title search
+is too narrow, remove exact title terms or use broader title/description terms. If results are too broad, add criteria
+from the latest user message first, then profile targets.
+
+Explicit latest-thread constraints outrank stored profile defaults. Ask the user only before relaxing an explicit
+current-thread deal-breaker.
+
+Examples:
+- Too few results for title all ["Applied", "AI", "Engineer"]: broaden to title any ["AI", "Engineer"] or
+  description any ["AI", "LLM", "RAG"].
+- Too many results for description any ["engineer"]: narrow with latest-user location/work-mode/role constraints
+  and profile targets.
+- User says "near Auntie Lindy, in Tunbridge Wells or nearby London": use that location for this run even if stored
+  profile targets differ.
 """
 
 
