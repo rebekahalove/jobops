@@ -68,7 +68,7 @@ from .models import (
 )
 from .candidate_discovery.models import CandidateDiscoveryResult
 from .candidate_discovery.service import CandidateJobDiscoveryService, serialize_plan as serialize_db_backed_search_plan
-from .candidate_discovery.diagnostics import format_candidate_discovery_diagnostics
+from .candidate_discovery.diagnostics import format_candidate_discovery_diagnostics, infer_no_jobs_added_reason
 from .candidate_discovery.statuses import HIDDEN_JOB_STATUSES
 from .planning import select_job_search_plan_with_model
 from .selection import (
@@ -107,6 +107,7 @@ def list_jobs(
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
 ) -> list[dict[str, Any]]:
+    latest_discovery_run_id = latest_completed_db_backed_job_search_run_id(session, auth.candidate_profile.id)
     statement = (
         select(CandidateSavedJob)
         .options(
@@ -121,7 +122,16 @@ def list_jobs(
     )
     links = list(session.scalars(statement))
     application_by_job_id = load_application_lookup_for_saved_jobs(session, links, auth.candidate_profile.id)
-    return [serialize_saved_job(link, application=application_by_job_id.get(link.job_id)) for link in links]
+    return sort_serialized_saved_jobs(
+        [
+            serialize_saved_job(
+                link,
+                application=application_by_job_id.get(link.job_id),
+                highlighted_job_search_run_id=latest_discovery_run_id,
+            )
+            for link in links
+        ]
+    )
 
 
 @router.get("/job-search-runs/latest")
@@ -144,7 +154,7 @@ def get_latest_job_search_run_status(
             .order_by(JobSearchQueryRun.created_at.desc())
         )
     )
-    payload = serialize_job_search_run_status(run, query_runs)
+    payload = serialize_job_search_run_status(run, query_runs, session=session, candidate_profile_id=auth.candidate_profile.id)
     log_job_search_run_status_serialized(payload)
     return payload
 
@@ -170,7 +180,7 @@ def get_job_search_run_status(
             .order_by(JobSearchQueryRun.created_at.desc())
         )
     )
-    payload = serialize_job_search_run_status(run, query_runs)
+    payload = serialize_job_search_run_status(run, query_runs, session=session, candidate_profile_id=auth.candidate_profile.id)
     log_job_search_run_status_serialized(payload)
     return payload
 
@@ -376,8 +386,28 @@ def build_db_backed_job_discovery_result(
             for result in discovery.job_sync_results
         }
     )
-    saved_jobs = [serialize_saved_job(link) for link in discovery.selected_candidate_jobs]
-    updated_saved_jobs = [serialize_saved_job(link) for link in discovery.updated_candidate_jobs]
+    saved_jobs = [
+        serialize_saved_job(link, highlighted_job_search_run_id=discovery.job_search_run_id)
+        for link in discovery.selected_candidate_jobs
+    ]
+    updated_saved_jobs = [
+        serialize_saved_job(link, highlighted_job_search_run_id=discovery.job_search_run_id)
+        for link in discovery.updated_candidate_jobs
+    ]
+    no_jobs_added_reason = db_backed_no_jobs_added_reason(
+        diagnostics,
+        unique_job_pool_count=discovery.unique_job_pool_count,
+        jobs_reviewed_count=discovery.jobs_reviewed_count,
+        added_count=discovery.added_count,
+    )
+    job_sync_completed_count = diagnostic_int(job_sync.get("completedCount")) or sum(
+        1 for row in job_sync.get("runs", []) if isinstance(row, dict) and row.get("status") == "completed"
+    )
+    database_matched_job_count = diagnostic_int(database_queries.get("uniqueJobPoolCount")) or discovery.unique_job_pool_count
+    jobs_reviewed_by_model = diagnostic_int(model_review.get("jobsReviewedByModel")) or discovery.jobs_reviewed_count
+    added_to_candidate_jobs_list = diagnostic_int(model_review.get("addedToCandidateJobsList")) or discovery.added_count
+    recorded_model_rejections = diagnostic_int(model_review.get("recordedModelRejections")) or discovery.rejected_count
+    model_review_completed = bool(model_review.get("modelReviewCompleted", True))
     result_payload = {
         "assistantMessage": discovery.assistant_message,
         "userVisibleSummary": discovery.assistant_message,
@@ -401,6 +431,18 @@ def build_db_backed_job_discovery_result(
         "providerDiagnostics": [],
         "diagnostics": diagnostics,
         "diagnosticMessages": format_candidate_discovery_diagnostics(diagnostics),
+        "jobSyncCompletedCount": job_sync_completed_count,
+        "jobSyncFailedCount": diagnostic_int(job_sync.get("failedCount")) or 0,
+        "databaseMatchedJobCount": database_matched_job_count,
+        "jobsReviewedByModel": jobs_reviewed_by_model,
+        "modelReviewCompleted": model_review_completed,
+        "modelReviewFailureReason": model_review.get("modelReviewFailureReason"),
+        "addedToCandidateJobsList": added_to_candidate_jobs_list,
+        "recordedModelRejections": recorded_model_rejections,
+        "noJobsAddedReason": no_jobs_added_reason,
+        "addedJobs": saved_jobs,
+        "addedJobIds": [job["id"] for job in saved_jobs],
+        "highlightedJobSearchRunId": discovery.job_search_run_id,
         "searchPlan": serialize_db_backed_search_plan(discovery.search_plan),
         "searchCriteria": {
             "jobScope": discovery.search_plan.job_scope,
@@ -434,7 +476,7 @@ def build_db_backed_job_discovery_result(
         "candidateCountAfterDedupe": discovery.unique_job_pool_count,
         "candidateCountAfterHardExclusionFilter": discovery.unique_job_pool_count,
         "candidateCountAfterDiversityCap": discovery.unique_job_pool_count,
-        "candidateCountSentToModel": int(model_review.get("jobsReviewedCount") or discovery.jobs_reviewed_count),
+        "candidateCountSentToModel": jobs_reviewed_by_model,
         "modelSelectedCount": discovery.added_count,
         "selectedCandidateIds": [],
         "invalidSelectedCandidateIds": [],
@@ -446,7 +488,7 @@ def build_db_backed_job_discovery_result(
         "currentSavedJobCount": len(current_saved_jobs),
         "excludedJobUrlCount": len(current_saved_job_urls(current_saved_jobs)),
         "currentSavedCompanyCount": len(current_saved_companies),
-        "databaseQueryCount": database_queries.get("totalRowsMatched") or discovery.unique_job_pool_count,
+        "databaseQueryCount": len(database_queries.get("queries", [])) if isinstance(database_queries.get("queries"), list) else 0,
     }
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
 
@@ -2501,6 +2543,67 @@ def current_saved_job_urls(current_saved_jobs: list[dict[str, Any]]) -> list[str
     return urls
 
 
+def latest_completed_db_backed_job_search_run_id(session: Session, candidate_profile_id: str) -> str | None:
+    return session.scalar(
+        select(JobSearchRun.id)
+        .where(
+            JobSearchRun.candidate_profile_id == candidate_profile_id,
+            JobSearchRun.search_mode == "db_backed",
+            JobSearchRun.status == "completed",
+        )
+        .order_by(JobSearchRun.completed_at.desc(), JobSearchRun.created_at.desc())
+        .limit(1)
+    )
+
+
+def load_added_jobs_for_search_run(session: Session, run_id: str, candidate_profile_id: str) -> list[dict[str, Any]]:
+    statement = (
+        select(CandidateSavedJob)
+        .options(
+            selectinload(CandidateSavedJob.job),
+            selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
+        )
+        .where(
+            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+            CandidateSavedJob.job_search_run_id == run_id,
+            CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
+        )
+        .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
+    )
+    links = list(session.scalars(statement))
+    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
+    return [
+        serialize_saved_job(link, application=application_by_job_id.get(link.job_id), highlighted_job_search_run_id=run_id)
+        for link in links
+    ]
+
+
+def sort_serialized_saved_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    newest_first = sorted(jobs, key=lambda job: str(job.get("added_at") or job.get("updated_at") or ""), reverse=True)
+    return sorted(newest_first, key=lambda job: 0 if job.get("highlighted") or job.get("justAdded") else 1)
+
+
+def db_backed_no_jobs_added_reason(
+    diagnostics: dict[str, Any],
+    *,
+    unique_job_pool_count: int,
+    jobs_reviewed_count: int,
+    added_count: int,
+) -> str | None:
+    stored_reason = diagnostics.get("noJobsAddedReason")
+    if isinstance(stored_reason, str) and stored_reason:
+        return stored_reason
+    model_review = diagnostics.get("modelReview") if isinstance(diagnostics.get("modelReview"), dict) else {}
+    return infer_no_jobs_added_reason(
+        unique_job_pool_count=diagnostic_int(model_review.get("uniqueJobsInPool")) or unique_job_pool_count,
+        jobs_reviewed_count=diagnostic_int(model_review.get("jobsReviewedByModel")) or jobs_reviewed_count,
+        added_count=diagnostic_int(model_review.get("addedToCandidateJobsList")) or added_count,
+        model_review_completed=model_review.get("modelReviewCompleted", True),
+        model_review_fallback=bool(model_review.get("modelReviewFallback")),
+        review_validation=model_review.get("reviewValidation"),
+    )
+
+
 def load_recent_job_search_history(session: Session, candidate_profile_id: str, *, limit: int) -> list[dict[str, Any]]:
     capped_limit = max(1, min(limit, 50))
     runs = list(
@@ -2569,12 +2672,34 @@ def serialize_recent_job_search_run(run: JobSearchRun, query_runs: list[JobSearc
     }
 
 
-def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearchQueryRun]) -> dict[str, Any]:
+def serialize_job_search_run_status(
+    run: JobSearchRun,
+    query_runs: list[JobSearchQueryRun],
+    *,
+    session: Session | None = None,
+    candidate_profile_id: str | None = None,
+) -> dict[str, Any]:
     provider_error_count = run.provider_error_count or sum(1 for query in query_runs if query.error)
     diagnostics = run.run_diagnostics_json if isinstance(run.run_diagnostics_json, dict) else {}
     planner = diagnostics.get("planner") if isinstance(diagnostics.get("planner"), dict) else {}
     selection = diagnostics.get("selection") if isinstance(diagnostics.get("selection"), dict) else {}
     replanning = diagnostics.get("replanning") if isinstance(diagnostics.get("replanning"), dict) else {}
+    model_review = diagnostics.get("modelReview") if isinstance(diagnostics.get("modelReview"), dict) else {}
+    is_db_backed_run = run.search_mode == "db_backed" or "jobSync" in diagnostics or "databaseQueries" in diagnostics
+    added_jobs = load_added_jobs_for_search_run(session, run.id, candidate_profile_id) if session is not None and candidate_profile_id else []
+    added_job_ids = [job["id"] for job in added_jobs] or [
+        str(item) for item in diagnostics.get("addedJobIds", []) if isinstance(item, str)
+    ]
+    no_jobs_added_reason = (
+        db_backed_no_jobs_added_reason(
+            diagnostics,
+            unique_job_pool_count=run.candidate_pool_count,
+            jobs_reviewed_count=run.candidate_pool_count,
+            added_count=run.saved_count,
+        )
+        if is_db_backed_run
+        else None
+    )
     status_payload = {
         "id": run.id,
         "status": run.status,
@@ -2611,6 +2736,14 @@ def serialize_job_search_run_status(run: JobSearchRun, query_runs: list[JobSearc
         "replanReason": clean_user_facing_explanation(replanning.get("replanReason"), limit=160),
         "replanReasons": replanning.get("replanReasons") if isinstance(replanning.get("replanReasons"), list) else [],
         "replanQueries": replanning.get("replanQueries") if isinstance(replanning.get("replanQueries"), list) else [],
+        "jobDiscoveryMode": run.search_mode,
+        "diagnosticMessages": format_candidate_discovery_diagnostics(diagnostics) if is_db_backed_run else None,
+        "modelReviewCompleted": model_review.get("modelReviewCompleted", True) if is_db_backed_run else None,
+        "modelReviewFailureReason": clean_user_facing_explanation(model_review.get("modelReviewFailureReason"), limit=240),
+        "noJobsAddedReason": no_jobs_added_reason,
+        "addedJobs": added_jobs,
+        "addedJobIds": added_job_ids,
+        "highlightedJobSearchRunId": run.id if is_db_backed_run and run.status == "completed" else None,
     }
     status_payload["diagnostics"] = build_serialized_job_search_run_diagnostics(
         run,
@@ -2655,6 +2788,8 @@ def build_serialized_job_search_run_diagnostics(
     status_payload: dict[str, Any],
     stored_diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
+    if "jobSync" in stored_diagnostics or "databaseQueries" in stored_diagnostics:
+        return sanitize_db_backed_run_diagnostics(stored_diagnostics, status_payload=status_payload, run=run)
     provider_diagnostics = stored_diagnostics.get("providerDiagnostics")
     provider_rows = (
         sanitize_provider_diagnostics_for_status(provider_diagnostics)
@@ -2684,6 +2819,86 @@ def build_serialized_job_search_run_diagnostics(
         },
         "replanning": replanning,
     }
+
+
+def sanitize_db_backed_run_diagnostics(
+    stored_diagnostics: dict[str, Any],
+    *,
+    status_payload: dict[str, Any],
+    run: JobSearchRun,
+) -> dict[str, Any]:
+    job_sync = stored_diagnostics.get("jobSync") if isinstance(stored_diagnostics.get("jobSync"), dict) else {}
+    database_queries = (
+        stored_diagnostics.get("databaseQueries") if isinstance(stored_diagnostics.get("databaseQueries"), dict) else {}
+    )
+    model_review = stored_diagnostics.get("modelReview") if isinstance(stored_diagnostics.get("modelReview"), dict) else {}
+    return {
+        "jobSync": {
+            "runs": sanitize_db_backed_sync_rows(job_sync.get("runs")),
+            "runCount": diagnostic_int(job_sync.get("runCount")) or 0,
+            "rawResultCount": diagnostic_int(job_sync.get("rawResultCount")) or 0,
+            "normalizedCount": diagnostic_int(job_sync.get("normalizedCount")) or 0,
+            "createdCount": diagnostic_int(job_sync.get("createdCount")) or 0,
+            "updatedCount": diagnostic_int(job_sync.get("updatedCount")) or 0,
+            "completedCount": diagnostic_int(job_sync.get("completedCount")) or 0,
+            "failedCount": diagnostic_int(job_sync.get("failedCount")) or 0,
+        },
+        "databaseQueries": {
+            "queries": sanitize_db_backed_query_rows(database_queries.get("queries")),
+            "uniqueJobPoolCount": diagnostic_int(database_queries.get("uniqueJobPoolCount")) or run.candidate_pool_count,
+            "totalRowsMatched": diagnostic_int(database_queries.get("totalRowsMatched")) or 0,
+        },
+        "modelReview": {
+            "uniqueJobsInPool": diagnostic_int(model_review.get("uniqueJobsInPool")) or run.candidate_pool_count,
+            "jobsReviewedByModel": diagnostic_int(model_review.get("jobsReviewedByModel")) or run.candidate_pool_count,
+            "addedToCandidateJobsList": diagnostic_int(model_review.get("addedToCandidateJobsList")) or run.saved_count,
+            "recordedModelRejections": diagnostic_int(model_review.get("recordedModelRejections")) or run.skipped_count,
+            "topRejectionReasonCounts": model_review.get("topRejectionReasonCounts") if isinstance(model_review.get("topRejectionReasonCounts"), dict) else {},
+            "rejectionReasonCounts": model_review.get("rejectionReasonCounts") if isinstance(model_review.get("rejectionReasonCounts"), dict) else {},
+            "modelReviewCompleted": model_review.get("modelReviewCompleted", True),
+            "modelReviewFallback": bool(model_review.get("modelReviewFallback")),
+            "modelReviewFailureReason": clean_user_facing_explanation(model_review.get("modelReviewFailureReason"), limit=240),
+            "reviewValidation": model_review.get("reviewValidation") if isinstance(model_review.get("reviewValidation"), dict) else {},
+        },
+        "noJobsAddedReason": status_payload.get("noJobsAddedReason") or stored_diagnostics.get("noJobsAddedReason"),
+    }
+
+
+def sanitize_db_backed_sync_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:200]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "syncKey": clean_user_facing_explanation(item.get("syncKey"), limit=240),
+                "status": clean_user_facing_explanation(item.get("status"), limit=80),
+                "raw": diagnostic_int(item.get("raw")) or 0,
+                "normalized": diagnostic_int(item.get("normalized")) or 0,
+                "created": diagnostic_int(item.get("created")) or 0,
+                "updated": diagnostic_int(item.get("updated")) or 0,
+                "failed": diagnostic_int(item.get("failed")) or None,
+            }
+        )
+    return rows
+
+
+def sanitize_db_backed_query_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:200]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "label": clean_user_facing_explanation(item.get("label"), limit=240),
+                "jobCount": diagnostic_int(item.get("jobCount")) or 0,
+            }
+        )
+    return rows
 
 
 def build_status_search_criteria(search_plan: dict[str, Any]) -> dict[str, Any]:
@@ -3691,18 +3906,32 @@ def saved_job_action_response(
     }
 
 
-def serialize_saved_job(link: CandidateSavedJob, *, application: Application | None = None) -> dict[str, Any]:
+def serialize_saved_job(
+    link: CandidateSavedJob,
+    *,
+    application: Application | None = None,
+    highlighted_job_search_run_id: str | None = None,
+) -> dict[str, Any]:
     if link.job is not None:
-        return serialize_legacy_saved_job(link, application=application)
+        return serialize_legacy_saved_job(
+            link,
+            application=application,
+            highlighted_job_search_run_id=highlighted_job_search_run_id,
+        )
     if link.job_listing is None:
         raise ValueError(f"Saved job {link.id} is missing both job_id and job_listing_id.")
     job = link.job_listing
     job_url = job_listing_primary_url(job)
+    highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
         "job_id": None,
         "job_listing_id": job.id,
+        "jobSearchRunId": link.job_search_run_id,
+        "highlighted": highlighted,
+        "justAdded": highlighted,
+        "latestDiscoveryRunId": highlighted_job_search_run_id,
         "title": job.title,
         "company_name": job.company_name,
         "job_url": job_url,
@@ -3751,15 +3980,25 @@ def serialize_saved_job(link: CandidateSavedJob, *, application: Application | N
     }
 
 
-def serialize_legacy_saved_job(link: CandidateSavedJob, *, application: Application | None = None) -> dict[str, Any]:
+def serialize_legacy_saved_job(
+    link: CandidateSavedJob,
+    *,
+    application: Application | None = None,
+    highlighted_job_search_run_id: str | None = None,
+) -> dict[str, Any]:
     job = link.job
     if job is None:
         raise ValueError(f"Saved job {link.id} is missing job_id.")
+    highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
         "job_id": link.job_id,
         "job_listing_id": link.job_listing_id,
+        "jobSearchRunId": link.job_search_run_id,
+        "highlighted": highlighted,
+        "justAdded": highlighted,
+        "latestDiscoveryRunId": highlighted_job_search_run_id,
         "title": job.title,
         "company_name": job.company_name,
         "job_url": job.job_url,

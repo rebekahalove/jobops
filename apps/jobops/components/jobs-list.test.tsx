@@ -297,6 +297,57 @@ describe("Jobs list", () => {
     expect(html).toContain("I found roles from followed-company boards, but none matched strongly enough to save.");
   });
 
+  it("renders DB-backed discovery diagnostics in Job Sync, database, and model sections", () => {
+    const html = renderToStaticMarkup(
+      <JobDiscoveryDiagnostics
+        initialRun={jobSearchRunFixture({
+          searchMode: "db_backed",
+          jobDiscoveryMode: "db_backed",
+          providerResultCount: 50,
+          candidatePoolCount: 87,
+          candidateCountAfterDedupe: 87,
+          noJobsAddedReason: "model_selected_zero",
+          diagnostics: {
+            jobSync: {
+              runs: [
+                {
+                  syncKey: "adzuna:broad:gb:remote-uk:ai",
+                  status: "completed",
+                  raw: 50,
+                  normalized: 49,
+                  created: 12,
+                  updated: 37
+                }
+              ]
+            },
+            databaseQueries: {
+              queries: [{ label: "Broad AI/LLM search", jobCount: 87 }],
+              uniqueJobPoolCount: 87
+            },
+            modelReview: {
+              uniqueJobsInPool: 87,
+              jobsReviewedByModel: 80,
+              addedToCandidateJobsList: 0,
+              recordedModelRejections: 80,
+              modelReviewCompleted: true,
+              topRejectionReasonCounts: { role_title: 12 }
+            },
+            noJobsAddedReason: "model_selected_zero"
+          }
+        })}
+      />
+    );
+
+    expect(html).toContain("Job Sync");
+    expect(html).toContain("adzuna:broad:gb:remote-uk:ai");
+    expect(html).toContain("Database queries");
+    expect(html).toContain("Broad AI/LLM search");
+    expect(html).toContain("Model review");
+    expect(html).toContain("Jobs reviewed by model");
+    expect(html).toContain("No jobs added: Model review selected zero jobs");
+    expect(html).toContain("Top rejection reasons: Role title: 12");
+  });
+
   it("renders favorite and unfavorite actions for active unapplied jobs", () => {
     const newHtml = renderToStaticMarkup(
       <JobsList
@@ -336,6 +387,18 @@ describe("Jobs list", () => {
 
     expect(sortJobsForBucket(jobs, "new").map((job) => job.id)).toEqual(["newer", "older"]);
     expect(sortJobsForBucket(jobs, "favorites").map((job) => job.id)).toEqual(["older", "newer"]);
+  });
+
+  it("sorts and highlights jobs from the latest discovery run first", () => {
+    const jobs = [
+      jobFixture({ id: "older", added_at: "2026-05-12T00:00:00Z" }),
+      jobFixture({ id: "just-added", added_at: "2026-05-10T00:00:00Z", highlighted: true, justAdded: true })
+    ];
+    const html = renderToStaticMarkup(<JobsList initialJobs={jobs} />);
+
+    expect(sortJobsForBucket(jobs, "new").map((job) => job.id)).toEqual(["just-added", "older"]);
+    expect(html).toContain("job-card-just-added");
+    expect(html).toContain("Just added");
   });
 });
 

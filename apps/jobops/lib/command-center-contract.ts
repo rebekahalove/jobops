@@ -60,7 +60,33 @@ export type JobSearchRunStatus = {
   replanReason?: string | null;
   replanReasons?: string[];
   replanQueries?: string[];
+  jobDiscoveryMode?: string | null;
+  diagnosticMessages?: string | null;
+  modelReviewCompleted?: boolean | null;
+  modelReviewFailureReason?: string | null;
+  noJobsAddedReason?: string | null;
+  addedJobs?: JobDiscoverySavedJob[];
+  addedJobIds?: string[];
+  highlightedJobSearchRunId?: string | null;
   diagnostics?: JobSearchRunDiagnostics;
+};
+
+export type JobDiscoverySavedJob = {
+  id: string;
+  title?: string | null;
+  company_name?: string | null;
+  job_url?: string | null;
+  apply_url?: string | null;
+  canonical_url?: string | null;
+  source?: string | null;
+  source_provider?: string | null;
+  provider_type?: string | null;
+  location?: string | null;
+  remote_work_mode?: string | null;
+  status?: string | null;
+  jobSearchRunId?: string | null;
+  highlighted?: boolean;
+  justAdded?: boolean;
 };
 
 export type JobSearchRunDiagnostics = {
@@ -75,6 +101,29 @@ export type JobSearchRunDiagnostics = {
     maxProviderPages?: number | null;
   };
   providerDiagnostics?: JobSearchProviderDiagnostic[];
+  jobSync?: {
+    runs?: Array<{
+      syncKey?: string | null;
+      status?: string | null;
+      raw?: number | null;
+      normalized?: number | null;
+      created?: number | null;
+      updated?: number | null;
+      failed?: number | null;
+    }>;
+    runCount?: number;
+    rawResultCount?: number;
+    normalizedCount?: number;
+    createdCount?: number;
+    updatedCount?: number;
+    completedCount?: number;
+    failedCount?: number;
+  };
+  databaseQueries?: {
+    queries?: Array<{ label?: string | null; jobCount?: number | null }>;
+    uniqueJobPoolCount?: number;
+    totalRowsMatched?: number;
+  };
   modelReview?: {
     candidateCountAfterDedupe?: number;
     candidatePoolCount?: number;
@@ -84,7 +133,23 @@ export type JobSearchRunDiagnostics = {
     duplicateCount?: number;
     skippedCount?: number;
     providerErrorCount?: number;
+    uniqueJobsInPool?: number;
+    jobsReviewedByModel?: number;
+    addedToCandidateJobsList?: number;
+    recordedModelRejections?: number;
+    topRejectionReasonCounts?: Record<string, number>;
+    rejectionReasonCounts?: Record<string, number>;
+    modelReviewCompleted?: boolean | null;
+    modelReviewFallback?: boolean;
+    modelReviewFailureReason?: string | null;
+    reviewValidation?: {
+      invalidSelectedJobIds?: string[];
+      invalidRejectedJobIds?: string[];
+      duplicateDecisionCount?: number;
+      selectedWinsConflictCount?: number;
+    };
   };
+  noJobsAddedReason?: string | null;
   modelExplanation?: {
     userVisibleSummary?: string | null;
     userSummary?: string | null;

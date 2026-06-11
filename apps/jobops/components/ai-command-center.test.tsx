@@ -228,6 +228,94 @@ describe("AI command center", () => {
     expect(html).toContain("duplicate_for_user: 4");
   });
 
+  it("renders active job-discovery action cards with a busy indicator", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-job-running",
+            type: "job_discovery",
+            title: "Discover jobs",
+            summary: "Searching synced jobs.",
+            status: "running",
+            targetWorkspace: "jobs",
+            resultPayload: {
+              jobDiscoveryMode: "db_backed",
+              jobSearchRunId: "run-1"
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("agent-action-card-busy");
+    expect(html).toContain("Job discovery is running...");
+    expect(html).toContain('role="status"');
+  });
+
+  it("renders jobs returned by a job-discovery result on the action card", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-job-results",
+            type: "job_discovery",
+            title: "Discover jobs",
+            summary: "Added one job.",
+            status: "completed",
+            targetWorkspace: "jobs",
+            resultPayload: {
+              jobDiscoveryMode: "db_backed",
+              jobSearchRunId: "run-1",
+              highlightedJobSearchRunId: "run-1",
+              jobs: [
+                {
+                  id: "saved-job-1",
+                  title: "AI Platform Engineer",
+                  company_name: "Example AI",
+                  location: "Remote UK",
+                  source_provider: "greenhouse",
+                  status: "new",
+                  job_url: "https://jobs.example.test/ai-platform"
+                }
+              ]
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Just added to your jobs list");
+    expect(html).toContain("AI Platform Engineer");
+    expect(html).toContain("Example AI - Remote UK");
+    expect(html).toContain("Greenhouse - New");
+    expect(html).toContain('href="https://jobs.example.test/ai-platform"');
+  });
+
+  it("renders a no-jobs-added reason when a DB-backed result has no jobs", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-no-jobs",
+            type: "job_discovery",
+            title: "Discover jobs",
+            summary: "No jobs added.",
+            status: "completed",
+            targetWorkspace: "jobs",
+            resultPayload: {
+              jobDiscoveryMode: "db_backed",
+              noJobsAddedReason: "model_review_failed",
+              modelReviewCompleted: false
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("No jobs added: Model review did not complete");
+  });
+
   it("notifies the profile workspace after completed profile-intake commands", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
@@ -254,6 +342,13 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
     expect(source).toContain("without replaying the command");
     expect(source).toContain("clearStoredJobDiscoveryRunId(run.id)");
+  });
+
+  it("warns before submitting duplicate job discovery while a run is active", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("activeJobDiscoveryRunId && plannedPreview.type === \"job_discovery\"");
+    expect(source).toContain("a job discovery run is already in progress");
   });
 
   it("uses model-authored job-discovery summaries when async polling completes", async () => {

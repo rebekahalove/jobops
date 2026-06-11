@@ -398,6 +398,10 @@ class SavedJobResponse(BaseModel):
     candidate_profile_id: str
     job_id: str | None
     job_listing_id: str | None = None
+    jobSearchRunId: str | None = None
+    highlighted: bool = False
+    justAdded: bool = False
+    latestDiscoveryRunId: str | None = None
     title: str
     company_name: str
     job_url: str

@@ -19,8 +19,8 @@ from jobops_api.job_discovery.candidate_discovery.repositories import CandidateJ
 from jobops_api.job_discovery.candidate_discovery.reviewer import JobReviewSelector, validate_review_result
 from jobops_api.job_discovery.candidate_discovery.service import CandidateJobDiscoveryService
 from jobops_api.job_discovery.models import JobDiscoveryRequest
-from jobops_api.job_discovery.service import list_jobs
-from jobops_api.db.models import CandidateJobRejectionReason, CandidateSavedJob
+from jobops_api.job_discovery.service import build_db_backed_job_discovery_result, list_jobs, serialize_job_search_run_status
+from jobops_api.db.models import CandidateJobRejectionReason, CandidateSavedJob, JobSearchRun
 
 from test_candidate_job_discovery import (
     NoSyncCandidateJobDiscoveryService,
@@ -309,6 +309,139 @@ def test_validation_ignores_unknown_model_ids_and_creates_no_rows(tmp_path) -> N
     assert result.diagnostics["modelReview"]["reviewValidation"]["invalidRejectedJobIds"] == ["missing-rejected"]
 
 
+def test_db_backed_result_zero_pool_exposes_no_db_matches() -> None:
+    discovery = make_candidate_discovery_result(
+        diagnostics={
+            "jobSync": {"runs": [], "completedCount": 0, "failedCount": 0},
+            "databaseQueries": {"queries": [], "uniqueJobPoolCount": 0, "totalRowsMatched": 0},
+            "modelReview": {
+                "uniqueJobsInPool": 0,
+                "jobsReviewedByModel": 0,
+                "addedToCandidateJobsList": 0,
+                "recordedModelRejections": 0,
+            },
+            "noJobsAddedReason": "no_db_matches",
+        },
+        unique_job_pool_count=0,
+        jobs_reviewed_count=0,
+        added_count=0,
+    )
+
+    payload = build_db_backed_job_discovery_result(
+        discovery,
+        current_saved_jobs=[],
+        current_saved_companies=[],
+    ).body["result"]
+
+    assert payload["noJobsAddedReason"] == "no_db_matches"
+    assert payload["databaseMatchedJobCount"] == 0
+
+
+def test_db_backed_result_model_failure_exposes_failure_reason() -> None:
+    discovery = make_candidate_discovery_result(
+        diagnostics={
+            "jobSync": {"runs": [], "completedCount": 0, "failedCount": 0},
+            "databaseQueries": {"queries": [{"label": "Synced search", "jobCount": 1}], "uniqueJobPoolCount": 1},
+            "modelReview": {
+                "uniqueJobsInPool": 1,
+                "jobsReviewedByModel": 0,
+                "addedToCandidateJobsList": 0,
+                "recordedModelRejections": 0,
+                "modelReviewCompleted": False,
+                "modelReviewFallback": True,
+                "modelReviewFailureReason": "model unavailable",
+            },
+            "noJobsAddedReason": "model_review_failed",
+        },
+        unique_job_pool_count=1,
+        jobs_reviewed_count=0,
+        added_count=0,
+    )
+
+    payload = build_db_backed_job_discovery_result(
+        discovery,
+        current_saved_jobs=[],
+        current_saved_companies=[],
+    ).body["result"]
+
+    assert payload["noJobsAddedReason"] == "model_review_failed"
+    assert payload["modelReviewCompleted"] is False
+    assert payload["modelReviewFailureReason"] == "model unavailable"
+
+
+def test_db_backed_result_empty_completed_review_exposes_selected_zero() -> None:
+    discovery = make_candidate_discovery_result(
+        diagnostics={
+            "jobSync": {"runs": [], "completedCount": 0, "failedCount": 0},
+            "databaseQueries": {"queries": [{"label": "Synced search", "jobCount": 1}], "uniqueJobPoolCount": 1},
+            "modelReview": {
+                "uniqueJobsInPool": 1,
+                "jobsReviewedByModel": 1,
+                "addedToCandidateJobsList": 0,
+                "recordedModelRejections": 0,
+                "modelReviewCompleted": True,
+            },
+            "noJobsAddedReason": "model_selected_zero",
+        },
+        unique_job_pool_count=1,
+        jobs_reviewed_count=1,
+        added_count=0,
+    )
+
+    payload = build_db_backed_job_discovery_result(
+        discovery,
+        current_saved_jobs=[],
+        current_saved_companies=[],
+    ).body["result"]
+
+    assert payload["noJobsAddedReason"] == "model_selected_zero"
+    assert payload["jobsReviewedByModel"] == 1
+
+
+def test_status_serialization_includes_db_backed_diagnostics_and_added_jobs(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        job = create_job_listing(session, title="AI Product Engineer", provider_job_id="status-added")
+        run = JobSearchRun(
+            candidate_profile_id=profile.id,
+            command_text="Find AI jobs.",
+            search_mode="db_backed",
+            status="completed",
+            provider_names=["job_sync", "database", "model_review"],
+            candidate_pool_count=1,
+            candidate_count_after_dedupe=1,
+            model_selected_count=1,
+            saved_count=1,
+            skipped_count=0,
+            run_diagnostics_json={
+                "jobSync": {"runs": [{"syncKey": "adzuna:test", "status": "completed", "raw": 1, "normalized": 1, "created": 1, "updated": 0}]},
+                "databaseQueries": {"queries": [{"label": "Synced search", "jobCount": 1}], "uniqueJobPoolCount": 1},
+                "modelReview": {
+                    "uniqueJobsInPool": 1,
+                    "jobsReviewedByModel": 1,
+                    "addedToCandidateJobsList": 1,
+                    "recordedModelRejections": 0,
+                    "modelReviewCompleted": True,
+                },
+            },
+        )
+        session.add(run)
+        session.flush()
+        link = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, job_search_run_id=run.id, status="new")
+        session.add(link)
+        session.commit()
+
+        payload = serialize_job_search_run_status(run, [], session=session, candidate_profile_id=profile.id)
+
+    assert payload["jobDiscoveryMode"] == "db_backed"
+    assert payload["diagnostics"]["jobSync"]["runs"][0]["syncKey"] == "adzuna:test"
+    assert payload["diagnostics"]["databaseQueries"]["uniqueJobPoolCount"] == 1
+    assert payload["addedJobIds"] == [link.id]
+    assert payload["addedJobs"][0]["job_listing_id"] == job.id
+    assert payload["highlightedJobSearchRunId"] == run.id
+
+
 def test_validate_review_result_selected_wins_and_dedupes_rejections() -> None:
     review = JobReviewResult(
         user_visible_summary="Reviewed.",
@@ -342,3 +475,30 @@ class UnknownIdReviewer:
             rejected_jobs=(RejectedJobDecision(job_listing_id="missing-rejected", reason_codes=("other",)),),
             diagnostics={"modelReviewCompleted": True},
         )
+
+
+def make_candidate_discovery_result(**overrides):
+    defaults = {
+        "assistant_message": "Reviewed synced jobs.",
+        "job_search_run_id": "run-test",
+        "search_plan": DbJobSearchPlan(
+            job_scope="new_to_candidate",
+            queries=(DbJobSearchQuery(source_statuses_any=("active",), limit=10),),
+            max_jobs_for_model_review=10,
+        ),
+        "selected_candidate_jobs": (),
+        "updated_candidate_jobs": (),
+        "rejected_candidate_jobs": (),
+        "job_sync_results": (),
+        "query_counts": (),
+        "unique_job_pool_count": 0,
+        "jobs_reviewed_count": 0,
+        "added_count": 0,
+        "updated_count": 0,
+        "rejected_count": 0,
+        "diagnostics": {},
+    }
+    defaults.update(overrides)
+    from jobops_api.job_discovery.candidate_discovery.models import CandidateDiscoveryResult
+
+    return CandidateDiscoveryResult(**defaults)

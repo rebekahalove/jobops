@@ -46,6 +46,35 @@ If model review does not complete, DB-backed discovery does not auto-add the fir
 
 Model-selected and model-rejected `jobListingId` values are validated against the bounded job pool actually sent for review. Unknown IDs are ignored, duplicate decisions are deduped, and if the same job is both selected and rejected, the selected decision wins and no active rejection reason is created for that job.
 
+### DB-Backed Discovery Status and Debugging
+
+Syncing inventory and selecting candidate jobs are separate steps. A completed `job_sync_runs` row means provider inventory was refreshed or skipped as fresh; it does not mean any `candidate_saved_jobs` row was added. Candidate-facing discovery reports the distinction in the chat result payload and in `/v1/job-search-runs/latest` or `/v1/job-search-runs/{id}`.
+
+DB-backed result/status payloads include:
+
+- `jobSyncCompletedCount` and `jobSyncFailedCount` for provider refresh attempts.
+- `databaseQueryCount` and `databaseMatchedJobCount` for synced-inventory search.
+- `jobsReviewedByModel`, `modelReviewCompleted`, and `modelReviewFailureReason`.
+- `addedToCandidateJobsList`, `recordedModelRejections`, `addedJobs`, and `addedJobIds`.
+- `noJobsAddedReason` when nothing was added.
+
+`noJobsAddedReason` is one of:
+
+- `no_db_matches`: the synced-inventory database query returned no jobs.
+- `model_review_failed`: synced jobs existed, but model review did not complete.
+- `model_selected_zero`: model review completed and selected no jobs.
+- `review_validation_removed_all_selected_ids`: selected IDs were outside the reviewed pool and were discarded.
+- `all_selected_jobs_already_on_list`: selected jobs were already represented on the candidate jobs list.
+- `unknown`: diagnostics were insufficient to classify the outcome.
+
+DB-backed diagnostics are stored on `job_search_runs.run_diagnostics_json` and exposed to the UI in three sections:
+
+- Job Sync: each `syncKey`, status, raw, normalized, created, and updated counts.
+- Database queries: each query label and matched job count, plus the unique pool count.
+- Model review: unique jobs in pool, jobs reviewed by model, jobs added to the candidate list, recorded model rejections, top rejection reasons, and model-review failure/no-added details when present.
+
+Jobs added by the latest completed DB-backed discovery run keep `candidate_saved_jobs.job_search_run_id` and are highlighted first in the Jobs workspace. The saved-job API includes `jobSearchRunId`, `highlighted`, `justAdded`, and `latestDiscoveryRunId` so the UI can preserve that highlight after refresh.
+
 ## 24-Hour Sync Policy
 
 Each provider refresh has a `sync_key`. A completed `job_sync_runs` row within the last 24 hours is fresh for that key. Failed runs do not satisfy freshness. When a refresh is skipped because the key is already fresh, Job Sync records a `job_sync_runs` row with `status="skipped_fresh"` for diagnostics, but skipped rows do not make a key fresh on their own.

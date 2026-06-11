@@ -678,6 +678,34 @@ textarea {
   font-size: 1rem;
 }
 
+.agent-action-card-busy {
+  border-color: rgba(15, 118, 110, 0.45);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.08);
+}
+
+.agent-action-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-strong);
+  font-size: 0.86rem;
+}
+
+.agent-action-busy span {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(15, 118, 110, 0.2);
+  border-top-color: var(--accent-strong);
+  border-radius: 999px;
+  animation: jobops-spin 0.8s linear infinite;
+}
+
+@keyframes jobops-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .agent-action-meta {
   display: flex;
   flex-wrap: wrap;
@@ -723,6 +751,58 @@ textarea {
   font-size: 0.86rem;
   font-weight: 700;
   overflow-wrap: anywhere;
+}
+
+.agent-action-jobs {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.agent-action-jobs h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.agent-action-jobs > div {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-action-job-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px;
+}
+
+.agent-action-job-row div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-action-job-row strong,
+.agent-action-job-row span,
+.agent-action-job-row small {
+  overflow-wrap: anywhere;
+}
+
+.agent-action-job-row span,
+.agent-action-job-row small,
+.agent-action-no-jobs {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.agent-action-job-row a {
+  color: var(--accent-strong);
+  font-weight: 800;
 }
 
 .model-request-debug {
@@ -2897,6 +2977,12 @@ input:disabled {
   color: #2f6c38;
 }
 
+.application-status-highlight {
+  border-color: rgba(15, 118, 110, 0.35);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
 .application-message {
   margin: 0;
   color: var(--accent-strong);
@@ -2929,6 +3015,11 @@ input:disabled {
 }
 
 .application-card-highlighted {
+  border-color: rgba(15, 118, 110, 0.52);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+}
+
+.job-card-just-added {
   border-color: rgba(15, 118, 110, 0.52);
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
 }

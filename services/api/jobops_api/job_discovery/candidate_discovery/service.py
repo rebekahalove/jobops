@@ -98,6 +98,8 @@ class CandidateJobDiscoveryService:
             rejection_reason_counts=reason_counts,
             review_diagnostics=review.diagnostics,
         )
+        diagnostics["addedJobIds"] = [link.id for link in selected_links]
+        diagnostics["addedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
         run.status = "completed"
         run.completed_at = datetime.now(UTC)
         run.total_provider_results = sum(getattr(result, "raw_result_count", 0) for result in job_sync_results)

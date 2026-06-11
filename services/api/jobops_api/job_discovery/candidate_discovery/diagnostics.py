@@ -26,6 +26,15 @@ def build_candidate_discovery_diagnostics(
         for result in job_sync_results
     ]
     query_rows = [{"label": label, "jobCount": count} for label, count in query_counts]
+    review_diagnostics = review_diagnostics or {}
+    no_jobs_added_reason = infer_no_jobs_added_reason(
+        unique_job_pool_count=unique_job_pool_count,
+        jobs_reviewed_count=jobs_reviewed_count,
+        added_count=added_count,
+        model_review_completed=review_diagnostics.get("modelReviewCompleted", True),
+        model_review_fallback=bool(review_diagnostics.get("modelReviewFallback")),
+        review_validation=review_diagnostics.get("reviewValidation"),
+    )
     return {
         "jobSync": {
             "runs": sync_runs,
@@ -34,6 +43,7 @@ def build_candidate_discovery_diagnostics(
             "normalizedCount": sum(int(row.get("normalized") or 0) for row in sync_runs),
             "createdCount": sum(int(row.get("created") or 0) for row in sync_runs),
             "updatedCount": sum(int(row.get("updated") or 0) for row in sync_runs),
+            "completedCount": sum(1 for row in sync_runs if row.get("status") == "completed"),
             "failedCount": sum(1 for row in sync_runs if row.get("status") == "failed"),
         },
         "databaseQueries": {
@@ -48,8 +58,9 @@ def build_candidate_discovery_diagnostics(
             "recordedModelRejections": rejected_count,
             "topRejectionReasonCounts": rejection_reason_counts,
             "rejectionReasonCounts": rejection_reason_counts,
-            **(review_diagnostics or {}),
+            **review_diagnostics,
         },
+        "noJobsAddedReason": no_jobs_added_reason,
     }
 
 
@@ -78,4 +89,28 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     lines.append(f"- Recorded model rejections: {review.get('recordedModelRejections', 0)}")
     if review.get("modelReviewFallback"):
         lines.append(f"- Model review fallback: {review.get('modelReviewFailureReason') or 'unknown'}")
+    if diagnostics.get("noJobsAddedReason"):
+        lines.append(f"- No jobs added reason: {diagnostics.get('noJobsAddedReason')}")
     return "\n".join(lines)
+
+
+def infer_no_jobs_added_reason(
+    *,
+    unique_job_pool_count: int,
+    jobs_reviewed_count: int,
+    added_count: int,
+    model_review_completed: object,
+    model_review_fallback: bool,
+    review_validation: object,
+) -> str | None:
+    if added_count > 0:
+        return None
+    if unique_job_pool_count <= 0:
+        return "no_db_matches"
+    if model_review_completed is False or model_review_fallback:
+        return "model_review_failed"
+    if isinstance(review_validation, dict) and review_validation.get("invalidSelectedJobIds"):
+        return "review_validation_removed_all_selected_ids"
+    if jobs_reviewed_count > 0:
+        return "model_selected_zero"
+    return "unknown"

@@ -15,7 +15,12 @@ const jobTabs: Array<{ id: JobBucketId; label: string }> = [
 export type SavedJob = {
   id: string;
   candidate_profile_id: string;
-  job_id: string;
+  job_id: string | null;
+  job_listing_id?: string | null;
+  jobSearchRunId?: string | null;
+  highlighted?: boolean;
+  justAdded?: boolean;
+  latestDiscoveryRunId?: string | null;
   title: string;
   company_name: string;
   job_url: string;
@@ -262,7 +267,7 @@ export function JobsList({
         {sortedJobs.length > 0 ? (
           <div className="job-card-grid">
             {sortedJobs.map((job) => (
-              <article className="job-card" id={`saved-job-${job.id}`} key={job.id}>
+              <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
                 <div className="job-card-main">
                   <div className="job-card-header">
                     <div>
@@ -270,6 +275,7 @@ export function JobsList({
                       <p>{job.company_name}</p>
                     </div>
                     <div className="job-card-badges">
+                      {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
                       {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
                       {job.has_application ? (
                         <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
@@ -473,6 +479,7 @@ function JobDiscoveryDiagnosticsPanel({
   const replanning = diagnostics?.replanning;
   const explanation = diagnostics?.modelExplanation;
   const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
+  const hasDbBackedDiagnostics = Boolean(diagnostics?.jobSync || diagnostics?.databaseQueries);
   const providerTimeline = buildProviderSearchTimeline(providerRows, replanning, criteria);
 
   const summaryText = run ? jobDiscoveryRunDigest(run) : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
@@ -503,6 +510,10 @@ function JobDiscoveryDiagnosticsPanel({
               {isActive ? <p className="diagnostics-muted">Running... diagnostics will fill in as provider results arrive.</p> : null}
             </section>
 
+            {hasDbBackedDiagnostics ? (
+              <DbBackedDiagnosticsSections run={run} />
+            ) : (
+              <>
             <section className="diagnostics-section">
               <h3>Initial search plan</h3>
               <dl className="diagnostics-grid">
@@ -567,6 +578,8 @@ function JobDiscoveryDiagnosticsPanel({
                 </ul>
               ) : null}
             </section>
+              </>
+            )}
           </div>
         ) : (
           <div className="job-discovery-diagnostics-body">
@@ -578,6 +591,80 @@ function JobDiscoveryDiagnosticsPanel({
         )}
       </details>
     </section>
+  );
+}
+
+function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
+  const diagnostics = run.diagnostics;
+  const syncRows = diagnostics?.jobSync?.runs ?? [];
+  const queryRows = diagnostics?.databaseQueries?.queries ?? [];
+  const modelReview = diagnostics?.modelReview;
+  const reasonCounts = modelReview?.topRejectionReasonCounts ?? modelReview?.rejectionReasonCounts ?? {};
+
+  return (
+    <>
+      <section className="diagnostics-section">
+        <h3>Job Sync</h3>
+        {syncRows.length ? (
+          <div className="diagnostics-provider-list">
+            {syncRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.syncKey}-${row.status}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.syncKey || "job_sync"}</strong>
+                  <span>{formatStatus(row.status || "unknown")}</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Raw", value: formatNumber(row.raw) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Normalized", value: formatNumber(row.normalized) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Created", value: formatNumber(row.created) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Updated", value: formatNumber(row.updated) ?? "0" }} />
+                  {row.failed ? <CompactDetailItem item={{ label: "Failed", value: formatNumber(row.failed) ?? "0" }} /> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="diagnostics-muted">No sync runs were recorded for this discovery run.</p>
+        )}
+      </section>
+
+      <section className="diagnostics-section">
+        <h3>Database queries</h3>
+        {queryRows.length ? (
+          <div className="diagnostics-provider-list">
+            {queryRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.label}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.label || "Synced job inventory search"}</strong>
+                  <span>{formatNumber(row.jobCount) ?? "0"} jobs</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="diagnostics-muted">No database query rows were recorded.</p>
+        )}
+        <p className="diagnostics-muted">Unique jobs in pool: {formatNumber(diagnostics?.databaseQueries?.uniqueJobPoolCount) ?? "0"}</p>
+      </section>
+
+      <section className="diagnostics-section">
+        <h3>Model review</h3>
+        <dl className="diagnostics-grid">
+          <DiagnosticItem label="Unique jobs in pool" value={formatNumber(modelReview?.uniqueJobsInPool) ?? "0"} />
+          <DiagnosticItem label="Jobs reviewed by model" value={formatNumber(modelReview?.jobsReviewedByModel) ?? "0"} />
+          <DiagnosticItem label="Added to candidate jobs list" value={formatNumber(modelReview?.addedToCandidateJobsList) ?? "0"} />
+          <DiagnosticItem label="Recorded model rejections" value={formatNumber(modelReview?.recordedModelRejections) ?? "0"} />
+          <DiagnosticItem label="Model review completed" value={modelReview?.modelReviewCompleted === false ? "No" : "Yes"} />
+        </dl>
+        {modelReview?.modelReviewFailureReason ? <p className="diagnostics-muted">Failure reason: {modelReview.modelReviewFailureReason}</p> : null}
+        {run.noJobsAddedReason || diagnostics?.noJobsAddedReason ? (
+          <p className="diagnostics-muted">No jobs added: {formatNoJobsAddedReason(run.noJobsAddedReason || diagnostics?.noJobsAddedReason)}</p>
+        ) : null}
+        {Object.keys(reasonCounts).length ? (
+          <p className="diagnostics-muted">Top rejection reasons: {formatReasonCounts(reasonCounts)}</p>
+        ) : null}
+      </section>
+    </>
   );
 }
 
@@ -704,7 +791,17 @@ export function buildJobBucketCounts(jobs: SavedJob[]): Record<JobBucketId, numb
 }
 
 export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
-  return [...jobs].sort((left, right) => jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket)));
+  return [...jobs].sort((left, right) => {
+    const highlightRank = Number(isJustAddedJob(left)) - Number(isJustAddedJob(right));
+    if (highlightRank !== 0) {
+      return -highlightRank;
+    }
+    return jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket));
+  });
+}
+
+function isJustAddedJob(job: SavedJob) {
+  return Boolean(job.justAdded || job.highlighted);
 }
 
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
@@ -924,6 +1021,28 @@ function formatList(values?: string[] | null) {
 
 function formatNumber(value?: number | null) {
   return typeof value === "number" ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value) : null;
+}
+
+function formatNoJobsAddedReason(value?: string | null) {
+  if (!value) {
+    return "Unknown";
+  }
+  const labels: Record<string, string> = {
+    no_db_matches: "No synced jobs matched the database search",
+    model_review_failed: "Model review did not complete",
+    model_selected_zero: "Model review selected zero jobs",
+    review_validation_removed_all_selected_ids: "Model returned job IDs outside the reviewed pool",
+    all_selected_jobs_already_on_list: "Selected jobs were already on the jobs list",
+    unknown: "Unknown"
+  };
+  return labels[value] ?? formatStatus(value);
+}
+
+function formatReasonCounts(value: Record<string, number>) {
+  return Object.entries(value)
+    .slice(0, 5)
+    .map(([reason, count]) => `${formatStatus(reason)}: ${count}`)
+    .join(", ");
 }
 
 function formatTriggerSource(providerName?: string | null, providerType?: string | null) {
