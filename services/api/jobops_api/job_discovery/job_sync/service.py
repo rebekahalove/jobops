@@ -122,6 +122,7 @@ def find_existing_job_listing_source(session: Session, source: JobListingSourceR
 def record_job_sync_run(session: Session, result: JobSyncResult) -> JobSyncRun:
     request = result.request
     run = JobSyncRun(
+        job_sync_signature_id=request.job_sync_signature_id,
         sync_key=request.sync_key,
         provider_name=request.provider_name,
         provider_type=str(request.provider_type),

@@ -6,11 +6,14 @@ JobOps now separates provider/API inventory refresh work from candidate-facing j
 
 Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching, but this branch does not replace the current candidate-facing live discovery flow.
 
-Job Sync uses three database tables:
+Job Sync uses four core database tables:
 
 - `job_listings`: global synced job inventory records.
 - `job_listing_sources`: provider-specific identity, provenance, and request context for each synced listing.
+- `job_sync_signatures`: durable provider search/source definitions that should be refreshed on a cadence.
 - `job_sync_runs`: provider refresh attempts, counts, status, and request diagnostics.
+
+`job_sync_signatures` are desired sync sources. `job_sync_runs` are history. A broad provider search should be refreshed because a signature row says so, not because a broad term is hard-coded in source code, migrations, or seed data.
 
 Existing `job_postings`, `candidate_saved_jobs`, and `applications` remain in place in this branch so applied jobs and application relationships stay intact. `JobPosting` should be revisited in a later migration as the candidate-facing workflows move to synced inventory. `CandidateSavedJob` should also be revisited for an eventual rename such as `CandidateJob` or `CandidateJobListEntry`, but that is deferred to avoid disturbing applied-job links.
 
@@ -71,7 +74,43 @@ python -m jobops_api.cli sync-greenhouse-job-boards --candidate-slug rebekah-lov
 python -m jobops_api.cli sync-greenhouse-job-boards --all-configured
 ```
 
-Adzuna broad sync signatures include provider country, location, and query text. Adzuna country is carried per sync request, so later inventory refreshes can support US, GB, and other provider endpoints without a single global country assumption.
+## Adzuna Signature-Driven Broad Sync
+
+Adzuna broad-provider Job Sync is signature-driven. A persisted `job_sync_signatures` row combines:
+
+- `provider_name="adzuna"` and `provider_type="broad_search"`.
+- User/model supplied query text.
+- Resolved location target and provider location mapping ids.
+- Adzuna `provider_country` and `provider_where`.
+- Paging settings such as `results_per_page` and `max_pages`.
+- Freshness settings and last refresh metadata.
+- Safe request criteria for diagnostics.
+
+No production broad terms are seeded or assumed. CLI calls can create signatures from explicit user-supplied terms now; later planner work can create model-planned signatures.
+
+Manual Adzuna signature examples:
+
+```powershell
+python -m jobops_api.cli upsert-adzuna-sync-signature --query "AI" --location "Remote UK" --query-kind broad_term --max-pages 2
+python -m jobops_api.cli upsert-adzuna-sync-signature --query "Engineer" --location "Louisville, KY" --query-kind broad_term
+python -m jobops_api.cli list-adzuna-sync-signatures --enabled-only
+python -m jobops_api.cli sync-adzuna-job-signatures --all-enabled
+python -m jobops_api.cli sync-adzuna-job-signatures --signature-id <id> --force --max-pages 1
+```
+
+`upsert-adzuna-sync-signature` creates or updates the durable signature only. It does not call Adzuna, so raw/normalized/created/updated counts remain unchanged until `sync-adzuna-job-signatures` runs. The upsert output prints a request preview, including API path, query, location, page count, and the exact follow-up sync command.
+
+For known mappings such as Remote UK, `provider_country` is resolved from `job_provider_location_mappings`; users should not need to pass `--provider-country gb`.
+
+Adzuna request diagnostics include exact non-secret values: provider country, API path, `what`, `where`, `what_exclude`, `results_per_page`, page, max pages, sync key, signature id, display location, normalized location key, mapping ids, confidence/status, provider-reported count/mean, and per-page returned counts. Diagnostics never include `app_id`, `app_key`, auth headers, cookies, or private profile payloads.
+
+Adzuna paging is bounded by the signature or CLI/service override. `results_per_page` defaults to 50 and `max_pages` defaults to 1. Broad searches can report large totals; Job Sync records provider-reported totals for diagnostics but fetches only configured pages.
+
+For `job_sync_signatures`, `last_attempted_at` and `last_status` describe the latest sync attempt. `last_completed_at` and the last count fields describe the latest successful completed refresh and are not reset by skipped or failed attempts.
+
+Adzuna raw results must include provider `id`. Missing `id` fails normalization; redirect URLs are not used as fallback identity. Adzuna broad searches do not mark jobs closed merely because a job is absent from a later broad search response, because broad provider searches are not exhaustive enough for strict stale marking.
+
+Adzuna country is carried per sync request, so inventory refreshes can support US, GB, and other provider endpoints without a global country assumption.
 
 ## Location Normalization
 
