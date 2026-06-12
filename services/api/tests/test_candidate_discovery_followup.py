@@ -355,9 +355,13 @@ def test_service_planning_failure_runs_no_sync_query_review_or_writes(tmp_path) 
 
         rows = list(session.scalars(select(CandidateSavedJob)).all())
         sync_runs = list(session.scalars(select(JobSyncRun)).all())
+        run = session.get(JobSearchRun, result.job_search_run_id)
 
     assert rows == []
     assert sync_runs == []
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error == "Model search planning did not complete."
     assert result.diagnostics["planner"]["planningFailed"] is True
     assert result.diagnostics["noJobsAddedReason"] == "model_planning_failed"
     assert result.unique_job_pool_count == 0

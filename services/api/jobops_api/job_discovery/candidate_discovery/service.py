@@ -219,8 +219,9 @@ class CandidateJobDiscoveryService:
         run.search_plan_json = {"planningFailed": True}
         run.search_mode = "db_backed"
         run.provider_names = ["model_planner"]
-        run.status = "completed"
+        run.status = "failed"
         run.completed_at = datetime.now(UTC)
+        run.error = "Model search planning did not complete."
         run.total_provider_results = 0
         run.candidate_pool_count = 0
         run.candidate_count_after_dedupe = 0

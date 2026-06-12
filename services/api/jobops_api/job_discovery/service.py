@@ -2778,6 +2778,9 @@ def build_job_search_run_status_message(run: JobSearchRun, *, provider_error_cou
             f"{run.skipped_count} skipped."
         )
     if run.status == "failed":
+        diagnostics = run.run_diagnostics_json if isinstance(run.run_diagnostics_json, dict) else {}
+        if diagnostics.get("noJobsAddedReason") == "model_planning_failed":
+            return "Model search planning did not complete, so JobOps did not run Job Sync, database search, or job review."
         return "Job discovery failed. No browser replay was attempted."
     if provider_error_count:
         return f"Job discovery finished with {provider_error_count} provider error(s)."
