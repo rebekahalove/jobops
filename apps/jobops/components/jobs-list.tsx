@@ -503,8 +503,8 @@ function JobDiscoveryDiagnosticsPanel({
                 <DiagnosticItem label="Status" value={formatStatus(run.status)} />
                 <DiagnosticItem label="Saved jobs" value={`${formatNumber(run.savedCount) ?? "0"} newly saved`} />
                 <DiagnosticItem label="Provider matches" value={`${formatNumber(run.providerResultCount) ?? "0"} normalized jobs returned by providers`} />
-                <DiagnosticItem label="Unique candidates" value={`${formatNumber(run.candidateCountAfterDedupe) ?? "0"} after URL/title dedupe`} />
-                <DiagnosticItem label="Sent to model" value={`${formatNumber(run.candidatePoolCount) ?? "0"} candidates in final review pool`} />
+                <DiagnosticItem label="Unique jobs" value={`${formatNumber(run.candidateCountAfterDedupe) ?? "0"} after URL/title dedupe`} />
+                <DiagnosticItem label="Reviewed job pool" value={`${formatNumber(run.candidatePoolCount) ?? "0"} jobs in final review pool`} />
                 <DiagnosticItem label="Selected by model" value={`${formatNumber(run.modelSelectedCount) ?? "0"} jobs recommended to save`} />
               </dl>
               {isActive ? <p className="diagnostics-muted">Running... diagnostics will fill in as provider results arrive.</p> : null}
@@ -553,13 +553,13 @@ function JobDiscoveryDiagnosticsPanel({
             <section className="diagnostics-section">
               <h3>Model review</h3>
               <dl className="diagnostics-grid">
-                <DiagnosticItem label="Unique candidates" value={`${formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} after provider result dedupe`} />
-                <DiagnosticItem label="Sent to model" value={`${formatNumber(modelReview?.candidatePoolCount) ?? "0"} final candidates`} />
+                <DiagnosticItem label="Unique jobs" value={`${formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} after provider result dedupe`} />
+                <DiagnosticItem label="Reviewed job pool" value={`${formatNumber(modelReview?.candidatePoolCount) ?? "0"} final jobs`} />
                 <DiagnosticItem label="Selected by model" value={`${formatNumber(modelReview?.modelSelectedCount) ?? "0"} save recommendations`} />
                 <DiagnosticItem label="Saved" value={`${formatNumber(modelReview?.savedCount) ?? "0"} new saved jobs`} />
                 <DiagnosticItem label="Refreshed" value={`${formatNumber(modelReview?.updatedExistingCount) ?? "0"} existing saved jobs refreshed`} />
                 <DiagnosticItem label="Duplicates" value={`${formatNumber(modelReview?.duplicateCount) ?? "0"} already-saved or duplicate save attempts`} />
-                <DiagnosticItem label="Skipped" value={`${formatNumber(modelReview?.skippedCount) ?? "0"} provider/model candidates not saved`} />
+                <DiagnosticItem label="Skipped" value={`${formatNumber(modelReview?.skippedCount) ?? "0"} provider/model jobs not saved`} />
                 <DiagnosticItem label="Provider errors" value={formatNumber(modelReview?.providerErrorCount) ?? "0"} />
               </dl>
             </section>
@@ -596,6 +596,9 @@ function JobDiscoveryDiagnosticsPanel({
 
 function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
   const diagnostics = run.diagnostics;
+  const planner = diagnostics?.planner;
+  const plannerSyncRows = [...(planner?.plannedSyncSignatures ?? []), ...(planner?.existingSyncSignaturesSelected ?? [])];
+  const plannerQueryRows = planner?.plannedDbQueries ?? [];
   const syncRows = diagnostics?.jobSync?.runs ?? [];
   const queryRows = diagnostics?.databaseQueries?.queries ?? [];
   const modelReview = diagnostics?.modelReview;
@@ -603,6 +606,52 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
 
   return (
     <>
+      <section className="diagnostics-section">
+        <h3>Planner</h3>
+        {planner?.planningFailed ? <p className="diagnostics-muted">Planning failed: {planner.error || "unknown"}</p> : null}
+        {plannerSyncRows.length ? (
+          <div className="diagnostics-provider-list">
+            {plannerSyncRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.syncKey}-${row.action}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.syncKey || "sync token"}</strong>
+                  <span>{[formatStatus(row.action || "planned"), row.syncRunStatus ? `sync ${formatStatus(row.syncRunStatus)}` : null].filter(Boolean).join(" - ")}</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Query", value: row.queryText || "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Location", value: row.displayLocation || "Any" }} />
+                  <CompactDetailItem item={{ label: "Country", value: row.providerCountry || "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Where", value: row.providerWhere || "-" }} />
+                  <CompactDetailItem item={{ label: "Pages", value: formatNumber(row.maxPages) ?? "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Results/page", value: formatNumber(row.resultsPerPage) ?? "Unknown" }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {plannerQueryRows.length ? (
+          <div className="diagnostics-provider-list">
+            {plannerQueryRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.label}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.label || "Synced job inventory search"}</strong>
+                  <span>{formatNumber(row.limit) ?? "No"} limit</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Title any", value: formatList(row.titleTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Description any", value: formatList(row.descriptionTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Country", value: formatList(row.locationCountriesAny) }} />
+                  <CompactDetailItem item={{ label: "Work mode", value: formatList(row.remoteWorkModesAny) }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {!plannerSyncRows.length && !plannerQueryRows.length && !planner?.planningFailed ? (
+          <p className="diagnostics-muted">No planner details were recorded.</p>
+        ) : null}
+      </section>
+
       <section className="diagnostics-section">
         <h3>Job Sync</h3>
         {syncRows.length ? (
@@ -652,7 +701,7 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
         <dl className="diagnostics-grid">
           <DiagnosticItem label="Unique jobs in pool" value={formatNumber(modelReview?.uniqueJobsInPool) ?? "0"} />
           <DiagnosticItem label="Jobs reviewed by model" value={formatNumber(modelReview?.jobsReviewedByModel) ?? "0"} />
-          <DiagnosticItem label="Added to candidate jobs list" value={formatNumber(modelReview?.addedToCandidateJobsList) ?? "0"} />
+          <DiagnosticItem label={modelReview?.selectedJobsLabel || "Added to jobs list"} value={formatNumber(modelReview?.addedToCandidateJobsList) ?? "0"} />
           <DiagnosticItem label="Recorded model rejections" value={formatNumber(modelReview?.recordedModelRejections) ?? "0"} />
           <DiagnosticItem label="Model review completed" value={modelReview?.modelReviewCompleted === false ? "No" : "Yes"} />
         </dl>
@@ -836,8 +885,8 @@ function jobDiscoveryRunDigest(run: JobSearchRunStatus) {
     formatStatus(run.status),
     `${run.savedCount} saved`,
     `${run.modelSelectedCount} model selected`,
-    `${run.candidatePoolCount} sent to model`,
-    `${run.candidateCountAfterDedupe} unique candidates`,
+    `${run.candidatePoolCount} reviewed jobs`,
+    `${run.candidateCountAfterDedupe} unique jobs`,
     `${run.providerResultCount} provider matches`
   ].join(" - ");
 }
@@ -1029,6 +1078,7 @@ function formatNoJobsAddedReason(value?: string | null) {
   }
   const labels: Record<string, string> = {
     no_db_matches: "No synced jobs matched the database search",
+    model_planning_failed: "Model search planning did not complete",
     model_review_failed: "Model review did not complete",
     model_selected_zero: "Model review selected zero jobs",
     review_validation_removed_all_selected_ids: "Model returned job IDs outside the reviewed pool",

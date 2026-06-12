@@ -408,6 +408,7 @@ def build_db_backed_job_discovery_result(
     added_to_candidate_jobs_list = diagnostic_int(model_review.get("addedToCandidateJobsList")) or discovery.added_count
     recorded_model_rejections = diagnostic_int(model_review.get("recordedModelRejections")) or discovery.rejected_count
     model_review_completed = bool(model_review.get("modelReviewCompleted", True))
+    selected_jobs_label = model_review.get("selectedJobsLabel") or "Added to jobs list"
     result_payload = {
         "assistantMessage": discovery.assistant_message,
         "userVisibleSummary": discovery.assistant_message,
@@ -438,6 +439,7 @@ def build_db_backed_job_discovery_result(
         "modelReviewCompleted": model_review_completed,
         "modelReviewFailureReason": model_review.get("modelReviewFailureReason"),
         "addedToCandidateJobsList": added_to_candidate_jobs_list,
+        "selectedJobsLabel": selected_jobs_label,
         "recordedModelRejections": recorded_model_rejections,
         "noJobsAddedReason": no_jobs_added_reason,
         "addedJobs": saved_jobs,
@@ -2740,6 +2742,7 @@ def serialize_job_search_run_status(
         "diagnosticMessages": format_candidate_discovery_diagnostics(diagnostics) if is_db_backed_run else None,
         "modelReviewCompleted": model_review.get("modelReviewCompleted", True) if is_db_backed_run else None,
         "modelReviewFailureReason": clean_user_facing_explanation(model_review.get("modelReviewFailureReason"), limit=240),
+        "selectedJobsLabel": clean_user_facing_explanation(model_review.get("selectedJobsLabel"), limit=120),
         "noJobsAddedReason": no_jobs_added_reason,
         "addedJobs": added_jobs,
         "addedJobIds": added_job_ids,
@@ -2833,6 +2836,7 @@ def sanitize_db_backed_run_diagnostics(
     )
     model_review = stored_diagnostics.get("modelReview") if isinstance(stored_diagnostics.get("modelReview"), dict) else {}
     return {
+        "planner": sanitize_db_backed_planner_diagnostics(stored_diagnostics.get("planner")),
         "jobSync": {
             "runs": sanitize_db_backed_sync_rows(job_sync.get("runs")),
             "runCount": diagnostic_int(job_sync.get("runCount")) or 0,
@@ -2853,6 +2857,7 @@ def sanitize_db_backed_run_diagnostics(
             "jobsReviewedByModel": diagnostic_int(model_review.get("jobsReviewedByModel")) or run.candidate_pool_count,
             "addedToCandidateJobsList": diagnostic_int(model_review.get("addedToCandidateJobsList")) or run.saved_count,
             "recordedModelRejections": diagnostic_int(model_review.get("recordedModelRejections")) or run.skipped_count,
+            "selectedJobsLabel": clean_user_facing_explanation(model_review.get("selectedJobsLabel"), limit=120),
             "topRejectionReasonCounts": model_review.get("topRejectionReasonCounts") if isinstance(model_review.get("topRejectionReasonCounts"), dict) else {},
             "rejectionReasonCounts": model_review.get("rejectionReasonCounts") if isinstance(model_review.get("rejectionReasonCounts"), dict) else {},
             "modelReviewCompleted": model_review.get("modelReviewCompleted", True),
@@ -2862,6 +2867,75 @@ def sanitize_db_backed_run_diagnostics(
         },
         "noJobsAddedReason": status_payload.get("noJobsAddedReason") or stored_diagnostics.get("noJobsAddedReason"),
     }
+
+
+def sanitize_db_backed_planner_diagnostics(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "status": clean_user_facing_explanation(value.get("status"), limit=80),
+        "modelUsed": bool(value.get("modelUsed")),
+        "planningFailed": bool(value.get("planningFailed")),
+        "error": clean_user_facing_explanation(value.get("error"), limit=240),
+        "plannedSyncSignatures": sanitize_planner_signature_rows(value.get("plannedSyncSignatures")),
+        "existingSyncSignaturesSelected": sanitize_planner_signature_rows(value.get("existingSyncSignaturesSelected")),
+        "plannedDbQueries": sanitize_planner_query_rows(value.get("plannedDbQueries")),
+    }
+
+
+def sanitize_planner_signature_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "id": clean_user_facing_explanation(item.get("id"), limit=80),
+                "syncKey": clean_user_facing_explanation(item.get("syncKey"), limit=240),
+                "providerName": clean_user_facing_explanation(item.get("providerName"), limit=80),
+                "queryText": clean_user_facing_explanation(item.get("queryText"), limit=160),
+                "queryKind": clean_user_facing_explanation(item.get("queryKind"), limit=80),
+                "displayLocation": clean_user_facing_explanation(item.get("displayLocation"), limit=160),
+                "providerCountry": clean_user_facing_explanation(item.get("providerCountry"), limit=20),
+                "providerWhere": clean_user_facing_explanation(item.get("providerWhere"), limit=160),
+                "maxPages": diagnostic_int(item.get("maxPages")),
+                "resultsPerPage": diagnostic_int(item.get("resultsPerPage")),
+                "enabled": bool(item.get("enabled")),
+                "verificationStatus": clean_user_facing_explanation(item.get("verificationStatus"), limit=80),
+                "action": clean_user_facing_explanation(item.get("action"), limit=80),
+                "syncRunStatus": clean_user_facing_explanation(item.get("syncRunStatus"), limit=80),
+                "raw": diagnostic_int(item.get("raw")),
+                "normalized": diagnostic_int(item.get("normalized")),
+                "created": diagnostic_int(item.get("created")),
+                "updated": diagnostic_int(item.get("updated")),
+            }
+        )
+    return rows
+
+
+def sanitize_planner_query_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "label": clean_user_facing_explanation(item.get("label"), limit=240),
+                "titleTermsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("titleTermsAny")), limit=20, item_limit=120),
+                "descriptionTermsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("descriptionTermsAny")), limit=20, item_limit=120),
+                "locationCountriesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationCountriesAny")), limit=10, item_limit=40),
+                "remoteWorkModesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("remoteWorkModesAny")), limit=10, item_limit=80),
+                "limit": diagnostic_int(item.get("limit")),
+                "activeOnly": bool(item.get("activeOnly")),
+                "includeModelRejected": bool(item.get("includeModelRejected")),
+                "orderBy": clean_user_facing_explanation(item.get("orderBy"), limit=80),
+            }
+        )
+    return rows
 
 
 def sanitize_db_backed_sync_rows(value: object) -> list[dict[str, Any]]:

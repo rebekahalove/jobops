@@ -51,6 +51,7 @@ class DbJobSearchPlan:
     max_job_pool_size: int = 300
     max_jobs_for_model_review: int = 80
     proposed_adzuna_signatures: tuple[dict[str, Any], ...] = ()
+    existing_adzuna_signature_ids_to_refresh: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

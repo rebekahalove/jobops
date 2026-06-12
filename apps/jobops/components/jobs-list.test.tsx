@@ -274,7 +274,7 @@ describe("Jobs list", () => {
     const html = renderToStaticMarkup(<JobDiscoveryDiagnostics initialRun={jobSearchRunFixture()} />);
 
     expect(html).toContain("Discovery diagnostics");
-    expect(html).toContain("Completed - 0 saved - 0 model selected - 12 sent to model - 12 unique candidates - 28 provider matches");
+    expect(html).toContain("Completed - 0 saved - 0 model selected - 12 reviewed jobs - 12 unique jobs - 28 provider matches");
     expect(html).toContain("Initial search plan");
     expect(html).toContain("Applied AI Engineer");
     expect(html).toContain("Provider search timeline");
@@ -308,6 +308,39 @@ describe("Jobs list", () => {
           candidateCountAfterDedupe: 87,
           noJobsAddedReason: "model_selected_zero",
           diagnostics: {
+            planner: {
+              status: "planned",
+              modelUsed: true,
+              planningFailed: false,
+              plannedSyncSignatures: [
+                {
+                  id: "sig-1",
+                  syncKey: "adzuna:broad:gb:remote-uk:ai",
+                  providerName: "adzuna",
+                  queryText: "AI",
+                  queryKind: "model_planned",
+                  displayLocation: "Remote UK",
+                  providerCountry: "gb",
+                  providerWhere: null,
+                  maxPages: 1,
+                  resultsPerPage: 50,
+                  enabled: true,
+                  verificationStatus: "verified",
+                  action: "created",
+                  syncRunStatus: "completed"
+                }
+              ],
+              plannedDbQueries: [
+                {
+                  label: "Model-planned AI/software search",
+                  titleTermsAny: ["AI", "Engineer"],
+                  descriptionTermsAny: ["LLM", "RAG"],
+                  locationCountriesAny: ["GB"],
+                  remoteWorkModesAny: ["remote"],
+                  limit: 300
+                }
+              ]
+            },
             jobSync: {
               runs: [
                 {
@@ -339,7 +372,10 @@ describe("Jobs list", () => {
     );
 
     expect(html).toContain("Job Sync");
+    expect(html).toContain("Planner");
     expect(html).toContain("adzuna:broad:gb:remote-uk:ai");
+    expect(html).toContain("Model-planned AI/software search");
+    expect(html).toContain("AI, Engineer");
     expect(html).toContain("Database queries");
     expect(html).toContain("Broad AI/LLM search");
     expect(html).toContain("Model review");

@@ -21,17 +21,21 @@ Existing `job_postings`, `candidate_saved_jobs`, and `applications` remain in pl
 
 Candidate-facing job discovery keeps the existing chat/run shell and `job_search_runs`, but the internals now use DB-backed synced inventory:
 
-- The planner emits a structured JSON search plan, not SQL.
-- The query builder translates the plan into SQLAlchemy queries over `job_listings`, `job_listing_sources`, and candidate job-list state.
+- The model planner emits a structured JSON plan for both sync signatures/sync tokens and DB search queries, not SQL.
+- The query builder translates the plan into SQLAlchemy queries over `job_listings`, `job_listing_sources`, and jobs-list state.
 - Supported query scopes are `new_to_candidate`, `candidate_jobs_list`, and `all_accessible_jobs`.
-- The reviewer model chooses which synced jobs should be added to the candidate job list and which should be recorded as model rejected.
+- The reviewer model chooses which synced jobs should be added to the jobs list and which should be recorded as model rejected.
 - Chat-facing summaries use the reviewer-provided `userVisibleSummary`.
 
-The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search, enabled Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
+The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 
-Deterministic scope inference treats phrases like `which jobs`, `what jobs`, and `show me the jobs` as requests for the existing candidate jobs list. Phrases like `jobs to apply to`, `find jobs to apply to`, and `give me some jobs` are new discovery unless the user explicitly references saved, listed, already-surfaced, or existing jobs. `all_accessible_jobs` is reserved for explicit combined requests such as `all jobs`, `existing and new jobs`, or `new and saved jobs`.
+The backend does not deterministically generate search criteria from chat text. If model planning fails, returns invalid JSON, or omits required DB queries, discovery records a no-op planning result and does not run Job Sync, DB search, model review, or jobs-list writes. Those runs report `noJobsAddedReason="model_planning_failed"`.
 
-Model-rejected synced jobs are retained as candidate job-list rows with `status="model_rejected"` and active `candidate_job_rejection_reasons`. They are hidden from the normal candidate-facing job list until reset. This keeps review history available without presenting rejected jobs as saved jobs.
+For new discovery, model-planned sync signatures refresh inventory before the DB query runs. The planner can also select existing Adzuna signatures to refresh/reuse. Planner diagnostics expose each sync token with signature id, `sync_key`, provider, query text, query kind, display location, provider country/where, page bounds, enabled/review status, action, associated sync-run status, and raw/normalized/created/updated counts when a run happened.
+
+Deterministic scope inference treats phrases like `which jobs`, `what jobs`, and `show me the jobs` as requests for the existing jobs list. Phrases like `jobs to apply to`, `find jobs to apply to`, and `give me some jobs` are new discovery unless the user explicitly references saved, listed, already-surfaced, or existing jobs. `all_accessible_jobs` is reserved for explicit combined requests such as `all jobs`, `existing and new jobs`, or `new and saved jobs`.
+
+Model-rejected synced jobs are retained as jobs-list rows with `status="model_rejected"` and active `candidate_job_rejection_reasons`. They are hidden from the normal jobs list until reset. This keeps review history available without presenting rejected jobs as saved jobs.
 
 Model rejection reasons can be reset with:
 
@@ -48,7 +52,7 @@ Model-selected and model-rejected `jobListingId` values are validated against th
 
 ### DB-Backed Discovery Status and Debugging
 
-Syncing inventory and selecting candidate jobs are separate steps. A completed `job_sync_runs` row means provider inventory was refreshed or skipped as fresh; it does not mean any `candidate_saved_jobs` row was added. Candidate-facing discovery reports the distinction in the chat result payload and in `/v1/job-search-runs/latest` or `/v1/job-search-runs/{id}`.
+Syncing inventory and selecting jobs are separate steps. A completed `job_sync_runs` row means provider inventory was refreshed or skipped as fresh; it does not mean any `candidate_saved_jobs` row was added. Candidate-facing discovery reports the distinction in the chat result payload and in `/v1/job-search-runs/latest` or `/v1/job-search-runs/{id}`.
 
 DB-backed result/status payloads include:
 
@@ -64,16 +68,21 @@ DB-backed result/status payloads include:
 - `model_review_failed`: synced jobs existed, but model review did not complete.
 - `model_selected_zero`: model review completed and selected no jobs.
 - `review_validation_removed_all_selected_ids`: selected IDs were outside the reviewed pool and were discarded.
-- `all_selected_jobs_already_on_list`: selected jobs were already represented on the candidate jobs list.
+- `all_selected_jobs_already_on_list`: selected jobs were already represented on the jobs list.
 - `unknown`: diagnostics were insufficient to classify the outcome.
 
 DB-backed diagnostics are stored on `job_search_runs.run_diagnostics_json` and exposed to the UI in three sections:
 
+- Planner: model-planned sync tokens/signatures and model-planned DB queries with actual fields, not just counts.
 - Job Sync: each `syncKey`, status, raw, normalized, created, and updated counts.
 - Database queries: each query label and matched job count, plus the unique pool count.
 - Model review: unique jobs in pool, jobs reviewed by model, jobs added to the candidate list, recorded model rejections, top rejection reasons, and model-review failure/no-added details when present.
 
 Jobs added by the latest completed DB-backed discovery run keep `candidate_saved_jobs.job_search_run_id` and are highlighted first in the Jobs workspace. The saved-job API includes `jobSearchRunId`, `highlighted`, `justAdded`, and `latestDiscoveryRunId` so the UI can preserve that highlight after refresh.
+
+For jobs-list review requests such as `which jobs`, `what jobs`, `show me the jobs`, or `which jobs should I apply to first`, the model should plan `jobScope="candidate_jobs_list"` with an explicit DB query over existing jobs-list entries. Those requests do not create new Adzuna sync signatures unless the user also asks to find new jobs. UI and diagnostics should describe these as recommended existing jobs, not newly added jobs.
+
+In user-facing text and diagnostics, use found jobs, job pool, reviewed jobs, selected jobs, model-rejected jobs, jobs list, and jobs list entries. Reserve `candidate profile`, `candidate_saved_jobs`, and `CandidateSavedJob` for the person/profile and database concepts.
 
 ## 24-Hour Sync Policy
 

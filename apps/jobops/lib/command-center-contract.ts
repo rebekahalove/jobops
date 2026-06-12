@@ -64,6 +64,7 @@ export type JobSearchRunStatus = {
   diagnosticMessages?: string | null;
   modelReviewCompleted?: boolean | null;
   modelReviewFailureReason?: string | null;
+  selectedJobsLabel?: string | null;
   noJobsAddedReason?: string | null;
   addedJobs?: JobDiscoverySavedJob[];
   addedJobIds?: string[];
@@ -101,6 +102,25 @@ export type JobSearchRunDiagnostics = {
     maxProviderPages?: number | null;
   };
   providerDiagnostics?: JobSearchProviderDiagnostic[];
+  planner?: {
+    status?: string | null;
+    modelUsed?: boolean;
+    planningFailed?: boolean;
+    error?: string | null;
+    plannedSyncSignatures?: JobSearchPlannerSyncSignature[];
+    existingSyncSignaturesSelected?: JobSearchPlannerSyncSignature[];
+    plannedDbQueries?: Array<{
+      label?: string | null;
+      titleTermsAny?: string[];
+      descriptionTermsAny?: string[];
+      locationCountriesAny?: string[];
+      remoteWorkModesAny?: string[];
+      limit?: number | null;
+      activeOnly?: boolean;
+      includeModelRejected?: boolean;
+      orderBy?: string | null;
+    }>;
+  };
   jobSync?: {
     runs?: Array<{
       syncKey?: string | null;
@@ -136,6 +156,7 @@ export type JobSearchRunDiagnostics = {
     uniqueJobsInPool?: number;
     jobsReviewedByModel?: number;
     addedToCandidateJobsList?: number;
+    selectedJobsLabel?: string | null;
     recordedModelRejections?: number;
     topRejectionReasonCounts?: Record<string, number>;
     rejectionReasonCounts?: Record<string, number>;
@@ -171,6 +192,27 @@ export type JobSearchRunDiagnostics = {
     providerResultsExisted?: boolean;
     candidatePoolExisted?: boolean;
   };
+};
+
+export type JobSearchPlannerSyncSignature = {
+  id?: string | null;
+  syncKey?: string | null;
+  providerName?: string | null;
+  queryText?: string | null;
+  queryKind?: string | null;
+  displayLocation?: string | null;
+  providerCountry?: string | null;
+  providerWhere?: string | null;
+  maxPages?: number | null;
+  resultsPerPage?: number | null;
+  enabled?: boolean;
+  verificationStatus?: string | null;
+  action?: string | null;
+  syncRunStatus?: string | null;
+  raw?: number | null;
+  normalized?: number | null;
+  created?: number | null;
+  updated?: number | null;
 };
 
 export type JobSearchProviderDiagnostic = {

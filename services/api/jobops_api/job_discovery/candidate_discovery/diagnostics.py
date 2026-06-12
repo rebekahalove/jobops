@@ -13,6 +13,7 @@ def build_candidate_discovery_diagnostics(
     rejected_count: int,
     rejection_reason_counts: dict[str, int],
     review_diagnostics: dict[str, Any] | None = None,
+    planner_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sync_runs = [
         {
@@ -35,7 +36,8 @@ def build_candidate_discovery_diagnostics(
         model_review_fallback=bool(review_diagnostics.get("modelReviewFallback")),
         review_validation=review_diagnostics.get("reviewValidation"),
     )
-    return {
+    diagnostics = {
+        "planner": planner_diagnostics or {"status": "planned", "modelUsed": True, "planningFailed": False},
         "jobSync": {
             "runs": sync_runs,
             "runCount": len(sync_runs),
@@ -62,10 +64,44 @@ def build_candidate_discovery_diagnostics(
         },
         "noJobsAddedReason": no_jobs_added_reason,
     }
+    return diagnostics
 
 
 def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
-    lines = ["Job Sync"]
+    lines = ["Planner"]
+    planner = diagnostics.get("planner", {}) if isinstance(diagnostics.get("planner"), dict) else {}
+    for item in planner.get("plannedSyncSignatures", []) if isinstance(planner.get("plannedSyncSignatures"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- Sync token {item.get('syncKey') or '-'} - {item.get('action') or 'planned'} - "
+            f"query={item.get('queryText') or '-'} location={item.get('displayLocation') or '-'} "
+            f"country={item.get('providerCountry') or '-'} where={item.get('providerWhere') or '-'} "
+            f"pages={item.get('maxPages') or '-'}"
+        )
+    for item in planner.get("existingSyncSignaturesSelected", []) if isinstance(planner.get("existingSyncSignaturesSelected"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- Sync token {item.get('syncKey') or '-'} - {item.get('action') or 'reused'} - "
+            f"query={item.get('queryText') or '-'} location={item.get('displayLocation') or '-'} "
+            f"country={item.get('providerCountry') or '-'} where={item.get('providerWhere') or '-'} "
+            f"pages={item.get('maxPages') or '-'}"
+        )
+    for item in planner.get("plannedDbQueries", []) if isinstance(planner.get("plannedDbQueries"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- DB search \"{item.get('label') or 'Synced job inventory search'}\" - "
+            f"title any: {', '.join(item.get('titleTermsAny') or []) or '-'} - "
+            f"description any: {', '.join(item.get('descriptionTermsAny') or []) or '-'} - "
+            f"country: {', '.join(item.get('locationCountriesAny') or []) or '-'} - "
+            f"work mode: {', '.join(item.get('remoteWorkModesAny') or []) or '-'}"
+        )
+    if planner.get("planningFailed"):
+        lines.append(f"- Planning failed: {planner.get('error') or 'unknown'}")
+    lines.append("")
+    lines.append("Job Sync")
     job_sync = diagnostics.get("jobSync", {})
     job_sync_rows = job_sync.get("runs", []) if isinstance(job_sync, dict) else job_sync
     for item in job_sync_rows:
@@ -85,7 +121,8 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     lines.append("Model review")
     lines.append(f"- Unique jobs in pool: {review.get('uniqueJobsInPool', 0)}")
     lines.append(f"- Jobs reviewed by model: {review.get('jobsReviewedByModel', 0)}")
-    lines.append(f"- Added to candidate jobs list: {review.get('addedToCandidateJobsList', 0)}")
+    selected_label = review.get("selectedJobsLabel") or "Added to jobs list"
+    lines.append(f"- {selected_label}: {review.get('addedToCandidateJobsList', 0)}")
     lines.append(f"- Recorded model rejections: {review.get('recordedModelRejections', 0)}")
     if review.get("modelReviewFallback"):
         lines.append(f"- Model review fallback: {review.get('modelReviewFailureReason') or 'unknown'}")
@@ -105,6 +142,8 @@ def infer_no_jobs_added_reason(
 ) -> str | None:
     if added_count > 0:
         return None
+    if isinstance(review_validation, dict) and review_validation.get("planningFailed"):
+        return "model_planning_failed"
     if unique_job_pool_count <= 0:
         return "no_db_matches"
     if model_review_completed is False or model_review_fallback:

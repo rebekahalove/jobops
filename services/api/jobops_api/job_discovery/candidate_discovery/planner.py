@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...model_connector import ModelConnector, ModelMessage, ModelRequest
@@ -56,6 +57,20 @@ NEW_JOB_DISCOVERY_REQUEST_PHRASES = (
 )
 
 
+class DbJobSearchPlanningError(Exception):
+    def __init__(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
+
+@dataclass(frozen=True)
+class DbJobSearchPlannerResult:
+    status: str
+    plan: DbJobSearchPlan | None = None
+    error: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
 class DbJobSearchPlanner:
     def plan(
         self,
@@ -67,21 +82,38 @@ class DbJobSearchPlanner:
         current_saved_companies: list[dict[str, Any]],
         target_context: dict[str, Any],
         private_profile_context: dict[str, Any],
+        inventory_context: dict[str, Any] | None = None,
     ) -> DbJobSearchPlan:
+        if connector is None:
+            raise DbJobSearchPlanningError(
+                "Model search planning did not complete because no model connector is configured.",
+                diagnostics={"planner": {"status": "failed", "modelUsed": False, "planningFailed": True, "error": "missing_model_connector"}},
+            )
         model_request = self.build_model_request(
             request,
             current_saved_jobs=current_saved_jobs,
             current_saved_companies=current_saved_companies,
             target_context=target_context,
             private_profile_context=private_profile_context,
+            inventory_context=inventory_context,
         )
-        if connector is not None:
-            try:
-                response = connector.generate(model_request)
-                return parse_db_search_plan(response.text)
-            except Exception:
-                pass
-        return deterministic_plan_from_request(request)
+        try:
+            response = connector.generate(model_request)
+            return parse_db_search_plan(response.text)
+        except DbJobSearchPlanningError:
+            raise
+        except Exception as exc:
+            raise DbJobSearchPlanningError(
+                "Model search planning did not complete.",
+                diagnostics={
+                    "planner": {
+                        "status": "failed",
+                        "modelUsed": True,
+                        "planningFailed": True,
+                        "error": type(exc).__name__,
+                    }
+                },
+            ) from exc
 
     def build_model_request(
         self,
@@ -91,6 +123,7 @@ class DbJobSearchPlanner:
         current_saved_companies: list[dict[str, Any]],
         target_context: dict[str, Any],
         private_profile_context: dict[str, Any],
+        inventory_context: dict[str, Any] | None = None,
     ) -> ModelRequest:
         payload = {
             "latestUserMessage": request.latest_user_message,
@@ -98,6 +131,7 @@ class DbJobSearchPlanner:
             "currentSavedCompanies": current_saved_companies[:50],
             "targetContext": target_context,
             "privateProfileContext": private_profile_context,
+            "inventoryContext": inventory_context or {},
             "allowedJobScopes": ["new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"],
             "broadeningRules": {
                 "broadenByRemovingCriteria": True,
@@ -117,20 +151,6 @@ class DbJobSearchPlanner:
                 ModelMessage(role="user", content=json.dumps(payload, sort_keys=True, default=str)),
             ],
         )
-
-
-def deterministic_plan_from_request(request: JobDiscoveryRequest) -> DbJobSearchPlan:
-    message = request.latest_user_message or ""
-    scope = infer_scope(message)
-    terms = extract_search_terms(message)
-    query = DbJobSearchQuery(
-        label="DB-backed synced job search",
-        title_terms_any=tuple(terms[:8]),
-        description_terms_any=tuple(terms[:12]),
-        freshness_days=120,
-        limit=300,
-    )
-    return DbJobSearchPlan(job_scope=scope, queries=(query,), max_job_pool_size=300, max_jobs_for_model_review=80)
 
 
 def infer_scope(message: str) -> str:
@@ -166,37 +186,27 @@ def phrase_matches(cleaned_message: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in cleaned_message for phrase in phrases)
 
 
-def extract_search_terms(message: str) -> list[str]:
-    stop_words = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "find",
-        "for",
-        "give",
-        "jobs",
-        "job",
-        "me",
-        "new",
-        "roles",
-        "show",
-        "some",
-        "the",
-        "to",
-    }
-    terms = []
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9+#.-]{1,}", message):
-        cleaned = token.strip()
-        if cleaned.casefold() not in stop_words and cleaned not in terms:
-            terms.append(cleaned)
-    return terms[:12]
-
-
 def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
-    parsed = json.loads(extract_first_json(raw_text))
+    try:
+        parsed = json.loads(extract_first_json(raw_text))
+    except Exception as exc:
+        raise DbJobSearchPlanningError(
+            "Model search planning returned invalid JSON.",
+            diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_json"}},
+        ) from exc
     plan = parsed.get("searchPlan", parsed)
-    queries = tuple(parse_query(item) for item in plan.get("queries", [])) or (DbJobSearchQuery(),)
+    raw_queries = plan.get("queries", [])
+    if not isinstance(raw_queries, list) or not raw_queries:
+        raise DbJobSearchPlanningError(
+            "Model search planning did not include database queries.",
+            diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "missing_queries"}},
+        )
+    queries = tuple(parse_query(item) for item in raw_queries if isinstance(item, dict))
+    if not queries:
+        raise DbJobSearchPlanningError(
+            "Model search planning did not include valid database queries.",
+            diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_queries"}},
+        )
     rules = plan.get("replanRules") or {}
     scope = str(plan.get("jobScope") or "new_to_candidate")
     if scope not in {"new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"}:
@@ -208,6 +218,9 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
         max_job_pool_size=int(rules.get("maxJobPoolSize") or 300),
         max_jobs_for_model_review=int(rules.get("maxJobsForModelReview") or 80),
         proposed_adzuna_signatures=tuple(plan.get("proposedAdzunaSignatures") or ()),
+        existing_adzuna_signature_ids_to_refresh=tuple(
+            str(item) for item in plan.get("existingAdzunaSignatureIdsToRefresh", []) if str(item).strip()
+        ),
     )
 
 

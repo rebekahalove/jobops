@@ -408,6 +408,7 @@ export function AiCommandCenter({
             diagnosticMessages: run.diagnosticMessages ?? undefined,
             modelReviewCompleted: run.modelReviewCompleted ?? undefined,
             modelReviewFailureReason: run.modelReviewFailureReason ?? undefined,
+            selectedJobsLabel: run.selectedJobsLabel ?? undefined,
             noJobsAddedReason: run.noJobsAddedReason ?? undefined,
             addedJobs: run.addedJobs ?? [],
             addedJobIds: run.addedJobIds ?? [],
@@ -462,6 +463,7 @@ export function AiCommandCenter({
             diagnosticMessages: run.diagnosticMessages ?? undefined,
             modelReviewCompleted: run.modelReviewCompleted ?? undefined,
             modelReviewFailureReason: run.modelReviewFailureReason ?? undefined,
+            selectedJobsLabel: run.selectedJobsLabel ?? undefined,
             noJobsAddedReason: run.noJobsAddedReason ?? undefined,
             addedJobs: run.addedJobs ?? [],
             addedJobIds: run.addedJobIds ?? [],
@@ -1369,6 +1371,13 @@ function jobDiscoveryJobsLabel(resultPayload: unknown) {
   const runId = typeof resultPayload.jobSearchRunId === "string" ? resultPayload.jobSearchRunId : null;
   const highlightedRunId = typeof resultPayload.highlightedJobSearchRunId === "string" ? resultPayload.highlightedJobSearchRunId : null;
   if (runId && highlightedRunId && runId === highlightedRunId) {
+    const selectedLabel = stringPayloadValue(resultPayload.selectedJobsLabel);
+    if (selectedLabel === "Recommended existing jobs") {
+      return "Recommended existing jobs";
+    }
+    if (selectedLabel === "Selected/recommended jobs") {
+      return "Selected/recommended jobs";
+    }
     return "Just added to your jobs list";
   }
   return resultPayload.jobDiscoveryMode === "db_backed" ? "Recommended jobs" : "Jobs referenced by this response";
@@ -1403,6 +1412,7 @@ function formatNoJobsAddedReason(value?: string | null) {
   }
   const labels: Record<string, string> = {
     no_db_matches: "No synced jobs matched the database search",
+    model_planning_failed: "Model search planning did not complete",
     model_review_failed: "Model review did not complete",
     model_selected_zero: "Model review selected zero jobs",
     review_validation_removed_all_selected_ids: "Model returned job IDs outside the reviewed pool",
