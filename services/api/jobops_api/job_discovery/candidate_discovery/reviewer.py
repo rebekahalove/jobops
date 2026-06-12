@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
+from json import JSONDecodeError
 from typing import Any
 
 from ...model_connector import ModelConnector, ModelMessage, ModelRequest
@@ -10,6 +12,12 @@ from ..models import JobDiscoveryRequest
 from .models import JobPoolEntry, JobReviewResult, RejectedJobDecision, SelectedJobDecision
 from .prompts import JOB_REVIEW_SELECTOR_SYSTEM_PROMPT
 from .rejection_reasons import REJECTION_REASON_CODES, normalize_reason_codes
+
+
+logger = logging.getLogger(__name__)
+DEBUG_RESPONSE_PREVIEW_CHARS = 6000
+DEBUG_RESPONSE_TAIL_CHARS = 2000
+REVIEW_MAX_OUTPUT_TOKENS = 32000
 
 
 class JobReviewSelector:
@@ -27,11 +35,67 @@ class JobReviewSelector:
         if connector is not None:
             try:
                 response = connector.generate(model_request)
-                parsed = parse_review_response(response.text)
-                return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True})
             except Exception as exc:
-                return safe_review_unavailable(bounded_pool, reason=f"connector_error:{exc.__class__.__name__}")
-        return safe_review_unavailable(bounded_pool, reason="connector_unavailable")
+                return safe_review_unavailable(
+                    bounded_pool,
+                    reason=f"connector_error:{exc.__class__.__name__}",
+                    diagnostics={"modelReviewAttemptCount": 1, "modelReviewErrorType": exc.__class__.__name__},
+                )
+            try:
+                parsed = parse_review_response(response.text)
+                return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True, "modelReviewAttemptCount": 1})
+            except (JSONDecodeError, ValueError) as first_error:
+                first_finish_reason = getattr(response, "finish_reason", None)
+                log_invalid_review_response(
+                    settings,
+                    attempt=1,
+                    error=first_error,
+                    response_text=response.text,
+                    finish_reason=first_finish_reason,
+                )
+                retry_request = self.build_retry_request(model_request, response_text=response.text)
+                retry_response_text = ""
+                retry_finish_reason = None
+                try:
+                    retry_response = connector.generate(retry_request)
+                    retry_response_text = retry_response.text
+                    retry_finish_reason = getattr(retry_response, "finish_reason", None)
+                    parsed = parse_review_response(retry_response_text)
+                    return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True, "modelReviewAttemptCount": 2, "modelReviewRetried": True})
+                except Exception as retry_error:
+                    log_invalid_review_response(
+                        settings,
+                        attempt=2,
+                        error=retry_error,
+                        response_text=retry_response_text,
+                        finish_reason=retry_finish_reason,
+                    )
+                    debug_diagnostics = invalid_review_response_debug(
+                        settings,
+                        attempt=2,
+                        error=retry_error,
+                        response_text=retry_response_text or response.text,
+                        finish_reason=retry_finish_reason or first_finish_reason,
+                    )
+                    return safe_review_unavailable(
+                        bounded_pool,
+                        reason=f"model_review_invalid_json:{retry_error.__class__.__name__}",
+                        diagnostics={
+                            "modelReviewAttemptCount": 2,
+                            "modelReviewRetried": True,
+                            "modelReviewErrorType": retry_error.__class__.__name__,
+                            "modelReviewFirstErrorType": first_error.__class__.__name__,
+                            "modelReviewFirstFinishReason": first_finish_reason,
+                            **debug_diagnostics,
+                        },
+                    )
+            except Exception as exc:
+                return safe_review_unavailable(
+                    bounded_pool,
+                    reason=f"model_review_parse_error:{exc.__class__.__name__}",
+                    diagnostics={"modelReviewAttemptCount": 1, "modelReviewErrorType": exc.__class__.__name__},
+                )
+        return safe_review_unavailable(bounded_pool, reason="connector_unavailable", diagnostics={"modelReviewAttemptCount": 0})
 
     def build_model_request(
         self,
@@ -45,6 +109,10 @@ class JobReviewSelector:
             "maxSelectedJobs": max_selected,
             "allowedRejectionReasonCodes": sorted(REJECTION_REASON_CODES),
             "jobPool": [entry.__dict__ for entry in job_pool],
+            "outputRules": [
+                "selectedJobs must contain at most maxSelectedJobs entries.",
+                "Keep rationales and explanations concise.",
+            ],
             "outputSchema": {
                 "userVisibleSummary": "string",
                 "selectedJobs": [{"jobListingId": "string", "rationale": "string", "matchHighlights": ["string"]}],
@@ -55,7 +123,7 @@ class JobReviewSelector:
         return ModelRequest(
             task="candidate_job_review",
             temperature=0.1,
-            max_output_tokens=6000,
+            max_output_tokens=REVIEW_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
             search_grounding=False,
             metadata={"feature": "candidate_job_review", "job_pool_count": len(job_pool)},
@@ -65,8 +133,28 @@ class JobReviewSelector:
             ],
         )
 
+    def build_retry_request(self, request: ModelRequest, *, response_text: str) -> ModelRequest:
+        return replace(
+            request,
+            temperature=0,
+            max_output_tokens=max(request.max_output_tokens, REVIEW_MAX_OUTPUT_TOKENS),
+            messages=[
+                *request.messages,
+                ModelMessage(
+                    role="user",
+                    content=(
+                        "The previous review response could not be parsed as valid JSON. Return exactly one valid "
+                        "JSON object using the requested output schema. Do not include markdown, code fences, prose, "
+                        "comments, or trailing commas. If no jobs should be selected, return empty selectedJobs and "
+                        "rejectedJobs arrays with a userVisibleSummary. Respect maxSelectedJobs."
+                    ),
+                ),
+            ],
+            metadata={**request.metadata, "retryForInvalidJson": True, "previousResponsePreviewLength": min(len(response_text), 500)},
+        )
 
-def safe_review_unavailable(job_pool: list[JobPoolEntry], *, reason: str) -> JobReviewResult:
+
+def safe_review_unavailable(job_pool: list[JobPoolEntry], *, reason: str, diagnostics: dict[str, Any] | None = None) -> JobReviewResult:
     if job_pool:
         summary = "I found synced jobs to review, but model review did not complete, so I did not add jobs to your list."
     else:
@@ -80,8 +168,61 @@ def safe_review_unavailable(job_pool: list[JobPoolEntry], *, reason: str) -> Job
             "modelReviewFallback": True,
             "modelReviewFailureReason": reason,
             "jobPoolCount": len(job_pool),
+            **(diagnostics or {}),
         },
     )
+
+
+def log_invalid_review_response(
+    settings: Settings,
+    *,
+    attempt: int,
+    error: BaseException,
+    response_text: str,
+    finish_reason: str | None,
+) -> None:
+    if settings.app_env.strip().lower() == "prod":
+        return
+    preview = response_text[:DEBUG_RESPONSE_PREVIEW_CHARS]
+    tail = response_text[-DEBUG_RESPONSE_TAIL_CHARS:] if len(response_text) > DEBUG_RESPONSE_PREVIEW_CHARS else ""
+    logger.warning(
+        "Candidate job review returned invalid JSON: %s",
+        json.dumps(
+            {
+                "attempt": attempt,
+                "errorType": error.__class__.__name__,
+                "error": str(error),
+                "finishReason": finish_reason,
+                "responseLength": len(response_text),
+                "responsePreview": preview,
+                "responseTail": tail,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def invalid_review_response_debug(
+    settings: Settings,
+    *,
+    attempt: int,
+    error: BaseException,
+    response_text: str,
+    finish_reason: str | None,
+) -> dict[str, Any]:
+    if settings.app_env.strip().lower() == "prod":
+        return {}
+    preview = response_text[:DEBUG_RESPONSE_PREVIEW_CHARS]
+    tail = response_text[-DEBUG_RESPONSE_TAIL_CHARS:] if len(response_text) > DEBUG_RESPONSE_PREVIEW_CHARS else ""
+    return {
+        "debugInvalidReviewAttempt": attempt,
+        "debugInvalidReviewErrorType": error.__class__.__name__,
+        "debugInvalidReviewError": str(error),
+        "debugInvalidReviewFinishReason": finish_reason,
+        "debugInvalidReviewResponseLength": len(response_text),
+        "debugInvalidReviewResponsePreview": preview,
+        "debugInvalidReviewResponseTail": tail,
+    }
 
 
 def validate_review_result(review: JobReviewResult, reviewed_job_listing_ids: tuple[str, ...]) -> JobReviewResult:

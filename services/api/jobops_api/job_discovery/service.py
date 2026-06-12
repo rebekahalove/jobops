@@ -39,7 +39,7 @@ from ..db.models import (
     JobSearchRun,
 )
 from ..db.session import create_session_factory, get_db_session
-from ..model_connector import ModelConnector
+from ..model_connector import ModelConnector, create_model_connector, read_model_connector_config_from_settings
 from ..profiles import candidate_profile_to_private_context_dict, get_candidate_profile_by_slug
 from ..security import require_internal_api_key
 from ..settings import Settings, load_settings
@@ -347,10 +347,11 @@ def run_job_discovery(
     ):
         return build_job_discovery_target_prompt_result(current_saved_jobs=current_saved_jobs, current_saved_companies=current_saved_companies)
 
+    active_connector = connector or create_model_connector(read_model_connector_config_from_settings(active_settings))
     discovery = CandidateJobDiscoveryService(
         session=db_session,
         settings=active_settings,
-        connector=connector,
+        connector=active_connector,
     ).run(
         request,
         candidate_profile=candidate_profile,
@@ -447,6 +448,7 @@ def build_db_backed_job_discovery_result(
         "highlightedJobSearchRunId": discovery.job_search_run_id,
         "searchPlan": serialize_db_backed_search_plan(discovery.search_plan),
         "searchCriteria": {
+            "mode": discovery.search_plan.mode,
             "jobScope": discovery.search_plan.job_scope,
             "queryLabels": [query.label for query in discovery.search_plan.queries],
         },
@@ -2880,10 +2882,40 @@ def sanitize_db_backed_planner_diagnostics(value: object) -> dict[str, Any]:
         "modelUsed": bool(value.get("modelUsed")),
         "planningFailed": bool(value.get("planningFailed")),
         "error": clean_user_facing_explanation(value.get("error"), limit=240),
+        "errorDetail": clean_user_facing_explanation(value.get("errorDetail"), limit=240),
+        "mode": clean_user_facing_explanation(value.get("mode"), limit=80),
+        "modeRationale": clean_user_facing_explanation(value.get("modeRationale"), limit=360),
+        "jobScope": clean_user_facing_explanation(value.get("jobScope"), limit=80),
+        "syncPlanRationale": clean_user_facing_explanation(value.get("syncPlanRationale"), limit=360),
+        "useFollowedCompanyBoards": bool(value.get("useFollowedCompanyBoards")),
+        "plannerAttemptCount": diagnostic_int(value.get("plannerAttemptCount")) or 0,
+        "criticAttemptCount": diagnostic_int(value.get("criticAttemptCount")) or 0,
+        "rejectedPlans": sanitize_rejected_plan_rows(value.get("rejectedPlans")),
+        "finalPlanStatus": clean_user_facing_explanation(value.get("finalPlanStatus"), limit=80),
+        "resultReplanCount": diagnostic_int(value.get("resultReplanCount")) or 0,
+        "resultReplanReason": clean_user_facing_explanation(value.get("resultReplanReason"), limit=120),
         "plannedSyncSignatures": sanitize_planner_signature_rows(value.get("plannedSyncSignatures")),
         "existingSyncSignaturesSelected": sanitize_planner_signature_rows(value.get("existingSyncSignaturesSelected")),
         "plannedDbQueries": sanitize_planner_query_rows(value.get("plannedDbQueries")),
     }
+
+
+def sanitize_rejected_plan_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:10]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "issueCode": clean_user_facing_explanation(item.get("issueCode"), limit=80),
+                "issueMessage": clean_user_facing_explanation(item.get("issueMessage"), limit=240),
+                "mode": clean_user_facing_explanation(item.get("mode"), limit=80),
+                "modeRationale": clean_user_facing_explanation(item.get("modeRationale"), limit=240),
+            }
+        )
+    return rows
 
 
 def sanitize_planner_signature_rows(value: object) -> list[dict[str, Any]]:
@@ -2929,9 +2961,26 @@ def sanitize_planner_query_rows(value: object) -> list[dict[str, Any]]:
             {
                 "label": clean_user_facing_explanation(item.get("label"), limit=240),
                 "titleTermsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("titleTermsAny")), limit=20, item_limit=120),
+                "titleTermsAll": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("titleTermsAll")), limit=20, item_limit=120),
+                "titleTermsExclude": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("titleTermsExclude")), limit=20, item_limit=120),
                 "descriptionTermsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("descriptionTermsAny")), limit=20, item_limit=120),
+                "descriptionTermsAll": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("descriptionTermsAll")), limit=20, item_limit=120),
+                "descriptionTermsExclude": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("descriptionTermsExclude")), limit=20, item_limit=120),
+                "companyNamesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("companyNamesAny")), limit=20, item_limit=120),
+                "companyNamesExclude": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("companyNamesExclude")), limit=20, item_limit=120),
+                "sourceProvidersAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("sourceProvidersAny")), limit=10, item_limit=80),
+                "atsBoardTokensAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("atsBoardTokensAny")), limit=20, item_limit=120),
                 "locationCountriesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationCountriesAny")), limit=10, item_limit=40),
+                "locationRegionsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationRegionsAny")), limit=10, item_limit=80),
+                "locationCitiesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationCitiesAny")), limit=10, item_limit=80),
+                "locationMetrosAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationMetrosAny")), limit=10, item_limit=80),
+                "locationDisplayTermsAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("locationDisplayTermsAny")), limit=10, item_limit=120),
                 "remoteWorkModesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("remoteWorkModesAny")), limit=10, item_limit=80),
+                "employmentTypesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("employmentTypesAny")), limit=10, item_limit=80),
+                "salaryCurrency": clean_user_facing_explanation(item.get("salaryCurrency"), limit=20),
+                "salaryMinAtLeast": diagnostic_int(item.get("salaryMinAtLeast")),
+                "sourceStatusesAny": clean_string_diagnostic_list(coerce_diagnostic_string_list(item.get("sourceStatusesAny")), limit=10, item_limit=80),
+                "freshnessDays": diagnostic_int(item.get("freshnessDays")),
                 "limit": diagnostic_int(item.get("limit")),
                 "activeOnly": bool(item.get("activeOnly")),
                 "includeModelRejected": bool(item.get("includeModelRejected")),

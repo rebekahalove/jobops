@@ -1,60 +1,20 @@
 from __future__ import annotations
 
 import json
-import re
+import queue
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from ...model_connector import ModelConnector, ModelMessage, ModelRequest
+from ...model_connector import ModelConnector, ModelMessage, ModelRequest, ModelResponse
 from ...settings import Settings
 from ..models import JobDiscoveryRequest
-from .models import DbJobSearchPlan, DbJobSearchQuery
-from .prompts import DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
+from ..provider_utils import safe_log_preview
+from .models import MODE_TO_SCOPE, DbJobSearchPlan, DbJobSearchQuery, DiscoveryMode
+from .prompts import DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT, DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
 
 
-ALL_ACCESSIBLE_JOB_REQUEST_PHRASES = (
-    "all jobs",
-    "existing and new jobs",
-    "new and saved jobs",
-    "everything available",
-)
-
-EXISTING_JOB_LIST_REQUEST_PHRASES = (
-    "show me the jobs",
-    "which jobs did you find",
-    "what jobs did you add",
-    "show me the jobs you found",
-    "show me my jobs",
-    "show me my jobs list",
-    "what is on my jobs list",
-    "which saved jobs should i apply to",
-    "show saved jobs",
-    "my saved jobs",
-    "jobs already on my list",
-    "jobs i already saved",
-    "review my jobs",
-    "saved jobs",
-    "jobs list",
-)
-
-EXISTING_JOB_LIST_REQUEST_PREFIXES = (
-    "which jobs",
-    "what jobs",
-)
-
-NEW_JOB_DISCOVERY_REQUEST_PHRASES = (
-    "find jobs",
-    "find new jobs",
-    "give me jobs",
-    "give me some jobs",
-    "give me jobs to apply to",
-    "find jobs to apply to",
-    "show me some jobs",
-    "find roles",
-    "find me roles",
-    "look for jobs",
-    "discover jobs",
-)
+ALLOWED_DISCOVERY_MODES = set(MODE_TO_SCOPE)
 
 
 class DbJobSearchPlanningError(Exception):
@@ -71,6 +31,15 @@ class DbJobSearchPlannerResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class CandidateDiscoveryPlanCritique:
+    valid: bool
+    issue_code: str | None = None
+    issue_message: str | None = None
+    corrected_plan: DbJobSearchPlan | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
 class DbJobSearchPlanner:
     def plan(
         self,
@@ -83,6 +52,8 @@ class DbJobSearchPlanner:
         target_context: dict[str, Any],
         private_profile_context: dict[str, Any],
         inventory_context: dict[str, Any] | None = None,
+        critique_context: dict[str, Any] | None = None,
+        execution_facts: dict[str, Any] | None = None,
     ) -> DbJobSearchPlan:
         if connector is None:
             raise DbJobSearchPlanningError(
@@ -96,9 +67,15 @@ class DbJobSearchPlanner:
             target_context=target_context,
             private_profile_context=private_profile_context,
             inventory_context=inventory_context,
+            critique_context=critique_context,
+            execution_facts=execution_facts,
         )
         try:
-            response = connector.generate(model_request)
+            response = generate_with_timeout(
+                connector,
+                model_request,
+                timeout_seconds=settings.llm_request_timeout_seconds,
+            )
             return parse_db_search_plan(response.text)
         except DbJobSearchPlanningError:
             raise
@@ -111,6 +88,7 @@ class DbJobSearchPlanner:
                         "modelUsed": True,
                         "planningFailed": True,
                         "error": type(exc).__name__,
+                        "errorDetail": safe_log_preview(str(exc), limit=240) or type(exc).__name__,
                     }
                 },
             ) from exc
@@ -124,6 +102,8 @@ class DbJobSearchPlanner:
         target_context: dict[str, Any],
         private_profile_context: dict[str, Any],
         inventory_context: dict[str, Any] | None = None,
+        critique_context: dict[str, Any] | None = None,
+        execution_facts: dict[str, Any] | None = None,
     ) -> ModelRequest:
         payload = {
             "latestUserMessage": request.latest_user_message,
@@ -132,13 +112,17 @@ class DbJobSearchPlanner:
             "targetContext": target_context,
             "privateProfileContext": private_profile_context,
             "inventoryContext": inventory_context or {},
-            "allowedJobScopes": ["new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"],
+            "allowedDiscoveryModes": list(MODE_TO_SCOPE.keys()),
             "broadeningRules": {
                 "broadenByRemovingCriteria": True,
                 "latestMessageOutranksStoredProfile": True,
                 "askOnlyBeforeRelaxingExplicitDealbreakers": True,
             },
         }
+        if critique_context:
+            payload["critiqueContext"] = critique_context
+        if execution_facts:
+            payload["executionFacts"] = execution_facts
         return ModelRequest(
             task="candidate_db_job_search_planning",
             temperature=0.1,
@@ -153,37 +137,64 @@ class DbJobSearchPlanner:
         )
 
 
-def infer_scope(message: str) -> str:
-    if is_all_accessible_jobs_request(message):
-        return "all_accessible_jobs"
-    if is_existing_jobs_list_request(message):
-        return "candidate_jobs_list"
-    return "new_to_candidate"
-
-
-def is_all_accessible_jobs_request(message: str) -> bool:
-    cleaned = normalize_scope_text(message)
-    return phrase_matches(cleaned, ALL_ACCESSIBLE_JOB_REQUEST_PHRASES)
-
-
-def is_existing_jobs_list_request(message: str) -> bool:
-    cleaned = normalize_scope_text(message)
-    if phrase_matches(cleaned, EXISTING_JOB_LIST_REQUEST_PHRASES):
-        return True
-    return any(cleaned == prefix or cleaned.startswith(f"{prefix} ") for prefix in EXISTING_JOB_LIST_REQUEST_PREFIXES)
-
-
-def is_new_job_discovery_request(message: str) -> bool:
-    cleaned = normalize_scope_text(message)
-    return phrase_matches(cleaned, NEW_JOB_DISCOVERY_REQUEST_PHRASES)
-
-
-def normalize_scope_text(message: str) -> str:
-    return " ".join(re.sub(r"[^a-z0-9+#.\s-]", " ", message.casefold()).split())
-
-
-def phrase_matches(cleaned_message: str, phrases: tuple[str, ...]) -> bool:
-    return any(phrase in cleaned_message for phrase in phrases)
+class CandidateDiscoveryPlanCritic:
+    def review(
+        self,
+        request: JobDiscoveryRequest,
+        *,
+        connector: ModelConnector | None,
+        settings: Settings,
+        plan: DbJobSearchPlan,
+        current_saved_jobs: list[dict[str, Any]],
+        inventory_context: dict[str, Any],
+    ) -> CandidateDiscoveryPlanCritique:
+        if connector is None:
+            raise DbJobSearchPlanningError(
+                "Model plan critique did not complete because no model connector is configured.",
+                diagnostics={"planner": {"status": "failed", "modelUsed": False, "planningFailed": True, "error": "missing_model_connector"}},
+            )
+        model_request = ModelRequest(
+            task="candidate_db_job_plan_critique",
+            temperature=0,
+            max_output_tokens=5000,
+            response_mime_type="application/json",
+            search_grounding=False,
+            metadata={"feature": "candidate_db_job_plan_critique"},
+            messages=[
+                ModelMessage(role="system", content=DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT),
+                ModelMessage(
+                    role="user",
+                    content=json.dumps(
+                        {
+                            "latestUserMessage": request.latest_user_message,
+                            "currentJobsListSummary": summarize_jobs_list(current_saved_jobs),
+                            "inventoryContext": inventory_context,
+                            "proposedPlan": serialize_plan_for_model(plan),
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ),
+                ),
+            ],
+        )
+        try:
+            response = generate_with_timeout(connector, model_request, timeout_seconds=settings.llm_request_timeout_seconds)
+            return parse_plan_critique(response.text)
+        except DbJobSearchPlanningError:
+            raise
+        except Exception as exc:
+            raise DbJobSearchPlanningError(
+                "Model plan critique did not complete.",
+                diagnostics={
+                    "planner": {
+                        "status": "failed",
+                        "modelUsed": True,
+                        "planningFailed": True,
+                        "error": type(exc).__name__,
+                        "errorDetail": safe_log_preview(str(exc), limit=240) or type(exc).__name__,
+                    }
+                },
+            ) from exc
 
 
 def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
@@ -195,7 +206,15 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
             diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_json"}},
         ) from exc
     plan = parsed.get("searchPlan", parsed)
-    raw_queries = plan.get("queries", [])
+    mode = str(plan.get("mode") or "").strip()
+    if mode not in ALLOWED_DISCOVERY_MODES:
+        raise DbJobSearchPlanningError(
+            "Model search planning did not include a valid discovery mode.",
+            diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_mode"}},
+        )
+    sync_plan = plan.get("syncPlan") if isinstance(plan.get("syncPlan"), dict) else {}
+    db_search_plan = plan.get("dbSearchPlan") if isinstance(plan.get("dbSearchPlan"), dict) else {}
+    raw_queries = db_search_plan.get("queries", [])
     if not isinstance(raw_queries, list) or not raw_queries:
         raise DbJobSearchPlanningError(
             "Model search planning did not include database queries.",
@@ -208,18 +227,20 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
             diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_queries"}},
         )
     rules = plan.get("replanRules") or {}
-    scope = str(plan.get("jobScope") or "new_to_candidate")
-    if scope not in {"new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"}:
-        scope = "new_to_candidate"
+    rules = plan.get("replanRules") if isinstance(plan.get("replanRules"), dict) else {}
     return DbJobSearchPlan(
-        job_scope=scope,
+        mode=mode,  # type: ignore[arg-type]
+        mode_rationale=clean_optional_text(plan.get("modeRationale")),
+        job_scope=MODE_TO_SCOPE[mode],
         queries=queries,
         min_job_pool_size=int(rules.get("minJobPoolSize") or 40),
         max_job_pool_size=int(rules.get("maxJobPoolSize") or 300),
         max_jobs_for_model_review=int(rules.get("maxJobsForModelReview") or 80),
-        proposed_adzuna_signatures=tuple(plan.get("proposedAdzunaSignatures") or ()),
+        use_followed_company_boards=bool(sync_plan.get("useFollowedCompanyBoards", False)),
+        sync_plan_rationale=clean_optional_text(sync_plan.get("rationale")),
+        proposed_adzuna_signatures=tuple(sync_plan.get("proposedAdzunaSignatures") or ()),
         existing_adzuna_signature_ids_to_refresh=tuple(
-            str(item) for item in plan.get("existingAdzunaSignatureIdsToRefresh", []) if str(item).strip()
+            str(item) for item in sync_plan.get("existingAdzunaSignatureIdsToRefresh", []) if str(item).strip()
         ),
     )
 
@@ -261,9 +282,132 @@ def parse_query(raw: dict[str, Any]) -> DbJobSearchQuery:
     )
 
 
+def parse_plan_critique(raw_text: str) -> CandidateDiscoveryPlanCritique:
+    try:
+        parsed = json.loads(extract_first_json(raw_text))
+    except Exception as exc:
+        raise DbJobSearchPlanningError(
+            "Model plan critique returned invalid JSON.",
+            diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_critique_json"}},
+        ) from exc
+    valid = bool(parsed.get("valid"))
+    issue_code = clean_optional_text(parsed.get("issueCode"))
+    issue_message = clean_optional_text(parsed.get("issueMessage"))
+    corrected_plan = None
+    raw_corrected = parsed.get("correctedPlan")
+    if isinstance(raw_corrected, dict):
+        corrected_plan = parse_db_search_plan(json.dumps(raw_corrected))
+    return CandidateDiscoveryPlanCritique(
+        valid=valid,
+        issue_code=issue_code,
+        issue_message=issue_message,
+        corrected_plan=corrected_plan,
+        diagnostics={
+            "valid": valid,
+            "issueCode": issue_code,
+            "issueMessage": issue_message,
+            "correctedPlanProvided": corrected_plan is not None,
+        },
+    )
+
+
+def clean_optional_text(value: object) -> str | None:
+    cleaned = " ".join(str(value or "").split()).strip()
+    return cleaned or None
+
+
+def serialize_plan_for_model(plan: DbJobSearchPlan) -> dict[str, Any]:
+    return {
+        "mode": plan.mode,
+        "modeRationale": plan.mode_rationale,
+        "syncPlan": {
+            "useFollowedCompanyBoards": plan.use_followed_company_boards,
+            "proposedAdzunaSignatures": list(plan.proposed_adzuna_signatures),
+            "existingAdzunaSignatureIdsToRefresh": list(plan.existing_adzuna_signature_ids_to_refresh),
+            "rationale": plan.sync_plan_rationale,
+        },
+        "dbSearchPlan": {
+            "queries": [serialize_query_for_model(query) for query in plan.queries],
+        },
+        "replanRules": {
+            "minJobPoolSize": plan.min_job_pool_size,
+            "maxJobPoolSize": plan.max_job_pool_size,
+            "maxJobsForModelReview": plan.max_jobs_for_model_review,
+        },
+    }
+
+
+def serialize_query_for_model(query: DbJobSearchQuery) -> dict[str, Any]:
+    return {
+        "label": query.label,
+        "activeOnly": query.active_only,
+        "titleTermsAny": list(query.title_terms_any),
+        "titleTermsAll": list(query.title_terms_all),
+        "titleTermsExclude": list(query.title_terms_exclude),
+        "descriptionTermsAny": list(query.description_terms_any),
+        "descriptionTermsAll": list(query.description_terms_all),
+        "descriptionTermsExclude": list(query.description_terms_exclude),
+        "companyIdsAny": list(query.company_ids_any),
+        "companyNamesAny": list(query.company_names_any),
+        "companyNamesExclude": list(query.company_names_exclude),
+        "sourceProvidersAny": list(query.source_providers_any),
+        "atsBoardTokensAny": list(query.ats_board_tokens_any),
+        "locationTargetIdsAny": list(query.location_target_ids_any),
+        "locationCountriesAny": list(query.location_countries_any),
+        "locationRegionsAny": list(query.location_regions_any),
+        "locationCitiesAny": list(query.location_cities_any),
+        "locationMetrosAny": list(query.location_metros_any),
+        "locationDisplayTermsAny": list(query.location_display_terms_any),
+        "remoteWorkModesAny": list(query.remote_work_modes_any),
+        "employmentTypesAny": list(query.employment_types_any),
+        "salaryCurrency": query.salary_currency,
+        "salaryMinAtLeast": query.salary_min_at_least,
+        "sourceStatusesAny": list(query.source_statuses_any),
+        "freshnessDays": query.freshness_days,
+        "includeModelRejected": query.include_model_rejected,
+        "limit": query.limit,
+        "orderBy": query.order_by,
+    }
+
+
+def summarize_jobs_list(current_saved_jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "visibleJobsListCount": len(current_saved_jobs),
+        "sample": current_saved_jobs[:10],
+    }
+
+
 def extract_first_json(raw_text: str) -> str:
     start = raw_text.find("{")
     end = raw_text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError("Model response did not include a JSON object.")
     return raw_text[start : end + 1]
+
+
+def generate_with_timeout(
+    connector: ModelConnector,
+    request: ModelRequest,
+    *,
+    timeout_seconds: float,
+) -> ModelResponse:
+    if timeout_seconds <= 0:
+        return connector.generate(request)
+
+    result_queue: queue.Queue[tuple[str, ModelResponse | BaseException]] = queue.Queue(maxsize=1)
+
+    def target() -> None:
+        try:
+            result_queue.put(("response", connector.generate(request)))
+        except BaseException as exc:
+            result_queue.put(("error", exc))
+
+    thread = threading.Thread(target=target, name="jobops-db-job-planner-model-call", daemon=True)
+    thread.start()
+    try:
+        kind, value = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise TimeoutError(f"Model search planning exceeded {timeout_seconds:g}s timeout.") from exc
+    if kind == "error":
+        raise value
+    return value

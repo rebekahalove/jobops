@@ -6,6 +6,22 @@ from typing import Any, Literal
 
 
 JobScope = Literal["new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"]
+DiscoveryMode = Literal[
+    "new_job_discovery",
+    "jobs_list_review",
+    "mixed_new_and_existing",
+    "direct_job_url",
+    "clarification_needed",
+]
+
+
+MODE_TO_SCOPE: dict[str, JobScope] = {
+    "new_job_discovery": "new_to_candidate",
+    "jobs_list_review": "candidate_jobs_list",
+    "mixed_new_and_existing": "all_accessible_jobs",
+    "direct_job_url": "new_to_candidate",
+    "clarification_needed": "new_to_candidate",
+}
 
 
 @dataclass(frozen=True)
@@ -45,13 +61,23 @@ class DbJobSearchQuery:
 
 @dataclass(frozen=True)
 class DbJobSearchPlan:
+    mode: DiscoveryMode = "new_job_discovery"
+    mode_rationale: str | None = None
     job_scope: JobScope = "new_to_candidate"
     queries: tuple[DbJobSearchQuery, ...] = (DbJobSearchQuery(),)
     min_job_pool_size: int = 40
     max_job_pool_size: int = 300
     max_jobs_for_model_review: int = 80
+    use_followed_company_boards: bool = False
+    sync_plan_rationale: str | None = None
     proposed_adzuna_signatures: tuple[dict[str, Any], ...] = ()
     existing_adzuna_signature_ids_to_refresh: tuple[str, ...] = ()
+    planner_attempt_count: int = 1
+    critic_attempt_count: int = 0
+    rejected_plans: tuple[dict[str, Any], ...] = ()
+    final_plan_status: str = "planned"
+    result_replan_count: int = 0
+    result_replan_reason: str | None = None
 
 
 @dataclass(frozen=True)

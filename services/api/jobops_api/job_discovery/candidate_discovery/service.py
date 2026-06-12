@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ...db.models import CandidateProfile, JobListing, JobListingSource, JobSearchRun, JobSyncRun, JobSyncSignature
+from ...db.models import CandidateProfile, JobListing, JobListingSource, JobSearchQueryRun, JobSearchRun, JobSyncRun, JobSyncSignature
 from ...model_connector import ModelConnector
 from ...settings import Settings
 from ..job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync_signature
 from ..job_sync.greenhouse_service import sync_greenhouse_boards
 from ..models import JobDiscoveryRequest
 from .diagnostics import build_candidate_discovery_diagnostics
-from .models import CandidateDiscoveryResult, DbJobSearchPlan, JobPoolEntry
-from .planner import DbJobSearchPlanner, DbJobSearchPlanningError
+from .models import CandidateDiscoveryResult, DbJobSearchPlan, DbJobSearchQuery, JobPoolEntry
+from .planner import CandidateDiscoveryPlanCritic, DbJobSearchPlanner, DbJobSearchPlanningError
 from .query_builder import JobListingQueryBuilder, job_listing_to_pool_entry
 from .repositories import CandidateJobRepository, rejection_reason_counts
 from .reviewer import JobReviewSelector, validate_review_result
@@ -29,12 +29,15 @@ class CandidateJobDiscoveryService:
         settings: Settings,
         connector: ModelConnector | None = None,
         planner: DbJobSearchPlanner | None = None,
+        critic: CandidateDiscoveryPlanCritic | None = None,
         reviewer: JobReviewSelector | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
         self.connector = connector
+        self._uses_default_planner = planner is None
         self.planner = planner or DbJobSearchPlanner()
+        self.critic = critic or CandidateDiscoveryPlanCritic()
         self.reviewer = reviewer or JobReviewSelector()
 
     def run(
@@ -53,16 +56,16 @@ class CandidateJobDiscoveryService:
             command_text=request.latest_user_message,
             job_search_run_id=job_search_run_id,
         )
+        self.mark_planning_started(run)
+        inventory_context = self.build_planner_inventory_context(current_saved_jobs=current_saved_jobs)
         try:
-            plan = self.planner.plan(
+            plan = self.plan_with_model_critique(
                 request,
-                connector=self.connector,
-                settings=self.settings,
                 current_saved_jobs=current_saved_jobs,
                 current_saved_companies=current_saved_companies,
                 target_context=target_context,
                 private_profile_context=private_profile_context,
-                inventory_context=self.build_planner_inventory_context(),
+                inventory_context=inventory_context,
             )
         except DbJobSearchPlanningError as exc:
             return self.complete_planning_failure_run(run, exc)
@@ -73,9 +76,34 @@ class CandidateJobDiscoveryService:
         run.started_at = run.started_at or datetime.now(UTC)
 
         job_sync_results = list(self.ensure_inventory(candidate_profile_id=candidate_profile.id, plan=plan))
-        planner_diagnostics = self.build_planner_diagnostics(plan, job_sync_results)
         query_builder = JobListingQueryBuilder(self.session)
         job_listings, query_counts = query_builder.execute_plan(candidate_profile.id, plan)
+        self.persist_db_query_runs(run.id, plan.queries, query_counts, deduped_count=len(job_listings))
+        if self.should_replan_for_pool_size(plan, len(job_listings)):
+            try:
+                replan_reason = "too_few_jobs" if len(job_listings) < plan.min_job_pool_size else "too_many_jobs"
+                plan = self.replan_from_execution(
+                    request,
+                    plan=plan,
+                    current_saved_jobs=current_saved_jobs,
+                    current_saved_companies=current_saved_companies,
+                    target_context=target_context,
+                    private_profile_context=private_profile_context,
+                    inventory_context=inventory_context,
+                    execution_facts={
+                        "reason": replan_reason,
+                        "jobPoolSize": len(job_listings),
+                        "queryCounts": [{"label": label, "jobCount": count} for label, count in query_counts],
+                        "minJobPoolSize": plan.min_job_pool_size,
+                        "maxJobPoolSize": plan.max_job_pool_size,
+                    },
+                )
+                job_sync_results.extend(self.ensure_inventory(candidate_profile_id=candidate_profile.id, plan=plan))
+                job_listings, query_counts = query_builder.execute_plan(candidate_profile.id, plan)
+                self.persist_db_query_runs(run.id, plan.queries, query_counts, deduped_count=len(job_listings))
+            except DbJobSearchPlanningError as exc:
+                return self.complete_planning_failure_run(run, exc)
+        planner_diagnostics = self.build_planner_diagnostics(plan, job_sync_results)
         pool_entries = self.build_pool_entries(job_listings)[: plan.max_jobs_for_model_review]
         review = self.reviewer.review(
             request,
@@ -137,22 +165,159 @@ class CandidateJobDiscoveryService:
             diagnostics=diagnostics,
         )
 
+    def plan_with_model_critique(
+        self,
+        request: JobDiscoveryRequest,
+        *,
+        current_saved_jobs: list[dict[str, Any]],
+        current_saved_companies: list[dict[str, Any]],
+        target_context: dict[str, Any],
+        private_profile_context: dict[str, Any],
+        inventory_context: dict[str, Any],
+    ) -> DbJobSearchPlan:
+        planner_attempt_count = 1
+        critic_attempt_count = 0
+        rejected_plans: list[dict[str, Any]] = []
+        plan = self.planner.plan(
+            request,
+            connector=self.connector,
+            settings=self.settings,
+            current_saved_jobs=current_saved_jobs,
+            current_saved_companies=current_saved_companies,
+            target_context=target_context,
+            private_profile_context=private_profile_context,
+            inventory_context=inventory_context,
+        )
+        if self.connector is None or not self._uses_default_planner:
+            return plan
+        critique = self.critic.review(
+            request,
+            connector=self.connector,
+            settings=self.settings,
+            plan=plan,
+            current_saved_jobs=current_saved_jobs,
+            inventory_context=inventory_context,
+        )
+        critic_attempt_count += 1
+        if not critique.valid:
+            rejected_plans.append(
+                {
+                    "issueCode": critique.issue_code,
+                    "issueMessage": critique.issue_message,
+                    "mode": plan.mode,
+                    "modeRationale": plan.mode_rationale,
+                }
+            )
+            if critique.corrected_plan is not None:
+                plan = critique.corrected_plan
+            else:
+                planner_attempt_count += 1
+                plan = self.planner.plan(
+                    request,
+                    connector=self.connector,
+                    settings=self.settings,
+                    current_saved_jobs=current_saved_jobs,
+                    current_saved_companies=current_saved_companies,
+                    target_context=target_context,
+                    private_profile_context=private_profile_context,
+                    inventory_context=inventory_context,
+                    critique_context={
+                        "issueCode": critique.issue_code,
+                        "issueMessage": critique.issue_message,
+                    },
+                )
+        return replace(
+            plan,
+            planner_attempt_count=planner_attempt_count,
+            critic_attempt_count=critic_attempt_count,
+            rejected_plans=tuple(rejected_plans),
+            final_plan_status="planned",
+        )
+
+    def should_replan_for_pool_size(self, plan: DbJobSearchPlan, job_pool_size: int) -> bool:
+        if self.connector is None or not self._uses_default_planner:
+            return False
+        if plan.result_replan_count >= 1:
+            return False
+        if job_pool_size < plan.min_job_pool_size:
+            return True
+        return job_pool_size > plan.max_job_pool_size
+
+    def replan_from_execution(
+        self,
+        request: JobDiscoveryRequest,
+        *,
+        plan: DbJobSearchPlan,
+        current_saved_jobs: list[dict[str, Any]],
+        current_saved_companies: list[dict[str, Any]],
+        target_context: dict[str, Any],
+        private_profile_context: dict[str, Any],
+        inventory_context: dict[str, Any],
+        execution_facts: dict[str, Any],
+    ) -> DbJobSearchPlan:
+        revised = self.planner.plan(
+            request,
+            connector=self.connector,
+            settings=self.settings,
+            current_saved_jobs=current_saved_jobs,
+            current_saved_companies=current_saved_companies,
+            target_context=target_context,
+            private_profile_context=private_profile_context,
+            inventory_context=inventory_context,
+            execution_facts=execution_facts,
+        )
+        return replace(
+            revised,
+            planner_attempt_count=plan.planner_attempt_count + 1,
+            critic_attempt_count=plan.critic_attempt_count,
+            rejected_plans=plan.rejected_plans,
+            final_plan_status="replanned",
+            result_replan_count=plan.result_replan_count + 1,
+            result_replan_reason=str(execution_facts.get("reason") or "pool_size"),
+        )
+
+    def mark_planning_started(self, run: JobSearchRun) -> None:
+        run.search_mode = "db_backed"
+        run.provider_names = ["model_planner"]
+        run.status = "running"
+        run.started_at = run.started_at or datetime.now(UTC)
+        run.error = None
+        run.run_diagnostics_json = {
+            "planner": {
+                "status": "running",
+                "modelUsed": True,
+                "planningFailed": False,
+            },
+            "jobSync": {"runs": [], "runCount": 0, "rawResultCount": 0, "normalizedCount": 0, "createdCount": 0, "updatedCount": 0, "completedCount": 0, "failedCount": 0},
+            "databaseQueries": {"queries": [], "uniqueJobPoolCount": 0, "totalRowsMatched": 0},
+            "modelReview": {
+                "uniqueJobsInPool": 0,
+                "jobsReviewedByModel": 0,
+                "addedToCandidateJobsList": 0,
+                "recordedModelRejections": 0,
+                "selectedJobsLabel": "Selected/recommended jobs",
+                "modelReviewCompleted": False,
+            },
+        }
+        self.session.commit()
+
     def ensure_inventory(self, *, candidate_profile_id: str, plan: DbJobSearchPlan) -> tuple[Any, ...]:
         results: list[Any] = []
         self._last_planned_adzuna_signature_ids = []
         self._last_planned_adzuna_signature_actions = {}
         self._last_existing_adzuna_signature_ids = list(plan.existing_adzuna_signature_ids_to_refresh)
         existing_signature_ids = set(self.session.scalars(select(JobSyncSignature.id)).all())
-        results.extend(
-            sync_greenhouse_boards(
-                self.session,
-                settings=self.settings,
-                candidate_profile_id=candidate_profile_id,
-                include_configured=False,
-                force=False,
-                freshness_hours=24,
+        if plan.use_followed_company_boards:
+            results.extend(
+                sync_greenhouse_boards(
+                    self.session,
+                    settings=self.settings,
+                    candidate_profile_id=candidate_profile_id,
+                    include_configured=False,
+                    force=False,
+                    freshness_hours=24,
+                )
             )
-        )
         if plan.existing_adzuna_signature_ids_to_refresh:
             results.extend(
                 sync_adzuna_signatures(
@@ -198,6 +363,7 @@ class CandidateJobDiscoveryService:
             "modelUsed": planner.get("modelUsed", True),
             "planningFailed": True,
             "error": planner.get("error") or str(error),
+            "errorDetail": planner.get("errorDetail"),
         }
         diagnostics = {
             "planner": planner_diagnostics,
@@ -250,7 +416,7 @@ class CandidateJobDiscoveryService:
             diagnostics=diagnostics,
         )
 
-    def build_planner_inventory_context(self) -> dict[str, Any]:
+    def build_planner_inventory_context(self, *, current_saved_jobs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         signatures = list(
             self.session.scalars(
                 select(JobSyncSignature)
@@ -264,6 +430,14 @@ class CandidateJobDiscoveryService:
                 select(JobSyncRun)
                 .order_by(JobSyncRun.completed_at.desc().nullslast(), JobSyncRun.started_at.desc())
                 .limit(25)
+            )
+        )
+        recent_db_query_runs = list(
+            self.session.scalars(
+                select(JobSearchQueryRun)
+                .where(JobSearchQueryRun.provider_name == "database")
+                .order_by(JobSearchQueryRun.created_at.desc())
+                .limit(50)
             )
         )
         provider_counts = {
@@ -285,13 +459,30 @@ class CandidateJobDiscoveryService:
             )
             if value
         ]
+        top_companies = [
+            {"companyName": company, "activeJobCount": int(count)}
+            for company, count in self.session.execute(
+                select(JobListing.company_name, func.count(JobListing.id))
+                .where(JobListing.company_name.is_not(None), JobListing.is_active.is_(True), JobListing.closed_at.is_(None))
+                .group_by(JobListing.company_name)
+                .order_by(func.count(JobListing.id).desc())
+                .limit(20)
+            )
+            if company
+        ]
         return {
             "existingAdzunaSignatures": [serialize_signature_for_planner(signature) for signature in signatures],
             "recentJobSyncRuns": [serialize_sync_run_for_planner(run) for run in recent_runs],
+            "recentDbQueryRuns": [serialize_db_query_run_for_planner(run) for run in recent_db_query_runs],
             "syncedInventorySummary": {
                 "activeJobListingCount": sum(provider_counts.values()),
                 "providers": provider_counts,
                 "locations": locations,
+                "topCompanies": top_companies,
+            },
+            "currentJobsListSummary": {
+                "visibleJobsListCount": len(current_saved_jobs or []),
+                "sample": (current_saved_jobs or [])[:10],
             },
         }
 
@@ -321,10 +512,50 @@ class CandidateJobDiscoveryService:
             "status": "planned",
             "modelUsed": True,
             "planningFailed": False,
+            "mode": plan.mode,
+            "modeRationale": plan.mode_rationale,
+            "jobScope": plan.job_scope,
+            "syncPlanRationale": plan.sync_plan_rationale,
+            "useFollowedCompanyBoards": plan.use_followed_company_boards,
+            "plannerAttemptCount": plan.planner_attempt_count,
+            "criticAttemptCount": plan.critic_attempt_count,
+            "rejectedPlans": list(plan.rejected_plans),
+            "finalPlanStatus": plan.final_plan_status,
+            "resultReplanCount": plan.result_replan_count,
+            "resultReplanReason": plan.result_replan_reason,
             "plannedSyncSignatures": [serialize_signature_for_diagnostics(signatures.get(signature_id), results_by_signature_id.get(signature_id), action=proposed_actions.get(signature_id, "updated")) for signature_id in proposed_ids if signatures.get(signature_id)],
             "existingSyncSignaturesSelected": [serialize_signature_for_diagnostics(signatures.get(signature_id), results_by_signature_id.get(signature_id), action="reused") for signature_id in existing_ids if signatures.get(signature_id)],
             "plannedDbQueries": [serialize_query_for_diagnostics(query) for query in plan.queries],
         }
+
+    def persist_db_query_runs(
+        self,
+        job_search_run_id: str,
+        queries: tuple[DbJobSearchQuery, ...],
+        query_counts: tuple[tuple[str, int], ...],
+        *,
+        deduped_count: int,
+    ) -> None:
+        counts_by_label = {label: count for label, count in query_counts}
+        for query in queries:
+            count = int(counts_by_label.get(query.label, 0))
+            self.session.add(
+                JobSearchQueryRun(
+                    job_search_run_id=job_search_run_id,
+                    provider_name="database",
+                    query=query.label,
+                    company_name=", ".join(query.company_names_any[:3]) or None,
+                    location=summarize_query_location(query),
+                    page=None,
+                    total_matches=count,
+                    raw_result_count=count,
+                    normalized_result_count=count,
+                    deduped_result_count=deduped_count,
+                    candidate_count_after_filters=count,
+                    error=None,
+                )
+            )
+        self.session.flush()
 
     def build_pool_entries(self, jobs: list[JobListing]) -> list[JobPoolEntry]:
         providers_by_job_id: dict[str, tuple[str, ...]] = {}
@@ -362,15 +593,29 @@ class CandidateJobDiscoveryService:
 
 def serialize_plan(plan: DbJobSearchPlan) -> dict[str, Any]:
     return {
+        "mode": plan.mode,
+        "modeRationale": plan.mode_rationale,
         "jobScope": plan.job_scope,
-        "queries": [json_safe(asdict(query)) for query in plan.queries],
+        "syncPlan": {
+            "useFollowedCompanyBoards": plan.use_followed_company_boards,
+            "proposedAdzunaSignatures": list(plan.proposed_adzuna_signatures),
+            "existingAdzunaSignatureIdsToRefresh": list(plan.existing_adzuna_signature_ids_to_refresh),
+            "rationale": plan.sync_plan_rationale,
+        },
+        "dbSearchPlan": {
+            "queries": [json_safe(asdict(query)) for query in plan.queries],
+        },
         "replanRules": {
             "minJobPoolSize": plan.min_job_pool_size,
             "maxJobPoolSize": plan.max_job_pool_size,
             "maxJobsForModelReview": plan.max_jobs_for_model_review,
         },
-        "proposedAdzunaSignatures": list(plan.proposed_adzuna_signatures),
-        "existingAdzunaSignatureIdsToRefresh": list(plan.existing_adzuna_signature_ids_to_refresh),
+        "plannerAttemptCount": plan.planner_attempt_count,
+        "criticAttemptCount": plan.critic_attempt_count,
+        "rejectedPlans": list(plan.rejected_plans),
+        "finalPlanStatus": plan.final_plan_status,
+        "resultReplanCount": plan.result_replan_count,
+        "resultReplanReason": plan.result_replan_reason,
     }
 
 
@@ -406,12 +651,25 @@ def serialize_signature_for_planner(signature: JobSyncSignature) -> dict[str, An
 def serialize_sync_run_for_planner(run: JobSyncRun) -> dict[str, Any]:
     return {
         "syncKey": run.sync_key,
+        "providerName": run.provider_name,
         "status": run.status,
         "rawResultCount": run.raw_result_count,
         "normalizedCount": run.normalized_count,
         "createdCount": run.created_count,
         "updatedCount": run.updated_count,
         "completedAt": run.completed_at.isoformat() if run.completed_at else None,
+    }
+
+
+def serialize_db_query_run_for_planner(run: JobSearchQueryRun) -> dict[str, Any]:
+    diagnostics = run.job_search_run.run_diagnostics_json if getattr(run, "job_search_run", None) is not None else {}
+    return {
+        "jobSearchRunId": run.job_search_run_id,
+        "label": run.query,
+        "criteriaSummary": run.query,
+        "resultCount": run.total_matches,
+        "createdAt": run.created_at.isoformat() if run.created_at else None,
+        "noJobsAddedReason": diagnostics.get("noJobsAddedReason") if isinstance(diagnostics, dict) else None,
     }
 
 
@@ -446,14 +704,44 @@ def serialize_query_for_diagnostics(query: DbJobSearchQuery) -> dict[str, Any]:
     return {
         "label": query.label,
         "titleTermsAny": list(query.title_terms_any),
+        "titleTermsAll": list(query.title_terms_all),
+        "titleTermsExclude": list(query.title_terms_exclude),
         "descriptionTermsAny": list(query.description_terms_any),
+        "descriptionTermsAll": list(query.description_terms_all),
+        "descriptionTermsExclude": list(query.description_terms_exclude),
+        "companyIdsAny": list(query.company_ids_any),
+        "companyNamesAny": list(query.company_names_any),
+        "companyNamesExclude": list(query.company_names_exclude),
+        "sourceProvidersAny": list(query.source_providers_any),
+        "atsBoardTokensAny": list(query.ats_board_tokens_any),
+        "locationTargetIdsAny": list(query.location_target_ids_any),
         "locationCountriesAny": list(query.location_countries_any),
+        "locationRegionsAny": list(query.location_regions_any),
+        "locationCitiesAny": list(query.location_cities_any),
+        "locationMetrosAny": list(query.location_metros_any),
+        "locationDisplayTermsAny": list(query.location_display_terms_any),
         "remoteWorkModesAny": list(query.remote_work_modes_any),
+        "employmentTypesAny": list(query.employment_types_any),
+        "salaryCurrency": query.salary_currency,
+        "salaryMinAtLeast": query.salary_min_at_least,
+        "sourceStatusesAny": list(query.source_statuses_any),
+        "freshnessDays": query.freshness_days,
         "limit": query.limit,
         "activeOnly": query.active_only,
         "includeModelRejected": query.include_model_rejected,
         "orderBy": query.order_by,
     }
+
+
+def summarize_query_location(query: DbJobSearchQuery) -> str | None:
+    parts = [
+        *query.location_countries_any,
+        *query.location_regions_any,
+        *query.location_cities_any,
+        *query.location_metros_any,
+        *query.location_display_terms_any,
+    ]
+    return ", ".join(str(part) for part in parts if str(part).strip()) or None
 
 
 def selected_jobs_label_for_scope(scope: str) -> str:

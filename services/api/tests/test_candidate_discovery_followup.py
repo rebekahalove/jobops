@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session
 
 import jobops_api.job_discovery.candidate_discovery.planner as planner_module
 import jobops_api.job_discovery.candidate_discovery.service as candidate_service_module
-from jobops_api.db.models import JobSyncRun, JobSyncSignature
+from jobops_api.db.models import JobSearchQueryRun, JobSyncRun, JobSyncSignature
 from jobops_api.job_discovery.candidate_discovery.models import (
     DbJobSearchPlan,
     DbJobSearchQuery,
@@ -17,8 +19,8 @@ from jobops_api.job_discovery.candidate_discovery.models import (
     RejectedJobDecision,
     SelectedJobDecision,
 )
-from jobops_api.job_discovery.candidate_discovery.planner import DbJobSearchPlanner, DbJobSearchPlanningError, infer_scope, parse_db_search_plan
-from jobops_api.job_discovery.candidate_discovery.prompts import DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
+from jobops_api.job_discovery.candidate_discovery.planner import DbJobSearchPlanner, DbJobSearchPlanningError, parse_db_search_plan
+from jobops_api.job_discovery.candidate_discovery.prompts import DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT, DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
 from jobops_api.job_discovery.candidate_discovery.query_builder import JobListingQueryBuilder
 from jobops_api.job_discovery.candidate_discovery.repositories import CandidateJobRepository, ModelRejectionService
 from jobops_api.job_discovery.candidate_discovery.reviewer import JobReviewSelector, validate_review_result
@@ -39,21 +41,15 @@ from test_candidate_job_discovery import (
 )
 
 
-def test_deterministic_scope_inference_examples() -> None:
-    cases = {
-        "which jobs": "candidate_jobs_list",
-        "what jobs": "candidate_jobs_list",
-        "show me the jobs": "candidate_jobs_list",
-        "show me my jobs": "candidate_jobs_list",
-        "which saved jobs should I apply to": "candidate_jobs_list",
-        "give me jobs to apply to": "new_to_candidate",
-        "find jobs to apply to": "new_to_candidate",
-        "show me some jobs": "new_to_candidate",
-        "find new jobs": "new_to_candidate",
-        "new and saved jobs": "all_accessible_jobs",
-    }
-    for message, expected_scope in cases.items():
-        assert infer_scope(message) == expected_scope
+def test_deterministic_scope_inference_helpers_are_removed() -> None:
+    for name in (
+        "infer_scope",
+        "is_existing_jobs_list_request",
+        "is_new_job_discovery_request",
+        "is_all_accessible_jobs_request",
+        "phrase_matches",
+    ):
+        assert not hasattr(planner_module, name)
 
 
 def test_planner_prompt_contains_broadening_and_override_instructions() -> None:
@@ -62,9 +58,13 @@ def test_planner_prompt_contains_broadening_and_override_instructions() -> None:
     assert "To broaden a search and increase results, remove or relax criteria" in prompt
     assert "Explicit latest-thread constraints outrank stored profile defaults" in prompt
     assert "Ask the user only before relaxing an explicit" in prompt
-    assert "planning both" in prompt
-    assert "inventory refresh sync signatures / sync tokens" in prompt
+    assert "You choose the discovery mode" in prompt
+    assert "plan inventory refresh sync tokens" in prompt
+    assert "Find me some jobs to apply to." in prompt
+    assert "new_job_discovery" in prompt
     assert "Do not call job results \"candidates.\"" in prompt
+    assert "Return JSON only" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
+    assert "correctedPlan" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
 
 
 def test_db_planner_without_connector_fails_without_deterministic_terms(tmp_path) -> None:
@@ -104,9 +104,42 @@ def test_db_planner_connector_exception_does_not_generate_search_terms(tmp_path)
     assert "Python" not in str(exc.value.diagnostics)
 
 
+def test_db_planner_connector_timeout_fails_loudly(tmp_path) -> None:
+    class SlowConnector:
+        def generate(self, request):
+            time.sleep(0.2)
+            raise AssertionError("Planner should stop waiting before this returns.")
+
+    settings = replace(make_settings(tmp_path), llm_request_timeout_seconds=0.01)
+
+    with pytest.raises(DbJobSearchPlanningError) as exc:
+        DbJobSearchPlanner().plan(
+            JobDiscoveryRequest(latest_user_message="Find Python AI jobs.", candidate_profile_slug="rebekah-love"),
+            connector=SlowConnector(),
+            settings=settings,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert exc.value.diagnostics["planner"]["planningFailed"] is True
+    assert exc.value.diagnostics["planner"]["error"] == "TimeoutError"
+    assert "timeout" in exc.value.diagnostics["planner"]["errorDetail"]
+    assert "Python" not in str(exc.value.diagnostics)
+
+
 def test_db_planner_missing_queries_is_planning_failure() -> None:
     with pytest.raises(DbJobSearchPlanningError):
-        parse_db_search_plan('{"jobScope":"new_to_candidate","proposedAdzunaSignatures":[],"queries":[]}')
+        parse_db_search_plan(
+            json.dumps(
+                {
+                    "mode": "new_job_discovery",
+                    "syncPlan": {"useFollowedCompanyBoards": False, "proposedAdzunaSignatures": [], "existingAdzunaSignatureIdsToRefresh": []},
+                    "dbSearchPlan": {"queries": []},
+                }
+            )
+        )
 
 
 def test_reset_all_model_rejections_uses_hidden_reviewable_status() -> None:
@@ -295,6 +328,155 @@ def test_reviewer_connector_exception_returns_no_selected_jobs(tmp_path) -> None
     assert result.user_visible_summary.startswith("I found synced jobs to review")
 
 
+def test_reviewer_retries_invalid_json_and_uses_valid_retry(tmp_path) -> None:
+    class InvalidThenValidConnector:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.requests = []
+
+        def generate(self, request):
+            self.calls += 1
+            self.requests.append(request)
+            if self.calls == 1:
+                return SimpleNamespace(text='{"userVisibleSummary": "truncated"', finish_reason="MAX_TOKENS")
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "userVisibleSummary": "I found one strong job.",
+                        "selectedJobs": [{"jobListingId": "job-1", "rationale": "Strong match.", "matchHighlights": ["AI platform"]}],
+                        "rejectedJobs": [],
+                        "criteriaAdjustmentSuggestion": {"shouldAskUser": False, "message": None, "criteriaToRelax": []},
+                    }
+                ),
+                finish_reason="stop",
+            )
+
+    connector = InvalidThenValidConnector()
+    job = SimpleNamespace(
+        job_listing_id="job-1",
+        title="AI Engineer",
+        company_name="Example",
+        location_display="Remote",
+        remote_work_mode="remote",
+        employment_type="full_time",
+        salary_text=None,
+        description_excerpt="Build AI systems.",
+        source_providers=("adzuna",),
+    )
+
+    result = JobReviewSelector().review(
+        JobDiscoveryRequest(latest_user_message="Find jobs.", candidate_profile_slug="rebekah-love"),
+        connector=connector,
+        settings=make_settings(tmp_path),
+        job_pool=[job],
+        max_selected=10,
+    )
+
+    assert connector.calls == 2
+    first_payload = json.loads(connector.requests[0].messages[-1].content)
+    retry_instruction = connector.requests[1].messages[-1].content
+    assert "maxRejectedJobs" not in first_payload
+    assert "Do not include every unselected job" not in " ".join(first_payload["outputRules"])
+    assert connector.requests[0].max_output_tokens == 32000
+    assert "Respect maxSelectedJobs." in retry_instruction
+    assert [decision.job_listing_id for decision in result.selected_jobs] == ["job-1"]
+    assert result.diagnostics["modelReviewCompleted"] is True
+    assert result.diagnostics["modelReviewRetried"] is True
+    assert result.diagnostics["modelReviewAttemptCount"] == 2
+
+
+def test_reviewer_invalid_json_after_retry_returns_no_selected_jobs(tmp_path) -> None:
+    class AlwaysInvalidConnector:
+        def generate(self, request):
+            return SimpleNamespace(text='{"userVisibleSummary": "still truncated"', finish_reason="MAX_TOKENS")
+
+    job = SimpleNamespace(
+        job_listing_id="job-1",
+        title="AI Engineer",
+        company_name="Example",
+        location_display="Remote",
+        remote_work_mode="remote",
+        employment_type="full_time",
+        salary_text=None,
+        description_excerpt="Build AI systems.",
+        source_providers=("adzuna",),
+    )
+
+    result = JobReviewSelector().review(
+        JobDiscoveryRequest(latest_user_message="Find jobs.", candidate_profile_slug="rebekah-love"),
+        connector=AlwaysInvalidConnector(),
+        settings=make_settings(tmp_path),
+        job_pool=[job],
+        max_selected=10,
+    )
+
+    assert result.selected_jobs == ()
+    assert result.rejected_jobs == ()
+    assert result.diagnostics["modelReviewFallback"] is True
+    assert result.diagnostics["modelReviewFailureReason"].startswith("model_review_invalid_json:")
+    assert result.diagnostics["modelReviewAttemptCount"] == 2
+    assert result.diagnostics["debugInvalidReviewAttempt"] == 2
+    assert result.diagnostics["debugInvalidReviewFinishReason"] == "MAX_TOKENS"
+    assert result.diagnostics["debugInvalidReviewResponseLength"] == len('{"userVisibleSummary": "still truncated"')
+    assert "still truncated" in result.diagnostics["debugInvalidReviewResponsePreview"]
+
+
+def test_reviewer_request_does_not_cap_rejected_jobs_for_large_pool(tmp_path) -> None:
+    selector = JobReviewSelector()
+    request = selector.build_model_request(
+        JobDiscoveryRequest(latest_user_message="Find jobs.", candidate_profile_slug="rebekah-love"),
+        job_pool=[
+            SimpleNamespace(
+                job_listing_id=f"job-{index}",
+                title=f"Job {index}",
+                company_name="Example",
+                location_display="Remote",
+                remote_work_mode="remote",
+                employment_type="full_time",
+                salary_text=None,
+                description_excerpt="Build systems.",
+                source_providers=("adzuna",),
+            )
+            for index in range(66)
+        ],
+        max_selected=25,
+    )
+
+    payload = json.loads(request.messages[-1].content)
+    assert "maxRejectedJobs" not in payload
+    assert request.max_output_tokens == 32000
+    assert "Do not include every unselected job" not in " ".join(payload["outputRules"])
+
+
+def test_reviewer_invalid_json_debug_preview_is_not_persisted_in_prod(tmp_path) -> None:
+    class AlwaysInvalidConnector:
+        def generate(self, request):
+            return SimpleNamespace(text='{"userVisibleSummary": "prod truncated"', finish_reason="MAX_TOKENS")
+
+    job = SimpleNamespace(
+        job_listing_id="job-1",
+        title="AI Engineer",
+        company_name="Example",
+        location_display="Remote",
+        remote_work_mode="remote",
+        employment_type="full_time",
+        salary_text=None,
+        description_excerpt="Build AI systems.",
+        source_providers=("adzuna",),
+    )
+
+    result = JobReviewSelector().review(
+        JobDiscoveryRequest(latest_user_message="Find jobs.", candidate_profile_slug="rebekah-love"),
+        connector=AlwaysInvalidConnector(),
+        settings=replace(make_settings(tmp_path), app_env="prod"),
+        job_pool=[job],
+        max_selected=10,
+    )
+
+    assert result.diagnostics["modelReviewFailureReason"].startswith("model_review_invalid_json:")
+    assert "debugInvalidReviewResponsePreview" not in result.diagnostics
+
+
 def test_service_model_failure_does_not_create_candidate_job_rows(tmp_path) -> None:
     class FailingConnector:
         def generate(self, request):
@@ -433,6 +615,110 @@ def test_model_planned_adzuna_signature_syncs_before_db_query_and_records_diagno
     assert result.diagnostics["databaseQueries"]["queries"][0]["jobCount"] == 1
 
 
+def test_model_critic_corrects_new_discovery_plan_that_reviews_empty_jobs_list(tmp_path, monkeypatch) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", lambda *args, **kwargs: ())
+
+        def fake_sync_adzuna_signatures(session_arg, *, settings, signature_ids=None, enabled_only=True, force=False, **kwargs):
+            signature = session_arg.get(JobSyncSignature, signature_ids[0])
+            assert signature is not None
+            create_job_listing(session_arg, title="AI Sync Corrected Engineer", provider="adzuna", provider_job_id="critic-corrected")
+            result = JobSyncResult(
+                request=JobSyncRequest(
+                    sync_key=signature.sync_key,
+                    provider_name="adzuna",
+                    provider_type="broad_search",
+                    sync_kind="broad_search",
+                    job_sync_signature_id=signature.id,
+                    provider_country=signature.provider_country,
+                    provider_where=signature.provider_where,
+                    display_location=signature.display_location,
+                    query_text=signature.query_text,
+                    query_kind=signature.query_kind,
+                    criteria_json=signature.criteria_json,
+                ),
+                raw_result_count=1,
+                normalized_count=1,
+                created_count=1,
+            )
+            record_job_sync_run(session_arg, result)
+            return [result]
+
+        monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fake_sync_adzuna_signatures)
+        service = CandidateJobDiscoveryService(
+            session=session,
+            settings=replace(make_settings(tmp_path), job_discovery_save_limit=1),
+            connector=CriticCorrectsConnector(),
+            reviewer=SelectFirstReviewer(),
+        )
+
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Find me some jobs to apply to.", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        query_runs = list(session.scalars(select(JobSearchQueryRun)).all())
+
+    assert result.search_plan.mode == "new_job_discovery"
+    assert result.search_plan.job_scope == "new_to_candidate"
+    assert result.search_plan.proposed_adzuna_signatures
+    assert result.diagnostics["planner"]["criticAttemptCount"] == 1
+    assert result.diagnostics["planner"]["rejectedPlans"][0]["issueCode"] == "mode_mismatch"
+    assert result.diagnostics["planner"]["mode"] == "new_job_discovery"
+    assert result.diagnostics["planner"]["plannedSyncSignatures"][0]["queryText"] == "AI"
+    assert result.added_count == 1
+    assert len(query_runs) >= 1
+    assert query_runs[-1].provider_name == "database"
+    assert query_runs[-1].raw_result_count == 1
+
+
+def test_jobs_list_review_does_not_sync_when_model_does_not_plan_sync(tmp_path, monkeypatch) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        job = create_job_listing(session, title="Existing AI Job", provider_job_id="existing-list-review")
+        session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        sync_called = False
+
+        def fake_sync(*args, **kwargs):
+            nonlocal sync_called
+            sync_called = True
+            return []
+
+        monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fake_sync)
+        monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fake_sync)
+        service = CandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=JobsListReviewConnector(),
+            reviewer=SelectFirstReviewer(),
+        )
+
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which jobs should I apply to first?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[{"title": "Existing AI Job"}],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+    assert sync_called is False
+    assert result.search_plan.mode == "jobs_list_review"
+    assert result.search_plan.job_scope == "candidate_jobs_list"
+    assert result.unique_job_pool_count == 1
+
+
 def test_planner_payload_includes_existing_sync_context_without_secrets(tmp_path) -> None:
     engine = create_candidate_discovery_engine()
     with Session(engine) as session:
@@ -473,6 +759,43 @@ def test_planner_payload_includes_existing_sync_context_without_secrets(tmp_path
     assert "syncedInventorySummary" in payload["inventoryContext"]
     assert "app_id" not in request.messages[-1].content
     assert "app_key" not in request.messages[-1].content
+
+
+def test_planner_payload_includes_recent_db_query_history(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        run = JobSearchRun(
+            candidate_profile_id=profile.id,
+            command_text="Find jobs.",
+            search_plan_json={},
+            run_diagnostics_json={"noJobsAddedReason": "no_db_matches"},
+            provider_names=[],
+            search_mode="db_backed",
+            status="completed",
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            JobSearchQueryRun(
+                job_search_run_id=run.id,
+                provider_name="database",
+                query="Previous zero result search",
+                total_matches=0,
+                raw_result_count=0,
+                normalized_result_count=0,
+                deduped_result_count=0,
+                candidate_count_after_filters=0,
+            )
+        )
+        session.commit()
+
+        service = CandidateJobDiscoveryService(session=session, settings=make_settings(tmp_path))
+        context = service.build_planner_inventory_context(current_saved_jobs=[])
+
+    assert context["recentDbQueryRuns"][0]["label"] == "Previous zero result search"
+    assert context["recentDbQueryRuns"][0]["resultCount"] == 0
+    assert context["recentDbQueryRuns"][0]["noJobsAddedReason"] == "no_db_matches"
 
 
 def test_validation_ignores_unknown_model_ids_and_creates_no_rows(tmp_path) -> None:
@@ -704,6 +1027,120 @@ class SelectFirstReviewer:
             selected_jobs=(SelectedJobDecision(job_listing_id=job_pool[0].job_listing_id, rationale="Strong match."),),
             diagnostics={"modelReviewCompleted": True},
         )
+
+
+class CriticCorrectsConnector:
+    def generate(self, request):
+        if request.task == "candidate_db_job_search_planning":
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "mode": "jobs_list_review",
+                        "modeRationale": "Incorrectly reviewing an empty jobs list.",
+                        "syncPlan": {
+                            "useFollowedCompanyBoards": False,
+                            "proposedAdzunaSignatures": [],
+                            "existingAdzunaSignatureIdsToRefresh": [],
+                            "rationale": "No sync planned.",
+                        },
+                        "dbSearchPlan": {
+                            "queries": [
+                                {
+                                    "label": "Review visible jobs list",
+                                    "activeOnly": True,
+                                    "includeModelRejected": False,
+                                    "limit": 100,
+                                    "orderBy": "last_seen_at_desc",
+                                }
+                            ]
+                        },
+                    }
+                )
+            )
+        if request.task == "candidate_db_job_plan_critique":
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "valid": False,
+                        "issueCode": "mode_mismatch",
+                        "issueMessage": "The user asked to find new jobs, but the plan reviews an empty jobs list.",
+                        "correctedPlan": {
+                            "mode": "new_job_discovery",
+                            "modeRationale": "The user asked to find jobs to apply to.",
+                            "syncPlan": {
+                                "useFollowedCompanyBoards": False,
+                                "proposedAdzunaSignatures": [
+                                    {
+                                        "queryText": "AI",
+                                        "displayLocation": "Remote US",
+                                        "queryKind": "model_planned",
+                                        "maxPages": 1,
+                                    }
+                                ],
+                                "existingAdzunaSignatureIdsToRefresh": [],
+                                "rationale": "Use a broad sync token before database search.",
+                            },
+                            "dbSearchPlan": {
+                                "queries": [
+                                    {
+                                        "label": "AI synced jobs",
+                                        "activeOnly": True,
+                                        "sourceProvidersAny": ["adzuna"],
+                                        "titleTermsAny": ["AI"],
+                                        "includeModelRejected": False,
+                                        "limit": 100,
+                                        "orderBy": "last_seen_at_desc",
+                                    }
+                                ]
+                            },
+                            "replanRules": {
+                                "minJobPoolSize": 1,
+                                "maxJobPoolSize": 100,
+                                "maxJobsForModelReview": 10,
+                            },
+                        },
+                    }
+                )
+            )
+        raise AssertionError(f"Unexpected task {request.task}")
+
+
+class JobsListReviewConnector:
+    def generate(self, request):
+        if request.task == "candidate_db_job_search_planning":
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "mode": "jobs_list_review",
+                        "modeRationale": "The user asked which existing jobs to apply to first.",
+                        "syncPlan": {
+                            "useFollowedCompanyBoards": False,
+                            "proposedAdzunaSignatures": [],
+                            "existingAdzunaSignatureIdsToRefresh": [],
+                            "rationale": "No new inventory needed for a jobs-list review.",
+                        },
+                        "dbSearchPlan": {
+                            "queries": [
+                                {
+                                    "label": "Review visible jobs list",
+                                    "activeOnly": True,
+                                    "includeModelRejected": False,
+                                    "limit": 100,
+                                    "orderBy": "last_seen_at_desc",
+                                }
+                            ]
+                        },
+                        "replanRules": {
+                            "minJobPoolSize": 1,
+                            "maxJobPoolSize": 100,
+                            "maxJobsForModelReview": 10,
+                        },
+                    }
+                )
+            )
+        if request.task == "candidate_db_job_plan_critique":
+            return SimpleNamespace(text=json.dumps({"valid": True, "issueCode": None, "issueMessage": None, "correctedPlan": None}))
+        raise AssertionError(f"Unexpected task {request.task}")
 
 
 def make_candidate_discovery_result(**overrides):

@@ -608,7 +608,40 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
     <>
       <section className="diagnostics-section">
         <h3>Planner</h3>
-        {planner?.planningFailed ? <p className="diagnostics-muted">Planning failed: {planner.error || "unknown"}</p> : null}
+        {!planner?.planningFailed && planner?.status ? <p className="diagnostics-muted">Planning status: {formatStatus(planner.status)}</p> : null}
+        {planner?.mode ? (
+          <p className="diagnostics-muted">
+            Mode: {formatStatus(planner.mode)}
+            {planner.modeRationale ? ` - ${planner.modeRationale}` : ""}
+          </p>
+        ) : null}
+        {planner?.plannerAttemptCount || planner?.criticAttemptCount ? (
+          <p className="diagnostics-muted">
+            Planner attempts: {formatNumber(planner.plannerAttemptCount) ?? "0"}; critic attempts: {formatNumber(planner.criticAttemptCount) ?? "0"}
+            {planner.finalPlanStatus ? `; final status: ${formatStatus(planner.finalPlanStatus)}` : ""}
+            {planner.resultReplanCount ? `; result replans: ${formatNumber(planner.resultReplanCount)}` : ""}
+            {planner.resultReplanReason ? ` (${formatStatus(planner.resultReplanReason)})` : ""}
+          </p>
+        ) : null}
+        {planner?.rejectedPlans?.length ? (
+          <div className="diagnostics-provider-list">
+            {planner.rejectedPlans.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.issueCode}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.issueCode || "Plan critique"}</strong>
+                  <span>{row.mode ? formatStatus(row.mode) : "Rejected"}</span>
+                </div>
+                <p className="diagnostics-muted">{row.issueMessage || "The model critic rejected this plan."}</p>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {planner?.planningFailed ? (
+          <p className="diagnostics-muted">
+            Planning failed: {planner.error || "unknown"}
+            {planner.errorDetail ? ` - ${planner.errorDetail}` : ""}
+          </p>
+        ) : null}
         {plannerSyncRows.length ? (
           <div className="diagnostics-provider-list">
             {plannerSyncRows.map((row, index) => (
@@ -639,15 +672,25 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
                 </div>
                 <div className="diagnostics-event-meta">
                   <CompactDetailItem item={{ label: "Title any", value: formatList(row.titleTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Title all", value: formatList(row.titleTermsAll) }} />
+                  <CompactDetailItem item={{ label: "Title exclude", value: formatList(row.titleTermsExclude) }} />
                   <CompactDetailItem item={{ label: "Description any", value: formatList(row.descriptionTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Description all", value: formatList(row.descriptionTermsAll) }} />
+                  <CompactDetailItem item={{ label: "Description exclude", value: formatList(row.descriptionTermsExclude) }} />
+                  <CompactDetailItem item={{ label: "Companies", value: formatList(row.companyNamesAny) }} />
+                  <CompactDetailItem item={{ label: "Providers", value: formatList(row.sourceProvidersAny) }} />
                   <CompactDetailItem item={{ label: "Country", value: formatList(row.locationCountriesAny) }} />
+                  <CompactDetailItem item={{ label: "Region", value: formatList(row.locationRegionsAny) }} />
+                  <CompactDetailItem item={{ label: "City", value: formatList(row.locationCitiesAny) }} />
+                  <CompactDetailItem item={{ label: "Location text", value: formatList(row.locationDisplayTermsAny) }} />
                   <CompactDetailItem item={{ label: "Work mode", value: formatList(row.remoteWorkModesAny) }} />
+                  <CompactDetailItem item={{ label: "Employment", value: formatList(row.employmentTypesAny) }} />
                 </div>
               </article>
             ))}
           </div>
         ) : null}
-        {!plannerSyncRows.length && !plannerQueryRows.length && !planner?.planningFailed ? (
+        {!plannerSyncRows.length && !plannerQueryRows.length && !planner?.planningFailed && !planner?.status ? (
           <p className="diagnostics-muted">No planner details were recorded.</p>
         ) : null}
       </section>
@@ -711,6 +754,24 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
         ) : null}
         {Object.keys(reasonCounts).length ? (
           <p className="diagnostics-muted">Top rejection reasons: {formatReasonCounts(reasonCounts)}</p>
+        ) : null}
+        {modelReview?.debugInvalidReviewResponsePreview ? (
+          <div className="diagnostics-debug-block">
+            <p className="diagnostics-muted">
+              Invalid review response debug: attempt {formatNumber(modelReview.debugInvalidReviewAttempt) ?? "unknown"};
+              {" "}finish reason {modelReview.debugInvalidReviewFinishReason || "unknown"};
+              {" "}length {formatNumber(modelReview.debugInvalidReviewResponseLength) ?? "unknown"} chars
+              {modelReview.debugInvalidReviewErrorType ? `; ${modelReview.debugInvalidReviewErrorType}` : ""}
+              {modelReview.debugInvalidReviewError ? `: ${modelReview.debugInvalidReviewError}` : ""}
+            </p>
+            <pre>{modelReview.debugInvalidReviewResponsePreview}</pre>
+            {modelReview.debugInvalidReviewResponseTail ? (
+              <>
+                <p className="diagnostics-muted">Response tail</p>
+                <pre>{modelReview.debugInvalidReviewResponseTail}</pre>
+              </>
+            ) : null}
+          </div>
         ) : null}
       </section>
     </>

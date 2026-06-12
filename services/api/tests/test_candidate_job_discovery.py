@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,6 +34,7 @@ from jobops_api.job_discovery.candidate_discovery.repositories import CandidateJ
 from jobops_api.job_discovery.candidate_discovery.service import CandidateJobDiscoveryService
 from jobops_api.job_discovery.models import JobDiscoveryRequest
 from jobops_api.job_discovery.service import run_job_discovery, serialize_saved_job
+from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
 
 
@@ -173,6 +175,7 @@ def test_run_job_discovery_uses_db_inventory_response_shape(tmp_path: Path, monk
 
         monkeypatch.setattr(candidate_service_module.CandidateJobDiscoveryService, "ensure_inventory", lambda self, **kwargs: ())
         monkeypatch.setattr(job_discovery_service_module, "should_prompt_for_discovery_targets", lambda *args, **kwargs: False)
+        monkeypatch.setattr(job_discovery_service_module, "create_model_connector", lambda config: DbPlanningConnector())
         monkeypatch.setattr(
             candidate_service_module.JobReviewSelector,
             "review",
@@ -232,6 +235,47 @@ class StaticPlanner:
             job_scope="new_to_candidate",
             queries=(DbJobSearchQuery(source_statuses_any=("active",), limit=10),),
             max_jobs_for_model_review=10,
+        )
+
+
+class DbPlanningConnector:
+    def generate(self, request) -> ModelResponse:
+        if request.task == "candidate_db_job_plan_critique":
+            return ModelResponse(
+                text=json.dumps({"valid": True, "issueCode": None, "issueMessage": None, "correctedPlan": None}),
+                provider="fake",
+                model="fake-db-critic",
+            )
+        assert request.task == "candidate_db_job_search_planning"
+        return ModelResponse(
+            text=json.dumps(
+                {
+                    "mode": "new_job_discovery",
+                    "modeRationale": "The user asked to find jobs.",
+                    "syncPlan": {
+                        "useFollowedCompanyBoards": False,
+                        "proposedAdzunaSignatures": [],
+                        "existingAdzunaSignatureIdsToRefresh": [],
+                        "rationale": "Use existing synced inventory in the test.",
+                    },
+                    "dbSearchPlan": {
+                        "queries": [
+                            {
+                                "label": "Synced inventory test search",
+                                "sourceStatusesAny": ["active"],
+                                "limit": 10,
+                            }
+                        ]
+                    },
+                    "replanRules": {
+                        "minJobPoolSize": 1,
+                        "maxJobPoolSize": 10,
+                        "maxJobsForModelReview": 10,
+                    },
+                }
+            ),
+            provider="fake",
+            model="fake-db-planner",
         )
 
 

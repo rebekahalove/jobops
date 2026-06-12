@@ -2838,6 +2838,28 @@ input:disabled {
   color: #9f1239;
 }
 
+.diagnostics-debug-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diagnostics-debug-block pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .diagnostics-note-list {
   margin: 0;
   padding-left: 18px;

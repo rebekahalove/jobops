@@ -70,6 +70,20 @@ def build_candidate_discovery_diagnostics(
 def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     lines = ["Planner"]
     planner = diagnostics.get("planner", {}) if isinstance(diagnostics.get("planner"), dict) else {}
+    if planner.get("mode"):
+        mode_line = f"- Mode: {planner.get('mode')}"
+        if planner.get("modeRationale"):
+            mode_line = f"{mode_line} - {planner.get('modeRationale')}"
+        lines.append(mode_line)
+    if planner.get("plannerAttemptCount") or planner.get("criticAttemptCount"):
+        lines.append(
+            f"- Planner attempts: {planner.get('plannerAttemptCount', 0)}; "
+            f"critic attempts: {planner.get('criticAttemptCount', 0)}; "
+            f"final status: {planner.get('finalPlanStatus') or planner.get('status') or 'unknown'}"
+        )
+    for item in planner.get("rejectedPlans", []) if isinstance(planner.get("rejectedPlans"), list) else []:
+        if isinstance(item, dict):
+            lines.append(f"- Rejected plan: {item.get('issueCode') or 'unknown'} - {item.get('issueMessage') or '-'}")
     for item in planner.get("plannedSyncSignatures", []) if isinstance(planner.get("plannedSyncSignatures"), list) else []:
         if not isinstance(item, dict):
             continue
