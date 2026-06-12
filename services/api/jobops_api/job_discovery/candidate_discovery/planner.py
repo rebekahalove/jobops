@@ -10,7 +10,7 @@ from ...model_connector import ModelConnector, ModelMessage, ModelRequest, Model
 from ...settings import Settings
 from ..models import JobDiscoveryRequest
 from ..provider_utils import safe_log_preview
-from .models import MODE_TO_SCOPE, DbJobSearchPlan, DbJobSearchQuery, DiscoveryMode
+from .models import MODE_TO_SCOPE, DbJobSearchPlan, DbJobSearchQuery, DiscoveryMode, ReviewPlan
 from .prompts import DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT, DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
 
 
@@ -228,6 +228,7 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
         )
     rules = plan.get("replanRules") or {}
     rules = plan.get("replanRules") if isinstance(plan.get("replanRules"), dict) else {}
+    review_plan = parse_review_plan(plan.get("reviewPlan"), mode=mode)
     return DbJobSearchPlan(
         mode=mode,  # type: ignore[arg-type]
         mode_rationale=clean_optional_text(plan.get("modeRationale")),
@@ -242,7 +243,34 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
         existing_adzuna_signature_ids_to_refresh=tuple(
             str(item) for item in sync_plan.get("existingAdzunaSignatureIdsToRefresh", []) if str(item).strip()
         ),
+        review_plan=review_plan,
     )
+
+
+def parse_review_plan(raw: object, *, mode: str) -> ReviewPlan:
+    if isinstance(raw, dict):
+        task = str(raw.get("task") or "").strip()
+        if task not in {"select_new_jobs", "rank_existing_jobs"}:
+            task = "rank_existing_jobs" if mode == "jobs_list_review" else "select_new_jobs"
+        requested_count = parse_positive_int(raw.get("requestedCount"))
+        return ReviewPlan(
+            task=task,  # type: ignore[arg-type]
+            requested_count=requested_count,
+            allow_rejections=bool(raw.get("allowRejections", task != "rank_existing_jobs")),
+            review_all_eligible_jobs=bool(raw.get("reviewAllEligibleJobs", task == "rank_existing_jobs")),
+            rationale=clean_optional_text(raw.get("rationale")),
+        )
+    if mode == "jobs_list_review":
+        return ReviewPlan(task="rank_existing_jobs", allow_rejections=False, review_all_eligible_jobs=True)
+    return ReviewPlan()
+
+
+def parse_positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def parse_query(raw: dict[str, Any]) -> DbJobSearchQuery:
@@ -329,11 +357,22 @@ def serialize_plan_for_model(plan: DbJobSearchPlan) -> dict[str, Any]:
         "dbSearchPlan": {
             "queries": [serialize_query_for_model(query) for query in plan.queries],
         },
+        "reviewPlan": serialize_review_plan_for_model(plan.review_plan),
         "replanRules": {
             "minJobPoolSize": plan.min_job_pool_size,
             "maxJobPoolSize": plan.max_job_pool_size,
             "maxJobsForModelReview": plan.max_jobs_for_model_review,
         },
+    }
+
+
+def serialize_review_plan_for_model(review_plan: ReviewPlan) -> dict[str, Any]:
+    return {
+        "task": review_plan.task,
+        "requestedCount": review_plan.requested_count,
+        "allowRejections": review_plan.allow_rejections,
+        "reviewAllEligibleJobs": review_plan.review_all_eligible_jobs,
+        "rationale": review_plan.rationale,
     }
 
 

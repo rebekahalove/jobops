@@ -29,7 +29,18 @@ class JobReviewSelector:
         settings: Settings,
         job_pool: list[JobPoolEntry],
         max_selected: int,
+        review_mode: str = "select_new_jobs",
+        requested_count: int | None = None,
+        allow_rejections: bool = True,
     ) -> JobReviewResult:
+        if review_mode == "rank_existing_jobs":
+            return self.rank_existing_jobs(
+                request,
+                connector=connector,
+                settings=settings,
+                job_pool=job_pool,
+                requested_count=requested_count or max_selected,
+            )
         bounded_pool = job_pool[: max(1, min(len(job_pool), settings.job_discovery_candidate_pool_limit or 80))]
         model_request = self.build_model_request(request, job_pool=bounded_pool, max_selected=max_selected)
         if connector is not None:
@@ -42,7 +53,7 @@ class JobReviewSelector:
                     diagnostics={"modelReviewAttemptCount": 1, "modelReviewErrorType": exc.__class__.__name__},
                 )
             try:
-                parsed = parse_review_response(response.text)
+                parsed = parse_review_response(response.text, allow_rejections=allow_rejections)
                 return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True, "modelReviewAttemptCount": 1})
             except (JSONDecodeError, ValueError) as first_error:
                 first_finish_reason = getattr(response, "finish_reason", None)
@@ -60,7 +71,7 @@ class JobReviewSelector:
                     retry_response = connector.generate(retry_request)
                     retry_response_text = retry_response.text
                     retry_finish_reason = getattr(retry_response, "finish_reason", None)
-                    parsed = parse_review_response(retry_response_text)
+                    parsed = parse_review_response(retry_response_text, allow_rejections=allow_rejections)
                     return replace(parsed, diagnostics={**parsed.diagnostics, "modelReviewCompleted": True, "modelReviewAttemptCount": 2, "modelReviewRetried": True})
                 except Exception as retry_error:
                     log_invalid_review_response(
@@ -96,6 +107,114 @@ class JobReviewSelector:
                     diagnostics={"modelReviewAttemptCount": 1, "modelReviewErrorType": exc.__class__.__name__},
                 )
         return safe_review_unavailable(bounded_pool, reason="connector_unavailable", diagnostics={"modelReviewAttemptCount": 0})
+
+    def rank_existing_jobs(
+        self,
+        request: JobDiscoveryRequest,
+        *,
+        connector: ModelConnector | None,
+        settings: Settings,
+        job_pool: list[JobPoolEntry],
+        requested_count: int,
+    ) -> JobReviewResult:
+        requested_count = max(1, requested_count)
+        if connector is None:
+            return safe_review_unavailable(job_pool, reason="connector_unavailable", diagnostics={"modelReviewAttemptCount": 0})
+        batch_size = max(1, settings.job_discovery_candidate_pool_limit or 80)
+        batches = [job_pool[index : index + batch_size] for index in range(0, len(job_pool), batch_size)] or [[]]
+        batch_results: list[JobReviewResult] = []
+        attempt_count = 0
+        for index, batch in enumerate(batches, start=1):
+            shortlist_count = requested_count if len(batches) == 1 else min(max(requested_count * 2, requested_count), 10, len(batch) or requested_count)
+            model_request = self.build_ranking_request(
+                request,
+                job_pool=batch,
+                requested_count=shortlist_count,
+                stage="batch" if len(batches) > 1 else "final",
+                batch_index=index,
+                batch_count=len(batches),
+            )
+            attempt_count += 1
+            try:
+                response = connector.generate(model_request)
+                batch_results.append(parse_review_response(response.text, allow_rejections=False))
+            except Exception as exc:
+                return safe_review_unavailable(
+                    job_pool,
+                    reason=f"model_review_invalid_json:{exc.__class__.__name__}",
+                    diagnostics={
+                        "modelReviewAttemptCount": attempt_count,
+                        "modelReviewErrorType": exc.__class__.__name__,
+                        **invalid_review_response_debug(
+                            settings,
+                            attempt=attempt_count,
+                            error=exc,
+                            response_text=getattr(locals().get("response", None), "text", ""),
+                            finish_reason=getattr(locals().get("response", None), "finish_reason", None),
+                        ),
+                    },
+                )
+
+        shortlist = dedupe_selected_decisions([decision for result in batch_results for decision in result.selected_jobs])
+        final_result = batch_results[0] if len(batches) == 1 else None
+        if len(batches) > 1:
+            shortlist_entries = entries_for_decisions(job_pool, shortlist)
+            final_request = self.build_ranking_request(
+                request,
+                job_pool=shortlist_entries,
+                requested_count=requested_count,
+                stage="final",
+                batch_index=None,
+                batch_count=len(batches),
+            )
+            attempt_count += 1
+            try:
+                final_response = connector.generate(final_request)
+                final_result = parse_review_response(final_response.text, allow_rejections=False)
+            except Exception as exc:
+                return safe_review_unavailable(
+                    job_pool,
+                    reason=f"model_review_invalid_json:{exc.__class__.__name__}",
+                    diagnostics={
+                        "modelReviewAttemptCount": attempt_count,
+                        "modelReviewErrorType": exc.__class__.__name__,
+                        **invalid_review_response_debug(
+                            settings,
+                            attempt=attempt_count,
+                            error=exc,
+                            response_text=getattr(locals().get("final_response", None), "text", ""),
+                            finish_reason=getattr(locals().get("final_response", None), "finish_reason", None),
+                        ),
+                    },
+                )
+        final_result = final_result or JobReviewResult(user_visible_summary="I reviewed jobs from your list.", diagnostics={})
+        final_selected = tuple(dedupe_selected_decisions(final_result.selected_jobs)[:requested_count])
+        ignored_ids = []
+        ignored_sources = [*batch_results, final_result] if len(batches) > 1 else [final_result]
+        for result in ignored_sources:
+            ignored_ids.extend(str(item) for item in result.diagnostics.get("ignoredRejectedJobIds", []) if str(item).strip())
+            ignored_ids.extend(decision.job_listing_id for decision in result.rejected_jobs)
+        ignored_ids = list(dict.fromkeys(ignored_ids))
+        return replace(
+            final_result,
+            selected_jobs=final_selected,
+            rejected_jobs=(),
+            diagnostics={
+                **final_result.diagnostics,
+                "modelReviewCompleted": True,
+                "modelReviewAttemptCount": attempt_count,
+                "reviewMode": "rank_existing_jobs",
+                "eligibleJobsListCount": len(job_pool),
+                "jobsReviewedByModel": len(job_pool),
+                "requestedRecommendationCount": requested_count,
+                "finalRecommendedCount": len(final_selected),
+                "reviewBatchCount": len(batches),
+                "perBatchReviewedCount": [len(batch) for batch in batches],
+                "perBatchShortlistCount": [len(result.selected_jobs) for result in batch_results],
+                "ignoredRejectedJobsInRankingMode": len(ignored_ids),
+                "ignoredRejectedJobIds": ignored_ids,
+            },
+        )
 
     def build_model_request(
         self,
@@ -151,6 +270,58 @@ class JobReviewSelector:
                 ),
             ],
             metadata={**request.metadata, "retryForInvalidJson": True, "previousResponsePreviewLength": min(len(response_text), 500)},
+        )
+
+    def build_ranking_request(
+        self,
+        request: JobDiscoveryRequest,
+        *,
+        job_pool: list[JobPoolEntry],
+        requested_count: int,
+        stage: str,
+        batch_index: int | None,
+        batch_count: int,
+    ) -> ModelRequest:
+        payload = {
+            "latestUserMessage": request.latest_user_message,
+            "reviewMode": "rank_existing_jobs",
+            "requestedCount": requested_count,
+            "stage": stage,
+            "batchIndex": batch_index,
+            "batchCount": batch_count,
+            "jobPool": [entry.__dict__ for entry in job_pool],
+            "outputRules": [
+                "Recommend the best requestedCount existing jobs to apply to first.",
+                "Do not reject jobs in ranking mode.",
+                "Jobs not recommended are simply not in the top set for this request and remain unchanged.",
+                "Use recommended jobs, recommended existing jobs, jobs list, and jobs list entries.",
+            ],
+            "outputSchema": {
+                "userVisibleSummary": "string",
+                "recommendedJobs": [
+                    {
+                        "jobListingId": "string",
+                        "savedJobId": "string",
+                        "rank": 1,
+                        "rationale": "string",
+                        "matchHighlights": ["string"],
+                        "cautions": ["string"],
+                    }
+                ],
+                "notSelectedSummary": "string",
+            },
+        }
+        return ModelRequest(
+            task="candidate_job_review",
+            temperature=0.1,
+            max_output_tokens=REVIEW_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+            search_grounding=False,
+            metadata={"feature": "candidate_job_review", "review_mode": "rank_existing_jobs", "job_pool_count": len(job_pool)},
+            messages=[
+                ModelMessage(role="system", content=JOB_REVIEW_SELECTOR_SYSTEM_PROMPT),
+                ModelMessage(role="user", content=json.dumps(payload, sort_keys=True, default=str)),
+            ],
         )
 
 
@@ -284,18 +455,11 @@ def validate_review_result(review: JobReviewResult, reviewed_job_listing_ids: tu
     )
 
 
-def parse_review_response(raw_text: str) -> JobReviewResult:
+def parse_review_response(raw_text: str, *, allow_rejections: bool = True) -> JobReviewResult:
     parsed = json.loads(extract_first_json(raw_text))
-    selected = tuple(
-        SelectedJobDecision(
-            job_listing_id=str(item.get("jobListingId") or item.get("job_listing_id")),
-            rationale=item.get("rationale"),
-            match_highlights=tuple(item.get("matchHighlights") or item.get("match_highlights") or ()),
-        )
-        for item in parsed.get("selectedJobs", [])
-        if item.get("jobListingId") or item.get("job_listing_id")
-    )
-    rejected = tuple(
+    raw_selected = parsed.get("recommendedJobs") if isinstance(parsed.get("recommendedJobs"), list) else parsed.get("selectedJobs", [])
+    selected = tuple(parse_selected_decision(item) for item in raw_selected if isinstance(item, dict) and (item.get("jobListingId") or item.get("job_listing_id")))
+    parsed_rejected = tuple(
         RejectedJobDecision(
             job_listing_id=str(item.get("jobListingId") or item.get("job_listing_id")),
             reason_codes=tuple(normalize_reason_codes(item.get("reasonCodes") or item.get("reason_codes") or ["other"])),
@@ -304,13 +468,56 @@ def parse_review_response(raw_text: str) -> JobReviewResult:
         for item in parsed.get("rejectedJobs", [])
         if item.get("jobListingId") or item.get("job_listing_id")
     )
+    rejected = parsed_rejected if allow_rejections else ()
     return JobReviewResult(
         user_visible_summary=str(parsed.get("userVisibleSummary") or "I reviewed synced jobs."),
         selected_jobs=selected,
         rejected_jobs=rejected,
         criteria_adjustment_suggestion=parsed.get("criteriaAdjustmentSuggestion") or {},
-        diagnostics={"modelReviewCompleted": True},
+        diagnostics={
+            "modelReviewCompleted": True,
+            **(
+                {
+                    "ignoredRejectedJobsInRankingMode": len(parsed_rejected),
+                    "ignoredRejectedJobIds": [decision.job_listing_id for decision in parsed_rejected],
+                }
+                if not allow_rejections and parsed_rejected
+                else {}
+            ),
+        },
     )
+
+
+def parse_selected_decision(item: dict[str, Any]) -> SelectedJobDecision:
+    rank = item.get("rank")
+    try:
+        parsed_rank = int(rank) if rank is not None else None
+    except (TypeError, ValueError):
+        parsed_rank = None
+    return SelectedJobDecision(
+        job_listing_id=str(item.get("jobListingId") or item.get("job_listing_id")),
+        saved_job_id=str(item.get("savedJobId") or item.get("saved_job_id")) if item.get("savedJobId") or item.get("saved_job_id") else None,
+        rank=parsed_rank,
+        rationale=item.get("rationale"),
+        match_highlights=tuple(item.get("matchHighlights") or item.get("match_highlights") or ()),
+        cautions=tuple(item.get("cautions") or ()),
+    )
+
+
+def dedupe_selected_decisions(decisions: tuple[SelectedJobDecision, ...] | list[SelectedJobDecision]) -> list[SelectedJobDecision]:
+    seen: set[str] = set()
+    deduped: list[SelectedJobDecision] = []
+    for decision in decisions:
+        if decision.job_listing_id in seen:
+            continue
+        seen.add(decision.job_listing_id)
+        deduped.append(decision)
+    return deduped
+
+
+def entries_for_decisions(job_pool: list[JobPoolEntry], decisions: list[SelectedJobDecision]) -> list[JobPoolEntry]:
+    by_id = {entry.job_listing_id: entry for entry in job_pool}
+    return [by_id[decision.job_listing_id] for decision in decisions if decision.job_listing_id in by_id]
 
 
 def extract_first_json(raw_text: str) -> str:

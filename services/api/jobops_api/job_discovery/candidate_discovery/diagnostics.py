@@ -75,6 +75,13 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
         if planner.get("modeRationale"):
             mode_line = f"{mode_line} - {planner.get('modeRationale')}"
         lines.append(mode_line)
+    if planner.get("reviewTask"):
+        review_line = f"- Review task: {planner.get('reviewTask')}"
+        if planner.get("requestedRecommendationCount"):
+            review_line = f"{review_line} - recommend {planner.get('requestedRecommendationCount')} existing jobs"
+        if planner.get("reviewPlanRationale"):
+            review_line = f"{review_line} - {planner.get('reviewPlanRationale')}"
+        lines.append(review_line)
     if planner.get("plannerAttemptCount") or planner.get("criticAttemptCount"):
         lines.append(
             f"- Planner attempts: {planner.get('plannerAttemptCount', 0)}; "
@@ -134,10 +141,22 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     review = diagnostics.get("modelReview", {})
     lines.append("Model review")
     lines.append(f"- Unique jobs in pool: {review.get('uniqueJobsInPool', 0)}")
+    if review.get("eligibleJobsListCount") is not None:
+        lines.append(f"- Eligible jobs from list: {review.get('eligibleJobsListCount', 0)}")
+    if review.get("reviewBatchCount") is not None:
+        lines.append(f"- Review batches: {review.get('reviewBatchCount', 0)}")
     lines.append(f"- Jobs reviewed by model: {review.get('jobsReviewedByModel', 0)}")
+    if review.get("requestedRecommendationCount") is not None:
+        lines.append(f"- Requested recommendations: {review.get('requestedRecommendationCount', 0)}")
     selected_label = review.get("selectedJobsLabel") or "Added to jobs list"
-    lines.append(f"- {selected_label}: {review.get('addedToCandidateJobsList', 0)}")
-    lines.append(f"- Recorded model rejections: {review.get('recordedModelRejections', 0)}")
+    selected_count = (
+        review.get("recommendedExistingJobCount", review.get("finalRecommendedCount", 0))
+        if selected_label == "Recommended existing jobs"
+        else review.get("addedToCandidateJobsList", 0)
+    )
+    lines.append(f"- {selected_label}: {selected_count}")
+    rejection_label = "Model rejections" if selected_label == "Recommended existing jobs" else "Recorded model rejections"
+    lines.append(f"- {rejection_label}: {review.get('recordedModelRejections', 0)}")
     if review.get("modelReviewFallback"):
         lines.append(f"- Model review fallback: {review.get('modelReviewFailureReason') or 'unknown'}")
     if diagnostics.get("noJobsAddedReason"):

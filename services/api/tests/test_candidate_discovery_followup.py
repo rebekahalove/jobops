@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from jobops_api.job_discovery.candidate_discovery.models import (
     DbJobSearchPlan,
     DbJobSearchQuery,
     JobReviewResult,
+    ReviewPlan,
     RejectedJobDecision,
     SelectedJobDecision,
 )
@@ -29,7 +31,7 @@ from jobops_api.job_discovery.models import JobDiscoveryRequest
 from jobops_api.job_discovery.service import build_db_backed_job_discovery_result, list_jobs, serialize_job_search_run_status
 from jobops_api.job_discovery.job_sync.models import JobSyncRequest, JobSyncResult
 from jobops_api.job_discovery.job_sync.service import record_job_sync_run
-from jobops_api.db.models import CandidateJobRejectionReason, CandidateSavedJob, JobSearchRun
+from jobops_api.db.models import Application, CandidateJobRejectionReason, CandidateSavedJob, JobSearchRun
 
 from test_candidate_job_discovery import (
     NoSyncCandidateJobDiscoveryService,
@@ -719,6 +721,234 @@ def test_jobs_list_review_does_not_sync_when_model_does_not_plan_sync(tmp_path, 
     assert result.unique_job_pool_count == 1
 
 
+def test_jobs_list_ranking_reviews_all_eligible_jobs_and_recommends_top_five(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    reviewer = RecordingRankingReviewer()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        for index in range(18):
+            job = create_job_listing(session, title=f"Existing Job {index:02d}", provider_job_id=f"rank-{index}")
+            session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=StaticJobsListRankingPlanner(limit=300, requested_count=5),
+            reviewer=reviewer,
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which are the first 5 jobs I should apply to?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        links = list(session.scalars(select(CandidateSavedJob)).all())
+        rejection_rows = list(session.scalars(select(CandidateJobRejectionReason)).all())
+        query_run = session.scalar(select(JobSearchQueryRun).where(JobSearchQueryRun.job_search_run_id == result.job_search_run_id))
+        run = session.get(JobSearchRun, result.job_search_run_id)
+
+    assert reviewer.reviewed_counts == [18]
+    assert result.recommended_existing_count == 5
+    assert result.added_count == 0
+    assert result.rejected_count == 0
+    assert result.diagnostics["modelReview"]["eligibleJobsListCount"] == 18
+    assert result.diagnostics["modelReview"]["requestedRecommendationCount"] == 5
+    assert result.diagnostics["modelReview"]["recommendedExistingJobCount"] == 5
+    assert result.diagnostics["modelReview"]["recordedModelRejections"] == 0
+    assert result.diagnostics["addedJobIds"] == []
+    assert len(result.diagnostics["recommendedJobIds"]) == 5
+    assert {link.status for link in links} == {"saved"}
+    assert all(link.job_search_run_id is None for link in links)
+    assert rejection_rows == []
+    assert query_run is not None
+    assert query_run.raw_result_count == 18
+    assert run is not None
+    assert run.saved_count == 0
+    assert run.model_selected_count == 5
+
+
+def test_jobs_list_ranking_expands_model_top_five_query_limit(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    reviewer = RecordingRankingReviewer()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        for index in range(18):
+            job = create_job_listing(session, title=f"Limit Expansion Job {index:02d}", provider_job_id=f"rank-limit-{index}")
+            session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=StaticJobsListRankingPlanner(limit=5, requested_count=5),
+            reviewer=reviewer,
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which are the first 5 jobs I should apply to?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert reviewer.reviewed_counts == [18]
+    assert result.search_plan.queries[0].limit >= 18
+    assert result.diagnostics["planner"]["inputCapCorrections"][0]["originalLimit"] == 5
+    assert result.diagnostics["planner"]["inputCapCorrections"][0]["requestedRecommendationCount"] == 5
+
+
+def test_jobs_list_ranking_excludes_applied_archived_and_hidden_rows(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    reviewer = RecordingRankingReviewer()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        visible = create_job_listing(session, title="Visible Saved", provider_job_id="eligible-visible")
+        applied = create_job_listing(session, title="Applied Saved", provider_job_id="eligible-applied")
+        archived = create_job_listing(session, title="Archived Saved", provider_job_id="eligible-archived")
+        model_rejected = create_job_listing(session, title="Rejected Saved", provider_job_id="eligible-rejected")
+        reset = create_job_listing(session, title="Reset Saved", provider_job_id="eligible-reset")
+        visible_link = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=visible.id, status="saved")
+        applied_link = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=applied.id, status="saved")
+        archived_link = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=archived.id, status="saved", archived_at=datetime.now(UTC))
+        session.add_all(
+            [
+                visible_link,
+                applied_link,
+                archived_link,
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=model_rejected.id, status="model_rejected"),
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=reset.id, status="model_rejection_reset"),
+            ]
+        )
+        session.flush()
+        session.add(
+            Application(
+                candidate_profile_id=profile.id,
+                saved_job_id=applied_link.id,
+                company_name="Example",
+                job_title="Applied Saved",
+                status="saved",
+            )
+        )
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=StaticJobsListRankingPlanner(limit=300, requested_count=5),
+            reviewer=reviewer,
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which job should I apply to first?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert reviewer.reviewed_titles == [["Visible Saved"]]
+    assert result.unique_job_pool_count == 1
+    assert result.diagnostics["modelReview"]["eligibleJobsListCount"] == 1
+
+
+def test_rank_existing_jobs_ignores_model_rejected_jobs_from_response(tmp_path) -> None:
+    class RankingConnectorWithRejectedJobs:
+        def generate(self, request):
+            payload = json.loads(request.messages[-1].content)
+            jobs = payload["jobPool"]
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "userVisibleSummary": "I recommend one existing job.",
+                        "recommendedJobs": [
+                            {
+                                "jobListingId": jobs[0]["job_listing_id"],
+                                "savedJobId": jobs[0]["saved_job_id"],
+                                "rank": 1,
+                                "rationale": "Best match.",
+                                "matchHighlights": ["Strong fit"],
+                                "cautions": [],
+                            }
+                        ],
+                        "rejectedJobs": [{"jobListingId": jobs[1]["job_listing_id"], "reasonCodes": ["role_title"], "explanation": "Not top."}],
+                    }
+                ),
+                finish_reason="stop",
+            )
+
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        for index in range(2):
+            job = create_job_listing(session, title=f"Ignore Reject {index}", provider_job_id=f"ignore-reject-{index}")
+            session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=RankingConnectorWithRejectedJobs(),
+            planner=StaticJobsListRankingPlanner(limit=300, requested_count=1),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which job should I apply to first?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        links = list(session.scalars(select(CandidateSavedJob)).all())
+        rejection_rows = list(session.scalars(select(CandidateJobRejectionReason)).all())
+
+    assert result.recommended_existing_count == 1
+    assert result.rejected_count == 0
+    assert result.diagnostics["modelReview"]["ignoredRejectedJobsInRankingMode"] == 1
+    assert {link.status for link in links} == {"saved"}
+    assert all(link.model_rejected_at is None for link in links)
+    assert rejection_rows == []
+
+
+def test_jobs_list_ranking_batches_all_eligible_jobs(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        for index in range(125):
+            job = create_job_listing(session, title=f"Batch Ranking {index:03d}", provider_job_id=f"rank-batch-{index}")
+            session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=replace(make_settings(tmp_path), job_discovery_candidate_pool_limit=50),
+            connector=RankingBatchConnector(),
+            planner=StaticJobsListRankingPlanner(limit=300, requested_count=5),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which are the first 5 jobs I should apply to?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert result.diagnostics["modelReview"]["eligibleJobsListCount"] == 125
+    assert result.diagnostics["modelReview"]["reviewBatchCount"] == 3
+    assert result.diagnostics["modelReview"]["perBatchReviewedCount"] == [50, 50, 25]
+    assert result.diagnostics["modelReview"]["jobsReviewedByModel"] == 125
+    assert result.recommended_existing_count == 5
+    assert result.rejected_count == 0
+
+
 def test_planner_payload_includes_existing_sync_context_without_secrets(tmp_path) -> None:
     engine = create_candidate_discovery_engine()
     with Session(engine) as session:
@@ -1141,6 +1371,105 @@ class JobsListReviewConnector:
         if request.task == "candidate_db_job_plan_critique":
             return SimpleNamespace(text=json.dumps({"valid": True, "issueCode": None, "issueMessage": None, "correctedPlan": None}))
         raise AssertionError(f"Unexpected task {request.task}")
+
+
+class StaticJobsListRankingPlanner:
+    def __init__(self, *, limit: int, requested_count: int) -> None:
+        self.limit = limit
+        self.requested_count = requested_count
+
+    def plan(self, *args, **kwargs) -> DbJobSearchPlan:
+        return DbJobSearchPlan(
+            mode="jobs_list_review",
+            job_scope="candidate_jobs_list",
+            mode_rationale="The user asked which existing jobs to apply to first.",
+            queries=(
+                DbJobSearchQuery(
+                    label="Review active unapplied jobs from the jobs list",
+                    source_statuses_any=("active",),
+                    limit=self.limit,
+                    order_by="last_seen_at_desc",
+                ),
+            ),
+            min_job_pool_size=1,
+            max_job_pool_size=300,
+            max_jobs_for_model_review=80,
+            review_plan=ReviewPlan(
+                task="rank_existing_jobs",
+                requested_count=self.requested_count,
+                allow_rejections=False,
+                review_all_eligible_jobs=True,
+                rationale="Rank all active, unarchived, unapplied jobs from the jobs list.",
+            ),
+        )
+
+
+class RecordingRankingReviewer:
+    def __init__(self) -> None:
+        self.reviewed_counts: list[int] = []
+        self.reviewed_titles: list[list[str]] = []
+
+    def review(self, *args, job_pool, requested_count=None, **kwargs) -> JobReviewResult:
+        self.reviewed_counts.append(len(job_pool))
+        self.reviewed_titles.append([entry.title for entry in job_pool])
+        selected = tuple(
+            SelectedJobDecision(
+                job_listing_id=entry.job_listing_id,
+                saved_job_id=entry.saved_job_id,
+                rank=index + 1,
+                rationale="Recommended existing job.",
+            )
+            for index, entry in enumerate(job_pool[: requested_count or 5])
+        )
+        rejected = (RejectedJobDecision(job_listing_id=job_pool[-1].job_listing_id, reason_codes=("other",)),) if job_pool else ()
+        return JobReviewResult(
+            user_visible_summary=f"I reviewed {len(job_pool)} jobs from your list.",
+            selected_jobs=selected,
+            rejected_jobs=rejected,
+            diagnostics={
+                "modelReviewCompleted": True,
+                "reviewMode": "rank_existing_jobs",
+                "eligibleJobsListCount": len(job_pool),
+                "jobsReviewedByModel": len(job_pool),
+                "requestedRecommendationCount": requested_count or 5,
+                "finalRecommendedCount": len(selected),
+                "reviewBatchCount": 1,
+                "perBatchReviewedCount": [len(job_pool)],
+                "perBatchShortlistCount": [len(selected)],
+            },
+        )
+
+
+class RankingBatchConnector:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate(self, request):
+        payload = json.loads(request.messages[-1].content)
+        self.calls.append(payload)
+        jobs = payload["jobPool"]
+        requested_count = int(payload["requestedCount"])
+        selected = [
+            {
+                "jobListingId": job["job_listing_id"],
+                "savedJobId": job["saved_job_id"],
+                "rank": index + 1,
+                "rationale": "Recommended existing job.",
+                "matchHighlights": [],
+                "cautions": [],
+            }
+            for index, job in enumerate(jobs[:requested_count])
+        ]
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "userVisibleSummary": f"I recommend {len(selected)} existing jobs.",
+                    "recommendedJobs": selected,
+                    "notSelectedSummary": "Other jobs remain unchanged.",
+                }
+            ),
+            finish_reason="stop",
+        )
 
 
 def make_candidate_discovery_result(**overrides):

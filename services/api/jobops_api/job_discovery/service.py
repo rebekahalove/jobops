@@ -391,6 +391,10 @@ def build_db_backed_job_discovery_result(
         serialize_saved_job(link, highlighted_job_search_run_id=discovery.job_search_run_id)
         for link in discovery.selected_candidate_jobs
     ]
+    recommended_jobs = [
+        serialize_saved_job(link)
+        for link in discovery.recommended_candidate_jobs
+    ]
     updated_saved_jobs = [
         serialize_saved_job(link, highlighted_job_search_run_id=discovery.job_search_run_id)
         for link in discovery.updated_candidate_jobs
@@ -414,7 +418,7 @@ def build_db_backed_job_discovery_result(
         "assistantMessage": discovery.assistant_message,
         "userVisibleSummary": discovery.assistant_message,
         "userSummary": discovery.assistant_message,
-        "jobs": saved_jobs,
+        "jobs": recommended_jobs or saved_jobs,
         "updatedExistingJobs": updated_saved_jobs,
         "discoveredCount": discovery.unique_job_pool_count,
         "verifiedCount": 0,
@@ -440,12 +444,17 @@ def build_db_backed_job_discovery_result(
         "modelReviewCompleted": model_review_completed,
         "modelReviewFailureReason": model_review.get("modelReviewFailureReason"),
         "addedToCandidateJobsList": added_to_candidate_jobs_list,
+        "recommendedJobs": recommended_jobs,
+        "recommendedJobIds": [job["id"] for job in recommended_jobs],
+        "recommendedExistingJobCount": discovery.recommended_existing_count,
+        "requestedRecommendationCount": discovery.requested_recommendation_count,
+        "eligibleJobsListCount": discovery.eligible_jobs_list_count,
         "selectedJobsLabel": selected_jobs_label,
         "recordedModelRejections": recorded_model_rejections,
         "noJobsAddedReason": no_jobs_added_reason,
         "addedJobs": saved_jobs,
         "addedJobIds": [job["id"] for job in saved_jobs],
-        "highlightedJobSearchRunId": discovery.job_search_run_id,
+        "highlightedJobSearchRunId": discovery.job_search_run_id if saved_jobs else None,
         "searchPlan": serialize_db_backed_search_plan(discovery.search_plan),
         "searchCriteria": {
             "mode": discovery.search_plan.mode,
@@ -2582,6 +2591,31 @@ def load_added_jobs_for_search_run(session: Session, run_id: str, candidate_prof
     ]
 
 
+def load_saved_jobs_by_ids(session: Session, saved_job_ids: list[str], candidate_profile_id: str) -> list[dict[str, Any]]:
+    order = {saved_job_id: index for index, saved_job_id in enumerate(saved_job_ids)}
+    if not order:
+        return []
+    links = list(
+        session.scalars(
+            select(CandidateSavedJob)
+            .options(
+                selectinload(CandidateSavedJob.job),
+                selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
+            )
+            .where(
+                CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+                CandidateSavedJob.id.in_(order),
+                CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
+            )
+        )
+    )
+    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
+    return [
+        serialize_saved_job(link, application=application_by_job_id.get(link.job_id))
+        for link in sorted(links, key=lambda item: order.get(item.id, len(order)))
+    ]
+
+
 def sort_serialized_saved_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     newest_first = sorted(jobs, key=lambda job: str(job.get("added_at") or job.get("updated_at") or ""), reverse=True)
     return sorted(newest_first, key=lambda job: 0 if job.get("highlighted") or job.get("justAdded") else 1)
@@ -2691,6 +2725,14 @@ def serialize_job_search_run_status(
     model_review = diagnostics.get("modelReview") if isinstance(diagnostics.get("modelReview"), dict) else {}
     is_db_backed_run = run.search_mode == "db_backed" or "jobSync" in diagnostics or "databaseQueries" in diagnostics
     added_jobs = load_added_jobs_for_search_run(session, run.id, candidate_profile_id) if session is not None and candidate_profile_id else []
+    recommended_job_ids = [
+        str(item) for item in diagnostics.get("recommendedJobIds", []) if isinstance(item, str)
+    ]
+    recommended_jobs = (
+        load_saved_jobs_by_ids(session, recommended_job_ids, candidate_profile_id)
+        if session is not None and candidate_profile_id and recommended_job_ids
+        else []
+    )
     added_job_ids = [job["id"] for job in added_jobs] or [
         str(item) for item in diagnostics.get("addedJobIds", []) if isinstance(item, str)
     ]
@@ -2748,7 +2790,12 @@ def serialize_job_search_run_status(
         "noJobsAddedReason": no_jobs_added_reason,
         "addedJobs": added_jobs,
         "addedJobIds": added_job_ids,
-        "highlightedJobSearchRunId": run.id if is_db_backed_run and run.status == "completed" else None,
+        "recommendedJobs": recommended_jobs,
+        "recommendedJobIds": recommended_job_ids,
+        "recommendedExistingJobCount": model_review.get("recommendedExistingJobCount"),
+        "requestedRecommendationCount": model_review.get("requestedRecommendationCount"),
+        "eligibleJobsListCount": model_review.get("eligibleJobsListCount"),
+        "highlightedJobSearchRunId": run.id if is_db_backed_run and run.status == "completed" and added_jobs else None,
     }
     status_payload["diagnostics"] = build_serialized_job_search_run_diagnostics(
         run,

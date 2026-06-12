@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import Select, exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from ...db.models import CandidateSavedJob, JobListing, JobListingSource
+from ...db.models import Application, CandidateSavedJob, JobListing, JobListingSource
 from .models import DbJobSearchPlan, DbJobSearchQuery, JobPoolEntry
 from .statuses import DISCOVERY_BLOCKING_STATUSES, HIDDEN_JOB_STATUSES, MODEL_REJECTED_STATUS
 
@@ -18,7 +18,13 @@ class JobListingQueryBuilder:
         by_id: dict[str, JobListing] = {}
         counts: list[tuple[str, int]] = []
         for query in plan.queries:
-            rows = list(self.session.scalars(self.build_query(candidate_profile_id, plan.job_scope, query)).unique().all())
+            rows = list(
+                self.session.scalars(
+                    self.build_query(candidate_profile_id, plan.job_scope, query, review_task=plan.review_plan.task)
+                )
+                .unique()
+                .all()
+            )
             counts.append((query.label, len(rows)))
             for row in rows:
                 by_id.setdefault(row.id, row)
@@ -26,7 +32,14 @@ class JobListingQueryBuilder:
                 break
         return list(by_id.values())[: plan.max_job_pool_size], tuple(counts)
 
-    def build_query(self, candidate_profile_id: str, job_scope: str, query: DbJobSearchQuery) -> Select[tuple[JobListing]]:
+    def build_query(
+        self,
+        candidate_profile_id: str,
+        job_scope: str,
+        query: DbJobSearchQuery,
+        *,
+        review_task: str = "select_new_jobs",
+    ) -> Select[tuple[JobListing]]:
         statement = select(JobListing)
         if requires_source_join(query):
             statement = statement.join(JobListingSource, JobListingSource.job_listing_id == JobListing.id)
@@ -94,6 +107,17 @@ class JobListingQueryBuilder:
             )
             if not query.include_model_rejected:
                 statement = statement.where(CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES))
+            if review_task == "rank_existing_jobs":
+                statement = statement.where(
+                    CandidateSavedJob.archived_at.is_(None),
+                    ~exists().where(
+                        Application.candidate_profile_id == candidate_profile_id,
+                        or_(
+                            Application.saved_job_id == CandidateSavedJob.id,
+                            Application.job_id == CandidateSavedJob.job_id,
+                        ),
+                    ),
+                )
         elif job_scope == "all_accessible_jobs" and not query.include_model_rejected:
             statement = statement.where(
                 ~exists().where(

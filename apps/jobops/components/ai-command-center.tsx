@@ -412,7 +412,12 @@ export function AiCommandCenter({
             noJobsAddedReason: run.noJobsAddedReason ?? undefined,
             addedJobs: run.addedJobs ?? [],
             addedJobIds: run.addedJobIds ?? [],
-            jobs: run.addedJobs ?? [],
+            recommendedJobs: run.recommendedJobs ?? [],
+            recommendedJobIds: run.recommendedJobIds ?? [],
+            recommendedExistingJobCount: run.recommendedExistingJobCount ?? undefined,
+            requestedRecommendationCount: run.requestedRecommendationCount ?? undefined,
+            eligibleJobsListCount: run.eligibleJobsListCount ?? undefined,
+            jobs: run.recommendedJobs?.length ? run.recommendedJobs : run.addedJobs ?? [],
             highlightedJobSearchRunId: run.highlightedJobSearchRunId ?? undefined,
             userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
@@ -467,7 +472,12 @@ export function AiCommandCenter({
             noJobsAddedReason: run.noJobsAddedReason ?? undefined,
             addedJobs: run.addedJobs ?? [],
             addedJobIds: run.addedJobIds ?? [],
-            jobs: run.addedJobs ?? [],
+            recommendedJobs: run.recommendedJobs ?? [],
+            recommendedJobIds: run.recommendedJobIds ?? [],
+            recommendedExistingJobCount: run.recommendedExistingJobCount ?? undefined,
+            requestedRecommendationCount: run.requestedRecommendationCount ?? undefined,
+            eligibleJobsListCount: run.eligibleJobsListCount ?? undefined,
+            jobs: run.recommendedJobs?.length ? run.recommendedJobs : run.addedJobs ?? [],
             highlightedJobSearchRunId: run.highlightedJobSearchRunId ?? undefined,
             userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
@@ -1325,7 +1335,10 @@ function getJobDiscoveryDiagnostics(resultPayload: unknown) {
     textDiagnostic("Source", payload.sourceName ?? payload.providerName),
     numberDiagnostic("DB matches", payload.databaseMatchedJobCount),
     numberDiagnostic("Reviewed", payload.jobsReviewedByModel),
-    numberDiagnostic("Added to list", payload.addedToCandidateJobsList),
+    numberDiagnostic(
+      stringPayloadValue(payload.selectedJobsLabel) === "Recommended existing jobs" ? "Recommended existing jobs" : "Added to list",
+      stringPayloadValue(payload.selectedJobsLabel) === "Recommended existing jobs" ? payload.recommendedExistingJobCount : payload.addedToCandidateJobsList
+    ),
     numberDiagnostic("Provider results", payload.providerResultCount),
     numberDiagnostic("Model selected", payload.modelSelectedCount),
     numberDiagnostic("Verified URLs", payload.verifiedUrlCount ?? payload.verifiedCount),
@@ -1368,13 +1381,13 @@ function jobDiscoveryJobsLabel(resultPayload: unknown) {
   if (!isRecord(resultPayload)) {
     return "Recommended jobs";
   }
+  const selectedLabel = stringPayloadValue(resultPayload.selectedJobsLabel);
+  if (selectedLabel === "Recommended existing jobs") {
+    return "Recommended existing jobs";
+  }
   const runId = typeof resultPayload.jobSearchRunId === "string" ? resultPayload.jobSearchRunId : null;
   const highlightedRunId = typeof resultPayload.highlightedJobSearchRunId === "string" ? resultPayload.highlightedJobSearchRunId : null;
   if (runId && highlightedRunId && runId === highlightedRunId) {
-    const selectedLabel = stringPayloadValue(resultPayload.selectedJobsLabel);
-    if (selectedLabel === "Recommended existing jobs") {
-      return "Recommended existing jobs";
-    }
     if (selectedLabel === "Selected/recommended jobs") {
       return "Selected/recommended jobs";
     }

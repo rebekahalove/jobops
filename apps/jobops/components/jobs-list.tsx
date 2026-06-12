@@ -603,6 +603,10 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
   const queryRows = diagnostics?.databaseQueries?.queries ?? [];
   const modelReview = diagnostics?.modelReview;
   const reasonCounts = modelReview?.topRejectionReasonCounts ?? modelReview?.rejectionReasonCounts ?? {};
+  const selectedJobsLabel = modelReview?.selectedJobsLabel || "Added to jobs list";
+  const selectedJobsValue = selectedJobsLabel === "Recommended existing jobs"
+    ? modelReview?.recommendedExistingJobCount ?? modelReview?.finalRecommendedCount ?? 0
+    : modelReview?.addedToCandidateJobsList ?? 0;
 
   return (
     <>
@@ -613,6 +617,13 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
           <p className="diagnostics-muted">
             Mode: {formatStatus(planner.mode)}
             {planner.modeRationale ? ` - ${planner.modeRationale}` : ""}
+          </p>
+        ) : null}
+        {planner?.reviewTask ? (
+          <p className="diagnostics-muted">
+            Review task: {formatStatus(planner.reviewTask)}
+            {planner.requestedRecommendationCount ? ` - recommend ${formatNumber(planner.requestedRecommendationCount) ?? planner.requestedRecommendationCount} existing jobs` : ""}
+            {planner.reviewPlanRationale ? ` - ${planner.reviewPlanRationale}` : ""}
           </p>
         ) : null}
         {planner?.plannerAttemptCount || planner?.criticAttemptCount ? (
@@ -743,9 +754,18 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
         <h3>Model review</h3>
         <dl className="diagnostics-grid">
           <DiagnosticItem label="Unique jobs in pool" value={formatNumber(modelReview?.uniqueJobsInPool) ?? "0"} />
+          {modelReview?.eligibleJobsListCount !== undefined ? (
+            <DiagnosticItem label="Eligible jobs from list" value={formatNumber(modelReview.eligibleJobsListCount) ?? "0"} />
+          ) : null}
+          {modelReview?.reviewBatchCount !== undefined ? (
+            <DiagnosticItem label="Review batches" value={formatNumber(modelReview.reviewBatchCount) ?? "0"} />
+          ) : null}
           <DiagnosticItem label="Jobs reviewed by model" value={formatNumber(modelReview?.jobsReviewedByModel) ?? "0"} />
-          <DiagnosticItem label={modelReview?.selectedJobsLabel || "Added to jobs list"} value={formatNumber(modelReview?.addedToCandidateJobsList) ?? "0"} />
-          <DiagnosticItem label="Recorded model rejections" value={formatNumber(modelReview?.recordedModelRejections) ?? "0"} />
+          {modelReview?.requestedRecommendationCount !== undefined ? (
+            <DiagnosticItem label="Requested recommendations" value={formatNumber(modelReview.requestedRecommendationCount) ?? "0"} />
+          ) : null}
+          <DiagnosticItem label={selectedJobsLabel} value={formatNumber(selectedJobsValue) ?? "0"} />
+          <DiagnosticItem label={selectedJobsLabel === "Recommended existing jobs" ? "Model rejections" : "Recorded model rejections"} value={formatNumber(modelReview?.recordedModelRejections) ?? "0"} />
           <DiagnosticItem label="Model review completed" value={modelReview?.modelReviewCompleted === false ? "No" : "Yes"} />
         </dl>
         {modelReview?.modelReviewFailureReason ? <p className="diagnostics-muted">Failure reason: {modelReview.modelReviewFailureReason}</p> : null}

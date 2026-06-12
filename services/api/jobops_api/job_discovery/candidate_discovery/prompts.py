@@ -38,6 +38,13 @@ Required JSON shape:
       }
     ]
   },
+  "reviewPlan": {
+    "task": "rank_existing_jobs",
+    "requestedCount": 5,
+    "allowRejections": false,
+    "reviewAllEligibleJobs": true,
+    "rationale": "Rank all visible, unarchived, unapplied jobs-list entries and recommend the best five."
+  },
   "replanRules": {"minJobPoolSize": 40, "maxJobPoolSize": 300, "maxJobsForModelReview": 80}
 }
 
@@ -57,7 +64,13 @@ contains enough jobs unless syncedInventorySummary and recent history support th
 
 For jobs_list_review, search jobs-list entries. Do not sync by default unless the user also asks for new jobs or you
 explicitly explain why refresh is necessary. A jobs-list review plan can use:
-{"mode":"jobs_list_review","modeRationale":"The user asked which existing jobs to prioritize.","syncPlan":{"useFollowedCompanyBoards":false,"proposedAdzunaSignatures":[],"existingAdzunaSignatureIdsToRefresh":[],"rationale":"No new inventory needed."},"dbSearchPlan":{"queries":[{"label":"Review visible jobs list","activeOnly":true,"includeModelRejected":false,"limit":100,"orderBy":"last_seen_at_desc"}]}}
+{"mode":"jobs_list_review","modeRationale":"The user asked which existing jobs to prioritize.","syncPlan":{"useFollowedCompanyBoards":false,"proposedAdzunaSignatures":[],"existingAdzunaSignatureIdsToRefresh":[],"rationale":"No new inventory needed."},"dbSearchPlan":{"queries":[{"label":"Review active unapplied jobs from the jobs list","activeOnly":true,"includeModelRejected":false,"limit":300,"orderBy":"last_seen_at_desc"}]},"reviewPlan":{"task":"rank_existing_jobs","requestedCount":5,"allowRejections":false,"reviewAllEligibleJobs":true,"rationale":"Recommend the best five visible, unarchived, unapplied jobs-list entries."}}
+
+For jobs-list ranking requests such as "which are the first 5 jobs I should apply to", use
+reviewPlan.task="rank_existing_jobs". Retrieve all eligible visible, unarchived, unapplied jobs from the jobs list up
+to an input cap such as 300. The requested number belongs in reviewPlan.requestedCount, not the database query limit.
+Do not set query limit to 5 merely because the user asked for five recommendations. Do not propose sync signatures for
+jobs-list ranking unless the user explicitly asks to find new jobs. Do not reject jobs in jobs-list ranking mode.
 
 To broaden a search and increase results, remove or relax criteria. Do not add additional required criteria when
 trying to broaden. Adding OR terms within one field can broaden; adding AND filters narrows. If exact-title search
@@ -86,6 +99,8 @@ model critique step; do not invent execution results.
 Validate:
 - The mode matches the user request and jobs-list context.
 - The plan is executable and includes dbSearchPlan.queries.
+- For jobs-list ranking, reviewPlan.task is rank_existing_jobs, requestedCount contains the requested top-N count, and
+  DB query limits are input caps that retrieve all eligible jobs-list entries rather than the requested output count.
 - A new_job_discovery or mixed_new_and_existing plan includes a credible inventory strategy through followed boards,
   proposed Adzuna sync tokens, or selected existing signatures.
 - A jobs_list_review plan makes sense given currentJobsListSummary.visibleJobsListCount.
@@ -108,6 +123,11 @@ Review the job pool and return exactly one valid JSON object. Do not include mar
 or prose after JSON. Select jobs worth adding to the jobs list and reject jobs that should not be shown again by
 default. selectedJobs must contain at most maxSelectedJobs entries. Keep rationales and explanations concise.
 Rejection reason codes must be from the allowed enum supplied in the user payload.
+
+For reviewMode="rank_existing_jobs", recommend the top requestedCount existing jobs to apply to first. Return
+recommendedJobs, not selectedJobs. Do not reject jobs in ranking mode. Jobs not recommended are simply not in the top
+set for this request and remain on the jobs list unchanged. Use recommended jobs or recommended existing jobs, not
+added jobs.
 
 Use the words job pool, job results, selected jobs, model-rejected jobs, and jobs list. Do not call job results
 candidates.

@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from ...db.models import CandidateProfile, JobListing, JobListingSource, JobSearchQueryRun, JobSearchRun, JobSyncRun, JobSyncSignature
+from ...db.models import CandidateProfile, CandidateSavedJob, JobListing, JobListingSource, JobSearchQueryRun, JobSearchRun, JobSyncRun, JobSyncSignature
 from ...model_connector import ModelConnector
 from ...settings import Settings
 from ..job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync_signature
@@ -69,6 +69,7 @@ class CandidateJobDiscoveryService:
             )
         except DbJobSearchPlanningError as exc:
             return self.complete_planning_failure_run(run, exc)
+        plan, planning_corrections = self.apply_jobs_list_ranking_input_cap(plan)
         run.search_plan_json = serialize_plan(plan)
         run.search_mode = "db_backed"
         run.provider_names = ["job_sync", "database", "model_review"]
@@ -104,44 +105,73 @@ class CandidateJobDiscoveryService:
             except DbJobSearchPlanningError as exc:
                 return self.complete_planning_failure_run(run, exc)
         planner_diagnostics = self.build_planner_diagnostics(plan, job_sync_results)
-        pool_entries = self.build_pool_entries(job_listings)[: plan.max_jobs_for_model_review]
+        if planning_corrections:
+            planner_diagnostics["inputCapCorrections"] = planning_corrections
+        pool_entries = self.build_pool_entries(job_listings, candidate_profile_id=candidate_profile.id)
+        if not is_jobs_list_ranking_plan(plan):
+            pool_entries = pool_entries[: plan.max_jobs_for_model_review]
         review = self.reviewer.review(
             request,
             connector=self.connector,
             settings=self.settings,
             job_pool=pool_entries,
             max_selected=self.settings.job_discovery_save_limit,
+            review_mode=plan.review_plan.task,
+            requested_count=plan.review_plan.requested_count,
+            allow_rejections=plan.review_plan.allow_rejections,
         )
         review = validate_review_result(review, tuple(entry.job_listing_id for entry in pool_entries))
         model_review_completed = bool(review.diagnostics.get("modelReviewCompleted", True))
         repository = CandidateJobRepository(self.session)
-        selected_links, updated_links, rejected_links = repository.apply_review_result(
-            candidate_profile_id=candidate_profile.id,
-            job_search_run_id=run.id,
-            review=review,
-        )
+        if is_jobs_list_ranking_plan(plan):
+            selected_links = self.load_existing_saved_links_for_recommendations(
+                candidate_profile.id,
+                [decision.job_listing_id for decision in review.selected_jobs],
+            )
+            updated_links: list[CandidateSavedJob] = []
+            rejected_links: list[CandidateSavedJob] = []
+        else:
+            selected_links, updated_links, rejected_links = repository.apply_review_result(
+                candidate_profile_id=candidate_profile.id,
+                job_search_run_id=run.id,
+                review=review,
+            )
         reason_counts = rejection_reason_counts(rejected_links)
+        is_ranking = is_jobs_list_ranking_plan(plan)
+        added_count = 0 if is_ranking else len(selected_links)
+        recommended_existing_count = len(selected_links) if is_ranking else 0
         diagnostics = build_candidate_discovery_diagnostics(
             job_sync_results=tuple(job_sync_results),
             query_counts=query_counts,
             unique_job_pool_count=len(job_listings),
             jobs_reviewed_count=len(pool_entries) if model_review_completed else 0,
-            added_count=len(selected_links),
+            added_count=added_count,
             rejected_count=len(rejected_links),
             rejection_reason_counts=reason_counts,
             review_diagnostics=review.diagnostics,
             planner_diagnostics=planner_diagnostics,
         )
         diagnostics["modelReview"]["selectedJobsLabel"] = selected_jobs_label_for_scope(plan.job_scope)
-        diagnostics["addedJobIds"] = [link.id for link in selected_links]
-        diagnostics["addedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
+        if is_ranking:
+            diagnostics["modelReview"]["recommendedExistingJobCount"] = recommended_existing_count
+            diagnostics["modelReview"]["requestedRecommendationCount"] = plan.review_plan.requested_count or self.settings.job_discovery_save_limit
+            diagnostics["modelReview"]["eligibleJobsListCount"] = len(job_listings)
+            if recommended_existing_count:
+                diagnostics["noJobsAddedReason"] = None
+            diagnostics["addedJobIds"] = []
+            diagnostics["addedJobListingIds"] = []
+            diagnostics["recommendedJobIds"] = [link.id for link in selected_links]
+            diagnostics["recommendedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
+        else:
+            diagnostics["addedJobIds"] = [link.id for link in selected_links]
+            diagnostics["addedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
         run.status = "completed"
         run.completed_at = datetime.now(UTC)
         run.total_provider_results = sum(getattr(result, "raw_result_count", 0) for result in job_sync_results)
         run.candidate_pool_count = len(job_listings)
         run.candidate_count_after_dedupe = len(job_listings)
         run.model_selected_count = len(selected_links)
-        run.saved_count = len(selected_links)
+        run.saved_count = added_count
         run.updated_existing_count = len(updated_links)
         run.duplicate_count = 0
         run.skipped_count = len(rejected_links)
@@ -152,16 +182,20 @@ class CandidateJobDiscoveryService:
             assistant_message=review.user_visible_summary,
             job_search_run_id=run.id,
             search_plan=plan,
-            selected_candidate_jobs=tuple(selected_links),
+            selected_candidate_jobs=() if is_ranking else tuple(selected_links),
             updated_candidate_jobs=tuple(updated_links),
             rejected_candidate_jobs=tuple(rejected_links),
+            recommended_candidate_jobs=tuple(selected_links) if is_ranking else (),
             job_sync_results=tuple(job_sync_results),
             query_counts=query_counts,
             unique_job_pool_count=len(job_listings),
             jobs_reviewed_count=len(pool_entries) if model_review_completed else 0,
-            added_count=len(selected_links),
+            added_count=added_count,
             updated_count=len(updated_links),
             rejected_count=len(rejected_links),
+            recommended_existing_count=recommended_existing_count,
+            requested_recommendation_count=plan.review_plan.requested_count,
+            eligible_jobs_list_count=len(job_listings) if is_ranking else None,
             diagnostics=diagnostics,
         )
 
@@ -235,6 +269,8 @@ class CandidateJobDiscoveryService:
         )
 
     def should_replan_for_pool_size(self, plan: DbJobSearchPlan, job_pool_size: int) -> bool:
+        if is_jobs_list_ranking_plan(plan):
+            return False
         if self.connector is None or not self._uses_default_planner:
             return False
         if plan.result_replan_count >= 1:
@@ -242,6 +278,31 @@ class CandidateJobDiscoveryService:
         if job_pool_size < plan.min_job_pool_size:
             return True
         return job_pool_size > plan.max_job_pool_size
+
+    def apply_jobs_list_ranking_input_cap(self, plan: DbJobSearchPlan) -> tuple[DbJobSearchPlan, list[dict[str, Any]]]:
+        if not is_jobs_list_ranking_plan(plan):
+            return plan, []
+        input_cap = max(plan.max_job_pool_size, self.settings.job_discovery_candidate_pool_limit or 0, 300)
+        requested_count = plan.review_plan.requested_count or self.settings.job_discovery_save_limit
+        corrections: list[dict[str, Any]] = []
+        queries: list[DbJobSearchQuery] = []
+        for query in plan.queries:
+            if query.limit <= requested_count:
+                corrections.append(
+                    {
+                        "type": "expanded_jobs_list_ranking_input_cap",
+                        "label": query.label,
+                        "requestedRecommendationCount": requested_count,
+                        "originalLimit": query.limit,
+                        "expandedLimit": input_cap,
+                    }
+                )
+                queries.append(replace(query, limit=input_cap))
+            else:
+                queries.append(query)
+        if not corrections:
+            return plan, []
+        return replace(plan, queries=tuple(queries), max_job_pool_size=max(plan.max_job_pool_size, input_cap)), corrections
 
     def replan_from_execution(
         self,
@@ -516,6 +577,11 @@ class CandidateJobDiscoveryService:
             "modeRationale": plan.mode_rationale,
             "jobScope": plan.job_scope,
             "syncPlanRationale": plan.sync_plan_rationale,
+            "reviewTask": plan.review_plan.task,
+            "reviewPlanRationale": plan.review_plan.rationale,
+            "requestedRecommendationCount": plan.review_plan.requested_count,
+            "allowRejections": plan.review_plan.allow_rejections,
+            "reviewAllEligibleJobs": plan.review_plan.review_all_eligible_jobs,
             "useFollowedCompanyBoards": plan.use_followed_company_boards,
             "plannerAttemptCount": plan.planner_attempt_count,
             "criticAttemptCount": plan.critic_attempt_count,
@@ -557,8 +623,25 @@ class CandidateJobDiscoveryService:
             )
         self.session.flush()
 
-    def build_pool_entries(self, jobs: list[JobListing]) -> list[JobPoolEntry]:
+    def load_existing_saved_links_for_recommendations(self, candidate_profile_id: str, job_listing_ids: list[str]) -> list[CandidateSavedJob]:
+        order = {job_listing_id: index for index, job_listing_id in enumerate(job_listing_ids)}
+        if not order:
+            return []
+        links = list(
+            self.session.scalars(
+                select(CandidateSavedJob)
+                .where(
+                    CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+                    CandidateSavedJob.job_listing_id.in_(order),
+                )
+                .options(selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources))
+            ).all()
+        )
+        return sorted(links, key=lambda link: order.get(link.job_listing_id or "", len(order)))
+
+    def build_pool_entries(self, jobs: list[JobListing], *, candidate_profile_id: str) -> list[JobPoolEntry]:
         providers_by_job_id: dict[str, tuple[str, ...]] = {}
+        saved_job_ids_by_listing_id: dict[str, str] = {}
         if jobs:
             sources = self.session.scalars(
                 select(JobListingSource).where(JobListingSource.job_listing_id.in_([job.id for job in jobs]))
@@ -569,7 +652,20 @@ class CandidateJobDiscoveryService:
                 if source.source_provider not in grouped[source.job_listing_id]:
                     grouped[source.job_listing_id].append(source.source_provider)
             providers_by_job_id = {job_id: tuple(providers) for job_id, providers in grouped.items()}
-        return [job_listing_to_pool_entry(job, source_providers=providers_by_job_id.get(job.id, ())) for job in jobs]
+            saved_links = self.session.scalars(
+                select(CandidateSavedJob).where(
+                    CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+                    CandidateSavedJob.job_listing_id.in_([job.id for job in jobs]),
+                )
+            ).all()
+            saved_job_ids_by_listing_id = {link.job_listing_id: link.id for link in saved_links if link.job_listing_id}
+        return [
+            replace(
+                job_listing_to_pool_entry(job, source_providers=providers_by_job_id.get(job.id, ())),
+                saved_job_id=saved_job_ids_by_listing_id.get(job.id),
+            )
+            for job in jobs
+        ]
 
     def get_or_create_run(self, *, candidate_profile_id: str, command_text: str, job_search_run_id: str | None) -> JobSearchRun:
         if job_search_run_id:
@@ -604,6 +700,13 @@ def serialize_plan(plan: DbJobSearchPlan) -> dict[str, Any]:
         },
         "dbSearchPlan": {
             "queries": [json_safe(asdict(query)) for query in plan.queries],
+        },
+        "reviewPlan": {
+            "task": plan.review_plan.task,
+            "requestedCount": plan.review_plan.requested_count,
+            "allowRejections": plan.review_plan.allow_rejections,
+            "reviewAllEligibleJobs": plan.review_plan.review_all_eligible_jobs,
+            "rationale": plan.review_plan.rationale,
         },
         "replanRules": {
             "minJobPoolSize": plan.min_job_pool_size,
@@ -750,3 +853,7 @@ def selected_jobs_label_for_scope(scope: str) -> str:
     if scope == "all_accessible_jobs":
         return "Selected/recommended jobs"
     return "Added to jobs list"
+
+
+def is_jobs_list_ranking_plan(plan: DbJobSearchPlan) -> bool:
+    return plan.mode == "jobs_list_review" and plan.review_plan.task == "rank_existing_jobs"

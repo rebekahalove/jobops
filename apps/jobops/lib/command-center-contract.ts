@@ -68,6 +68,11 @@ export type JobSearchRunStatus = {
   noJobsAddedReason?: string | null;
   addedJobs?: JobDiscoverySavedJob[];
   addedJobIds?: string[];
+  recommendedJobs?: JobDiscoverySavedJob[];
+  recommendedJobIds?: string[];
+  recommendedExistingJobCount?: number | null;
+  requestedRecommendationCount?: number | null;
+  eligibleJobsListCount?: number | null;
   highlightedJobSearchRunId?: string | null;
   diagnostics?: JobSearchRunDiagnostics;
 };
@@ -112,6 +117,11 @@ export type JobSearchRunDiagnostics = {
     modeRationale?: string | null;
     jobScope?: string | null;
     syncPlanRationale?: string | null;
+    reviewTask?: string | null;
+    reviewPlanRationale?: string | null;
+    requestedRecommendationCount?: number | null;
+    allowRejections?: boolean;
+    reviewAllEligibleJobs?: boolean;
     useFollowedCompanyBoards?: boolean;
     plannerAttemptCount?: number | null;
     criticAttemptCount?: number | null;
@@ -185,6 +195,13 @@ export type JobSearchRunDiagnostics = {
     uniqueJobsInPool?: number;
     jobsReviewedByModel?: number;
     addedToCandidateJobsList?: number;
+    recommendedExistingJobCount?: number;
+    requestedRecommendationCount?: number;
+    eligibleJobsListCount?: number;
+    finalRecommendedCount?: number;
+    reviewBatchCount?: number;
+    perBatchReviewedCount?: number[];
+    perBatchShortlistCount?: number[];
     selectedJobsLabel?: string | null;
     recordedModelRejections?: number;
     topRejectionReasonCounts?: Record<string, number>;

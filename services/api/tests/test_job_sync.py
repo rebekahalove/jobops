@@ -87,6 +87,27 @@ def test_greenhouse_distinct_provider_job_ids_preserve_distinct_same_title_jobs(
         assert len(session.scalars(select(JobListingSource)).all()) == 2
 
 
+def test_job_listing_upsert_preserves_provider_title_longer_than_240_characters() -> None:
+    long_title = (
+        "Senior AI & Data Analytics Architect - Atlanta GA, Hybrid(3 days Onsite). In-person is mandatory and "
+        "preferred only locals. Must have strong experience in Python, SQL, Machine Learning, Deep Learning, NLP, "
+        "Generative AI, GPT, Claude, Gemini, Llama, Mistral, governance, monitoring, and analytics platforms"
+    )
+    assert len(long_title) > 240
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title=long_title),
+            source=greenhouse_source(provider_job_id="long-title-1", board_token="long-title-board"),
+        )
+        stored = session.get(JobListing, result.job_listing_id)
+
+        assert stored is not None
+        assert stored.title == long_title
+
+
 def test_greenhouse_fetches_retrieve_job_payload_with_application_questions(monkeypatch) -> None:
     requested: list[tuple[str, dict[str, object] | None]] = []
     list_job = greenhouse_list_job_raw()

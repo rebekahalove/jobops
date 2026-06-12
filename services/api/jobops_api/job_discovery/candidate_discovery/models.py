@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 JobScope = Literal["new_to_candidate", "candidate_jobs_list", "all_accessible_jobs"]
+ReviewTask = Literal["select_new_jobs", "rank_existing_jobs"]
 DiscoveryMode = Literal[
     "new_job_discovery",
     "jobs_list_review",
@@ -60,6 +61,15 @@ class DbJobSearchQuery:
 
 
 @dataclass(frozen=True)
+class ReviewPlan:
+    task: ReviewTask = "select_new_jobs"
+    requested_count: int | None = None
+    allow_rejections: bool = True
+    review_all_eligible_jobs: bool = False
+    rationale: str | None = None
+
+
+@dataclass(frozen=True)
 class DbJobSearchPlan:
     mode: DiscoveryMode = "new_job_discovery"
     mode_rationale: str | None = None
@@ -78,6 +88,7 @@ class DbJobSearchPlan:
     final_plan_status: str = "planned"
     result_replan_count: int = 0
     result_replan_reason: str | None = None
+    review_plan: ReviewPlan = field(default_factory=ReviewPlan)
 
 
 @dataclass(frozen=True)
@@ -91,14 +102,18 @@ class JobPoolEntry:
     salary_text: str | None
     description_excerpt: str | None
     source_providers: tuple[str, ...] = ()
+    saved_job_id: str | None = None
     relevance_reason: str | None = None
 
 
 @dataclass(frozen=True)
 class SelectedJobDecision:
     job_listing_id: str
+    saved_job_id: str | None = None
+    rank: int | None = None
     rationale: str | None = None
     match_highlights: tuple[str, ...] = ()
+    cautions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,3 +148,7 @@ class CandidateDiscoveryResult:
     updated_count: int
     rejected_count: int
     diagnostics: dict[str, Any]
+    recommended_candidate_jobs: tuple[Any, ...] = ()
+    recommended_existing_count: int = 0
+    requested_recommendation_count: int | None = None
+    eligible_jobs_list_count: int | None = None
