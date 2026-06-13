@@ -60,7 +60,39 @@ export type JobSearchRunStatus = {
   replanReason?: string | null;
   replanReasons?: string[];
   replanQueries?: string[];
+  jobDiscoveryMode?: string | null;
+  diagnosticMessages?: string | null;
+  modelReviewCompleted?: boolean | null;
+  modelReviewFailureReason?: string | null;
+  selectedJobsLabel?: string | null;
+  noJobsAddedReason?: string | null;
+  addedJobs?: JobDiscoverySavedJob[];
+  addedJobIds?: string[];
+  recommendedJobs?: JobDiscoverySavedJob[];
+  recommendedJobIds?: string[];
+  recommendedExistingJobCount?: number | null;
+  requestedRecommendationCount?: number | null;
+  eligibleJobsListCount?: number | null;
+  highlightedJobSearchRunId?: string | null;
   diagnostics?: JobSearchRunDiagnostics;
+};
+
+export type JobDiscoverySavedJob = {
+  id: string;
+  title?: string | null;
+  company_name?: string | null;
+  job_url?: string | null;
+  apply_url?: string | null;
+  canonical_url?: string | null;
+  source?: string | null;
+  source_provider?: string | null;
+  provider_type?: string | null;
+  location?: string | null;
+  remote_work_mode?: string | null;
+  status?: string | null;
+  jobSearchRunId?: string | null;
+  highlighted?: boolean;
+  justAdded?: boolean;
 };
 
 export type JobSearchRunDiagnostics = {
@@ -75,6 +107,82 @@ export type JobSearchRunDiagnostics = {
     maxProviderPages?: number | null;
   };
   providerDiagnostics?: JobSearchProviderDiagnostic[];
+  planner?: {
+    status?: string | null;
+    modelUsed?: boolean;
+    planningFailed?: boolean;
+    error?: string | null;
+    errorDetail?: string | null;
+    mode?: string | null;
+    modeRationale?: string | null;
+    jobScope?: string | null;
+    syncPlanRationale?: string | null;
+    reviewTask?: string | null;
+    reviewPlanRationale?: string | null;
+    requestedRecommendationCount?: number | null;
+    allowRejections?: boolean;
+    reviewAllEligibleJobs?: boolean;
+    useFollowedCompanyBoards?: boolean;
+    plannerAttemptCount?: number | null;
+    criticAttemptCount?: number | null;
+    rejectedPlans?: Array<{ issueCode?: string | null; issueMessage?: string | null; mode?: string | null; modeRationale?: string | null }>;
+    finalPlanStatus?: string | null;
+    resultReplanCount?: number | null;
+    resultReplanReason?: string | null;
+    plannedSyncSignatures?: JobSearchPlannerSyncSignature[];
+    existingSyncSignaturesSelected?: JobSearchPlannerSyncSignature[];
+    plannedDbQueries?: Array<{
+      label?: string | null;
+      titleTermsAny?: string[];
+      titleTermsAll?: string[];
+      titleTermsExclude?: string[];
+      descriptionTermsAny?: string[];
+      descriptionTermsAll?: string[];
+      descriptionTermsExclude?: string[];
+      companyNamesAny?: string[];
+      companyNamesExclude?: string[];
+      sourceProvidersAny?: string[];
+      atsBoardTokensAny?: string[];
+      locationCountriesAny?: string[];
+      locationRegionsAny?: string[];
+      locationCitiesAny?: string[];
+      locationMetrosAny?: string[];
+      locationDisplayTermsAny?: string[];
+      remoteWorkModesAny?: string[];
+      employmentTypesAny?: string[];
+      salaryCurrency?: string | null;
+      salaryMinAtLeast?: number | null;
+      sourceStatusesAny?: string[];
+      freshnessDays?: number | null;
+      limit?: number | null;
+      activeOnly?: boolean;
+      includeModelRejected?: boolean;
+      orderBy?: string | null;
+    }>;
+  };
+  jobSync?: {
+    runs?: Array<{
+      syncKey?: string | null;
+      status?: string | null;
+      raw?: number | null;
+      normalized?: number | null;
+      created?: number | null;
+      updated?: number | null;
+      failed?: number | null;
+    }>;
+    runCount?: number;
+    rawResultCount?: number;
+    normalizedCount?: number;
+    createdCount?: number;
+    updatedCount?: number;
+    completedCount?: number;
+    failedCount?: number;
+  };
+  databaseQueries?: {
+    queries?: Array<{ label?: string | null; jobCount?: number | null }>;
+    uniqueJobPoolCount?: number;
+    totalRowsMatched?: number;
+  };
   modelReview?: {
     candidateCountAfterDedupe?: number;
     candidatePoolCount?: number;
@@ -84,7 +192,40 @@ export type JobSearchRunDiagnostics = {
     duplicateCount?: number;
     skippedCount?: number;
     providerErrorCount?: number;
+    uniqueJobsInPool?: number;
+    jobsReviewedByModel?: number;
+    addedToCandidateJobsList?: number;
+    recommendedExistingJobCount?: number;
+    requestedRecommendationCount?: number;
+    eligibleJobsListCount?: number;
+    fewerThanRequestedRecommendations?: boolean;
+    availableMatchingSavedListJobs?: number;
+    finalRecommendedCount?: number;
+    reviewBatchCount?: number;
+    perBatchReviewedCount?: number[];
+    perBatchShortlistCount?: number[];
+    selectedJobsLabel?: string | null;
+    recordedModelRejections?: number;
+    topRejectionReasonCounts?: Record<string, number>;
+    rejectionReasonCounts?: Record<string, number>;
+    modelReviewCompleted?: boolean | null;
+    modelReviewFallback?: boolean;
+    modelReviewFailureReason?: string | null;
+    debugInvalidReviewAttempt?: number | null;
+    debugInvalidReviewErrorType?: string | null;
+    debugInvalidReviewError?: string | null;
+    debugInvalidReviewFinishReason?: string | null;
+    debugInvalidReviewResponseLength?: number | null;
+    debugInvalidReviewResponsePreview?: string | null;
+    debugInvalidReviewResponseTail?: string | null;
+    reviewValidation?: {
+      invalidSelectedJobIds?: string[];
+      invalidRejectedJobIds?: string[];
+      duplicateDecisionCount?: number;
+      selectedWinsConflictCount?: number;
+    };
   };
+  noJobsAddedReason?: string | null;
   modelExplanation?: {
     userVisibleSummary?: string | null;
     userSummary?: string | null;
@@ -106,6 +247,27 @@ export type JobSearchRunDiagnostics = {
     providerResultsExisted?: boolean;
     candidatePoolExisted?: boolean;
   };
+};
+
+export type JobSearchPlannerSyncSignature = {
+  id?: string | null;
+  syncKey?: string | null;
+  providerName?: string | null;
+  queryText?: string | null;
+  queryKind?: string | null;
+  displayLocation?: string | null;
+  providerCountry?: string | null;
+  providerWhere?: string | null;
+  maxPages?: number | null;
+  resultsPerPage?: number | null;
+  enabled?: boolean;
+  verificationStatus?: string | null;
+  action?: string | null;
+  syncRunStatus?: string | null;
+  raw?: number | null;
+  normalized?: number | null;
+  created?: number | null;
+  updated?: number | null;
 };
 
 export type JobSearchProviderDiagnostic = {

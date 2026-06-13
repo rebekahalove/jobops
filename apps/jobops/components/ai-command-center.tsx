@@ -201,6 +201,18 @@ export function AiCommandCenter({
     if (!submittedCommand) {
       return;
     }
+    const plannedPreview = createPlannedAction(submittedCommand, "preview");
+    if (activeJobDiscoveryRunId && plannedPreview.type === "job_discovery") {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `agent-active-job-run-${Date.now()}-${current.length}`,
+          role: "agent",
+          text: "Status update: a job discovery run is already in progress. Wait for it to finish before starting another discovery run."
+        }
+      ]);
+      return;
+    }
 
     const submissionId = Date.now();
     const clientContext = buildCommandCenterClientContext(messages, submittedCommand);
@@ -391,6 +403,22 @@ export function AiCommandCenter({
             duplicateCount: run.duplicateCount,
             skippedCount: run.skippedCount,
             providerErrorCount: run.providerErrorCount,
+            jobDiscoveryMode: run.jobDiscoveryMode ?? run.searchMode ?? undefined,
+            diagnostics: run.diagnostics,
+            diagnosticMessages: run.diagnosticMessages ?? undefined,
+            modelReviewCompleted: run.modelReviewCompleted ?? undefined,
+            modelReviewFailureReason: run.modelReviewFailureReason ?? undefined,
+            selectedJobsLabel: run.selectedJobsLabel ?? undefined,
+            noJobsAddedReason: run.noJobsAddedReason ?? undefined,
+            addedJobs: run.addedJobs ?? [],
+            addedJobIds: run.addedJobIds ?? [],
+            recommendedJobs: run.recommendedJobs ?? [],
+            recommendedJobIds: run.recommendedJobIds ?? [],
+            recommendedExistingJobCount: run.recommendedExistingJobCount ?? undefined,
+            requestedRecommendationCount: run.requestedRecommendationCount ?? undefined,
+            eligibleJobsListCount: run.eligibleJobsListCount ?? undefined,
+            jobs: run.recommendedJobs?.length ? run.recommendedJobs : run.addedJobs ?? [],
+            highlightedJobSearchRunId: run.highlightedJobSearchRunId ?? undefined,
             userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
             plannerRationale: run.plannerRationale ?? undefined,
@@ -435,6 +463,22 @@ export function AiCommandCenter({
             candidateCountAfterDedupe: run.candidateCountAfterDedupe,
             modelSelectedCount: run.modelSelectedCount,
             providerErrorCount: run.providerErrorCount,
+            jobDiscoveryMode: run.jobDiscoveryMode ?? run.searchMode ?? undefined,
+            diagnostics: run.diagnostics,
+            diagnosticMessages: run.diagnosticMessages ?? undefined,
+            modelReviewCompleted: run.modelReviewCompleted ?? undefined,
+            modelReviewFailureReason: run.modelReviewFailureReason ?? undefined,
+            selectedJobsLabel: run.selectedJobsLabel ?? undefined,
+            noJobsAddedReason: run.noJobsAddedReason ?? undefined,
+            addedJobs: run.addedJobs ?? [],
+            addedJobIds: run.addedJobIds ?? [],
+            recommendedJobs: run.recommendedJobs ?? [],
+            recommendedJobIds: run.recommendedJobIds ?? [],
+            recommendedExistingJobCount: run.recommendedExistingJobCount ?? undefined,
+            requestedRecommendationCount: run.requestedRecommendationCount ?? undefined,
+            eligibleJobsListCount: run.eligibleJobsListCount ?? undefined,
+            jobs: run.recommendedJobs?.length ? run.recommendedJobs : run.addedJobs ?? [],
+            highlightedJobSearchRunId: run.highlightedJobSearchRunId ?? undefined,
             userVisibleSummary: run.userVisibleSummary ?? undefined,
             userSummary: run.userSummary ?? undefined,
             plannerRationale: run.plannerRationale ?? undefined,
@@ -1183,13 +1227,22 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
   const modelRequest = getModelRequestDebugPayload(action.resultPayload);
   const modelResponse = getModelResponseDebugPayload(action.resultPayload);
   const jobDiscoveryDiagnostics = getJobDiscoveryDiagnostics(action.resultPayload);
+  const jobDiscoveryJobs = getJobDiscoveryJobs(action.resultPayload);
+  const noJobsAddedReason = getNoJobsAddedReason(action.resultPayload);
+  const isBusyJobDiscovery = action.type === "job_discovery" && action.status === "running";
 
   return (
-    <article className="agent-action-card">
+    <article className={`agent-action-card${isBusyJobDiscovery ? " agent-action-card-busy" : ""}`}>
       <div>
         <p className="eyebrow">{action.status.replace("_", " ")}</p>
         <h2>{action.title}</h2>
       </div>
+      {isBusyJobDiscovery ? (
+        <div className="agent-action-busy" role="status">
+          <span aria-hidden="true" />
+          <strong>Job discovery is running...</strong>
+        </div>
+      ) : null}
       <p>{truncateText(action.summary, ACTION_SUMMARY_MAX_CHARS)}</p>
       <div className="agent-action-meta">
         <span>{action.type}</span>
@@ -1204,6 +1257,45 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
             </div>
           ))}
         </dl>
+      ) : null}
+      {jobDiscoveryJobs.length ? (
+        <section className="agent-action-jobs" aria-label="Recommended jobs">
+          <h3>{jobDiscoveryJobsLabel(action.resultPayload)}</h3>
+          <div>
+            {jobDiscoveryJobs.slice(0, 5).map((job) => (
+              <article className="agent-action-job-row" key={job.id}>
+                <div>
+                  <strong>{stringPayloadValue(job.title) || "Untitled role"}</strong>
+                  <span>
+                    {[
+                      stringPayloadValue(job.company_name),
+                      stringPayloadValue(job.location) || formatOptionalStatus(stringPayloadValue(job.remote_work_mode))
+                    ]
+                      .filter(Boolean)
+                      .join(" - ")}
+                  </span>
+                  <small>
+                    {[
+                      formatOptionalStatus(
+                        stringPayloadValue(job.source_provider) || stringPayloadValue(job.source) || stringPayloadValue(job.provider_type)
+                      ),
+                      formatOptionalStatus(stringPayloadValue(job.status))
+                    ]
+                      .filter(Boolean)
+                      .join(" - ")}
+                  </small>
+                </div>
+                {jobActionUrl(job) ? (
+                  <a href={jobActionUrl(job) || "#"} rel="noopener noreferrer" target="_blank">
+                    Open
+                  </a>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : noJobsAddedReason ? (
+        <p className="agent-action-no-jobs">No jobs added: {formatNoJobsAddedReason(noJobsAddedReason)}</p>
       ) : null}
       {modelRequest ? (
         <details className="model-request-debug">
@@ -1241,14 +1333,67 @@ function getJobDiscoveryDiagnostics(resultPayload: unknown) {
   const diagnostics = [
     textDiagnostic("Mode", payload.jobDiscoveryMode),
     textDiagnostic("Source", payload.sourceName ?? payload.providerName),
+    numberDiagnostic("DB matches", payload.databaseMatchedJobCount),
+    numberDiagnostic("Reviewed", payload.jobsReviewedByModel),
+    numberDiagnostic(
+      stringPayloadValue(payload.selectedJobsLabel) === "Recommended existing jobs" ? "Recommended existing jobs" : "Added to list",
+      stringPayloadValue(payload.selectedJobsLabel) === "Recommended existing jobs" ? payload.recommendedExistingJobCount : payload.addedToCandidateJobsList
+    ),
     numberDiagnostic("Provider results", payload.providerResultCount),
     numberDiagnostic("Model selected", payload.modelSelectedCount),
     numberDiagnostic("Verified URLs", payload.verifiedUrlCount ?? payload.verifiedCount),
     numberDiagnostic("Saved", payload.savedJobCount ?? payload.savedCount),
     numberDiagnostic("Duplicates", payload.duplicateCount),
+    textDiagnostic("No jobs added", formatNoJobsAddedReason(getNoJobsAddedReason(payload))),
     skippedReasonsDiagnostic(payload.skippedReasons)
   ].filter((item): item is { label: string; value: string } => Boolean(item));
   return diagnostics.length ? diagnostics : null;
+}
+
+function getJobDiscoveryJobs(resultPayload: unknown): Array<Record<string, unknown> & { id: string }> {
+  if (!isRecord(resultPayload)) {
+    return [];
+  }
+  const rawJobs = Array.isArray(resultPayload.jobs)
+    ? resultPayload.jobs
+    : Array.isArray(resultPayload.addedJobs)
+      ? resultPayload.addedJobs
+      : [];
+  return rawJobs.filter((job): job is Record<string, unknown> & { id: string } => isRecord(job) && typeof job.id === "string");
+}
+
+function getNoJobsAddedReason(resultPayload: unknown) {
+  if (!isRecord(resultPayload)) {
+    return null;
+  }
+  return typeof resultPayload.noJobsAddedReason === "string" && resultPayload.noJobsAddedReason ? resultPayload.noJobsAddedReason : null;
+}
+
+function stringPayloadValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function jobActionUrl(job: Record<string, unknown>) {
+  return stringPayloadValue(job.apply_url) || stringPayloadValue(job.job_url) || stringPayloadValue(job.canonical_url) || null;
+}
+
+function jobDiscoveryJobsLabel(resultPayload: unknown) {
+  if (!isRecord(resultPayload)) {
+    return "Recommended jobs";
+  }
+  const selectedLabel = stringPayloadValue(resultPayload.selectedJobsLabel);
+  if (selectedLabel === "Recommended existing jobs") {
+    return "Recommended existing jobs";
+  }
+  const runId = typeof resultPayload.jobSearchRunId === "string" ? resultPayload.jobSearchRunId : null;
+  const highlightedRunId = typeof resultPayload.highlightedJobSearchRunId === "string" ? resultPayload.highlightedJobSearchRunId : null;
+  if (runId && highlightedRunId && runId === highlightedRunId) {
+    if (selectedLabel === "Selected/recommended jobs") {
+      return "Selected/recommended jobs";
+    }
+    return "Just added to your jobs list";
+  }
+  return resultPayload.jobDiscoveryMode === "db_backed" ? "Recommended jobs" : "Jobs referenced by this response";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1261,6 +1406,33 @@ function textDiagnostic(label: string, value: unknown) {
 
 function numberDiagnostic(label: string, value: unknown) {
   return typeof value === "number" ? { label, value: String(value) } : null;
+}
+
+function formatOptionalStatus(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatNoJobsAddedReason(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const labels: Record<string, string> = {
+    no_db_matches: "No synced jobs matched the database search",
+    model_planning_failed: "Model search planning did not complete",
+    model_review_failed: "Model review did not complete",
+    model_selected_zero: "Model review selected zero jobs",
+    review_validation_removed_all_selected_ids: "Model returned job IDs outside the reviewed pool",
+    all_selected_jobs_already_on_list: "Selected jobs were already on the jobs list",
+    unknown: "Unknown"
+  };
+  return labels[value] ?? formatOptionalStatus(value);
 }
 
 function skippedReasonsDiagnostic(value: unknown) {

@@ -25,6 +25,8 @@ from jobops_api.db.models import (
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
 from jobops_api.job_discovery.greenhouse_seed import upsert_greenhouse_companies_for_candidate
+from jobops_api.job_discovery.candidate_discovery.repositories import ModelRejectionService
+from jobops_api.job_discovery.candidate_discovery.rejection_reasons import REJECTION_REASON_CODES
 from jobops_api.job_discovery.job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync_signature
 from jobops_api.job_discovery.job_sync.greenhouse_service import sync_greenhouse_boards
 from jobops_api.job_discovery.job_sync.location_resolver import ensure_initial_job_location_mappings
@@ -142,6 +144,21 @@ def main() -> None:
     update_location_mapping_parser.add_argument("--confidence", default=None)
     update_location_mapping_parser.add_argument("--verification-status", default="verified")
 
+    reset_model_rejected_parser = subparsers.add_parser(
+        "reset-model-rejected-jobs",
+        help="Reset model rejection reasons so previously rejected synced jobs can be reconsidered.",
+    )
+    reset_model_rejected_parser.add_argument("--candidate-slug", required=True)
+    reset_model_rejected_parser.add_argument(
+        "--reason",
+        action="append",
+        default=[],
+        choices=sorted(REJECTION_REASON_CODES),
+        help="Optional rejection reason code to reset. Repeat to reset multiple reasons.",
+    )
+    reset_model_rejected_parser.add_argument("--reset-by", default="cli")
+    reset_model_rejected_parser.add_argument("--reset-reason", default="Manual reset of model rejected candidate jobs.")
+
     inspect_parser = subparsers.add_parser("inspect-alpha-workspaces", help="Print users, workspaces, and profile ids.")
     inspect_parser.add_argument("--workspace-slug", default=None)
 
@@ -225,6 +242,13 @@ def main() -> None:
             provider_where=args.provider_where,
             confidence=args.confidence,
             verification_status=args.verification_status,
+        )
+    elif args.command == "reset-model-rejected-jobs":
+        reset_model_rejected_jobs_command(
+            candidate_slug=args.candidate_slug,
+            reasons=args.reason,
+            reset_by=args.reset_by,
+            reset_reason=args.reset_reason,
         )
     elif args.command == "inspect-alpha-workspaces":
         inspect_alpha_workspaces_command(workspace_slug=args.workspace_slug)
@@ -563,6 +587,29 @@ def update_job_location_mapping_command(
             f"country={mapping.provider_country or '-'} where={mapping.provider_where or '-'} "
             f"confidence={mapping.confidence} status={mapping.verification_status}"
         )
+
+
+def reset_model_rejected_jobs_command(
+    *,
+    candidate_slug: str,
+    reasons: list[str],
+    reset_by: str,
+    reset_reason: str,
+) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        candidate_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == candidate_slug))
+        if candidate_profile is None:
+            raise SystemExit(f"Candidate profile not found: {candidate_slug}")
+        reset_count = ModelRejectionService(session).reset_model_rejections(
+            candidate_profile_id=candidate_profile.id,
+            reason_codes=reasons or None,
+            reset_reason=reset_reason,
+            reset_by=reset_by,
+        )
+        session.commit()
+    reason_text = ", ".join(reasons) if reasons else "all active reasons"
+    print(f"Reset {reset_count} model rejection reason(s) for {candidate_slug}: {reason_text}.")
 
 
 def resolve_password_arg(password: str | None, prompt_password: bool) -> str:

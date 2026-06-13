@@ -274,7 +274,7 @@ describe("Jobs list", () => {
     const html = renderToStaticMarkup(<JobDiscoveryDiagnostics initialRun={jobSearchRunFixture()} />);
 
     expect(html).toContain("Discovery diagnostics");
-    expect(html).toContain("Completed - 0 saved - 0 model selected - 12 sent to model - 12 unique candidates - 28 provider matches");
+    expect(html).toContain("Completed - 0 saved - 0 model selected - 12 reviewed jobs - 12 unique jobs - 28 provider matches");
     expect(html).toContain("Initial search plan");
     expect(html).toContain("Applied AI Engineer");
     expect(html).toContain("Provider search timeline");
@@ -295,6 +295,152 @@ describe("Jobs list", () => {
     expect(html).toContain("Model review");
     expect(html).toContain("Model explanation");
     expect(html).toContain("I found roles from followed-company boards, but none matched strongly enough to save.");
+  });
+
+  it("renders DB-backed discovery diagnostics in Job Sync, database, and model sections", () => {
+    const html = renderToStaticMarkup(
+      <JobDiscoveryDiagnostics
+        initialRun={jobSearchRunFixture({
+          searchMode: "db_backed",
+          jobDiscoveryMode: "db_backed",
+          providerResultCount: 50,
+          candidatePoolCount: 87,
+          candidateCountAfterDedupe: 87,
+          noJobsAddedReason: "model_selected_zero",
+          diagnostics: {
+            planner: {
+              status: "planned",
+              modelUsed: true,
+              planningFailed: false,
+              plannedSyncSignatures: [
+                {
+                  id: "sig-1",
+                  syncKey: "adzuna:broad:gb:remote-uk:ai",
+                  providerName: "adzuna",
+                  queryText: "AI",
+                  queryKind: "model_planned",
+                  displayLocation: "Remote UK",
+                  providerCountry: "gb",
+                  providerWhere: null,
+                  maxPages: 1,
+                  resultsPerPage: 50,
+                  enabled: true,
+                  verificationStatus: "verified",
+                  action: "created",
+                  syncRunStatus: "completed"
+                }
+              ],
+              plannedDbQueries: [
+                {
+                  label: "Model-planned AI/software search",
+                  titleTermsAny: ["AI", "Engineer"],
+                  descriptionTermsAny: ["LLM", "RAG"],
+                  locationCountriesAny: ["GB"],
+                  remoteWorkModesAny: ["remote"],
+                  limit: 300
+                }
+              ]
+            },
+            jobSync: {
+              runs: [
+                {
+                  syncKey: "adzuna:broad:gb:remote-uk:ai",
+                  status: "completed",
+                  raw: 50,
+                  normalized: 49,
+                  created: 12,
+                  updated: 37
+                }
+              ]
+            },
+            databaseQueries: {
+              queries: [{ label: "Broad AI/LLM search", jobCount: 87 }],
+              uniqueJobPoolCount: 87
+            },
+            modelReview: {
+              uniqueJobsInPool: 87,
+              jobsReviewedByModel: 80,
+              addedToCandidateJobsList: 0,
+              recordedModelRejections: 80,
+              modelReviewCompleted: true,
+              topRejectionReasonCounts: { role_title: 12 }
+            },
+            noJobsAddedReason: "model_selected_zero"
+          }
+        })}
+      />
+    );
+
+    expect(html).toContain("Job Sync");
+    expect(html).toContain("Planner");
+    expect(html).toContain("adzuna:broad:gb:remote-uk:ai");
+    expect(html).toContain("Model-planned AI/software search");
+    expect(html).toContain("AI, Engineer");
+    expect(html).toContain("Database queries");
+    expect(html).toContain("Broad AI/LLM search");
+    expect(html).toContain("Model review");
+    expect(html).toContain("Jobs reviewed by model");
+    expect(html).toContain("No jobs added: Model review selected zero jobs");
+    expect(html).toContain("Top rejection reasons: Role title: 12");
+  });
+
+  it("renders jobs-list ranking diagnostics as recommended existing jobs", () => {
+    const html = renderToStaticMarkup(
+      <JobDiscoveryDiagnostics
+        initialRun={jobSearchRunFixture({
+          searchMode: "db_backed",
+          jobDiscoveryMode: "db_backed",
+          savedCount: 0,
+          modelSelectedCount: 0,
+          message: "Only 3 matching saved-list jobs were available. Would you like me to search for new jobs?",
+          userVisibleSummary: "Only 3 matching saved-list jobs were available. Would you like me to search for new jobs?",
+          diagnostics: {
+            planner: {
+              status: "planned",
+              mode: "jobs_list_review",
+              reviewTask: "rank_existing_jobs",
+              requestedRecommendationCount: 5,
+              plannedSyncSignatures: [],
+              existingSyncSignaturesSelected: [],
+              plannedDbQueries: [
+                {
+                  label: "Review active unapplied US remote jobs from the jobs list",
+                  locationCountriesAny: ["US"],
+                  remoteWorkModesAny: ["remote"],
+                  limit: 300
+                }
+              ]
+            },
+            jobSync: { runs: [] },
+            databaseQueries: {
+              queries: [{ label: "Review active unapplied US remote jobs from the jobs list", jobCount: 3 }],
+              uniqueJobPoolCount: 3
+            },
+            modelReview: {
+              uniqueJobsInPool: 3,
+              eligibleJobsListCount: 3,
+              jobsReviewedByModel: 3,
+              requestedRecommendationCount: 5,
+              selectedJobsLabel: "Recommended existing jobs",
+              recommendedExistingJobCount: 3,
+              addedToCandidateJobsList: 0,
+              recordedModelRejections: 0,
+              modelReviewCompleted: true,
+              fewerThanRequestedRecommendations: true,
+              availableMatchingSavedListJobs: 3
+            }
+          }
+        })}
+      />
+    );
+
+    expect(html).toContain("Review task: Rank existing jobs - recommend 5 existing jobs");
+    expect(html).toContain("Review active unapplied US remote jobs from the jobs list");
+    expect(html).toContain("Eligible jobs from list");
+    expect(html).toContain("Recommended existing jobs");
+    expect(html).toContain("Model rejections");
+    expect(html).toContain("Only 3 matching saved-list jobs were available. Ask whether to search for new jobs.");
+    expect(html).not.toContain("Just added to your jobs list");
   });
 
   it("renders favorite and unfavorite actions for active unapplied jobs", () => {
@@ -336,6 +482,29 @@ describe("Jobs list", () => {
 
     expect(sortJobsForBucket(jobs, "new").map((job) => job.id)).toEqual(["newer", "older"]);
     expect(sortJobsForBucket(jobs, "favorites").map((job) => job.id)).toEqual(["older", "newer"]);
+  });
+
+  it("sorts and highlights jobs from the latest discovery run first", () => {
+    const jobs = [
+      jobFixture({ id: "older", added_at: "2026-05-12T00:00:00Z" }),
+      jobFixture({ id: "just-added", added_at: "2026-05-10T00:00:00Z", highlighted: true, justAdded: true })
+    ];
+    const html = renderToStaticMarkup(<JobsList initialJobs={jobs} />);
+
+    expect(sortJobsForBucket(jobs, "new").map((job) => job.id)).toEqual(["just-added", "older"]);
+    expect(html).toContain("job-card-just-added");
+    expect(html).toContain("Just added");
+  });
+
+  it("does not badge recommended existing jobs as just added", () => {
+    const jobs = [
+      jobFixture({ id: "recommended-existing", highlighted: true, justAdded: false, title: "Recommended Existing Role" })
+    ];
+    const html = renderToStaticMarkup(<JobsList initialJobs={jobs} />);
+
+    expect(html).toContain("Recommended Existing Role");
+    expect(html).not.toContain("job-card-just-added");
+    expect(html).not.toContain("Just added");
   });
 });
 

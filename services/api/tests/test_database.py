@@ -189,6 +189,87 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     }.issubset(provider_location_mapping_columns)
 
 
+def test_job_listing_title_downgrade_preserves_long_provider_titles(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_long_title_downgrade_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "20260612_0032")
+
+    long_title = (
+        "Senior AI & Data Analytics Architect - Atlanta GA, Hybrid(3 days Onsite). In-person is mandatory and "
+        "preferred only locals. Must have strong experience in Python, SQL, Machine Learning, Deep Learning, NLP, "
+        "Generative AI, GPT, Claude, Gemini, Llama, Mistral, governance, monitoring, and analytics platforms"
+    )
+    assert len(long_title) > 240
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO job_listings (id, title, company_name, is_active) "
+                "VALUES ('listing-1', :title, 'Long Title Co', 1)"
+            ),
+            {"title": long_title},
+        )
+
+    command.downgrade(alembic_config, "20260611_0031")
+
+    with engine.connect() as connection:
+        stored_title = connection.scalar(text("SELECT title FROM job_listings WHERE id = 'listing-1'"))
+
+    assert stored_title == long_title
+
+
+def test_candidate_saved_jobs_downgrade_preserves_synced_saved_rows(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_synced_saved_job_downgrade_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "20260611_0031")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO tenants (id, name, slug) VALUES ('tenant-1', 'Tenant', 'tenant')"))
+        connection.execute(
+            text(
+                "INSERT INTO candidate_profiles (id, tenant_id, slug, display_name, headline, summary, profile_status) "
+                "VALUES ('profile-1', 'tenant-1', 'one', 'One', 'Headline', '', 'draft')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO job_listings (id, title, company_name, is_active) "
+                "VALUES ('listing-1', 'Synced Job', 'Synced Co', 1)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO candidate_saved_jobs (id, candidate_profile_id, job_id, job_listing_id, status) "
+                "VALUES ('saved-1', 'profile-1', NULL, 'listing-1', 'new')"
+            )
+        )
+
+    command.downgrade(alembic_config, "20260610_0030")
+    command.upgrade(alembic_config, "head")
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT job_id, job_listing_id, status FROM candidate_saved_jobs WHERE id = 'saved-1'")
+        ).mappings().one()
+
+    assert row["job_id"] is None
+    assert row["job_listing_id"] == "listing-1"
+    assert row["status"] == "new"
+
+
 def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "jobops_company_backfill_test.db"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"

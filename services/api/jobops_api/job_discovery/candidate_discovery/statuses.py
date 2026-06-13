@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+
+MODEL_REJECTED_STATUS = "model_rejected"
+MODEL_REJECTION_RESET_STATUS = "model_rejection_reset"
+
+USER_VISIBLE_JOB_STATUSES = {"new", "saved"}
+HIDDEN_JOB_STATUSES = {MODEL_REJECTED_STATUS, MODEL_REJECTION_RESET_STATUS}
+DISCOVERY_BLOCKING_STATUSES = {"new", "saved", MODEL_REJECTED_STATUS}

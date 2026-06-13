@@ -357,7 +357,7 @@ class JobPosting(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    title: Mapped[str] = mapped_column(String(240))
+    title: Mapped[str] = mapped_column(Text)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
     job_url: Mapped[str] = mapped_column(Text)
@@ -403,26 +403,73 @@ class CandidateSavedJob(Base, TimestampMixin):
     __tablename__ = "candidate_saved_jobs"
     __table_args__ = (
         UniqueConstraint("candidate_profile_id", "job_id", name="uq_candidate_saved_jobs_profile_job"),
+        Index(
+            "uq_candidate_saved_jobs_profile_listing",
+            "candidate_profile_id",
+            "job_listing_id",
+            unique=True,
+            sqlite_where=text("job_listing_id IS NOT NULL"),
+            postgresql_where=text("job_listing_id IS NOT NULL"),
+        ),
         Index("ix_candidate_saved_jobs_profile_added", "candidate_profile_id", "added_at"),
         Index("ix_candidate_saved_jobs_profile_status_added", "candidate_profile_id", "status", "added_at"),
+        Index("ix_candidate_saved_jobs_profile_status", "candidate_profile_id", "status"),
+        Index("ix_candidate_saved_jobs_profile_listing", "candidate_profile_id", "job_listing_id"),
+        Index("ix_candidate_saved_jobs_job_listing", "job_listing_id"),
+        Index("ix_candidate_saved_jobs_search_run", "job_search_run_id"),
+        Index("ix_candidate_saved_jobs_last_model_reviewed", "last_model_reviewed_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
-    job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=True)
+    job_listing_id: Mapped[str | None] = mapped_column(ForeignKey("job_listings.id", ondelete="CASCADE"), nullable=True)
+    job_search_run_id: Mapped[str | None] = mapped_column(ForeignKey("job_search_runs.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="new")
     fit_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_command: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovery_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_model_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_decision_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_review_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     archived_by_action: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
-    job: Mapped[JobPosting] = relationship(back_populates="saved_links")
+    job: Mapped[JobPosting | None] = relationship(back_populates="saved_links")
+    job_listing: Mapped[JobListing | None] = relationship()
+    job_search_run: Mapped[JobSearchRun | None] = relationship()
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
+    rejection_reasons: Mapped[list[CandidateJobRejectionReason]] = relationship(
+        back_populates="candidate_job",
+        cascade="all, delete-orphan",
+    )
+
+
+class CandidateJobRejectionReason(Base):
+    __tablename__ = "candidate_job_rejection_reasons"
+    __table_args__ = (
+        Index("ix_candidate_job_rejection_reasons_candidate_job", "candidate_job_id", "active"),
+        Index("ix_candidate_job_rejection_reasons_reason_active", "reason_code", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_job_id: Mapped[str] = mapped_column(ForeignKey("candidate_saved_jobs.id", ondelete="CASCADE"))
+    reason_code: Mapped[str] = mapped_column(String(80))
+    affected_field: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reset_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reset_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    candidate_job: Mapped[CandidateSavedJob] = relationship(back_populates="rejection_reasons")
 
 
 class JobLocationTarget(Base, TimestampMixin):
@@ -505,7 +552,7 @@ class JobListing(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    title: Mapped[str] = mapped_column(String(240))
+    title: Mapped[str] = mapped_column(Text)
     job_location_target_id: Mapped[str | None] = mapped_column(ForeignKey("job_location_targets.id", ondelete="SET NULL"), nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
@@ -832,11 +879,22 @@ class Application(Base, TimestampMixin):
 
     @property
     def source_provider(self) -> str | None:
-        return self.job.source_provider if self.job is not None else None
+        if self.job is not None:
+            return self.job.source_provider
+        job_listing = self.synced_job_listing
+        if job_listing is None:
+            return None
+        for source in job_listing.sources:
+            if source.source_provider:
+                return source.source_provider
+        return None
 
     @property
     def posting_date(self) -> date | None:
-        return self.job.posting_date if self.job is not None else None
+        if self.job is not None:
+            return self.job.posting_date
+        job_listing = self.synced_job_listing
+        return job_listing.posting_date if job_listing is not None else None
 
     @property
     def fit_summary(self) -> str | None:
@@ -844,19 +902,37 @@ class Application(Base, TimestampMixin):
 
     @property
     def salary_text(self) -> str | None:
-        return self.job.salary_text if self.job is not None else None
+        if self.job is not None:
+            return self.job.salary_text
+        job_listing = self.synced_job_listing
+        return job_listing.salary_text if job_listing is not None else None
 
     @property
     def remote_work_mode(self) -> str | None:
-        return self.job.remote_work_mode if self.job is not None else None
+        if self.job is not None:
+            return self.job.remote_work_mode
+        job_listing = self.synced_job_listing
+        return job_listing.remote_work_mode if job_listing is not None else None
 
     @property
     def employment_type(self) -> str | None:
-        return self.job.employment_type if self.job is not None else None
+        if self.job is not None:
+            return self.job.employment_type
+        job_listing = self.synced_job_listing
+        return job_listing.employment_type if job_listing is not None else None
 
     @property
     def apply_url(self) -> str | None:
-        return self.job.apply_url if self.job is not None else None
+        if self.job is not None:
+            return self.job.apply_url
+        job_listing = self.synced_job_listing
+        return job_listing.apply_url if job_listing is not None else None
+
+    @property
+    def synced_job_listing(self) -> JobListing | None:
+        if self.saved_job is None:
+            return None
+        return self.saved_job.job_listing
 
     @property
     def latest_material_bundle(self) -> ApplicationMaterialBundle | None:

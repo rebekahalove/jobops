@@ -15,7 +15,12 @@ const jobTabs: Array<{ id: JobBucketId; label: string }> = [
 export type SavedJob = {
   id: string;
   candidate_profile_id: string;
-  job_id: string;
+  job_id: string | null;
+  job_listing_id?: string | null;
+  jobSearchRunId?: string | null;
+  highlighted?: boolean;
+  justAdded?: boolean;
+  latestDiscoveryRunId?: string | null;
   title: string;
   company_name: string;
   job_url: string;
@@ -262,7 +267,7 @@ export function JobsList({
         {sortedJobs.length > 0 ? (
           <div className="job-card-grid">
             {sortedJobs.map((job) => (
-              <article className="job-card" id={`saved-job-${job.id}`} key={job.id}>
+              <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
                 <div className="job-card-main">
                   <div className="job-card-header">
                     <div>
@@ -270,6 +275,7 @@ export function JobsList({
                       <p>{job.company_name}</p>
                     </div>
                     <div className="job-card-badges">
+                      {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
                       {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
                       {job.has_application ? (
                         <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
@@ -473,6 +479,7 @@ function JobDiscoveryDiagnosticsPanel({
   const replanning = diagnostics?.replanning;
   const explanation = diagnostics?.modelExplanation;
   const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
+  const hasDbBackedDiagnostics = Boolean(diagnostics?.jobSync || diagnostics?.databaseQueries);
   const providerTimeline = buildProviderSearchTimeline(providerRows, replanning, criteria);
 
   const summaryText = run ? jobDiscoveryRunDigest(run) : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
@@ -496,13 +503,17 @@ function JobDiscoveryDiagnosticsPanel({
                 <DiagnosticItem label="Status" value={formatStatus(run.status)} />
                 <DiagnosticItem label="Saved jobs" value={`${formatNumber(run.savedCount) ?? "0"} newly saved`} />
                 <DiagnosticItem label="Provider matches" value={`${formatNumber(run.providerResultCount) ?? "0"} normalized jobs returned by providers`} />
-                <DiagnosticItem label="Unique candidates" value={`${formatNumber(run.candidateCountAfterDedupe) ?? "0"} after URL/title dedupe`} />
-                <DiagnosticItem label="Sent to model" value={`${formatNumber(run.candidatePoolCount) ?? "0"} candidates in final review pool`} />
+                <DiagnosticItem label="Unique jobs" value={`${formatNumber(run.candidateCountAfterDedupe) ?? "0"} after URL/title dedupe`} />
+                <DiagnosticItem label="Reviewed job pool" value={`${formatNumber(run.candidatePoolCount) ?? "0"} jobs in final review pool`} />
                 <DiagnosticItem label="Selected by model" value={`${formatNumber(run.modelSelectedCount) ?? "0"} jobs recommended to save`} />
               </dl>
               {isActive ? <p className="diagnostics-muted">Running... diagnostics will fill in as provider results arrive.</p> : null}
             </section>
 
+            {hasDbBackedDiagnostics ? (
+              <DbBackedDiagnosticsSections run={run} />
+            ) : (
+              <>
             <section className="diagnostics-section">
               <h3>Initial search plan</h3>
               <dl className="diagnostics-grid">
@@ -542,13 +553,13 @@ function JobDiscoveryDiagnosticsPanel({
             <section className="diagnostics-section">
               <h3>Model review</h3>
               <dl className="diagnostics-grid">
-                <DiagnosticItem label="Unique candidates" value={`${formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} after provider result dedupe`} />
-                <DiagnosticItem label="Sent to model" value={`${formatNumber(modelReview?.candidatePoolCount) ?? "0"} final candidates`} />
+                <DiagnosticItem label="Unique jobs" value={`${formatNumber(modelReview?.candidateCountAfterDedupe) ?? "0"} after provider result dedupe`} />
+                <DiagnosticItem label="Reviewed job pool" value={`${formatNumber(modelReview?.candidatePoolCount) ?? "0"} final jobs`} />
                 <DiagnosticItem label="Selected by model" value={`${formatNumber(modelReview?.modelSelectedCount) ?? "0"} save recommendations`} />
                 <DiagnosticItem label="Saved" value={`${formatNumber(modelReview?.savedCount) ?? "0"} new saved jobs`} />
                 <DiagnosticItem label="Refreshed" value={`${formatNumber(modelReview?.updatedExistingCount) ?? "0"} existing saved jobs refreshed`} />
                 <DiagnosticItem label="Duplicates" value={`${formatNumber(modelReview?.duplicateCount) ?? "0"} already-saved or duplicate save attempts`} />
-                <DiagnosticItem label="Skipped" value={`${formatNumber(modelReview?.skippedCount) ?? "0"} provider/model candidates not saved`} />
+                <DiagnosticItem label="Skipped" value={`${formatNumber(modelReview?.skippedCount) ?? "0"} provider/model jobs not saved`} />
                 <DiagnosticItem label="Provider errors" value={formatNumber(modelReview?.providerErrorCount) ?? "0"} />
               </dl>
             </section>
@@ -567,6 +578,8 @@ function JobDiscoveryDiagnosticsPanel({
                 </ul>
               ) : null}
             </section>
+              </>
+            )}
           </div>
         ) : (
           <div className="job-discovery-diagnostics-body">
@@ -578,6 +591,215 @@ function JobDiscoveryDiagnosticsPanel({
         )}
       </details>
     </section>
+  );
+}
+
+function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
+  const diagnostics = run.diagnostics;
+  const planner = diagnostics?.planner;
+  const plannerSyncRows = [...(planner?.plannedSyncSignatures ?? []), ...(planner?.existingSyncSignaturesSelected ?? [])];
+  const plannerQueryRows = planner?.plannedDbQueries ?? [];
+  const syncRows = diagnostics?.jobSync?.runs ?? [];
+  const queryRows = diagnostics?.databaseQueries?.queries ?? [];
+  const modelReview = diagnostics?.modelReview;
+  const reasonCounts = modelReview?.topRejectionReasonCounts ?? modelReview?.rejectionReasonCounts ?? {};
+  const selectedJobsLabel = modelReview?.selectedJobsLabel || "Added to jobs list";
+  const selectedJobsValue = selectedJobsLabel === "Recommended existing jobs"
+    ? modelReview?.recommendedExistingJobCount ?? modelReview?.finalRecommendedCount ?? 0
+    : modelReview?.addedToCandidateJobsList ?? 0;
+
+  return (
+    <>
+      <section className="diagnostics-section">
+        <h3>Planner</h3>
+        {!planner?.planningFailed && planner?.status ? <p className="diagnostics-muted">Planning status: {formatStatus(planner.status)}</p> : null}
+        {planner?.mode ? (
+          <p className="diagnostics-muted">
+            Mode: {formatStatus(planner.mode)}
+            {planner.modeRationale ? ` - ${planner.modeRationale}` : ""}
+          </p>
+        ) : null}
+        {planner?.reviewTask ? (
+          <p className="diagnostics-muted">
+            Review task: {formatStatus(planner.reviewTask)}
+            {planner.requestedRecommendationCount ? ` - recommend ${formatNumber(planner.requestedRecommendationCount) ?? planner.requestedRecommendationCount} existing jobs` : ""}
+            {planner.reviewPlanRationale ? ` - ${planner.reviewPlanRationale}` : ""}
+          </p>
+        ) : null}
+        {planner?.plannerAttemptCount || planner?.criticAttemptCount ? (
+          <p className="diagnostics-muted">
+            Planner attempts: {formatNumber(planner.plannerAttemptCount) ?? "0"}; critic attempts: {formatNumber(planner.criticAttemptCount) ?? "0"}
+            {planner.finalPlanStatus ? `; final status: ${formatStatus(planner.finalPlanStatus)}` : ""}
+            {planner.resultReplanCount ? `; result replans: ${formatNumber(planner.resultReplanCount)}` : ""}
+            {planner.resultReplanReason ? ` (${formatStatus(planner.resultReplanReason)})` : ""}
+          </p>
+        ) : null}
+        {planner?.rejectedPlans?.length ? (
+          <div className="diagnostics-provider-list">
+            {planner.rejectedPlans.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.issueCode}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.issueCode || "Plan critique"}</strong>
+                  <span>{row.mode ? formatStatus(row.mode) : "Rejected"}</span>
+                </div>
+                <p className="diagnostics-muted">{row.issueMessage || "The model critic rejected this plan."}</p>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {planner?.planningFailed ? (
+          <p className="diagnostics-muted">
+            Planning failed: {planner.error || "unknown"}
+            {planner.errorDetail ? ` - ${planner.errorDetail}` : ""}
+          </p>
+        ) : null}
+        {plannerSyncRows.length ? (
+          <div className="diagnostics-provider-list">
+            {plannerSyncRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.syncKey}-${row.action}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.syncKey || "sync token"}</strong>
+                  <span>{[formatStatus(row.action || "planned"), row.syncRunStatus ? `sync ${formatStatus(row.syncRunStatus)}` : null].filter(Boolean).join(" - ")}</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Query", value: row.queryText || "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Location", value: row.displayLocation || "Any" }} />
+                  <CompactDetailItem item={{ label: "Country", value: row.providerCountry || "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Where", value: row.providerWhere || "-" }} />
+                  <CompactDetailItem item={{ label: "Pages", value: formatNumber(row.maxPages) ?? "Unknown" }} />
+                  <CompactDetailItem item={{ label: "Results/page", value: formatNumber(row.resultsPerPage) ?? "Unknown" }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {plannerQueryRows.length ? (
+          <div className="diagnostics-provider-list">
+            {plannerQueryRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.label}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.label || "Synced job inventory search"}</strong>
+                  <span>{formatNumber(row.limit) ?? "No"} limit</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Title any", value: formatList(row.titleTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Title all", value: formatList(row.titleTermsAll) }} />
+                  <CompactDetailItem item={{ label: "Title exclude", value: formatList(row.titleTermsExclude) }} />
+                  <CompactDetailItem item={{ label: "Description any", value: formatList(row.descriptionTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Description all", value: formatList(row.descriptionTermsAll) }} />
+                  <CompactDetailItem item={{ label: "Description exclude", value: formatList(row.descriptionTermsExclude) }} />
+                  <CompactDetailItem item={{ label: "Companies", value: formatList(row.companyNamesAny) }} />
+                  <CompactDetailItem item={{ label: "Providers", value: formatList(row.sourceProvidersAny) }} />
+                  <CompactDetailItem item={{ label: "Country", value: formatList(row.locationCountriesAny) }} />
+                  <CompactDetailItem item={{ label: "Region", value: formatList(row.locationRegionsAny) }} />
+                  <CompactDetailItem item={{ label: "City", value: formatList(row.locationCitiesAny) }} />
+                  <CompactDetailItem item={{ label: "Location text", value: formatList(row.locationDisplayTermsAny) }} />
+                  <CompactDetailItem item={{ label: "Work mode", value: formatList(row.remoteWorkModesAny) }} />
+                  <CompactDetailItem item={{ label: "Employment", value: formatList(row.employmentTypesAny) }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {!plannerSyncRows.length && !plannerQueryRows.length && !planner?.planningFailed && !planner?.status ? (
+          <p className="diagnostics-muted">No planner details were recorded.</p>
+        ) : null}
+      </section>
+
+      <section className="diagnostics-section">
+        <h3>Job Sync</h3>
+        {syncRows.length ? (
+          <div className="diagnostics-provider-list">
+            {syncRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.syncKey}-${row.status}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.syncKey || "job_sync"}</strong>
+                  <span>{formatStatus(row.status || "unknown")}</span>
+                </div>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Raw", value: formatNumber(row.raw) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Normalized", value: formatNumber(row.normalized) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Created", value: formatNumber(row.created) ?? "0" }} />
+                  <CompactDetailItem item={{ label: "Updated", value: formatNumber(row.updated) ?? "0" }} />
+                  {row.failed ? <CompactDetailItem item={{ label: "Failed", value: formatNumber(row.failed) ?? "0" }} /> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="diagnostics-muted">No sync runs were recorded for this discovery run.</p>
+        )}
+      </section>
+
+      <section className="diagnostics-section">
+        <h3>Database queries</h3>
+        {queryRows.length ? (
+          <div className="diagnostics-provider-list">
+            {queryRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.label}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.label || "Synced job inventory search"}</strong>
+                  <span>{formatNumber(row.jobCount) ?? "0"} jobs</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="diagnostics-muted">No database query rows were recorded.</p>
+        )}
+        <p className="diagnostics-muted">Unique jobs in pool: {formatNumber(diagnostics?.databaseQueries?.uniqueJobPoolCount) ?? "0"}</p>
+      </section>
+
+      <section className="diagnostics-section">
+        <h3>Model review</h3>
+        <dl className="diagnostics-grid">
+          <DiagnosticItem label="Unique jobs in pool" value={formatNumber(modelReview?.uniqueJobsInPool) ?? "0"} />
+          {modelReview?.eligibleJobsListCount !== undefined ? (
+            <DiagnosticItem label="Eligible jobs from list" value={formatNumber(modelReview.eligibleJobsListCount) ?? "0"} />
+          ) : null}
+          {modelReview?.reviewBatchCount !== undefined ? (
+            <DiagnosticItem label="Review batches" value={formatNumber(modelReview.reviewBatchCount) ?? "0"} />
+          ) : null}
+          <DiagnosticItem label="Jobs reviewed by model" value={formatNumber(modelReview?.jobsReviewedByModel) ?? "0"} />
+          {modelReview?.requestedRecommendationCount !== undefined ? (
+            <DiagnosticItem label="Requested recommendations" value={formatNumber(modelReview.requestedRecommendationCount) ?? "0"} />
+          ) : null}
+          <DiagnosticItem label={selectedJobsLabel} value={formatNumber(selectedJobsValue) ?? "0"} />
+          <DiagnosticItem label={selectedJobsLabel === "Recommended existing jobs" ? "Model rejections" : "Recorded model rejections"} value={formatNumber(modelReview?.recordedModelRejections) ?? "0"} />
+          <DiagnosticItem label="Model review completed" value={modelReview?.modelReviewCompleted === false ? "No" : "Yes"} />
+        </dl>
+        {modelReview?.modelReviewFailureReason ? <p className="diagnostics-muted">Failure reason: {modelReview.modelReviewFailureReason}</p> : null}
+        {run.noJobsAddedReason || diagnostics?.noJobsAddedReason ? (
+          <p className="diagnostics-muted">No jobs added: {formatNoJobsAddedReason(run.noJobsAddedReason || diagnostics?.noJobsAddedReason)}</p>
+        ) : null}
+        {modelReview?.fewerThanRequestedRecommendations ? (
+          <p className="diagnostics-muted">
+            Only {formatNumber(modelReview.availableMatchingSavedListJobs) ?? "0"} matching saved-list jobs were available. Ask whether to search for new jobs.
+          </p>
+        ) : null}
+        {Object.keys(reasonCounts).length ? (
+          <p className="diagnostics-muted">Top rejection reasons: {formatReasonCounts(reasonCounts)}</p>
+        ) : null}
+        {modelReview?.debugInvalidReviewResponsePreview ? (
+          <div className="diagnostics-debug-block">
+            <p className="diagnostics-muted">
+              Invalid review response debug: attempt {formatNumber(modelReview.debugInvalidReviewAttempt) ?? "unknown"};
+              {" "}finish reason {modelReview.debugInvalidReviewFinishReason || "unknown"};
+              {" "}length {formatNumber(modelReview.debugInvalidReviewResponseLength) ?? "unknown"} chars
+              {modelReview.debugInvalidReviewErrorType ? `; ${modelReview.debugInvalidReviewErrorType}` : ""}
+              {modelReview.debugInvalidReviewError ? `: ${modelReview.debugInvalidReviewError}` : ""}
+            </p>
+            <pre>{modelReview.debugInvalidReviewResponsePreview}</pre>
+            {modelReview.debugInvalidReviewResponseTail ? (
+              <>
+                <p className="diagnostics-muted">Response tail</p>
+                <pre>{modelReview.debugInvalidReviewResponseTail}</pre>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    </>
   );
 }
 
@@ -704,7 +926,17 @@ export function buildJobBucketCounts(jobs: SavedJob[]): Record<JobBucketId, numb
 }
 
 export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
-  return [...jobs].sort((left, right) => jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket)));
+  return [...jobs].sort((left, right) => {
+    const highlightRank = Number(isJustAddedJob(left)) - Number(isJustAddedJob(right));
+    if (highlightRank !== 0) {
+      return -highlightRank;
+    }
+    return jobSortDate(right, bucket).localeCompare(jobSortDate(left, bucket));
+  });
+}
+
+function isJustAddedJob(job: SavedJob) {
+  return Boolean(job.justAdded);
 }
 
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
@@ -739,8 +971,8 @@ function jobDiscoveryRunDigest(run: JobSearchRunStatus) {
     formatStatus(run.status),
     `${run.savedCount} saved`,
     `${run.modelSelectedCount} model selected`,
-    `${run.candidatePoolCount} sent to model`,
-    `${run.candidateCountAfterDedupe} unique candidates`,
+    `${run.candidatePoolCount} reviewed jobs`,
+    `${run.candidateCountAfterDedupe} unique jobs`,
     `${run.providerResultCount} provider matches`
   ].join(" - ");
 }
@@ -924,6 +1156,29 @@ function formatList(values?: string[] | null) {
 
 function formatNumber(value?: number | null) {
   return typeof value === "number" ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value) : null;
+}
+
+function formatNoJobsAddedReason(value?: string | null) {
+  if (!value) {
+    return "Unknown";
+  }
+  const labels: Record<string, string> = {
+    no_db_matches: "No synced jobs matched the database search",
+    model_planning_failed: "Model search planning did not complete",
+    model_review_failed: "Model review did not complete",
+    model_selected_zero: "Model review selected zero jobs",
+    review_validation_removed_all_selected_ids: "Model returned job IDs outside the reviewed pool",
+    all_selected_jobs_already_on_list: "Selected jobs were already on the jobs list",
+    unknown: "Unknown"
+  };
+  return labels[value] ?? formatStatus(value);
+}
+
+function formatReasonCounts(value: Record<string, number>) {
+  return Object.entries(value)
+    .slice(0, 5)
+    .map(([reason, count]) => `${formatStatus(reason)}: ${count}`)
+    .join(", ");
 }
 
 function formatTriggerSource(providerName?: string | null, providerType?: string | null) {
