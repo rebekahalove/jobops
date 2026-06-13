@@ -414,6 +414,14 @@ class SavedJobResponse(BaseModel):
     source_query: str | None
     source_url: str | None
     source_updated_at: datetime | None
+    hasApplicationFields: bool = False
+    requiredFieldCount: int | None = None
+    shortAnswerQuestionCount: int | None = None
+    requiresResume: bool | None = None
+    requiresCoverLetter: bool | None = None
+    requiresPortfolioUrl: bool | None = None
+    requiresLinkedIn: bool | None = None
+    requiresWebsite: bool | None = None
     company_website_url: str | None
     company_careers_url: str | None
     ats_provider: str | None

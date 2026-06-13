@@ -134,9 +134,11 @@ Greenhouse board sync refreshes a board token through the public jobs API with `
 
 Each returned job gets a `job_listing_sources` row tied to the board token and provider job id. The source metadata retains the full list-job payload, retrieve-job payload when available, and exact per-job retrieve request values. Successful detail payloads include application questions, location questions, compliance/demographic question objects, exposed job metadata, departments, offices, language, requisition/internal IDs, and pay ranges. Failed or guardrail-skipped detail retrieval stores a concise safe error or skip object in source metadata without stack traces, headers, cookies, or secrets.
 
+When Greenhouse retrieve-job details are available, Job Sync also stores normalized application form data on `job_listing_sources.application_fields_json`, a compact material-generation summary on `application_requirements_json`, and normalized pay input ranges on `pay_transparency_json`. These fields preserve resume, cover-letter, URL, location, compliance, demographic, short-answer, and pay-transparency signals separately from the raw provider payload. If a later detail call is skipped or fails, refresh preserves the previously stored normalized application fields instead of blanking them.
+
 Greenhouse full-board Job Sync can be run independently of candidate-facing discovery. Board targets can come from configured board tokens, configured company board mappings, or candidate company records with Greenhouse board metadata. Greenhouse sync does not role-filter jobs and does not create candidate saved-job rows.
 
-Greenhouse run diagnostics include detail request counts: attempted, succeeded, failed, and skipped by guardrail. After a successful valid list-jobs response, any previously active Greenhouse source for that board token whose job id is missing from the latest list response is marked inactive/closed. A valid empty `jobs: []` response can close old board jobs, but malformed list responses do not trigger stale/closed marking. The associated synced listing is closed when it has no other active sources. If a closed Greenhouse job reappears later, its source and listing are reactivated. No stale/closed marking runs when the list-jobs request fails.
+Greenhouse run diagnostics include board token, list URL, `content=true`, raw list count, provider-id count, retrieve params, max-detail guardrail, detail request counts, stale-closure eligibility, and closed counts. After a successful valid list-jobs response, any previously active Greenhouse source for that board token whose job id is missing from the latest list response is marked inactive/closed. A valid empty `jobs: []` response can close old board jobs, but malformed list responses do not trigger stale/closed marking. The associated synced listing is closed when it has no other active sources. If a closed Greenhouse job reappears later, its source and listing are reactivated. No stale/closed marking runs when the list-jobs request fails.
 
 Greenhouse sync records a failed `job_sync_runs` row for a board-level list failure or malformed list response and continues syncing later board targets in the same service call.
 
@@ -176,9 +178,9 @@ python -m jobops_api.cli sync-adzuna-job-signatures --signature-id <id> --force 
 
 For known mappings such as Remote UK, `provider_country` is resolved from `job_provider_location_mappings`; users should not need to pass `--provider-country gb`.
 
-Adzuna request diagnostics include exact non-secret values: provider country, API path, `what`, `where`, `what_exclude`, `results_per_page`, page, max pages, sync key, signature id, display location, normalized location key, mapping ids, confidence/status, provider-reported count/mean, and per-page returned counts. Diagnostics never include `app_id`, `app_key`, auth headers, cookies, or private profile payloads.
+Adzuna request diagnostics include exact non-secret values: provider country, API path, `what`, `where`, `what_exclude`, `results_per_page`, page, max pages, sync key, signature id, display location, normalized location key, mapping ids, confidence/status, provider-reported count/mean/total, requested pages, fetched pages, failed pages, skipped pages, page numbers fetched, page errors, and per-page returned counts. Diagnostics never include `app_id`, `app_key`, auth headers, cookies, or private profile payloads.
 
-Adzuna paging is bounded by the signature or CLI/service override. `results_per_page` defaults to 50 and `max_pages` defaults to 1. Broad searches can report large totals; Job Sync records provider-reported totals for diagnostics but fetches only configured pages.
+Adzuna paging is bounded by the signature or CLI/service override. `results_per_page` defaults to 50 and `max_pages` defaults to 1. Broad searches can report large totals; Job Sync records provider-reported totals for diagnostics but fetches only configured pages. If a later page fails after earlier pages succeeded, the run is recorded as `partial`, earlier-page records are still persisted, and diagnostics include `partialSync=true` plus the failed page details. If the first requested page fails before any results are fetched, the run is recorded as failed.
 
 For `job_sync_signatures`, `last_attempted_at` and `last_status` describe the latest sync attempt. `last_completed_at` and the last count fields describe the latest successful completed refresh and are not reset by skipped or failed attempts.
 
@@ -208,6 +210,6 @@ python -m jobops_api.cli update-job-location-mapping --mapping-id <id> --provide
 
 Raw provider job locations are still stored separately on synced listings and source records.
 
-## Branch 5 TODO
+## Application Materials
 
-Adzuna inventory depth is still bounded by signature paging settings. Branch 5 should improve Adzuna pagination and inventory-depth strategy so DB-backed candidate discovery can reason about when broad-provider inventory is shallow, stale, or under-sampled before asking the model to review a pool.
+Application materials generation can use synced `job_listings` even when there is no legacy canonical `job_postings` row. For Greenhouse-backed saved jobs, materials context includes the normalized application requirements summary and compact application-fields summary from `job_listing_sources`. The prompt treats those provider fields as untrusted context, grounds checklist and short-answer drafts in the actual application questions, and does not invent form requirements when fields are unavailable. Saved-job API serialization exposes a compact application-requirements summary so the UI can tell whether a synced job has form details such as resume, cover-letter, URL, or short-answer fields.

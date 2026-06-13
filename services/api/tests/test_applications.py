@@ -258,7 +258,7 @@ def test_create_application_from_synced_saved_job_without_canonical_posting(monk
     with Session(engine) as session:
         profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
         assert profile is not None
-        saved_job = create_synced_saved_job(session, candidate_profile_id=profile.id)
+        saved_job = create_synced_saved_job(session, candidate_profile_id=profile.id, with_application_fields=True)
         saved_job_id = saved_job.id
         session.commit()
 
@@ -310,6 +310,11 @@ def test_create_application_from_synced_saved_job_without_canonical_posting(monk
         assert job_payload["id"] == saved_job_id
         assert job_payload["has_application"] is True
         assert job_payload["application_id"] == created["id"]
+        assert job_payload["hasApplicationFields"] is True
+        assert job_payload["requiredFieldCount"] == 3
+        assert job_payload["shortAnswerQuestionCount"] == 1
+        assert job_payload["requiresResume"] is True
+        assert job_payload["requiresLinkedIn"] is True
 
         with Session(engine) as session:
             applications = session.scalars(select(Application).where(Application.saved_job_id == saved_job_id)).all()
@@ -1107,6 +1112,78 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
         app.dependency_overrides.clear()
 
 
+def test_generate_application_materials_includes_synced_application_fields(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    monkeypatch.setenv("JOBOPS_LLM_PROVIDER", "mock")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_synced_saved_job(session, candidate_profile_id=profile.id, with_application_fields=True)
+        application = Application(
+            candidate_profile_id=profile.id,
+            saved_job_id=saved_job.id,
+            company_name="Synced Civic",
+            job_title="Synced Applied AI Engineer",
+            job_url="https://jobs.example.test/synced-civic/apply",
+            status="in_progress",
+            notes="Draft against the actual ATS fields.",
+        )
+        session.add(application)
+        session.commit()
+        application_id = application.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/v1/applications/{application_id}/materials/generate",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["contextManifest"]["jobDescriptionSource"] == "synced_full_stored"
+        assert payload["contextManifest"]["applicationFieldsIncluded"] is True
+        assert payload["contextManifest"]["applicationFieldsProvider"] == "greenhouse"
+        assert payload["contextManifest"]["applicationFieldsRequiredCount"] == 3
+        assert payload["contextManifest"]["applicationFieldsShortAnswerCount"] == 1
+        assert "resume" in payload["contextManifest"]["applicationFieldsDetectedMaterials"]
+
+        with Session(engine) as session:
+            bundle = session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id))
+            assert bundle is not None
+            snapshot = bundle.source_context_snapshot
+            assert snapshot["context"]["applicationRequirements"]["requiresResume"] is True
+            assert snapshot["context"]["applicationRequirements"]["shortAnswerQuestions"][0]["label"] == "Why do you want this role?"
+            short_answers = [
+                item.content
+                for item in bundle.items
+                if item.material_type == "short_application_answers"
+            ]
+            checklist = [
+                item.content
+                for item in bundle.items
+                if item.material_type == "application_checklist"
+            ]
+            assert short_answers and "Why do you want this role?" in short_answers[0]
+            assert checklist and "Resume" in checklist[0]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_generate_application_materials_creates_new_bundle_version(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "dev")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
@@ -1367,6 +1444,7 @@ def create_synced_saved_job(
     session: Session,
     *,
     candidate_profile_id: str,
+    with_application_fields: bool = False,
 ) -> CandidateSavedJob:
     job_listing = JobListing(
         title="Synced Applied AI Engineer",
@@ -1381,6 +1459,8 @@ def create_synced_saved_job(
         salary_text="USD 155,000-185,000",
         posting_date=date(2026, 5, 22),
         source_status="active",
+        full_description="Synced full job description about applied AI systems, user workflows, and product ownership.",
+        description_excerpt="Synced excerpt.",
     )
     session.add(job_listing)
     session.flush()
@@ -1395,6 +1475,11 @@ def create_synced_saved_job(
             apply_url="https://jobs.example.test/synced-civic/apply",
             canonical_url="https://jobs.example.test/synced-civic/applied-ai",
             is_active=True,
+            application_fields_json=greenhouse_application_fields_fixture() if with_application_fields else None,
+            application_requirements_json=greenhouse_application_requirements_fixture() if with_application_fields else None,
+            pay_transparency_json={"provider": "greenhouse", "normalizedRanges": [{"currency": "USD", "min": 155000, "max": 185000}]}
+            if with_application_fields
+            else None,
         )
     )
     saved_job = CandidateSavedJob(
@@ -1406,6 +1491,50 @@ def create_synced_saved_job(
     session.add(saved_job)
     session.flush()
     return saved_job
+
+
+def greenhouse_application_fields_fixture() -> dict[str, object]:
+    return {
+        "provider": "greenhouse",
+        "sourceResultId": "synced-apply-1",
+        "rawFieldCount": 4,
+        "requiredFieldCount": 3,
+        "requiredQuestionLabels": ["Resume", "Location", "Why do you want this role?"],
+        "optionalQuestionLabels": ["LinkedIn"],
+        "fileUploadFields": [{"label": "Resume", "name": "resume", "type": "input_file"}],
+        "freeTextQuestionLabels": ["Location", "Why do you want this role?"],
+        "urlQuestionLabels": ["LinkedIn"],
+    }
+
+
+def greenhouse_application_requirements_fixture() -> dict[str, object]:
+    return {
+        "provider": "greenhouse",
+        "sourceResultId": "synced-apply-1",
+        "requiresResume": True,
+        "requiresCoverLetter": False,
+        "requiresPortfolioUrl": False,
+        "requiresLinkedIn": True,
+        "requiresWebsite": False,
+        "requiresGithub": False,
+        "requiresLocation": True,
+        "requiresPhone": False,
+        "requiresWorkAuthorization": False,
+        "requiresSponsorshipAnswer": False,
+        "requiresSalaryExpectation": False,
+        "shortAnswerQuestions": [
+            {
+                "label": "Why do you want this role?",
+                "required": True,
+                "fieldTypes": ["textarea"],
+                "description": None,
+            }
+        ],
+        "requiredQuestionLabels": ["Resume", "Location", "Why do you want this role?"],
+        "optionalQuestionLabels": ["LinkedIn"],
+        "detectedMaterials": ["linkedin_url", "location", "resume"],
+        "notes": [],
+    }
 
 
 def create_auth_session_token(

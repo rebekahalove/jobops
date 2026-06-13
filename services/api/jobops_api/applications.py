@@ -486,7 +486,7 @@ def get_owned_application_or_404(session: Session, application_id: str, candidat
         select(Application)
         .options(
             selectinload(Application.job),
-            selectinload(Application.saved_job),
+            selectinload(Application.saved_job).selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
             selectinload(Application.candidate_profile),
             selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
         )

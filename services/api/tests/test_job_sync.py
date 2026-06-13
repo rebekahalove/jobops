@@ -207,6 +207,21 @@ def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None
     assert source.raw_metadata_json["demographic_questions"]["questions"][0]["label"] == "Favorite Color"
     assert source.raw_metadata_json["pay_input_ranges"][0]["currency_type"] == "USD"
     assert source.raw_metadata_json["job_board_retrieve_request"] == greenhouse_retrieve_request("vaulttec", "44444")
+    assert source.application_fields_json is not None
+    assert source.application_fields_json["provider"] == "greenhouse"
+    assert source.application_fields_json["boardToken"] == "vaulttec"
+    assert source.application_fields_json["sourceResultId"] == "vaulttec:44444"
+    assert source.application_fields_json["requiredQuestionLabels"] == ["First Name", "Resume", "Location"]
+    assert source.application_fields_json["fileUploadFields"] == [{"label": "Resume", "name": "resume", "type": "input_file"}]
+    assert source.application_fields_json["demographicQuestions"]["questions"][0]["fields"][0]["type"] == "multi_value_multi_select"
+    assert source.application_requirements_json is not None
+    assert source.application_requirements_json["requiresResume"] is True
+    assert source.application_requirements_json["requiresCoverLetter"] is False
+    assert source.application_requirements_json["requiresLocation"] is True
+    assert source.application_requirements_json["shortAnswerQuestions"][0]["label"] == "Resume"
+    assert source.pay_transparency_json is not None
+    assert source.pay_transparency_json["normalizedRanges"][0]["currency"] == "USD"
+    assert source.pay_transparency_json["normalizedRanges"][0]["min"] == 50000
 
 
 def test_greenhouse_provider_location_creates_reviewable_target_without_us_default() -> None:
@@ -260,13 +275,14 @@ def test_greenhouse_detail_failure_keeps_list_job_and_records_diagnostics(monkey
     assert result.raw_result_count == 2
     assert result.normalized_count == 2
     assert result.created_count == 2
-    assert result.diagnostics_json == {
-        "detailRequestsAttempted": 2,
-        "detailRequestsSucceeded": 1,
-        "detailRequestsFailed": 1,
-        "detailRequestsSkippedByGuardrail": 0,
-        "listJobsResponseValid": True,
-    }
+    assert result.diagnostics_json["detailRequestsAttempted"] == 2
+    assert result.diagnostics_json["detailRequestsSucceeded"] == 1
+    assert result.diagnostics_json["detailRequestsFailed"] == 1
+    assert result.diagnostics_json["detailRequestsSkippedByGuardrail"] == 0
+    assert result.diagnostics_json["listJobsResponseValid"] is True
+    assert result.diagnostics_json["listJobsContentParam"] is True
+    assert result.diagnostics_json["staleClosureEligible"] is True
+    assert result.diagnostics_json["detailRequestParams"] == {"questions": "true", "pay_transparency": "true"}
     assert run is not None
     assert run.criteria_json["detailRequestsAttempted"] == 2
     assert run.criteria_json["detailRequestsSucceeded"] == 1
@@ -312,13 +328,12 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
         run = session.scalar(select(JobSyncRun))
 
     assert result.normalized_count == 2
-    assert result.diagnostics_json == {
-        "detailRequestsAttempted": 1,
-        "detailRequestsSucceeded": 1,
-        "detailRequestsFailed": 0,
-        "detailRequestsSkippedByGuardrail": 1,
-        "listJobsResponseValid": True,
-    }
+    assert result.diagnostics_json["detailRequestsAttempted"] == 1
+    assert result.diagnostics_json["detailRequestsSucceeded"] == 1
+    assert result.diagnostics_json["detailRequestsFailed"] == 0
+    assert result.diagnostics_json["detailRequestsSkippedByGuardrail"] == 1
+    assert result.diagnostics_json["listJobsResponseValid"] is True
+    assert result.diagnostics_json["maxDetailRequests"] == 1
     assert run is not None
     assert run.criteria_json["maxDetailRequests"] == 1
     assert run.criteria_json["detailRequestsSkippedByGuardrail"] == 1
@@ -334,6 +349,49 @@ def test_greenhouse_detail_max_guardrail_keeps_list_jobs(monkeypatch) -> None:
         ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
         ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
     ]
+
+
+def test_greenhouse_detail_skip_preserves_prior_application_fields(monkeypatch) -> None:
+    first_requested = install_greenhouse_fetch_mock(
+        monkeypatch,
+        board_token="vaulttec",
+        jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer")],
+    )
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        full_provider = GreenhouseJobSyncProvider()
+        request = full_provider.build_sync_plan(["vaulttec"]).requests[0]
+        first = full_provider.refresh_inventory(session, request, freshness_hours=0)
+        assert first.normalized_count == 1
+        source = session.scalar(select(JobListingSource).where(JobListingSource.provider_job_id == "44444"))
+        assert source is not None
+        initial_requirements = source.application_requirements_json
+        initial_fields = source.application_fields_json
+        initial_pay = source.pay_transparency_json
+        assert initial_requirements is not None
+        assert initial_fields is not None
+        assert initial_pay is not None
+
+        second_requested = install_greenhouse_fetch_mock(
+            monkeypatch,
+            board_token="vaulttec",
+            jobs=[greenhouse_list_job_raw(job_id=44444, title="Product Engineer Updated")],
+        )
+        skip_detail_provider = GreenhouseJobSyncProvider(max_detail_requests=0)
+        second = skip_detail_provider.refresh_inventory(session, request, freshness_hours=0)
+        assert second.normalized_count == 1
+        refreshed_source = session.scalar(select(JobListingSource).where(JobListingSource.provider_job_id == "44444"))
+        assert refreshed_source is not None
+        assert refreshed_source.application_requirements_json == initial_requirements
+        assert refreshed_source.application_fields_json == initial_fields
+        assert refreshed_source.pay_transparency_json == initial_pay
+
+    assert first_requested == [
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"}),
+        ("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs/44444", {"questions": "true", "pay_transparency": "true"}),
+    ]
+    assert second_requested == [("https://boards-api.greenhouse.io/v1/boards/vaulttec/jobs", {"content": "true"})]
 
 
 def test_greenhouse_sync_plan_accepts_company_targets_and_dedupes_tokens() -> None:
@@ -843,6 +901,50 @@ def test_adzuna_record_without_id_is_failed_normalization() -> None:
         assert result.normalized_count == 0
         assert result.failed_normalization_count == 1
         assert session.scalars(select(JobListing)).all() == []
+
+
+def test_adzuna_partial_page_failure_persists_first_page_and_records_diagnostics(monkeypatch) -> None:
+    requested: list[tuple[str, dict[str, object] | None]] = []
+
+    def fake_fetch_json(url: str, *, params: dict[str, object] | None = None):
+        requested.append((url, params))
+        if url.endswith("/search/1"):
+            return {"count": 2, "mean": 1.0, "results": [adzuna_raw(id="adz-1", title="First Page Engineer")]}
+        if url.endswith("/search/2"):
+            raise urllib.error.HTTPError(url, 502, "Bad Gateway", hdrs=None, fp=None)
+        raise AssertionError(f"Unexpected Adzuna URL: {url}")
+
+    monkeypatch.setattr("jobops_api.job_discovery.job_sync.providers.adzuna.client.fetch_json", fake_fetch_json)
+    provider = AdzunaJobSyncProvider(app_id="app", app_key="key", results_per_page=1)
+    request = adzuna_sync_request()
+    request.criteria_json["maxPages"] = 3
+    request.criteria_json["resultsPerPage"] = 1
+    engine = create_engine_for_job_sync_tests()
+
+    with Session(engine) as session:
+        result = provider.refresh_inventory(session, request, freshness_hours=0)
+        run = session.scalar(select(JobSyncRun))
+        listings = session.scalars(select(JobListing)).all()
+
+    assert result.status == "partial"
+    assert result.error is None
+    assert result.raw_result_count == 1
+    assert result.normalized_count == 1
+    assert result.diagnostics_json["requestedPages"] == 3
+    assert result.diagnostics_json["fetchedPages"] == 1
+    assert result.diagnostics_json["failedPages"] == 1
+    assert result.diagnostics_json["skippedPages"] == 1
+    assert result.diagnostics_json["partialSync"] is True
+    assert result.diagnostics_json["completionStatus"] == "partial_page_failure"
+    assert result.diagnostics_json["pageErrors"][0]["page"] == 2
+    assert result.diagnostics_json["pageErrors"][0]["status"] == 502
+    assert run is not None
+    assert run.status == "partial"
+    assert run.criteria_json["pageErrors"][0]["status"] == 502
+    assert len(listings) == 1
+    assert listings[0].title == "First Page Engineer"
+    assert requested[0][0] == "https://api.adzuna.com/v1/api/jobs/us/search/1"
+    assert requested[1][0] == "https://api.adzuna.com/v1/api/jobs/us/search/2"
 
 
 def test_sync_freshness_counts_only_recent_completed_runs() -> None:

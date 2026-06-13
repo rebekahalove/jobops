@@ -102,6 +102,9 @@ class JobListingSourceRecord:
     source_country: str | None = None
     raw_location: str | None = None
     raw_metadata_json: dict[str, Any] = field(default_factory=dict)
+    application_fields_json: dict[str, Any] | None = None
+    application_requirements_json: dict[str, Any] | None = None
+    pay_transparency_json: dict[str, Any] | None = None
     source_updated_at: datetime | None = None
     source_status: str | None = None
 

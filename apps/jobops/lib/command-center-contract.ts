@@ -87,6 +87,14 @@ export type JobDiscoverySavedJob = {
   source?: string | null;
   source_provider?: string | null;
   provider_type?: string | null;
+  hasApplicationFields?: boolean;
+  requiredFieldCount?: number | null;
+  shortAnswerQuestionCount?: number | null;
+  requiresResume?: boolean | null;
+  requiresCoverLetter?: boolean | null;
+  requiresPortfolioUrl?: boolean | null;
+  requiresLinkedIn?: boolean | null;
+  requiresWebsite?: boolean | null;
   location?: string | null;
   remote_work_mode?: string | null;
   status?: string | null;

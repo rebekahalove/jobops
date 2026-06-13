@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from alembic import command
@@ -147,6 +148,9 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
         "ats_board_token",
         "source_query",
         "raw_metadata_json",
+        "application_fields_json",
+        "application_requirements_json",
+        "pay_transparency_json",
         "last_synced_at",
         "is_active",
     }.issubset(job_listing_source_columns)
@@ -268,6 +272,61 @@ def test_candidate_saved_jobs_downgrade_preserves_synced_saved_rows(tmp_path: Pa
     assert row["job_id"] is None
     assert row["job_listing_id"] == "listing-1"
     assert row["status"] == "new"
+
+
+def test_job_source_application_fields_downgrade_preserves_populated_columns(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_application_fields_downgrade_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO job_listings (id, title, company_name, is_active) "
+                "VALUES ('listing-1', 'Synced Job', 'Synced Co', 1)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO job_listing_sources "
+                "(id, job_listing_id, source_provider, provider_type, provider_job_id, raw_metadata_json, "
+                "application_fields_json, application_requirements_json, pay_transparency_json, is_active) "
+                "VALUES "
+                "('source-1', 'listing-1', 'greenhouse', 'ats_board', 'job-1', :raw_metadata, "
+                ":application_fields, :application_requirements, :pay_transparency, 1)"
+            ),
+            {
+                "raw_metadata": json.dumps({}),
+                "application_fields": json.dumps({"questions": []}),
+                "application_requirements": json.dumps({"requiresResume": True}),
+                "pay_transparency": json.dumps({"normalizedRanges": []}),
+            },
+        )
+
+    command.downgrade(alembic_config, "20260612_0032")
+    inspector = inspect_database(engine)
+    source_columns = {column["name"] for column in inspector.get_columns("job_listing_sources")}
+    assert {"application_fields_json", "application_requirements_json", "pay_transparency_json"}.issubset(source_columns)
+
+    command.upgrade(alembic_config, "head")
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT application_fields_json, application_requirements_json, pay_transparency_json "
+                "FROM job_listing_sources WHERE id = 'source-1'"
+            )
+        ).mappings().one()
+
+    assert "questions" in row["application_fields_json"]
+    assert "requiresResume" in row["application_requirements_json"]
+    assert "normalizedRanges" in row["pay_transparency_json"]
 
 
 def test_canonical_company_migration_backfills_target_companies(tmp_path: Path, monkeypatch) -> None:

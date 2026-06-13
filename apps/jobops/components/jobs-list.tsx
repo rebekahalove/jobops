@@ -31,6 +31,14 @@ export type SavedJob = {
   source_result_id?: string | null;
   source_query?: string | null;
   source_url?: string | null;
+  hasApplicationFields?: boolean;
+  requiredFieldCount?: number | null;
+  shortAnswerQuestionCount?: number | null;
+  requiresResume?: boolean | null;
+  requiresCoverLetter?: boolean | null;
+  requiresPortfolioUrl?: boolean | null;
+  requiresLinkedIn?: boolean | null;
+  requiresWebsite?: boolean | null;
   provenance?: string | null;
   url_verification_status?: string | null;
   url_verification_checked_at?: string | null;
