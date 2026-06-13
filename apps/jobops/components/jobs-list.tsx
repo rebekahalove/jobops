@@ -772,6 +772,11 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
         {run.noJobsAddedReason || diagnostics?.noJobsAddedReason ? (
           <p className="diagnostics-muted">No jobs added: {formatNoJobsAddedReason(run.noJobsAddedReason || diagnostics?.noJobsAddedReason)}</p>
         ) : null}
+        {modelReview?.fewerThanRequestedRecommendations ? (
+          <p className="diagnostics-muted">
+            Only {formatNumber(modelReview.availableMatchingSavedListJobs) ?? "0"} matching saved-list jobs were available. Ask whether to search for new jobs.
+          </p>
+        ) : null}
         {Object.keys(reasonCounts).length ? (
           <p className="diagnostics-muted">Top rejection reasons: {formatReasonCounts(reasonCounts)}</p>
         ) : null}
@@ -931,7 +936,7 @@ export function sortJobsForBucket(jobs: SavedJob[], bucket: JobBucketId) {
 }
 
 function isJustAddedJob(job: SavedJob) {
-  return Boolean(job.justAdded || job.highlighted);
+  return Boolean(job.justAdded);
 }
 
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {

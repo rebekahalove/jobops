@@ -384,6 +384,65 @@ describe("Jobs list", () => {
     expect(html).toContain("Top rejection reasons: Role title: 12");
   });
 
+  it("renders jobs-list ranking diagnostics as recommended existing jobs", () => {
+    const html = renderToStaticMarkup(
+      <JobDiscoveryDiagnostics
+        initialRun={jobSearchRunFixture({
+          searchMode: "db_backed",
+          jobDiscoveryMode: "db_backed",
+          savedCount: 0,
+          modelSelectedCount: 0,
+          message: "Only 3 matching saved-list jobs were available. Would you like me to search for new jobs?",
+          userVisibleSummary: "Only 3 matching saved-list jobs were available. Would you like me to search for new jobs?",
+          diagnostics: {
+            planner: {
+              status: "planned",
+              mode: "jobs_list_review",
+              reviewTask: "rank_existing_jobs",
+              requestedRecommendationCount: 5,
+              plannedSyncSignatures: [],
+              existingSyncSignaturesSelected: [],
+              plannedDbQueries: [
+                {
+                  label: "Review active unapplied US remote jobs from the jobs list",
+                  locationCountriesAny: ["US"],
+                  remoteWorkModesAny: ["remote"],
+                  limit: 300
+                }
+              ]
+            },
+            jobSync: { runs: [] },
+            databaseQueries: {
+              queries: [{ label: "Review active unapplied US remote jobs from the jobs list", jobCount: 3 }],
+              uniqueJobPoolCount: 3
+            },
+            modelReview: {
+              uniqueJobsInPool: 3,
+              eligibleJobsListCount: 3,
+              jobsReviewedByModel: 3,
+              requestedRecommendationCount: 5,
+              selectedJobsLabel: "Recommended existing jobs",
+              recommendedExistingJobCount: 3,
+              addedToCandidateJobsList: 0,
+              recordedModelRejections: 0,
+              modelReviewCompleted: true,
+              fewerThanRequestedRecommendations: true,
+              availableMatchingSavedListJobs: 3
+            }
+          }
+        })}
+      />
+    );
+
+    expect(html).toContain("Review task: Rank existing jobs - recommend 5 existing jobs");
+    expect(html).toContain("Review active unapplied US remote jobs from the jobs list");
+    expect(html).toContain("Eligible jobs from list");
+    expect(html).toContain("Recommended existing jobs");
+    expect(html).toContain("Model rejections");
+    expect(html).toContain("Only 3 matching saved-list jobs were available. Ask whether to search for new jobs.");
+    expect(html).not.toContain("Just added to your jobs list");
+  });
+
   it("renders favorite and unfavorite actions for active unapplied jobs", () => {
     const newHtml = renderToStaticMarkup(
       <JobsList
@@ -435,6 +494,17 @@ describe("Jobs list", () => {
     expect(sortJobsForBucket(jobs, "new").map((job) => job.id)).toEqual(["just-added", "older"]);
     expect(html).toContain("job-card-just-added");
     expect(html).toContain("Just added");
+  });
+
+  it("does not badge recommended existing jobs as just added", () => {
+    const jobs = [
+      jobFixture({ id: "recommended-existing", highlighted: true, justAdded: false, title: "Recommended Existing Role" })
+    ];
+    const html = renderToStaticMarkup(<JobsList initialJobs={jobs} />);
+
+    expect(html).toContain("Recommended Existing Role");
+    expect(html).not.toContain("job-card-just-added");
+    expect(html).not.toContain("Just added");
   });
 });
 

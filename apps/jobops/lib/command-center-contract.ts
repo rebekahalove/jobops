@@ -198,6 +198,8 @@ export type JobSearchRunDiagnostics = {
     recommendedExistingJobCount?: number;
     requestedRecommendationCount?: number;
     eligibleJobsListCount?: number;
+    fewerThanRequestedRecommendations?: boolean;
+    availableMatchingSavedListJobs?: number;
     finalRecommendedCount?: number;
     reviewBatchCount?: number;
     perBatchReviewedCount?: number[];

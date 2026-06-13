@@ -292,6 +292,45 @@ describe("AI command center", () => {
     expect(html).toContain('href="https://jobs.example.test/ai-platform"');
   });
 
+  it("labels jobs-list ranking results as recommended existing jobs", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-ranked-existing-jobs",
+            type: "job_discovery",
+            title: "Rank jobs",
+            summary: "Recommended existing jobs.",
+            status: "completed",
+            targetWorkspace: "jobs",
+            resultPayload: {
+              jobDiscoveryMode: "db_backed",
+              jobSearchRunId: "run-1",
+              highlightedJobSearchRunId: "run-1",
+              selectedJobsLabel: "Recommended existing jobs",
+              recommendedExistingJobCount: 1,
+              jobs: [
+                {
+                  id: "saved-job-1",
+                  title: "AI Platform Engineer",
+                  company_name: "Example AI",
+                  location: "Remote US",
+                  source_provider: "greenhouse",
+                  status: "saved",
+                  job_url: "https://jobs.example.test/ai-platform"
+                }
+              ]
+            }
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Recommended existing jobs");
+    expect(html).not.toContain("Just added to your jobs list");
+    expect(html).toContain("AI Platform Engineer");
+  });
+
   it("renders a no-jobs-added reason when a DB-backed result has no jobs", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter
