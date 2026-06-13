@@ -17,6 +17,8 @@ from jobops_api.db.models import (
     Base,
     CandidateProfile,
     CandidateSavedJob,
+    JobListing,
+    JobListingSource,
     JobPosting,
 )
 from jobops_api.db.seed_profile import seed_public_profile
@@ -238,6 +240,81 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         assert duplicate_response.json()["id"] == created["id"]
         with Session(engine) as session:
             assert len(session.scalars(select(Application).where(Application.job_id == job_id)).all()) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_application_from_synced_saved_job_without_canonical_posting(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_synced_saved_job(session, candidate_profile_id=profile.id)
+        saved_job_id = saved_job.id
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        create_response = client.post(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={"saved_job_id": saved_job_id, "status": "in_progress"},
+        )
+        assert create_response.status_code == 201
+        created = create_response.json()
+        assert created["status"] == "in_process"
+        assert created["job_id"] is None
+        assert created["saved_job_id"] == saved_job_id
+        assert created["company_name"] == "Synced Civic"
+        assert created["job_title"] == "Synced Applied AI Engineer"
+        assert created["job_url"] == "https://jobs.example.test/synced-civic/apply"
+        assert created["location"] == "Remote US"
+        assert created["source"] == "greenhouse"
+        assert created["source_provider"] == "greenhouse"
+        assert created["fit_summary"] == "Strong synced match."
+        assert created["salary_text"] == "USD 155,000-185,000"
+        assert created["remote_work_mode"] == "remote"
+        assert created["employment_type"] == "Full-time"
+
+        duplicate_response = client.post(
+            "/v1/applications",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+            json={"saved_job_id": saved_job_id, "status": "in_progress"},
+        )
+        assert duplicate_response.status_code == 201
+        assert duplicate_response.json()["id"] == created["id"]
+
+        jobs_response = client.get(
+            "/v1/jobs",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert jobs_response.status_code == 200
+        [job_payload] = jobs_response.json()
+        assert job_payload["id"] == saved_job_id
+        assert job_payload["has_application"] is True
+        assert job_payload["application_id"] == created["id"]
+
+        with Session(engine) as session:
+            applications = session.scalars(select(Application).where(Application.saved_job_id == saved_job_id)).all()
+            assert len(applications) == 1
+            assert applications[0].job_id is None
     finally:
         app.dependency_overrides.clear()
 
@@ -1280,6 +1357,51 @@ def create_saved_job(
         candidate_profile_id=candidate_profile_id,
         job_id=job.id,
         fit_summary="Matches applied AI and platform engineering goals.",
+    )
+    session.add(saved_job)
+    session.flush()
+    return saved_job
+
+
+def create_synced_saved_job(
+    session: Session,
+    *,
+    candidate_profile_id: str,
+) -> CandidateSavedJob:
+    job_listing = JobListing(
+        title="Synced Applied AI Engineer",
+        company_name="Synced Civic",
+        canonical_url="https://jobs.example.test/synced-civic/applied-ai",
+        apply_url="https://jobs.example.test/synced-civic/apply",
+        source_url="https://jobs.example.test/synced-civic/applied-ai",
+        location_display="Remote US",
+        location_country="us",
+        remote_work_mode="remote",
+        employment_type="Full-time",
+        salary_text="USD 155,000-185,000",
+        posting_date=date(2026, 5, 22),
+        source_status="active",
+    )
+    session.add(job_listing)
+    session.flush()
+    session.add(
+        JobListingSource(
+            job_listing_id=job_listing.id,
+            source_provider="greenhouse",
+            provider_type="ats",
+            provider_job_id="synced-apply-1",
+            source_result_id="synced-apply-1",
+            source_url="https://jobs.example.test/synced-civic/applied-ai",
+            apply_url="https://jobs.example.test/synced-civic/apply",
+            canonical_url="https://jobs.example.test/synced-civic/applied-ai",
+            is_active=True,
+        )
+    )
+    saved_job = CandidateSavedJob(
+        candidate_profile_id=candidate_profile_id,
+        job_listing_id=job_listing.id,
+        status="saved",
+        fit_summary="Strong synced match.",
     )
     session.add(saved_job)
     session.flush()

@@ -155,12 +155,20 @@ def test_db_backed_service_saves_selected_and_persists_rejections(tmp_path: Path
         session.commit()
 
         saved_links = list(session.scalars(select(CandidateSavedJob)).all())
+        saved_link_listing_titles = {
+            session.get(JobListing, link.job_listing_id).title
+            for link in saved_links
+            if link.job_listing_id
+        }
         run = session.get(JobSearchRun, result.job_search_run_id)
 
     assert result.added_count == 1
     assert result.rejected_count == 1
     assert result.diagnostics["modelReview"]["rejectionReasonCounts"] == {"role_title": 1}
     assert {link.status for link in saved_links} == {"new", "model_rejected"}
+    assert all(link.job_id is None for link in saved_links)
+    assert all(link.job_listing_id for link in saved_links)
+    assert saved_link_listing_titles == {"AI Platform Engineer", "Sales Engineer"}
     assert run is not None
     assert run.status == "completed"
     assert run.search_mode == "db_backed"

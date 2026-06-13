@@ -40,6 +40,7 @@ class JobListingQueryBuilder:
         *,
         review_task: str = "select_new_jobs",
     ) -> Select[tuple[JobListing]]:
+        effective_scope = "candidate_jobs_list" if review_task == "rank_existing_jobs" else job_scope
         statement = select(JobListing)
         if requires_source_join(query):
             statement = statement.join(JobListingSource, JobListingSource.job_listing_id == JobListing.id)
@@ -93,7 +94,7 @@ class JobListingQueryBuilder:
         if query.ats_board_tokens_any:
             statement = statement.where(JobListingSource.ats_board_token.in_(query.ats_board_tokens_any))
 
-        if job_scope == "new_to_candidate":
+        if effective_scope == "new_to_candidate":
             statement = statement.where(
                 ~exists().where(
                     CandidateSavedJob.candidate_profile_id == candidate_profile_id,
@@ -101,7 +102,7 @@ class JobListingQueryBuilder:
                     CandidateSavedJob.status.in_(DISCOVERY_BLOCKING_STATUSES),
                 )
             )
-        elif job_scope == "candidate_jobs_list":
+        elif effective_scope == "candidate_jobs_list":
             statement = statement.join(CandidateSavedJob, CandidateSavedJob.job_listing_id == JobListing.id).where(
                 CandidateSavedJob.candidate_profile_id == candidate_profile_id
             )
@@ -118,7 +119,7 @@ class JobListingQueryBuilder:
                         ),
                     ),
                 )
-        elif job_scope == "all_accessible_jobs" and not query.include_model_rejected:
+        elif effective_scope == "all_accessible_jobs" and not query.include_model_rejected:
             statement = statement.where(
                 ~exists().where(
                     CandidateSavedJob.candidate_profile_id == candidate_profile_id,

@@ -949,6 +949,175 @@ def test_jobs_list_ranking_batches_all_eligible_jobs(tmp_path) -> None:
     assert result.rejected_count == 0
 
 
+def test_filtered_apply_prioritization_corrects_mixed_plan_to_jobs_list_ranking(tmp_path, monkeypatch) -> None:
+    def fail_sync(*args, **kwargs):
+        raise AssertionError("jobs-list ranking must not run sync")
+
+    monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fail_sync)
+    monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fail_sync)
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        saved = create_job_listing(session, title="US Remote Saved AI Job", provider_job_id="filtered-saved")
+        other = create_job_listing(session, title="UK Remote Saved AI Job", provider_job_id="filtered-other")
+        other.location_country = "gb"
+        session.add_all(
+            [
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=saved.id, status="saved"),
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=other.id, status="saved"),
+            ]
+        )
+        session.commit()
+
+        service = CandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=MixedPlanCorrectedToRankingConnector(),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="what US remote jobs should I apply to today?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        links = list(session.scalars(select(CandidateSavedJob)).all())
+
+    assert result.search_plan.mode == "jobs_list_review"
+    assert result.search_plan.review_plan.task == "rank_existing_jobs"
+    assert result.search_plan.use_followed_company_boards is False
+    assert result.search_plan.proposed_adzuna_signatures == ()
+    assert result.job_sync_results == ()
+    assert result.added_count == 0
+    assert result.recommended_existing_count == 1
+    assert result.diagnostics["planner"]["rejectedPlans"][0]["issueCode"] == "mode_mismatch_apply_prioritization"
+    assert result.diagnostics["addedJobIds"] == []
+    assert len(result.diagnostics["recommendedJobIds"]) == 1
+    assert all(link.job_search_run_id is None for link in links)
+
+
+def test_rank_existing_jobs_executor_guard_ignores_unsaved_recommendations(tmp_path, monkeypatch) -> None:
+    def fail_sync(*args, **kwargs):
+        raise AssertionError("rank_existing_jobs must not run sync")
+
+    monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fail_sync)
+    monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fail_sync)
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        saved = create_job_listing(session, title="Saved US Remote", provider_job_id="guard-saved")
+        unsaved = create_job_listing(session, title="Unsaved US Remote", provider_job_id="guard-unsaved")
+        saved_listing_id = saved.id
+        unsaved_listing_id = unsaved.id
+        session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=saved.id, status="saved"))
+        session.commit()
+
+        service = CandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=UnsafeMixedRankingPlanner(unsaved_job_listing_id=unsaved_listing_id),
+            reviewer=StaticRecommendationReviewer(job_listing_ids=[unsaved_listing_id]),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Find new jobs and rank them with my saved jobs.", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        links = list(session.scalars(select(CandidateSavedJob)).all())
+
+    assert result.search_plan.mode == "jobs_list_review"
+    assert result.search_plan.job_scope == "candidate_jobs_list"
+    assert result.job_sync_results == ()
+    assert result.added_count == 0
+    assert result.recommended_existing_count == 0
+    assert len(links) == 1
+    assert links[0].job_listing_id == saved_listing_id
+    assert result.diagnostics["addedJobIds"] == []
+    assert result.diagnostics["recommendedJobIds"] == []
+    assert result.diagnostics["modelReview"]["ignoredNonListRecommendations"] == 1
+    assert unsaved_listing_id in result.diagnostics["modelReview"]["ignoredNonListRecommendationJobListingIds"]
+
+
+def test_jobs_list_ranking_filter_applies_to_saved_list_entries(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    reviewer = RecordingRankingReviewer()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        us_remote = create_job_listing(session, title="US Remote Saved", provider_job_id="saved-us-remote")
+        us_hybrid = create_job_listing(session, title="US Hybrid Saved", provider_job_id="saved-us-hybrid")
+        us_hybrid.remote_work_mode = "hybrid"
+        uk_remote = create_job_listing(session, title="UK Remote Saved", provider_job_id="saved-uk-remote")
+        uk_remote.location_country = "gb"
+        session.add_all(
+            [
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=us_remote.id, status="saved"),
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=us_hybrid.id, status="saved"),
+                CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=uk_remote.id, status="saved"),
+            ]
+        )
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=FilteredJobsListRankingPlanner(location_countries=("us",), remote_modes=("remote",), requested_count=5),
+            reviewer=reviewer,
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="what US remote jobs should I apply to today?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert reviewer.reviewed_titles == [["US Remote Saved"]]
+    assert result.unique_job_pool_count == 1
+    assert result.added_count == 0
+    assert result.diagnostics["modelReview"]["eligibleJobsListCount"] == 1
+
+
+def test_jobs_list_ranking_fewer_than_requested_asks_before_searching(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    reviewer = RecordingRankingReviewer()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        for index in range(3):
+            job = create_job_listing(session, title=f"Available Saved {index}", provider_job_id=f"available-{index}")
+            session.add(CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved"))
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=StaticJobsListRankingPlanner(limit=300, requested_count=5),
+            reviewer=reviewer,
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Which are the first 5 jobs I should apply to?", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+
+    assert result.recommended_existing_count == 3
+    assert result.added_count == 0
+    assert result.diagnostics["modelReview"]["fewerThanRequestedRecommendations"] is True
+    assert result.diagnostics["modelReview"]["availableMatchingSavedListJobs"] == 3
+    assert "search for new jobs" in result.assistant_message
+
+
 def test_planner_payload_includes_existing_sync_context_without_secrets(tmp_path) -> None:
     engine = create_candidate_discovery_engine()
     with Session(engine) as session:
@@ -1402,6 +1571,191 @@ class StaticJobsListRankingPlanner:
                 rationale="Rank all active, unarchived, unapplied jobs from the jobs list.",
             ),
         )
+
+
+class FilteredJobsListRankingPlanner:
+    def __init__(
+        self,
+        *,
+        location_countries: tuple[str, ...] = (),
+        remote_modes: tuple[str, ...] = (),
+        requested_count: int,
+    ) -> None:
+        self.location_countries = location_countries
+        self.remote_modes = remote_modes
+        self.requested_count = requested_count
+
+    def plan(self, *args, **kwargs) -> DbJobSearchPlan:
+        return DbJobSearchPlan(
+            mode="jobs_list_review",
+            job_scope="candidate_jobs_list",
+            mode_rationale="The user asked which filtered saved jobs to apply to first.",
+            queries=(
+                DbJobSearchQuery(
+                    label="Review active unapplied filtered jobs from the jobs list",
+                    source_statuses_any=("active",),
+                    location_countries_any=self.location_countries,
+                    remote_work_modes_any=self.remote_modes,
+                    limit=300,
+                ),
+            ),
+            min_job_pool_size=1,
+            max_job_pool_size=300,
+            review_plan=ReviewPlan(
+                task="rank_existing_jobs",
+                requested_count=self.requested_count,
+                allow_rejections=False,
+                review_all_eligible_jobs=True,
+            ),
+        )
+
+
+class UnsafeMixedRankingPlanner:
+    def __init__(self, *, unsaved_job_listing_id: str) -> None:
+        self.unsaved_job_listing_id = unsaved_job_listing_id
+
+    def plan(self, *args, **kwargs) -> DbJobSearchPlan:
+        return DbJobSearchPlan(
+            mode="mixed_new_and_existing",
+            job_scope="all_accessible_jobs",
+            mode_rationale="Unsafe one-pass mixed ranking plan.",
+            use_followed_company_boards=True,
+            proposed_adzuna_signatures=({"queryText": "AI", "displayLocation": "Remote US", "queryKind": "model_planned"},),
+            queries=(DbJobSearchQuery(label="Unsafe all accessible ranking", source_statuses_any=("active",), limit=300),),
+            min_job_pool_size=1,
+            max_job_pool_size=300,
+            review_plan=ReviewPlan(
+                task="rank_existing_jobs",
+                requested_count=5,
+                allow_rejections=False,
+                review_all_eligible_jobs=True,
+            ),
+        )
+
+
+class StaticRecommendationReviewer:
+    def __init__(self, *, job_listing_ids: list[str]) -> None:
+        self.job_listing_ids = job_listing_ids
+
+    def review(self, *args, **kwargs) -> JobReviewResult:
+        return JobReviewResult(
+            user_visible_summary="I recommend these existing jobs.",
+            selected_jobs=tuple(SelectedJobDecision(job_listing_id=job_listing_id) for job_listing_id in self.job_listing_ids),
+            diagnostics={"modelReviewCompleted": True, "reviewMode": "rank_existing_jobs"},
+        )
+
+
+class MixedPlanCorrectedToRankingConnector:
+    def generate(self, request):
+        if request.task == "candidate_db_job_search_planning":
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "mode": "mixed_new_and_existing",
+                        "modeRationale": "Incorrectly treated filters as new discovery.",
+                        "syncPlan": {
+                            "useFollowedCompanyBoards": True,
+                            "proposedAdzunaSignatures": [
+                                {
+                                    "queryText": "AI",
+                                    "displayLocation": "Remote US",
+                                    "queryKind": "model_planned",
+                                    "maxPages": 1,
+                                }
+                            ],
+                            "existingAdzunaSignatureIdsToRefresh": [],
+                            "rationale": "Incorrect sync.",
+                        },
+                        "dbSearchPlan": {
+                            "queries": [
+                                {
+                                    "label": "Unsafe mixed US remote search",
+                                    "activeOnly": True,
+                                    "locationCountriesAny": ["us"],
+                                    "remoteWorkModesAny": ["remote"],
+                                    "limit": 300,
+                                    "orderBy": "last_seen_at_desc",
+                                }
+                            ]
+                        },
+                        "reviewPlan": {
+                            "task": "rank_existing_jobs",
+                            "requestedCount": 5,
+                            "allowRejections": False,
+                            "reviewAllEligibleJobs": True,
+                        },
+                    }
+                )
+            )
+        if request.task == "candidate_db_job_plan_critique":
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "valid": False,
+                        "issueCode": "mode_mismatch_apply_prioritization",
+                        "issueMessage": "The user asked which jobs to apply to, with filters.",
+                        "correctedPlan": {
+                            "mode": "jobs_list_review",
+                            "modeRationale": "The user asked which US remote jobs on the jobs list to apply to today.",
+                            "syncPlan": {
+                                "useFollowedCompanyBoards": False,
+                                "proposedAdzunaSignatures": [],
+                                "existingAdzunaSignatureIdsToRefresh": [],
+                                "rationale": "No new inventory needed.",
+                            },
+                            "dbSearchPlan": {
+                                "queries": [
+                                    {
+                                        "label": "Review active unapplied US remote jobs from the jobs list",
+                                        "activeOnly": True,
+                                        "locationCountriesAny": ["us"],
+                                        "remoteWorkModesAny": ["remote"],
+                                        "includeModelRejected": False,
+                                        "limit": 300,
+                                        "orderBy": "last_seen_at_desc",
+                                    }
+                                ]
+                            },
+                            "reviewPlan": {
+                                "task": "rank_existing_jobs",
+                                "requestedCount": 5,
+                                "allowRejections": False,
+                                "reviewAllEligibleJobs": True,
+                                "rationale": "Rank matching existing jobs-list entries.",
+                            },
+                            "replanRules": {
+                                "minJobPoolSize": 1,
+                                "maxJobPoolSize": 300,
+                                "maxJobsForModelReview": 80,
+                            },
+                        },
+                    }
+                )
+            )
+        if request.task == "candidate_job_review":
+            payload = json.loads(request.messages[-1].content)
+            jobs = payload["jobPool"]
+            selected = [
+                {
+                    "jobListingId": job["job_listing_id"],
+                    "savedJobId": job["saved_job_id"],
+                    "rank": index + 1,
+                    "rationale": "Matches the US remote filter.",
+                    "matchHighlights": ["US remote"],
+                    "cautions": [],
+                }
+                for index, job in enumerate(jobs[:5])
+            ]
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "userVisibleSummary": f"I reviewed {len(jobs)} US remote saved-list jobs.",
+                        "recommendedJobs": selected,
+                    }
+                ),
+                finish_reason="stop",
+            )
+        raise AssertionError(f"Unexpected task {request.task}")
 
 
 class RecordingRankingReviewer:

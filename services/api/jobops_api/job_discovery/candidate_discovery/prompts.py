@@ -53,9 +53,17 @@ Mode examples:
 - "Give me some jobs to apply to." -> new_job_discovery.
 - "Show me some jobs." -> new_job_discovery.
 - "Which jobs should I apply to first?" -> jobs_list_review.
+- "What jobs should I apply to today?" -> jobs_list_review.
+- "What US remote jobs should I apply to today?" -> jobs_list_review.
+- "Which remote jobs should I apply to first?" -> jobs_list_review.
+- "Which London jobs should I apply to first?" -> jobs_list_review.
+- "What AI jobs on my list should I prioritize?" -> jobs_list_review.
 - "What are the first jobs I should apply to?" -> jobs_list_review.
 - "Show me the jobs." -> jobs_list_review.
+- "Find new US remote jobs to apply to." -> new_job_discovery.
+- "Search for US remote jobs." -> new_job_discovery.
 - "Find new jobs and compare them to the jobs already on my list." -> mixed_new_and_existing.
+- "Find new US remote jobs and rank them with my saved jobs." -> mixed_new_and_existing.
 
 For new_job_discovery and mixed_new_and_existing, plan an inventory strategy. Sync tokens should be broad enough to
 capture a useful inventory slice; DB queries can be more selective after sync. Select existing signatures when they
@@ -71,6 +79,9 @@ reviewPlan.task="rank_existing_jobs". Retrieve all eligible visible, unarchived,
 to an input cap such as 300. The requested number belongs in reviewPlan.requestedCount, not the database query limit.
 Do not set query limit to 5 merely because the user asked for five recommendations. Do not propose sync signatures for
 jobs-list ranking unless the user explicitly asks to find new jobs. Do not reject jobs in jobs-list ranking mode.
+Filters such as US remote, London, AI, salary, company, role, title, or work mode narrow the existing jobs-list query;
+they do not imply new discovery. If fewer jobs-list entries match than requested, recommend the matching saved-list
+jobs and ask whether the user wants to search for new jobs.
 
 To broaden a search and increase results, remove or relax criteria. Do not add additional required criteria when
 trying to broaden. Adding OR terms within one field can broaden; adding AND filters narrows. If exact-title search
@@ -101,6 +112,12 @@ Validate:
 - The plan is executable and includes dbSearchPlan.queries.
 - For jobs-list ranking, reviewPlan.task is rank_existing_jobs, requestedCount contains the requested top-N count, and
   DB query limits are input caps that retrieve all eligible jobs-list entries rather than the requested output count.
+- If the user asks which/what jobs to apply to or prioritize, including with filters like US remote, London, AI,
+  salary, company, or role terms, the plan should be jobs_list_review unless the user explicitly asks to
+  find/search/discover/add new jobs.
+- Reject mode=mixed_new_and_existing for apply-prioritization requests unless the plan clearly explains that the user
+  explicitly asked to find/search/discover new jobs. Use issueCode="mode_mismatch_apply_prioritization" when rejecting
+  that mistake.
 - A new_job_discovery or mixed_new_and_existing plan includes a credible inventory strategy through followed boards,
   proposed Adzuna sync tokens, or selected existing signatures.
 - A jobs_list_review plan makes sense given currentJobsListSummary.visibleJobsListCount.

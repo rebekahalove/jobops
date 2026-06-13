@@ -121,12 +121,12 @@ def list_jobs(
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
     )
     links = list(session.scalars(statement))
-    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, auth.candidate_profile.id)
+    application_by_saved_job_id = load_application_lookup_for_saved_jobs(session, links, auth.candidate_profile.id)
     return sort_serialized_saved_jobs(
         [
             serialize_saved_job(
                 link,
-                application=application_by_job_id.get(link.job_id),
+                application=application_by_saved_job_id.get(link.id),
                 highlighted_job_search_run_id=latest_discovery_run_id,
             )
             for link in links
@@ -2584,9 +2584,9 @@ def load_added_jobs_for_search_run(session: Session, run_id: str, candidate_prof
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
     )
     links = list(session.scalars(statement))
-    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
+    application_by_saved_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
     return [
-        serialize_saved_job(link, application=application_by_job_id.get(link.job_id), highlighted_job_search_run_id=run_id)
+        serialize_saved_job(link, application=application_by_saved_job_id.get(link.id), highlighted_job_search_run_id=run_id)
         for link in links
     ]
 
@@ -2609,9 +2609,9 @@ def load_saved_jobs_by_ids(session: Session, saved_job_ids: list[str], candidate
             )
         )
     )
-    application_by_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
+    application_by_saved_job_id = load_application_lookup_for_saved_jobs(session, links, candidate_profile_id)
     return [
-        serialize_saved_job(link, application=application_by_job_id.get(link.job_id))
+        serialize_saved_job(link, application=application_by_saved_job_id.get(link.id))
         for link in sorted(links, key=lambda item: order.get(item.id, len(order)))
     ]
 
@@ -4018,27 +4018,56 @@ def load_application_lookup_for_saved_jobs(
     links: list[CandidateSavedJob],
     candidate_profile_id: str,
 ) -> dict[str, Application]:
-    job_ids = [link.job_id for link in links if link.job_id]
-    if not job_ids:
+    saved_job_ids = [link.id for link in links]
+    job_id_to_saved_job_id = {link.job_id: link.id for link in links if link.job_id}
+    if not saved_job_ids and not job_id_to_saved_job_id:
         return {}
-    applications = list(
+    lookup: dict[str, Application] = {}
+    if saved_job_ids:
+        applications_by_saved_job = list(
+            session.scalars(
+                select(Application)
+                .where(
+                    Application.candidate_profile_id == candidate_profile_id,
+                    Application.saved_job_id.in_(saved_job_ids),
+                )
+                .order_by(Application.created_at.desc())
+            )
+        )
+        for application in applications_by_saved_job:
+            if application.saved_job_id and application.saved_job_id not in lookup:
+                lookup[application.saved_job_id] = application
+    if not job_id_to_saved_job_id:
+        return lookup
+    applications_by_job = list(
         session.scalars(
             select(Application)
             .where(
                 Application.candidate_profile_id == candidate_profile_id,
-                Application.job_id.in_(job_ids),
+                Application.job_id.in_(job_id_to_saved_job_id),
             )
             .order_by(Application.created_at.desc())
         )
     )
-    lookup: dict[str, Application] = {}
-    for application in applications:
-        if application.job_id and application.job_id not in lookup:
-            lookup[application.job_id] = application
+    for application in applications_by_job:
+        saved_job_id = job_id_to_saved_job_id.get(application.job_id)
+        if saved_job_id and saved_job_id not in lookup:
+            lookup[saved_job_id] = application
     return lookup
 
 
 def get_application_for_saved_job(session: Session, saved_job: CandidateSavedJob, candidate_profile_id: str) -> Application | None:
+    application = session.scalar(
+        select(Application)
+        .where(
+            Application.candidate_profile_id == candidate_profile_id,
+            Application.saved_job_id == saved_job.id,
+        )
+        .order_by(Application.created_at.desc())
+        .limit(1)
+    )
+    if application is not None:
+        return application
     if not saved_job.job_id:
         return None
     return session.scalar(

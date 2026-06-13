@@ -67,6 +67,24 @@ def test_greenhouse_same_board_and_provider_job_id_updates_existing_listing() ->
         assert session.scalar(select(JobListing).where(JobListing.id == first.job_listing_id)).title == "Senior Applied AI Engineer"
         assert len(session.scalars(select(JobListing)).all()) == 1
         assert len(session.scalars(select(JobListingSource)).all()) == 1
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
+
+
+def test_job_sync_upsert_never_creates_candidate_saved_jobs() -> None:
+    engine = create_engine_for_job_sync_tests()
+    with Session(engine) as session:
+        result = upsert_job_listing_from_provider_record(
+            session,
+            listing=listing(title="Synced Inventory Only"),
+            source=greenhouse_source(provider_job_id="inventory-only", board_token="anthropic"),
+        )
+        session.commit()
+
+        saved_links = list(session.scalars(select(CandidateSavedJob)).all())
+        synced_listing = session.get(JobListing, result.job_listing_id)
+
+    assert synced_listing is not None
+    assert saved_links == []
 
 
 def test_greenhouse_distinct_provider_job_ids_preserve_distinct_same_title_jobs() -> None:

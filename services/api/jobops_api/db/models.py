@@ -879,11 +879,22 @@ class Application(Base, TimestampMixin):
 
     @property
     def source_provider(self) -> str | None:
-        return self.job.source_provider if self.job is not None else None
+        if self.job is not None:
+            return self.job.source_provider
+        job_listing = self.synced_job_listing
+        if job_listing is None:
+            return None
+        for source in job_listing.sources:
+            if source.source_provider:
+                return source.source_provider
+        return None
 
     @property
     def posting_date(self) -> date | None:
-        return self.job.posting_date if self.job is not None else None
+        if self.job is not None:
+            return self.job.posting_date
+        job_listing = self.synced_job_listing
+        return job_listing.posting_date if job_listing is not None else None
 
     @property
     def fit_summary(self) -> str | None:
@@ -891,19 +902,37 @@ class Application(Base, TimestampMixin):
 
     @property
     def salary_text(self) -> str | None:
-        return self.job.salary_text if self.job is not None else None
+        if self.job is not None:
+            return self.job.salary_text
+        job_listing = self.synced_job_listing
+        return job_listing.salary_text if job_listing is not None else None
 
     @property
     def remote_work_mode(self) -> str | None:
-        return self.job.remote_work_mode if self.job is not None else None
+        if self.job is not None:
+            return self.job.remote_work_mode
+        job_listing = self.synced_job_listing
+        return job_listing.remote_work_mode if job_listing is not None else None
 
     @property
     def employment_type(self) -> str | None:
-        return self.job.employment_type if self.job is not None else None
+        if self.job is not None:
+            return self.job.employment_type
+        job_listing = self.synced_job_listing
+        return job_listing.employment_type if job_listing is not None else None
 
     @property
     def apply_url(self) -> str | None:
-        return self.job.apply_url if self.job is not None else None
+        if self.job is not None:
+            return self.job.apply_url
+        job_listing = self.synced_job_listing
+        return job_listing.apply_url if job_listing is not None else None
+
+    @property
+    def synced_job_listing(self) -> JobListing | None:
+        if self.saved_job is None:
+            return None
+        return self.saved_job.job_listing
 
     @property
     def latest_material_bundle(self) -> ApplicationMaterialBundle | None:
