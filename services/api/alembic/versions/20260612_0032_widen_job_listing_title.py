@@ -23,5 +23,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    connection = op.get_bind()
+    max_title_length = connection.execute(sa.text("SELECT max(length(title)) FROM job_listings")).scalar()
+    if max_title_length and max_title_length > 240:
+        return
     with op.batch_alter_table("job_listings") as batch_op:
         batch_op.alter_column("title", existing_type=sa.Text(), type_=sa.String(length=240), existing_nullable=False)
