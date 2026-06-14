@@ -23,6 +23,10 @@ from jobops_api.db.models import (
 )
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
+from jobops_api.job_discovery.job_sync.providers.greenhouse.application_fields import (
+    extract_application_fields_from_greenhouse_payload,
+    summarize_greenhouse_application_requirements,
+)
 from jobops_api.main import app
 from jobops_api.security import INTERNAL_API_KEY_HEADER
 
@@ -311,7 +315,7 @@ def test_create_application_from_synced_saved_job_without_canonical_posting(monk
         assert job_payload["has_application"] is True
         assert job_payload["application_id"] == created["id"]
         assert job_payload["hasApplicationFields"] is True
-        assert job_payload["requiredFieldCount"] == 3
+        assert job_payload["requiredFieldCount"] == 4
         assert job_payload["shortAnswerQuestionCount"] == 1
         assert job_payload["requiresResume"] is True
         assert job_payload["requiresLinkedIn"] is True
@@ -1158,7 +1162,7 @@ def test_generate_application_materials_includes_synced_application_fields(monke
         assert payload["contextManifest"]["jobDescriptionSource"] == "synced_full_stored"
         assert payload["contextManifest"]["applicationFieldsIncluded"] is True
         assert payload["contextManifest"]["applicationFieldsProvider"] == "greenhouse"
-        assert payload["contextManifest"]["applicationFieldsRequiredCount"] == 3
+        assert payload["contextManifest"]["applicationFieldsRequiredCount"] == 4
         assert payload["contextManifest"]["applicationFieldsShortAnswerCount"] == 1
         assert "resume" in payload["contextManifest"]["applicationFieldsDetectedMaterials"]
 
@@ -1167,7 +1171,12 @@ def test_generate_application_materials_includes_synced_application_fields(monke
             assert bundle is not None
             snapshot = bundle.source_context_snapshot
             assert snapshot["context"]["applicationRequirements"]["requiresResume"] is True
-            assert snapshot["context"]["applicationRequirements"]["shortAnswerQuestions"][0]["label"] == "Why do you want this role?"
+            short_answer_labels = [
+                question["label"]
+                for question in snapshot["context"]["applicationRequirements"]["shortAnswerQuestions"]
+            ]
+            assert "Resume" not in short_answer_labels
+            assert short_answer_labels == ["Why do you want this role?"]
             short_answers = [
                 item.content
                 for item in bundle.items
@@ -1494,46 +1503,49 @@ def create_synced_saved_job(
 
 
 def greenhouse_application_fields_fixture() -> dict[str, object]:
-    return {
-        "provider": "greenhouse",
-        "sourceResultId": "synced-apply-1",
-        "rawFieldCount": 4,
-        "requiredFieldCount": 3,
-        "requiredQuestionLabels": ["Resume", "Location", "Why do you want this role?"],
-        "optionalQuestionLabels": ["LinkedIn"],
-        "fileUploadFields": [{"label": "Resume", "name": "resume", "type": "input_file"}],
-        "freeTextQuestionLabels": ["Location", "Why do you want this role?"],
-        "urlQuestionLabels": ["LinkedIn"],
-    }
+    fields = extract_application_fields_from_greenhouse_payload(greenhouse_application_fields_raw_fixture())
+    assert fields is not None
+    return fields
 
 
 def greenhouse_application_requirements_fixture() -> dict[str, object]:
+    requirements = summarize_greenhouse_application_requirements(greenhouse_application_fields_fixture())
+    assert requirements is not None
+    return requirements
+
+
+def greenhouse_application_fields_raw_fixture() -> dict[str, object]:
     return {
-        "provider": "greenhouse",
-        "sourceResultId": "synced-apply-1",
-        "requiresResume": True,
-        "requiresCoverLetter": False,
-        "requiresPortfolioUrl": False,
-        "requiresLinkedIn": True,
-        "requiresWebsite": False,
-        "requiresGithub": False,
-        "requiresLocation": True,
-        "requiresPhone": False,
-        "requiresWorkAuthorization": False,
-        "requiresSponsorshipAnswer": False,
-        "requiresSalaryExpectation": False,
-        "shortAnswerQuestions": [
+        "ats_board_token": "synced-civic",
+        "source_result_id": "synced-apply-1",
+        "id": "synced-apply-1",
+        "questions": [
             {
-                "label": "Why do you want this role?",
                 "required": True,
-                "fieldTypes": ["textarea"],
-                "description": None,
+                "label": "Resume",
+                "fields": [
+                    {"name": "resume", "type": "input_file"},
+                    {"name": "resume_text", "type": "textarea"},
+                ],
+            },
+            {
+                "required": False,
+                "label": "LinkedIn",
+                "fields": [{"name": "linkedin_url", "type": "input_text"}],
+            },
+            {
+                "required": True,
+                "label": "Why do you want this role?",
+                "fields": [{"name": "question_1", "type": "textarea"}],
+            },
+        ],
+        "location_questions": [
+            {
+                "required": True,
+                "label": "Location",
+                "fields": [{"name": "location", "type": "input_text"}],
             }
         ],
-        "requiredQuestionLabels": ["Resume", "Location", "Why do you want this role?"],
-        "optionalQuestionLabels": ["LinkedIn"],
-        "detectedMaterials": ["linkedin_url", "location", "resume"],
-        "notes": [],
     }
 
 

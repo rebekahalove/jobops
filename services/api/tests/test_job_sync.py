@@ -211,14 +211,28 @@ def test_greenhouse_source_record_retains_list_and_retrieve_job_fields() -> None
     assert source.application_fields_json["provider"] == "greenhouse"
     assert source.application_fields_json["boardToken"] == "vaulttec"
     assert source.application_fields_json["sourceResultId"] == "vaulttec:44444"
-    assert source.application_fields_json["requiredQuestionLabels"] == ["First Name", "Resume", "Location"]
+    assert source.application_fields_json["requiredQuestionLabels"] == [
+        "First Name",
+        "Resume",
+        "Why are you interested in this role?",
+        "Location",
+    ]
     assert source.application_fields_json["fileUploadFields"] == [{"label": "Resume", "name": "resume", "type": "input_file"}]
     assert source.application_fields_json["demographicQuestions"]["questions"][0]["fields"][0]["type"] == "multi_value_multi_select"
     assert source.application_requirements_json is not None
     assert source.application_requirements_json["requiresResume"] is True
     assert source.application_requirements_json["requiresCoverLetter"] is False
     assert source.application_requirements_json["requiresLocation"] is True
-    assert source.application_requirements_json["shortAnswerQuestions"][0]["label"] == "Resume"
+    short_answer_labels = [question["label"] for question in source.application_requirements_json["shortAnswerQuestions"]]
+    assert "Resume" not in short_answer_labels
+    assert source.application_requirements_json["shortAnswerQuestions"] == [
+        {
+            "label": "Why are you interested in this role?",
+            "required": True,
+            "fieldTypes": ["textarea"],
+            "description": "Tell us why this role fits your experience.",
+        }
+    ]
     assert source.pay_transparency_json is not None
     assert source.pay_transparency_json["normalizedRanges"][0]["currency"] == "USD"
     assert source.pay_transparency_json["normalizedRanges"][0]["min"] == 50000
@@ -1459,6 +1473,12 @@ def greenhouse_retrieve_job_raw(*, job_id: int = 44444, title: str = "Product En
                     {"name": "resume", "type": "input_file"},
                     {"name": "resume_text", "type": "textarea"},
                 ],
+            },
+            {
+                "required": True,
+                "label": "Why are you interested in this role?",
+                "description": "Tell us why this role fits your experience.",
+                "fields": [{"name": "question_1", "type": "textarea"}],
             },
         ],
         "metadata": [{"id": 12345, "name": "Field Name", "value_type": "text", "value": "Some value"}],

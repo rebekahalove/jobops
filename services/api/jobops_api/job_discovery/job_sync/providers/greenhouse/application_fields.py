@@ -5,6 +5,43 @@ from typing import Any
 from ....provider_utils import clean_text_value
 
 
+SHORT_ANSWER_FIELD_TYPES = {"textarea", "input_text"}
+NON_NARRATIVE_SHORT_ANSWER_TOKENS = {
+    "resume",
+    "cv",
+    "cover letter",
+    "portfolio",
+    "work samples",
+    "samples",
+    "linkedin",
+    "github",
+    "website",
+    "personal site",
+    "phone",
+    "location",
+    "work authorization",
+    "authorized to work",
+    "right to work",
+    "sponsorship",
+    "visa",
+    "salary",
+    "compensation",
+    "pay expectation",
+    "first name",
+    "last name",
+    "full name",
+    "preferred name",
+    "email",
+    "address",
+    "veteran",
+    "disability",
+    "gender",
+    "race",
+    "ethnicity",
+    "demographic",
+}
+
+
 def extract_application_fields_from_greenhouse_payload(raw_metadata: dict[str, Any] | None) -> dict[str, Any] | None:
     payload = greenhouse_detail_payload(raw_metadata)
     if not payload:
@@ -61,7 +98,7 @@ def summarize_greenhouse_application_requirements(application_fields: dict[str, 
             "description": question.get("description"),
         }
         for question in all_questions
-        if has_field_type(question, {"textarea"}) and question.get("label")
+        if is_short_answer_question(question)
     ]
     return {
         "provider": "greenhouse",
@@ -203,6 +240,13 @@ def field_types(question: dict[str, Any]) -> list[str]:
 
 def has_field_type(question: dict[str, Any], wanted_types: set[str]) -> bool:
     return any(field_type.casefold() in wanted_types for field_type in field_types(question))
+
+
+def is_short_answer_question(question: dict[str, Any]) -> bool:
+    if not question.get("label") or not has_field_type(question, SHORT_ANSWER_FIELD_TYPES):
+        return False
+    text = question_text(question)
+    return not any(token in text for token in NON_NARRATIVE_SHORT_ANSWER_TOKENS)
 
 
 def question_labels_with_field_types(questions: list[dict[str, Any]], wanted_types: set[str]) -> list[str]:
