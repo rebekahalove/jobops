@@ -14,6 +14,7 @@ from ..job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync
 from ..job_sync.greenhouse_service import sync_greenhouse_boards
 from ..models import JobDiscoveryRequest
 from .diagnostics import build_candidate_discovery_diagnostics
+from .direct_url import DirectJobUrlDiscoveryService
 from .models import CandidateDiscoveryResult, DbJobSearchPlan, DbJobSearchQuery, JobPoolEntry
 from .planner import CandidateDiscoveryPlanCritic, DbJobSearchPlanner, DbJobSearchPlanningError
 from .query_builder import JobListingQueryBuilder, job_listing_to_pool_entry
@@ -72,6 +73,14 @@ class CandidateJobDiscoveryService:
         plan, planning_corrections = self.apply_jobs_list_ranking_safety(plan)
         run.search_plan_json = serialize_plan(plan)
         run.search_mode = "db_backed"
+        if plan.mode == "direct_job_url":
+            return DirectJobUrlDiscoveryService(session=self.session, settings=self.settings).run(
+                request,
+                candidate_profile=candidate_profile,
+                current_saved_companies=current_saved_companies,
+                plan=plan,
+                run=run,
+            )
         run.provider_names = ["job_sync", "database", "model_review"]
         run.status = "running"
         run.started_at = run.started_at or datetime.now(UTC)
