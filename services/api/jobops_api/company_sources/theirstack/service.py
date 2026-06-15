@@ -39,11 +39,13 @@ class TheirStackCompanyEnrichmentService:
         discovery_query: str | None = None,
     ) -> TheirStackCompanyEnrichmentResult:
         if not self.settings.theirstack_company_search_enabled or not self.settings.theirstack_api_key:
+            requested_pages = request.max_pages or self.settings.theirstack_company_search_max_pages
+            effective_request = request_with_settings_defaults(request, settings=self.settings)
             diagnostics = TheirStackCompanySearchDiagnostics(
                 enabled=False,
-                requested_pages=max(1, request.max_pages),
-                skipped_pages=max(1, request.max_pages),
-                request_shape=request.sanitized_shape(),
+                requested_pages=max(1, requested_pages),
+                skipped_pages=max(1, requested_pages),
+                request_shape=effective_request.sanitized_shape(),
                 error_type="theirstack_unavailable",
                 error_message="TheirStack company search is disabled or missing an API key.",
             ).to_dict()
@@ -57,11 +59,7 @@ class TheirStackCompanyEnrichmentService:
             api_key=self.settings.theirstack_api_key,
             timeout_seconds=self.settings.llm_request_timeout_seconds,
         )
-        effective_request = replace(
-            request,
-            limit=request.limit or self.settings.theirstack_company_search_limit,
-            max_pages=request.max_pages or self.settings.theirstack_company_search_max_pages,
-        )
+        effective_request = request_with_settings_defaults(request, settings=self.settings)
         try:
             search_result = client.search_companies(effective_request)
         except TheirStackCompanySearchError as exc:
@@ -84,6 +82,8 @@ class TheirStackCompanyEnrichmentService:
                 self.session,
                 name=company_record.name,
                 normalized_name=company_record.normalized_name,
+                domain=company_record.domain,
+                normalized_domain=company_record.domain,
                 website_url=company_record.website_url,
                 job_listings_url=job_listings_url_for(company_record),
                 description=company_record.description,
@@ -125,6 +125,18 @@ class TheirStackCompanyEnrichmentService:
             normalized_companies=normalized,
             diagnostics=diagnostics,
         )
+
+
+def request_with_settings_defaults(
+    request: TheirStackCompanySearchRequest,
+    *,
+    settings: Settings,
+) -> TheirStackCompanySearchRequest:
+    return replace(
+        request,
+        limit=request.limit if request.limit is not None else settings.theirstack_company_search_limit,
+        max_pages=request.max_pages if request.max_pages is not None else settings.theirstack_company_search_max_pages,
+    )
 
 
 def job_listings_url_for(company: NormalizedCompanyEnrichment) -> str | None:

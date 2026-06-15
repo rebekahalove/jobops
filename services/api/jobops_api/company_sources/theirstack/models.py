@@ -15,16 +15,17 @@ class TheirStackCompanySearchRequest:
     company_technology_slug_and: tuple[str, ...] = ()
     company_keyword_slug_or: tuple[str, ...] = ()
     job_filters: dict[str, Any] = field(default_factory=dict)
-    limit: int = 25
+    limit: int | None = None
     page: int = 1
-    max_pages: int = 1
+    max_pages: int | None = None
     include_total_results: bool = True
 
     def to_api_body(self, *, page: int | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
-            "limit": self.limit,
             "page": page or self.page,
         }
+        if self.limit is not None:
+            body["limit"] = self.limit
         tuple_fields = {
             "company_name_or": self.company_name_or,
             "company_name_partial_match_or": self.company_name_partial_match_or,
@@ -131,4 +132,3 @@ class TheirStackCompanyEnrichmentResult:
     normalized_companies: tuple[NormalizedCompanyEnrichment, ...] = ()
     diagnostics: dict[str, Any] = field(default_factory=dict)
     error_message: str | None = None
-

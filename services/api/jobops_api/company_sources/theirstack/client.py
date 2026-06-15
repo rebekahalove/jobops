@@ -37,7 +37,7 @@ class TheirStackCompanySearchClient:
         self._http_post = http_post or default_http_post
 
     def search_companies(self, request: TheirStackCompanySearchRequest) -> TheirStackCompanySearchResult:
-        requested_pages = max(1, request.max_pages)
+        requested_pages = max(1, request.max_pages or 1)
         diagnostics = TheirStackCompanySearchDiagnostics(
             enabled=True,
             requested_pages=requested_pages,
@@ -156,4 +156,3 @@ def extract_total_companies(payload: dict[str, Any]) -> int | None:
             if isinstance(value, int):
                 return value
     return None
-

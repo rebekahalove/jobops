@@ -150,6 +150,34 @@ def test_theirstack_enrichment_upserts_company_without_linking_profile(tmp_path:
         assert session.scalar(select(CandidateCompany)) is None
 
 
+def test_theirstack_enrichment_persists_domain_without_website_and_dedupes(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    payload = {
+        "name": "Domain Only Co",
+        "domain": "domainonly.example",
+        "description": "Domain-only TheirStack company.",
+    }
+    with Session(engine) as session:
+        service = TheirStackCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            client=FakeTheirStackClient([payload]),
+        )
+
+        first = service.search_and_upsert_companies(TheirStackCompanySearchRequest(company_domain_or=("domainonly.example",)))
+        second = service.search_and_upsert_companies(TheirStackCompanySearchRequest(company_domain_or=("domainonly.example",)))
+        session.commit()
+
+    with Session(engine) as session:
+        companies = list(session.scalars(select(Company)))
+        assert first.status == "completed"
+        assert second.status == "completed"
+        assert len(companies) == 1
+        assert companies[0].domain == "domainonly.example"
+        assert companies[0].normalized_domain == "domainonly.example"
+        assert companies[0].website_url is None
+
+
 def test_theirstack_enrichment_explicitly_links_candidate_company_with_metadata(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -307,9 +335,47 @@ def test_theirstack_enrichment_unavailable_when_disabled(tmp_path: Path) -> None
     assert "api key" in result.error_message.casefold()
 
 
+def test_theirstack_enrichment_default_request_uses_settings_limit_and_pages(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    fake_client = FakeTheirStackClient([theirstack_payload()])
+    with Session(engine) as session:
+        service = TheirStackCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path, limit=9, max_pages=4),
+            client=fake_client,
+        )
+
+        result = service.search_and_upsert_companies(TheirStackCompanySearchRequest())
+
+    assert result.status == "completed"
+    assert fake_client.requests[0].limit == 9
+    assert fake_client.requests[0].max_pages == 4
+    assert result.diagnostics["requestShape"]["limit"] == 9
+    assert result.diagnostics["requestShape"]["page"] == 1
+
+
+def test_theirstack_enrichment_explicit_request_limit_and_pages_override_settings(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    fake_client = FakeTheirStackClient([theirstack_payload()])
+    with Session(engine) as session:
+        service = TheirStackCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path, limit=9, max_pages=4),
+            client=fake_client,
+        )
+
+        result = service.search_and_upsert_companies(TheirStackCompanySearchRequest(limit=2, max_pages=3))
+
+    assert result.status == "completed"
+    assert fake_client.requests[0].limit == 2
+    assert fake_client.requests[0].max_pages == 3
+    assert result.diagnostics["requestShape"]["limit"] == 2
+
+
 class FakeTheirStackClient:
     def __init__(self, companies: list[dict[str, Any]]) -> None:
         self.companies = companies
+        self.requests: list[TheirStackCompanySearchRequest] = []
 
     def search_companies(self, request: TheirStackCompanySearchRequest):
         from jobops_api.company_sources.theirstack.models import (
@@ -317,12 +383,13 @@ class FakeTheirStackClient:
             TheirStackCompanySearchResult,
         )
 
+        self.requests.append(request)
         return TheirStackCompanySearchResult(
             status="completed",
             companies=tuple(self.companies),
             diagnostics=TheirStackCompanySearchDiagnostics(
                 enabled=True,
-                requested_pages=request.max_pages,
+                requested_pages=request.max_pages or 1,
                 fetched_pages=1,
                 raw_company_count=len(self.companies),
                 request_shape=request.sanitized_shape(),
@@ -384,6 +451,8 @@ def make_settings(
     *,
     api_key: str | None = "secret-theirstack-key",
     enabled: bool = True,
+    limit: int = 25,
+    max_pages: int = 1,
 ) -> Settings:
     return Settings(
         app_env="test",
@@ -398,4 +467,6 @@ def make_settings(
         repo_root=repo_root,
         theirstack_api_key=api_key,
         theirstack_company_search_enabled=enabled,
+        theirstack_company_search_limit=limit,
+        theirstack_company_search_max_pages=max_pages,
     )
