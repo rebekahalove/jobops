@@ -297,16 +297,29 @@ class ModelPlannedCompanyEnrichmentService:
         ).search_and_upsert_companies(
             plan.search,
             candidate_profile_id=candidate_profile.id,
-            link_to_profile=plan.link_discovered_companies_to_profile and not plan.require_greenhouse,
+            link_to_profile=plan.link_discovered_companies_to_profile
+            and not plan.require_greenhouse
+            and not plan.require_supported_ats,
             discovery_query=latest_user_message,
         )
 
         if plan.require_greenhouse:
-            companies = link_greenhouse_required_companies(
+            companies = link_filtered_theirstack_companies(
                 self.session,
                 candidate_profile_id=candidate_profile.id,
                 enrichment=enrichment,
                 discovery_query=latest_user_message,
+                require_greenhouse=True,
+                require_supported_ats=True,
+            )
+        elif plan.require_supported_ats:
+            companies = link_filtered_theirstack_companies(
+                self.session,
+                candidate_profile_id=candidate_profile.id,
+                enrichment=enrichment,
+                discovery_query=latest_user_message,
+                require_greenhouse=False,
+                require_supported_ats=True,
             )
         else:
             companies = [
@@ -330,16 +343,20 @@ class ModelPlannedCompanyEnrichmentService:
         )
 
 
-def link_greenhouse_required_companies(
+def link_filtered_theirstack_companies(
     session: Session,
     *,
     candidate_profile_id: str,
     enrichment: Any,
     discovery_query: str,
+    require_greenhouse: bool,
+    require_supported_ats: bool,
 ) -> list[CandidateCompany]:
     links: list[CandidateCompany] = []
     for company, normalized in zip(enrichment.companies, enrichment.normalized_companies, strict=False):
-        if not getattr(company, "greenhouse_board_token", None):
+        if require_greenhouse and not getattr(company, "greenhouse_board_token", None):
+            continue
+        if require_supported_ats and not company_has_supported_ats(company):
             continue
         link_result = ensure_candidate_company_link(
             session,
@@ -357,6 +374,14 @@ def link_greenhouse_required_companies(
         )
         links.append(link_result.link)
     return links
+
+
+def company_has_supported_ats(company: Any) -> bool:
+    return bool(
+        getattr(company, "greenhouse_board_token", None)
+        or getattr(company, "ashby_board_url", None)
+        or getattr(company, "lever_slug", None)
+    )
 
 
 def build_company_enrichment_context(
@@ -503,11 +528,18 @@ def build_enrichment_result_payload(
         if plan.require_greenhouse
         else 0
     )
+    filtered_no_supported_ats_count = (
+        max(0, len(enrichment.companies) - len(linked_companies))
+        if plan.require_supported_ats and not plan.require_greenhouse
+        else 0
+    )
     message = build_enrichment_assistant_message(
         linked_count=len(linked_companies),
         greenhouse_count=greenhouse_count,
         filtered_no_greenhouse_count=filtered_no_greenhouse_count,
+        filtered_no_supported_ats_count=filtered_no_supported_ats_count,
         require_greenhouse=plan.require_greenhouse,
+        require_supported_ats=plan.require_supported_ats,
     )
     return {
         "assistantMessage": message,
@@ -518,6 +550,7 @@ def build_enrichment_result_payload(
         "upsertedCompanyCount": (enrichment.diagnostics or {}).get("upsertedCompanyCount"),
         "linkedCompanyCount": len(linked_companies),
         "filteredNoGreenhouseTokenCount": filtered_no_greenhouse_count,
+        "filteredNoSupportedAtsCount": filtered_no_supported_ats_count,
         "greenhouseBoardTokenCount": greenhouse_count,
         "ashbyBoardUrlCount": ashby_count,
         "leverSlugCount": lever_count,
@@ -571,7 +604,9 @@ def build_enrichment_assistant_message(
     linked_count: int,
     greenhouse_count: int,
     filtered_no_greenhouse_count: int,
+    filtered_no_supported_ats_count: int,
     require_greenhouse: bool,
+    require_supported_ats: bool,
 ) -> str:
     if linked_count == 0:
         return (
@@ -588,6 +623,18 @@ def build_enrichment_assistant_message(
         )
         return (
             f"I added only companies with Greenhouse board tokens as leads: {linked_count} {company_word}. "
+            f"{greenhouse_count} include Greenhouse board tokens.{filtered_sentence} "
+            "I have not synced those boards yet, so these are leads for first-party verification."
+        )
+    if require_supported_ats:
+        filtered_sentence = (
+            f" I filtered out {filtered_no_supported_ats_count} TheirStack compan"
+            f"{'y' if filtered_no_supported_ats_count == 1 else 'ies'} without supported ATS metadata."
+            if filtered_no_supported_ats_count
+            else ""
+        )
+        return (
+            f"I added only companies with supported ATS metadata as leads: {linked_count} {company_word}. "
             f"{greenhouse_count} include Greenhouse board tokens.{filtered_sentence} "
             "I have not synced those boards yet, so these are leads for first-party verification."
         )

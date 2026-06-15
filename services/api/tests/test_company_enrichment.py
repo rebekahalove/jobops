@@ -296,6 +296,70 @@ def test_greenhouse_required_enrichment_reports_only_greenhouse_matches(tmp_path
         assert sorted(company.name for company in session.scalars(select(Company)).all()) == ["Greenhouse Co", "Plain Co"]
 
 
+def test_supported_ats_required_links_only_supported_ats_companies(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    client = FakeTheirStackClient(
+        [
+            theirstack_payload("Greenhouse Co", domain="greenhouse.example", job_url="https://job-boards.greenhouse.io/greenhouseco/jobs/1"),
+            theirstack_payload("Ashby Co", domain="ashby.example", job_url="https://jobs.ashbyhq.com/ashbyco/1"),
+            theirstack_payload("Lever Co", domain="lever.example", job_url="https://jobs.lever.co/leverco/1"),
+            theirstack_payload("Plain Workday Co", domain="plain.example", job_url="https://example.myworkdayjobs.com/plain"),
+        ]
+    )
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=StaticPlanConnector(
+                theirstack_plan(
+                    {"companyDescriptionPatternOr": ["hiring"]},
+                    require_supported_ats=True,
+                )
+            ),
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies with supported ATS metadata.",
+            current_saved_companies=[],
+            target_context={},
+            profile_context={},
+            discovery_context={},
+        )
+        session.commit()
+
+    payload = result.body["result"]
+    with Session(engine) as session:
+        assert payload["rawCompanyCount"] == 4
+        assert payload["normalizedCompanyCount"] == 4
+        assert payload["upsertedCompanyCount"] == 4
+        assert payload["linkedCompanyCount"] == 3
+        assert payload["filteredNoSupportedAtsCount"] == 1
+        assert payload["filteredNoGreenhouseTokenCount"] == 0
+        assert payload["greenhouseBoardTokenCount"] == 1
+        assert payload["ashbyBoardUrlCount"] == 1
+        assert payload["leverSlugCount"] == 1
+        assert "supported ATS metadata" in payload["assistantMessage"]
+        assert "filtered out 1 TheirStack company without supported ATS metadata" in payload["assistantMessage"]
+        assert sorted(company.name for company in session.scalars(select(Company)).all()) == [
+            "Ashby Co",
+            "Greenhouse Co",
+            "Lever Co",
+            "Plain Workday Co",
+        ]
+        assert sorted(link.company.name for link in session.scalars(select(CandidateCompany)).all()) == [
+            "Ashby Co",
+            "Greenhouse Co",
+            "Lever Co",
+        ]
+        assert len(session.scalars(select(JobListing)).all()) == 0
+        assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
+        assert len(session.scalars(select(JobSyncRun)).all()) == 0
+
+
 def test_model_planned_enrichment_dedupes_existing_link_and_preserves_metadata(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -445,13 +509,15 @@ def theirstack_plan(
     search: dict[str, Any],
     *,
     terms: list[str] | None = None,
+    require_supported_ats: bool | None = None,
     require_greenhouse: bool = False,
 ) -> dict[str, Any]:
+    supported_ats = require_greenhouse if require_supported_ats is None else require_supported_ats
     return {
         "useTheirStackCompanySearch": True,
         "rationale": "The user asked for company hiring-signal leads.",
         "linkDiscoveredCompaniesToProfile": True,
-        "requireSupportedAts": require_greenhouse,
+        "requireSupportedAts": supported_ats,
         "requireGreenhouse": require_greenhouse,
         "hiringSignalTerms": terms or [],
         "hiringSignalSource": "theirstack",
