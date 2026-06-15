@@ -104,7 +104,8 @@ def parse_float(value: object) -> float | None:
 
 
 def safe_page_error(error: Exception) -> dict[str, object]:
-    detail: dict[str, object] = {"type": type(error).__name__, "message": "Adzuna page request failed."}
+    message = clean_optional_text(str(error)) or "Adzuna page request failed."
+    detail: dict[str, object] = {"type": type(error).__name__, "message": message}
     status = getattr(error, "code", None)
     if isinstance(status, int):
         detail["status"] = status

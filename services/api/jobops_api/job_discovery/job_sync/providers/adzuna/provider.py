@@ -180,7 +180,7 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
             diagnostics["completionStatus"] = "partial_page_failure"
         elif page_errors:
             status = "failed"
-            error = "Adzuna page request failed before any results were fetched."
+            error = clean_text_value(page_errors[0].get("message")) or "Adzuna page request failed before any results were fetched."
             diagnostics["completionStatus"] = "failed_page_request"
 
         sync_result = JobSyncResult(
