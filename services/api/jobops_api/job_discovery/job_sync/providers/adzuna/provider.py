@@ -167,14 +167,32 @@ class AdzunaJobSyncProvider(BaseJobSyncProvider):
             created_count += int(result.created)
             updated_count += int(result.updated)
 
+        diagnostics = {
+            **self.refresh_diagnostics(request),
+            "totalNormalizedResults": normalized_count,
+        }
+        page_errors = diagnostics.get("pageErrors") if isinstance(diagnostics.get("pageErrors"), list) else []
+        status = "completed"
+        error = None
+        if page_errors and raw_records:
+            status = "partial"
+            diagnostics["partialSync"] = True
+            diagnostics["completionStatus"] = "partial_page_failure"
+        elif page_errors:
+            status = "failed"
+            error = clean_text_value(page_errors[0].get("message")) or "Adzuna page request failed before any results were fetched."
+            diagnostics["completionStatus"] = "failed_page_request"
+
         sync_result = JobSyncResult(
             request=request,
+            status=status,
+            error=error,
             raw_result_count=len(raw_records),
             normalized_count=normalized_count,
             created_count=created_count,
             updated_count=updated_count,
             failed_normalization_count=failed_normalization_count,
-            diagnostics_json=self.refresh_diagnostics(request),
+            diagnostics_json=diagnostics,
         )
         record_job_sync_run(session, sync_result)
         return sync_result

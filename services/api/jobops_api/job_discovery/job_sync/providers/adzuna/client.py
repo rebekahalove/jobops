@@ -47,7 +47,17 @@ class AdzunaJobSyncClient:
                 params["where"] = page_request.where
             if page_request.what_exclude:
                 params["what_exclude"] = page_request.what_exclude
-            payload = fetch_json(f"{ADZUNA_API_ROOT}{page_request.api_path}", params=params)
+            try:
+                payload = fetch_json(f"{ADZUNA_API_ROOT}{page_request.api_path}", params=params)
+            except Exception as error:
+                pages.append(
+                    AdzunaPageResult(
+                        request=page_request,
+                        results=(),
+                        error=safe_page_error(error),
+                    )
+                )
+                break
             results: tuple[object, ...] = ()
             provider_count: int | None = None
             provider_mean: float | None = None
@@ -65,7 +75,7 @@ class AdzunaJobSyncClient:
                     provider_reported_mean=provider_mean,
                 )
             )
-        return AdzunaSearchResponse(pages=tuple(pages))
+        return AdzunaSearchResponse(pages=tuple(pages), requested_pages=max_pages)
 
 
 def bounded_results_per_page(value: int) -> int:
@@ -91,3 +101,12 @@ def parse_float(value: object) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def safe_page_error(error: Exception) -> dict[str, object]:
+    message = clean_optional_text(str(error)) or "Adzuna page request failed."
+    detail: dict[str, object] = {"type": type(error).__name__, "message": message}
+    status = getattr(error, "code", None)
+    if isinstance(status, int):
+        detail["status"] = status
+    return detail

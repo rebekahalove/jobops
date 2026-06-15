@@ -88,7 +88,21 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
         return JobSyncPlan(requests=tuple(requests))
 
     def refresh_diagnostics(self, request: JobSyncRequest) -> dict[str, object]:
-        return self.client.diagnostics_json()
+        api_url = canonical_greenhouse_jobs_api_url(request.ats_board_token or "")
+        stale_closure_eligible = bool(self.latest_list_result.valid)
+        return {
+            **self.client.diagnostics_json(),
+            "boardToken": request.ats_board_token,
+            "listJobsUrl": api_url,
+            "listJobsContentParam": True,
+            "listJobsRawCount": len(self.latest_list_result.jobs),
+            "listJobsProviderJobIdCount": len(self.latest_list_result.provider_job_ids),
+            "detailRequestParams": {"questions": "true", "pay_transparency": "true"},
+            "maxDetailRequests": self.max_detail_requests,
+            "listJobsResponseValid": self.latest_list_result.valid,
+            "staleClosureEligible": stale_closure_eligible,
+            "staleClosureSkippedReason": None if stale_closure_eligible else "invalid_or_incomplete_list_response",
+        }
 
     def fetch_provider_records(self, request: JobSyncRequest) -> Iterable[object]:
         if not request.ats_board_token:
@@ -179,7 +193,7 @@ class GreenhouseJobSyncProvider(BaseJobSyncProvider):
             failed_normalization_count=failed_normalization_count,
             diagnostics_json={
                 **self.refresh_diagnostics(request),
-                "listJobsResponseValid": self.latest_list_result.valid,
+                "closedCount": closed_count,
             },
         )
         record_job_sync_run(session, sync_result)

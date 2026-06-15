@@ -223,9 +223,17 @@ def apply_source_fields(job_listing_source: JobListingSource, source: JobListing
         "source_country",
         "raw_location",
         "raw_metadata_json",
-        "source_updated_at",
     ):
         setattr(job_listing_source, name, getattr(source, name))
+    for name in (
+        "application_fields_json",
+        "application_requirements_json",
+        "pay_transparency_json",
+    ):
+        value = getattr(source, name)
+        if value is not None:
+            setattr(job_listing_source, name, value)
+    job_listing_source.source_updated_at = source.source_updated_at
     job_listing_source.last_seen_at = synced_at
     job_listing_source.last_synced_at = synced_at
     job_listing_source.is_active = source.source_status not in {"closed", "expired", "inactive"}

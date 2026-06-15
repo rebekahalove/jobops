@@ -36,11 +36,13 @@ class AdzunaPageResult:
     results: tuple[object, ...]
     provider_reported_count: int | None = None
     provider_reported_mean: float | None = None
+    error: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class AdzunaSearchResponse:
     pages: tuple[AdzunaPageResult, ...]
+    requested_pages: int = 0
 
     @property
     def results(self) -> tuple[object, ...]:
@@ -61,10 +63,25 @@ class AdzunaSearchResponse:
         return None
 
     def diagnostics_json(self) -> dict[str, Any]:
+        requested_pages = self.requested_pages or max((page.request.page for page in self.pages), default=0)
+        failed_pages = [page for page in self.pages if page.error]
+        fetched_pages = [page for page in self.pages if not page.error]
+        skipped_pages = max(0, requested_pages - len(self.pages))
         return {
             "providerReportedCount": self.provider_reported_count,
             "providerReportedMean": self.provider_reported_mean,
-            "pagesFetched": len(self.pages),
+            "providerTotalResults": self.provider_reported_count,
+            "requestedPages": requested_pages,
+            "fetchedPages": len(fetched_pages),
+            "pagesFetched": len(fetched_pages),
+            "failedPages": len(failed_pages),
+            "skippedPages": skipped_pages,
+            "pageNumbersFetched": [page.request.page for page in fetched_pages],
+            "totalRawResults": sum(len(page.results) for page in fetched_pages),
+            "pageErrors": [
+                {"page": page.request.page, **(page.error or {})}
+                for page in failed_pages
+            ],
             "pageDiagnostics": [
                 {
                     "page": page.request.page,
@@ -75,6 +92,7 @@ class AdzunaSearchResponse:
                     "returnedCount": len(page.results),
                     "providerReportedCount": page.provider_reported_count,
                     "providerReportedMean": page.provider_reported_mean,
+                    "error": page.error,
                 }
                 for page in self.pages
             ],

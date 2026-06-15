@@ -109,6 +109,19 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 - Implemented with company name, job title, job URL, location, source, date applied, status, notes, next follow-up date, and timestamps.
 - Current statuses: `saved`, `applied`, `interviewing`, `rejected`, `offer`, `closed`, `withdrawn`.
 
+`job_listings`
+
+- Provider/API-backed job inventory refreshed by Job Sync.
+- Stores normalized job facts used for DB-backed discovery, including provider URLs, title, company, location, work mode, compensation, description excerpt/full description, posting/source dates, active/closed state, and location target links.
+- Does not create candidate saved-job rows by itself; candidate-facing selection happens separately.
+
+`job_listing_sources`
+
+- Provider-scoped source records for a `job_listings` row.
+- Stores provider identity, board/query metadata, exact raw provider payloads, raw location values, active/closed state, and sync timestamps.
+- Greenhouse source rows also store normalized retrieve-job application data in `application_fields_json`, compact material-generation requirements in `application_requirements_json`, and pay range details in `pay_transparency_json`.
+- These normalized application fields are derived from provider API payloads and are used as untrusted context for draft materials; raw payloads remain preserved for audit/debugging.
+
 `application_events`
 
 - Timeline of application state changes, follow-ups, interviews, and notes.

@@ -4125,6 +4125,7 @@ def serialize_saved_job(
     job = link.job_listing
     job_url = job_listing_primary_url(job)
     highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
+    application_requirements = compact_application_requirements_summary(job)
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
@@ -4141,6 +4142,7 @@ def serialize_saved_job(
         "apply_url": job.apply_url,
         "source": "job_sync",
         "source_provider": first_job_listing_source_provider(job),
+        **application_requirements,
         "provider_type": "job_sync",
         "source_result_id": None,
         "source_query": None,
@@ -4259,6 +4261,38 @@ def first_job_listing_source_provider(job: Any) -> str | None:
         if source.source_provider:
             return source.source_provider
     return None
+
+
+def compact_application_requirements_summary(job: Any) -> dict[str, Any]:
+    requirements = richest_application_requirements(job)
+    fields = richest_application_fields(job)
+    short_answers = requirements.get("shortAnswerQuestions") if isinstance(requirements, dict) else []
+    return {
+        "hasApplicationFields": bool(fields or requirements),
+        "requiredFieldCount": fields.get("requiredFieldCount") if isinstance(fields, dict) else 0,
+        "shortAnswerQuestionCount": len(short_answers) if isinstance(short_answers, list) else 0,
+        "requiresResume": requirements.get("requiresResume") if isinstance(requirements, dict) else None,
+        "requiresCoverLetter": requirements.get("requiresCoverLetter") if isinstance(requirements, dict) else None,
+        "requiresPortfolioUrl": requirements.get("requiresPortfolioUrl") if isinstance(requirements, dict) else None,
+        "requiresLinkedIn": requirements.get("requiresLinkedIn") if isinstance(requirements, dict) else None,
+        "requiresWebsite": requirements.get("requiresWebsite") if isinstance(requirements, dict) else None,
+    }
+
+
+def richest_application_requirements(job: Any) -> dict[str, Any] | None:
+    sources = getattr(job, "sources", None) or []
+    candidates = [source.application_requirements_json for source in sources if source.application_requirements_json]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: len(item.get("shortAnswerQuestions") or []) + len(item.get("detectedMaterials") or []))
+
+
+def richest_application_fields(job: Any) -> dict[str, Any] | None:
+    sources = getattr(job, "sources", None) or []
+    candidates = [source.application_fields_json for source in sources if source.application_fields_json]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item.get("rawFieldCount") or 0))
 
 
 def normalize_job_url(value: str | None) -> str | None:

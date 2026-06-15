@@ -5,6 +5,11 @@ from sqlalchemy.orm import Session
 from ....provider_utils import clean_text_value, html_to_text, infer_remote_mode, nested_get, parse_datetime_value
 from ...location_resolver import resolve_or_create_job_location_from_provider_payload
 from ...models import JobListingSourceRecord, JobSyncRequest, NormalizedJobListing
+from .application_fields import (
+    extract_application_fields_from_greenhouse_payload,
+    extract_pay_transparency_from_greenhouse_payload,
+    summarize_greenhouse_application_requirements,
+)
 from .models import GreenhouseDetailFetchResult
 
 
@@ -67,11 +72,21 @@ def normalize_greenhouse_job_record(
         source_updated_at=source_updated_at,
         source_status="active",
     )
+    raw_metadata = copy_greenhouse_raw_metadata(raw)
+    source_result_id = f"{request.ats_board_token}:{provider_job_id}" if provider_job_id else None
+    application_metadata = {
+        **raw_metadata,
+        "ats_board_token": request.ats_board_token,
+        "source_result_id": source_result_id,
+    }
+    application_fields = extract_application_fields_from_greenhouse_payload(application_metadata)
+    application_requirements = summarize_greenhouse_application_requirements(application_fields)
+    pay_transparency = extract_pay_transparency_from_greenhouse_payload(application_metadata)
     source = JobListingSourceRecord(
         source_provider="greenhouse",
         provider_type="ats_board",
         provider_job_id=provider_job_id,
-        source_result_id=f"{request.ats_board_token}:{provider_job_id}" if provider_job_id else None,
+        source_result_id=source_result_id,
         ats_provider="greenhouse",
         ats_board_token=request.ats_board_token,
         source_url=source_url,
@@ -81,7 +96,10 @@ def normalize_greenhouse_job_record(
         source_location=request.display_location,
         source_country=request.provider_country,
         raw_location=location_raw,
-        raw_metadata_json=copy_greenhouse_raw_metadata(raw),
+        raw_metadata_json=raw_metadata,
+        application_fields_json=application_fields,
+        application_requirements_json=application_requirements,
+        pay_transparency_json=pay_transparency,
         source_updated_at=source_updated_at,
         source_status="active",
     )
