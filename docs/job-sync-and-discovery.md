@@ -35,7 +35,9 @@ Pre-revamp live-provider discovery is intentionally removed. Direct URL ingestio
 
 TheirStack is a company/enrichment source, not the canonical job detail source. The TheirStack foundation can search companies explicitly through the provider service, normalize company metadata, infer supported ATS identifiers from returned job/career URLs, and persist companies through the existing canonical company path.
 
-This branch does not call TheirStack from model-planned company discovery, does not call it automatically from chat commands, and does not sync discovered boards after enrichment. TheirStack-discovered Greenhouse boards are not auto-synced until a later branch.
+TheirStack model-planned company enrichment is available for company discovery/enrichment and hiring-signal leads. The command-center company discovery path can ask a dedicated planner whether to use TheirStack. TheirStack is called only when that model plan explicitly requests company enrichment; there is no backend keyword router that turns words like Greenhouse, AI, or marketing into provider calls.
+
+TheirStack is not used for saved-jobs ranking, direct job URL ingestion, or verified job-detail retrieval. TheirStack-discovered Greenhouse boards are not auto-synced until a later branch. First-party board sync after enrichment is required before JobOps can verify actual current company-board jobs.
 
 Configuration uses:
 
@@ -55,6 +57,10 @@ TheirStack URL inference reuses existing canonical company fields:
 - Workday, Workable, and unknown ATS URLs are preserved as unsupported/source URLs and are not treated as supported sync providers.
 
 Useful enrichment-only metadata such as LinkedIn URL, industry, employee counts, funding fields, technology and keyword slugs, job counts, compact TheirStack payload metadata, and unsupported ATS URLs can be stored in `candidate_companies.provider_grounding_metadata` only when an explicit service call links the company to a candidate profile. Diagnostics are sanitized and never include API keys, bearer tokens, authorization headers, or raw huge payloads.
+
+TheirStack response language must describe results as company leads or hiring signals, for example "TheirStack returned hiring signals" or "TheirStack indicates hiring activity." Do not describe these as verified JobOps job matches until a first-party board sync has fetched the company board directly.
+
+Role, domain, geography, technology, and hiring-signal filters in TheirStack plans are derived from the latest user message, authenticated profile, candidate target context, saved-company context, or recent discovery context. They are not hardcoded to any role or field such as Applied AI, AI Engineer, LLM, software engineering, healthcare, product marketing, or Greenhouse.
 
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 

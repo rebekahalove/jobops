@@ -773,7 +773,11 @@ def execute_company_discovery_command(
                 status="completed",
                 targetWorkspace="companies",
                 title="Discover companies",
-                summary=build_company_discovery_action_summary(added_count),
+                summary=(
+                    f"Found {added_count} TheirStack company lead{'s' if added_count != 1 else ''}."
+                    if result_payload.get("companyEnrichmentPlan")
+                    else build_company_discovery_action_summary(added_count)
+                ),
                 resultPayload=result_payload,
             )
         ],

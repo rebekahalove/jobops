@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import select
@@ -36,6 +36,9 @@ from .security import require_internal_api_key
 from .settings import Settings, load_settings
 
 from fastapi import APIRouter, Depends, HTTPException
+
+if TYPE_CHECKING:
+    from .company_sources.theirstack.client import TheirStackCompanySearchClient
 
 
 DerivationStatus = Literal["model_derived", "user_entered", "imported"]
@@ -457,6 +460,7 @@ def run_company_discovery(
     request: CompanyDiscoveryRequest,
     *,
     connector: ModelConnector | None = None,
+    theirstack_client: TheirStackCompanySearchClient | None = None,
     db_session: Session,
     settings: Settings | None = None,
     candidate_profile: CandidateProfile | None = None,
@@ -489,7 +493,44 @@ def run_company_discovery(
         profile_context=profile_context,
         private_profile_context=private_profile_context,
     )
-    if should_prompt_for_discovery_targets(request.latest_user_message, target_context=target_context, signals=preflight_signals):
+    target_preflight_needed = should_prompt_for_discovery_targets(
+        request.latest_user_message,
+        target_context=target_context,
+        signals=preflight_signals,
+    )
+    if target_preflight_needed and not (active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key):
+        return build_company_discovery_target_prompt_result(
+            diagnostics=build_target_preflight_diagnostics(
+                preflight_signals,
+                reason="no_actionable_company_discovery_context",
+                recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+            )
+        )
+
+    if active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key:
+        from .company_enrichment import ModelPlannedCompanyEnrichmentService
+
+        enrichment_result = ModelPlannedCompanyEnrichmentService(
+            session=db_session,
+            settings=active_settings,
+            connector=connector,
+            theirstack_client=theirstack_client,
+        ).run(
+            candidate_profile=candidate_profile,
+            latest_user_message=request.latest_user_message,
+            current_saved_companies=current_saved_companies,
+            target_context=target_context,
+            profile_context=profile_context,
+            discovery_context=discovery_context,
+        )
+        if enrichment_result.handled:
+            db_session.commit()
+            return CompanyDiscoveryServiceResult(
+                body=enrichment_result.body,
+                status_code=enrichment_result.status_code,
+            )
+
+    if target_preflight_needed:
         return build_company_discovery_target_prompt_result(
             diagnostics=build_target_preflight_diagnostics(
                 preflight_signals,
