@@ -78,3 +78,51 @@ def test_load_settings_can_enable_api_docs_in_prod(tmp_path: Path, monkeypatch: 
     settings = load_settings(tmp_path)
 
     assert settings.enable_api_docs is True
+
+
+def test_load_settings_reads_theirstack_company_search_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_API_KEY", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED", raising=False)
+
+    (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
+    (tmp_path / ".env.dev").write_text(
+        "\n".join(
+            [
+                "JOBOPS_THEIRSTACK_API_KEY=secret-theirstack-key",
+                "JOBOPS_THEIRSTACK_COMPANY_SEARCH_LIMIT=12",
+                "JOBOPS_THEIRSTACK_COMPANY_SEARCH_MAX_PAGES=3",
+                "JOBOPS_THEIRSTACK_COMPANY_SEARCH_FRESHNESS_DAYS=45",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.theirstack_api_key == "secret-theirstack-key"
+    assert settings.theirstack_company_search_enabled is True
+    assert settings.theirstack_company_search_limit == 12
+    assert settings.theirstack_company_search_max_pages == 3
+    assert settings.theirstack_company_search_freshness_days == 45
+
+
+def test_load_settings_can_disable_theirstack_even_with_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_API_KEY", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED", raising=False)
+
+    (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
+    (tmp_path / ".env.dev").write_text(
+        "\n".join(
+            [
+                "JOBOPS_THEIRSTACK_API_KEY=secret-theirstack-key",
+                "JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED=false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.theirstack_company_search_enabled is False

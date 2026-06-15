@@ -31,6 +31,31 @@ Candidate-facing job discovery keeps the existing chat/run shell and `job_search
 
 Pre-revamp live-provider discovery is intentionally removed. Direct URL ingestion is DB-backed: supported direct job URLs write normalized inventory into `job_listings` and `job_listing_sources`, then create or refresh `candidate_saved_jobs.job_listing_id`.
 
+## TheirStack Company Enrichment Foundation
+
+TheirStack is a company/enrichment source, not the canonical job detail source. The TheirStack foundation can search companies explicitly through the provider service, normalize company metadata, infer supported ATS identifiers from returned job/career URLs, and persist companies through the existing canonical company path.
+
+This branch does not call TheirStack from model-planned company discovery, does not call it automatically from chat commands, and does not sync discovered boards after enrichment. TheirStack-discovered Greenhouse boards are not auto-synced until a later branch.
+
+Configuration uses:
+
+- `JOBOPS_THEIRSTACK_API_KEY`
+- `JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED`
+- `JOBOPS_THEIRSTACK_COMPANY_SEARCH_LIMIT`
+- `JOBOPS_THEIRSTACK_COMPANY_SEARCH_MAX_PAGES`
+- `JOBOPS_THEIRSTACK_COMPANY_SEARCH_FRESHNESS_DAYS`
+
+Company search defaults to enabled when `JOBOPS_THEIRSTACK_API_KEY` is present unless `JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED=false` is set. The default limit is 25 companies, default max pages is 1, and default freshness window is 30 days. TheirStack may consume credits per returned company, so diagnostics include a credit caution.
+
+TheirStack URL inference reuses existing canonical company fields:
+
+- Greenhouse board tokens are stored on `companies.greenhouse_board_token`.
+- Ashby board URLs are stored on `companies.ashby_board_url`.
+- Lever slugs are stored on `companies.lever_slug`.
+- Workday, Workable, and unknown ATS URLs are preserved as unsupported/source URLs and are not treated as supported sync providers.
+
+Useful enrichment-only metadata such as LinkedIn URL, industry, employee counts, funding fields, technology and keyword slugs, job counts, compact TheirStack payload metadata, and unsupported ATS URLs can be stored in `candidate_companies.provider_grounding_metadata` only when an explicit service call links the company to a candidate profile. Diagnostics are sanitized and never include API keys, bearer tokens, authorization headers, or raw huge payloads.
+
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 
 For `direct_job_url`, the planner must choose that mode because the user supplied a specific job URL to add/save. The backend may structurally extract HTTP URLs only after the model-selected plan mode is `direct_job_url`; it does not route direct URL ingestion by keyword matching. Direct URL plans do not run broad provider sync, DB search queries, model review, model rejection recording, or stale/closed marking.

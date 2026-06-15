@@ -38,6 +38,11 @@ class Settings:
     adzuna_country: str = "us"
     greenhouse_board_tokens: tuple[str, ...] = ()
     greenhouse_company_boards: dict[str, str] | None = None
+    theirstack_api_key: str | None = None
+    theirstack_company_search_enabled: bool = False
+    theirstack_company_search_limit: int = 25
+    theirstack_company_search_max_pages: int = 1
+    theirstack_company_search_freshness_days: int = 30
     llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -72,6 +77,9 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         job_discovery_source = "mock" if model_provider.strip().lower() == "mock" else "none"
     if not job_discovery_providers:
         job_discovery_providers = (job_discovery_source.strip().lower(),) if job_discovery_source.strip().lower() not in {"", "none"} else ()
+
+    theirstack_api_key = merged.get("JOBOPS_THEIRSTACK_API_KEY")
+    theirstack_enabled_value = merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED")
 
     return Settings(
         app_env=app_env,
@@ -132,6 +140,23 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         adzuna_country=(merged.get("JOBOPS_ADZUNA_COUNTRY") or "us").strip().lower(),
         greenhouse_board_tokens=parse_csv_list(merged.get("JOBOPS_GREENHOUSE_BOARD_TOKENS")),
         greenhouse_company_boards=parse_json_object(merged.get("JOBOPS_GREENHOUSE_COMPANY_BOARDS")),
+        theirstack_api_key=theirstack_api_key,
+        theirstack_company_search_enabled=parse_bool(
+            theirstack_enabled_value,
+            default=bool(theirstack_api_key),
+        ),
+        theirstack_company_search_limit=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_LIMIT"),
+            default=25,
+        ),
+        theirstack_company_search_max_pages=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_MAX_PAGES"),
+            default=1,
+        ),
+        theirstack_company_search_freshness_days=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_FRESHNESS_DAYS"),
+            default=30,
+        ),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root,
         llm_request_timeout_seconds=parse_float(merged.get("JOBOPS_LLM_TIMEOUT_SECONDS"), default=60),
