@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 
 ProviderType = Literal["broad_search", "ats_board", "mock"]
-SyncKind = Literal["company_board", "broad_search"]
+SyncKind = Literal["company_board", "broad_search", "direct_url"]
 
 
 @dataclass(frozen=True)

@@ -215,13 +215,15 @@ def parse_db_search_plan(raw_text: str) -> DbJobSearchPlan:
     sync_plan = plan.get("syncPlan") if isinstance(plan.get("syncPlan"), dict) else {}
     db_search_plan = plan.get("dbSearchPlan") if isinstance(plan.get("dbSearchPlan"), dict) else {}
     raw_queries = db_search_plan.get("queries", [])
-    if not isinstance(raw_queries, list) or not raw_queries:
+    if mode == "direct_job_url" and (not isinstance(raw_queries, list) or not raw_queries):
+        raw_queries = []
+    elif not isinstance(raw_queries, list) or not raw_queries:
         raise DbJobSearchPlanningError(
             "Model search planning did not include database queries.",
             diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "missing_queries"}},
         )
     queries = tuple(parse_query(item) for item in raw_queries if isinstance(item, dict))
-    if not queries:
+    if not queries and mode != "direct_job_url":
         raise DbJobSearchPlanningError(
             "Model search planning did not include valid database queries.",
             diagnostics={"planner": {"status": "failed", "modelUsed": True, "planningFailed": True, "error": "invalid_queries"}},

@@ -4,7 +4,7 @@ JobOps separates provider/API inventory refresh work from candidate-facing job d
 
 ## Job Sync
 
-Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching. Candidate-facing discovery is DB-backed only: it searches this synced inventory instead of calling live provider search adapters or direct URL ingestion code.
+Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching. Candidate-facing discovery is DB-backed only: it searches this synced inventory or ingests explicit direct job URLs into the same synced listing model.
 
 Job Sync uses four core database tables:
 
@@ -23,15 +23,27 @@ Candidate-facing job discovery keeps the existing chat/run shell and `job_search
 
 - The model planner emits a structured JSON plan for both sync signatures/sync tokens and DB search queries, not SQL.
 - The query builder translates the plan into SQLAlchemy queries over `job_listings`, `job_listing_sources`, and jobs-list state.
-- The model chooses a discovery `mode`: `new_job_discovery`, `jobs_list_review`, `mixed_new_and_existing`, or `clarification_needed`.
+- The model chooses a discovery `mode`: `new_job_discovery`, `jobs_list_review`, `mixed_new_and_existing`, `direct_job_url`, or `clarification_needed`.
 - The backend maps model-selected modes onto internal query scopes only after validating the model plan structure.
 - For new discovery, the reviewer model chooses which synced jobs should be added to the jobs list and which should be recorded as model rejected.
 - For jobs-list ranking, the reviewer model recommends the best existing jobs-list entries without adding or rejecting rows.
 - Chat-facing summaries use the reviewer-provided `userVisibleSummary`.
 
-Pre-revamp live-provider discovery and direct URL ingestion are intentionally removed. Future direct URL ingestion or enrichment work should write normalized inventory into the Job Sync/listing model first, then let candidate-facing discovery consume it through the DB-backed path.
+Pre-revamp live-provider discovery is intentionally removed. Direct URL ingestion is DB-backed: supported direct job URLs write normalized inventory into `job_listings` and `job_listing_sources`, then create or refresh `candidate_saved_jobs.job_listing_id`.
 
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
+
+For `direct_job_url`, the planner must choose that mode because the user supplied a specific job URL to add/save. The backend may structurally extract HTTP URLs only after the model-selected plan mode is `direct_job_url`; it does not route direct URL ingestion by keyword matching. Direct URL plans do not run broad provider sync, DB search queries, model review, model rejection recording, or stale/closed marking.
+
+Supported Greenhouse direct URL shapes:
+
+- `https://job-boards.greenhouse.io/{board_token}/jobs/{job_id}`
+- `https://boards.greenhouse.io/{board_token}/jobs/{job_id}`
+- `https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}`
+
+Board-only Greenhouse URLs are not enough for direct ingestion; the URL must include a specific job id. Direct Greenhouse ingestion fetches the public board list with `content=true`, fetches the retrieve-job endpoint with `questions=true` and `pay_transparency=true`, merges those payloads, and normalizes through the same Greenhouse Job Sync mapper used by full board sync. Application fields, application requirements, raw list/retrieve payloads, and pay transparency are preserved on `job_listing_sources`. Direct URL ingestion records `job_sync_runs.sync_kind="direct_url"` with a sync key such as `greenhouse:direct-url:{board_token}:{provider_job_id}` and diagnostics for parsed URL kind, list/detail fetch status, listing/source ids, saved-job id, company ids, and create/refresh flags.
+
+Direct Greenhouse ingestion resolves or creates a canonical `Company` by Greenhouse board token, ensures a `CandidateCompany` link exists, and avoids downgrading richer company metadata with board-token fallback names. It does not use `JobPosting`, does not create `candidate_saved_jobs.job_id`, and does not call full Greenhouse board sync or mark jobs missing from the board as closed.
 
 The backend does not deterministically route discovery mode or generate search criteria from chat text. If model planning fails, returns invalid JSON, omits the required `mode`, omits required DB queries, or fails model critique, discovery records a no-op planning result and does not run Job Sync, DB search, model review, or jobs-list writes. Those runs report `noJobsAddedReason="model_planning_failed"`.
 
@@ -82,6 +94,9 @@ DB-backed result/status payloads include:
 - `model_selected_zero`: model review completed and selected no jobs.
 - `review_validation_removed_all_selected_ids`: selected IDs were outside the reviewed pool and were discarded.
 - `all_selected_jobs_already_on_list`: selected jobs were already represented on the jobs list.
+- `direct_url_missing_url`: the model chose direct URL ingestion, but the latest message did not include an HTTP URL.
+- `unsupported_direct_job_url`: the direct URL provider registry does not support the supplied URL yet.
+- `direct_url_ingestion_failed`: the direct URL was supported, but provider fetch/normalization did not produce a saved job.
 - `unknown`: diagnostics were insufficient to classify the outcome.
 
 DB-backed diagnostics are stored on `job_search_runs.run_diagnostics_json` and exposed to the UI in three sections:
@@ -90,6 +105,7 @@ DB-backed diagnostics are stored on `job_search_runs.run_diagnostics_json` and e
 - Job Sync: each `syncKey`, status, raw, normalized, created, and updated counts.
 - Database queries: each query label and matched job count, plus the unique pool count.
 - Model review: unique jobs in pool, jobs reviewed by model, jobs added to the jobs list or recommended existing jobs, recorded model rejections, top rejection reasons, and model-review failure/no-added details when present.
+- Direct URL ingestion: URL-level provider, status, parsed Greenhouse board token/job id, list/detail fetch status, listing/source ids, saved-job id, company ids, create/refresh flags, and safe error details.
 
 Jobs added by the latest completed DB-backed discovery run keep `candidate_saved_jobs.job_search_run_id` and are highlighted first in the Jobs workspace. The saved-job API includes `jobSearchRunId`, `highlighted`, `justAdded`, and `latestDiscoveryRunId` so the UI can preserve that highlight after refresh.
 

@@ -8,6 +8,7 @@ Allowed mode values:
   - new_job_discovery: find new jobs to add to the jobs list.
   - jobs_list_review: review/prioritize jobs already on the jobs list.
   - mixed_new_and_existing: find new jobs and compare/review them with existing jobs-list entries.
+  - direct_job_url: add or save a specific job URL supplied by the user.
   - clarification_needed: safe execution is impossible without a user answer.
 
 Required JSON shape:
@@ -63,6 +64,15 @@ Mode examples:
 - "Search for US remote jobs." -> new_job_discovery.
 - "Find new jobs and compare them to the jobs already on my list." -> mixed_new_and_existing.
 - "Find new US remote jobs and rank them with my saved jobs." -> mixed_new_and_existing.
+- "Add this job to my list https://job-boards.greenhouse.io/example/jobs/123" -> direct_job_url.
+- "Save this Greenhouse job https://boards.greenhouse.io/example/jobs/123" -> direct_job_url.
+- "Add this Greenhouse job https://boards-api.greenhouse.io/v1/boards/example/jobs/123" -> direct_job_url.
+
+For direct_job_url, the user supplied a specific job URL to add/save. Do not propose broad Adzuna signatures, do not
+use followed-company board sync, do not run model review, and do not require fake DB search queries. Use
+syncPlan.useFollowedCompanyBoards=false, proposedAdzunaSignatures=[], existingAdzunaSignatureIdsToRefresh=[],
+dbSearchPlan.queries=[], and reviewPlan.task="select_new_jobs". If the user asks to add/save a URL but no URL is
+present, use clarification_needed or a direct_job_url plan that explains the missing URL.
 
 For new_job_discovery and mixed_new_and_existing, plan an inventory strategy. Sync tokens should be broad enough to
 capture a useful inventory slice; DB queries can be more selective after sync. Select existing signatures when they
@@ -108,7 +118,12 @@ model critique step; do not invent execution results.
 
 Validate:
 - The mode matches the user request and jobs-list context.
-- The plan is executable and includes dbSearchPlan.queries.
+- The plan is executable and includes dbSearchPlan.queries unless mode is direct_job_url.
+- For direct_job_url, the latest user message must include a specific HTTP job URL; the plan should not use followed
+  board sync, Adzuna signatures, broad search, DB queries, or model review.
+- Reject or correct plans that turn an explicit add/save job URL task into broad discovery. Use
+  issueCode="mode_mismatch_direct_url" when rejecting that mistake.
+- Reject direct_job_url when no URL is present. Use issueCode="missing_direct_url".
 - For jobs-list ranking, reviewPlan.task is rank_existing_jobs, requestedCount contains the requested top-N count, and
   DB query limits are input caps that retrieve all eligible jobs-list entries rather than the requested output count.
 - If the user asks which/what jobs to apply to or prioritize, including with filters like US remote, London, AI,
