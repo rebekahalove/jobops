@@ -159,7 +159,9 @@ class DirectJobUrlDiscoveryService:
         diagnostics["addedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
         diagnostics["updatedJobIds"] = [link.id for link in updated_links]
         diagnostics["updatedJobListingIds"] = [link.job_listing_id for link in updated_links if link.job_listing_id]
-        if successful_count == 0:
+        if successful_count > 0:
+            diagnostics["noJobsAddedReason"] = None
+        else:
             diagnostics["noJobsAddedReason"] = "direct_url_ingestion_failed" if failed_count else "unsupported_direct_job_url"
 
         run.search_mode = "db_backed"

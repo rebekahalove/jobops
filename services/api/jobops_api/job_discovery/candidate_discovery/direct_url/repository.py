@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from ....company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from ....db.models import CandidateSavedJob, Company, JobListing
 from ...greenhouse_utils import canonical_greenhouse_jobs_api_url
+from ..statuses import HIDDEN_JOB_STATUSES
 from .models import DirectUrlCompanyResolution, DirectUrlSavedJobWriteResult
 
 
@@ -81,7 +82,8 @@ class DirectUrlSavedJobRepository:
         )
         created = saved_job is None
         if saved_job is None:
-            saved_job = CandidateSavedJob(job_listing_id=job_listing_id,
+            saved_job = CandidateSavedJob(
+                job_listing_id=job_listing_id,
                 candidate_profile_id=candidate_profile_id,
                 job_search_run_id=job_search_run_id,
                 status="new",
@@ -90,7 +92,8 @@ class DirectUrlSavedJobRepository:
             )
             self.session.add(saved_job)
         else:
-            saved_job.status = "new"
+            if saved_job.archived_at is not None or saved_job.status in HIDDEN_JOB_STATUSES:
+                saved_job.status = "new"
             saved_job.job_search_run_id = job_search_run_id
             saved_job.source_command = source_command
             saved_job.archived_at = None

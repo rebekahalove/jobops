@@ -335,13 +335,49 @@ def test_direct_url_second_add_refreshes_and_archived_readd_restores(tmp_path) -
         )
         session.commit()
         links = list(session.scalars(select(CandidateSavedJob)).all())
+        refreshed_run = session.get(JobSearchRun, second.job_search_run_id)
+        refreshed_run_status = refreshed_run.status if refreshed_run is not None else None
 
     assert first.added_count == 1
     assert second.added_count == 0
     assert second.updated_count == 1
+    assert refreshed_run_status == "completed"
+    assert second.diagnostics["noJobsAddedReason"] is None
+    assert second.diagnostics["modelReview"]["modelReviewSkippedReason"] == "direct_job_url"
+    assert "already on your jobs list" in second.assistant_message
+    assert "refreshed" in second.assistant_message
     assert len(links) == 1
     assert links[0].archived_at is None
     assert links[0].status == "new"
+
+
+def test_direct_url_refresh_preserves_existing_visible_status(tmp_path) -> None:
+    _, engine = run_direct_url_service(tmp_path, DIRECT_URL, FakeGreenhouseClient())
+    with Session(engine) as session:
+        saved = session.scalar(select(CandidateSavedJob))
+        saved.status = "favorite"
+        session.commit()
+        profile = session.scalar(select(CandidateSavedJob)).candidate_profile
+        run = JobSearchRun(candidate_profile_id=profile.id, command_text=f"save {DIRECT_URL}", search_mode="db_backed", status="started")
+        session.add(run)
+        session.flush()
+        result = DirectJobUrlDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            providers=(GreenhouseDirectJobUrlProvider(client=FakeGreenhouseClient()),),
+        ).run(
+            JobDiscoveryRequest(latest_user_message=f"save {DIRECT_URL}", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_companies=[],
+            plan=direct_plan(),
+            run=run,
+        )
+        session.commit()
+        refreshed = session.scalar(select(CandidateSavedJob))
+
+    assert result.updated_count == 1
+    assert result.diagnostics["noJobsAddedReason"] is None
+    assert refreshed.status == "favorite"
 
 
 def test_greenhouse_direct_ingestion_does_not_mark_stale_jobs_closed(tmp_path) -> None:
