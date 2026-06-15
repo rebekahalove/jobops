@@ -82,6 +82,7 @@ def find_canonical_company(
     normalized_domain: str | None,
     greenhouse_board_token: str | None = None,
     ashby_board_url: str | None = None,
+    lever_slug: str | None = None,
 ) -> Company | None:
     if greenhouse_board_token:
         by_greenhouse = session.scalar(select(Company).where(Company.greenhouse_board_token == greenhouse_board_token))
@@ -92,6 +93,11 @@ def find_canonical_company(
         by_ashby = session.scalar(select(Company).where(Company.ashby_board_url == ashby_board_url))
         if by_ashby is not None:
             return by_ashby
+
+    if lever_slug:
+        by_lever = session.scalar(select(Company).where(Company.lever_slug == lever_slug))
+        if by_lever is not None:
+            return by_lever
 
     if normalized_domain:
         by_domain = session.scalar(select(Company).where(Company.normalized_domain == normalized_domain))
@@ -139,6 +145,7 @@ def upsert_canonical_company(
     clean_normalized_name = normalize_company_name(normalized_name or cleaned_name) or None
     clean_greenhouse_board_token = greenhouse_board_token.strip() if greenhouse_board_token else None
     clean_ashby_board_url = ashby_board_url.strip() if ashby_board_url else None
+    clean_lever_slug = lever_slug.strip() if lever_slug else None
     normalized_domain = normalized_domain_from_company_urls(
         website_url,
         careers_url,
@@ -153,6 +160,7 @@ def upsert_canonical_company(
         normalized_domain=normalized_domain,
         greenhouse_board_token=clean_greenhouse_board_token,
         ashby_board_url=clean_ashby_board_url,
+        lever_slug=clean_lever_slug,
     )
 
     if company is None:
@@ -175,7 +183,7 @@ def upsert_canonical_company(
             data_confidence=data_confidence or "medium",
             greenhouse_board_token=clean_greenhouse_board_token,
             ashby_board_url=clean_ashby_board_url,
-            lever_slug=lever_slug,
+            lever_slug=clean_lever_slug,
             first_seen_at=now,
             last_seen_at=now,
         )
@@ -205,7 +213,7 @@ def upsert_canonical_company(
     company.data_confidence = company.data_confidence or data_confidence or "medium"
     company.greenhouse_board_token = company.greenhouse_board_token or clean_greenhouse_board_token
     company.ashby_board_url = company.ashby_board_url or clean_ashby_board_url
-    company.lever_slug = company.lever_slug or lever_slug
+    company.lever_slug = company.lever_slug or clean_lever_slug
     company.last_seen_at = now
     session.add(company)
     session.flush()
