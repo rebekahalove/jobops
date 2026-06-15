@@ -311,7 +311,7 @@ export function ApplicationDetail({
           <DetailItem label="Follow-up" value={formatDateOnly(application.next_follow_up_date)} />
         </dl>
 
-        {application.saved_job_id || application.job_id ? (
+        {application.saved_job_id ? (
           <div className="application-linked-job-action">
             <Link className="secondary-action compact-action" href={savedJobHref(application, workspaceBasePath)}>
               View saved job

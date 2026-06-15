@@ -20,7 +20,6 @@ from jobops_api.db.models import (
     JobListingSource,
     JobLocationTarget,
     JobProviderLocationMapping,
-    JobPosting,
     JobSyncRun,
     Tenant,
 )
@@ -1272,7 +1271,7 @@ def test_record_job_sync_run_stores_request_diagnostics_without_secrets() -> Non
         }
 
 
-def test_job_sync_models_do_not_break_existing_applied_application_relationships() -> None:
+def test_job_sync_models_support_applied_application_relationships_for_synced_jobs() -> None:
     engine = create_engine_for_job_sync_tests()
     with Session(engine) as session:
         tenant = Tenant(name="Tenant", slug="tenant")
@@ -1284,17 +1283,17 @@ def test_job_sync_models_do_not_break_existing_applied_application_relationships
             summary="",
             profile_status="draft",
         )
-        posting = JobPosting(
+        job_listing = JobListing(
             title="Applied AI Engineer",
             company_name="Acme AI",
-            job_url="https://jobs.example.test/1",
-            normalized_url="https://jobs.example.test/1",
-            source="manual",
+            canonical_url="https://jobs.example.test/1",
+            apply_url="https://jobs.example.test/1/apply",
+            source_url="https://jobs.example.test/1",
+            source_status="active",
         )
-        saved_job = CandidateSavedJob(candidate_profile=profile, job=posting, status="saved")
+        saved_job = CandidateSavedJob(candidate_profile=profile, job_listing=job_listing, status="saved")
         application = Application(
             candidate_profile=profile,
-            job=posting,
             saved_job=saved_job,
             company_name="Acme AI",
             job_title="Applied AI Engineer",
@@ -1307,8 +1306,8 @@ def test_job_sync_models_do_not_break_existing_applied_application_relationships
 
         loaded = session.scalar(select(Application).where(Application.id == application.id))
         assert loaded is not None
-        assert loaded.job.id == posting.id
         assert loaded.saved_job.id == saved_job.id
+        assert loaded.saved_job.job_listing.id == job_listing.id
         assert loaded.status == "applied"
 
 

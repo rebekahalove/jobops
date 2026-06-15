@@ -54,7 +54,6 @@ export type ApplicationMaterialBundle = {
 export type TrackedApplication = {
   id: string;
   candidate_profile_id?: string;
-  job_id?: string | null;
   saved_job_id?: string | null;
   company_id?: string | null;
   company_name: string;
@@ -232,7 +231,7 @@ export function ApplicationsTracker({
       setMessageKind("success");
       setMessage(actionResultMessage(payload, fallbackMessage));
       window.dispatchEvent(new CustomEvent("jobops:applications-updated"));
-      if (application.job_id) {
+      if (application.saved_job_id) {
         window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       }
     } catch (error) {

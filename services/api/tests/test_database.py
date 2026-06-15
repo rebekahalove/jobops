@@ -110,9 +110,13 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "company_id" in job_role_columns
     assert "target_company_id" not in job_role_columns
     assert "company_id" in application_columns
-    assert "job_id" in application_columns
+    assert "job_id" not in application_columns
     assert "saved_job_id" in application_columns
     assert "target_company_id" not in application_columns
+    assert "job_postings" not in inspector.get_table_names()
+    candidate_saved_job_columns = {column["name"] for column in inspector.get_columns("candidate_saved_jobs")}
+    assert "job_id" not in candidate_saved_job_columns
+    assert "job_listing_id" in candidate_saved_job_columns
     assert "job_listings" in inspector.get_table_names()
     assert "job_listing_sources" in inspector.get_table_names()
     assert "job_sync_runs" in inspector.get_table_names()
@@ -266,10 +270,9 @@ def test_candidate_saved_jobs_downgrade_preserves_synced_saved_rows(tmp_path: Pa
 
     with engine.connect() as connection:
         row = connection.execute(
-            text("SELECT job_id, job_listing_id, status FROM candidate_saved_jobs WHERE id = 'saved-1'")
+            text("SELECT job_listing_id, status FROM candidate_saved_jobs WHERE id = 'saved-1'")
         ).mappings().one()
 
-    assert row["job_id"] is None
     assert row["job_listing_id"] == "listing-1"
     assert row["status"] == "new"
 
@@ -412,14 +415,14 @@ def test_application_job_link_migration_preserves_existing_applications(tmp_path
 
     inspector = inspect_database(engine)
     application_columns = {column["name"] for column in inspector.get_columns("applications")}
-    assert {"job_id", "saved_job_id"}.issubset(application_columns)
+    assert "saved_job_id" in application_columns
+    assert "job_id" not in application_columns
     with engine.connect() as connection:
         row = connection.execute(
-            text("SELECT company_name, job_title, job_id, saved_job_id, notes FROM applications WHERE id = 'application-1'")
+            text("SELECT company_name, job_title, saved_job_id, notes FROM applications WHERE id = 'application-1'")
         ).mappings().one()
 
     assert row["company_name"] == "Acme AI"
     assert row["job_title"] == "Applied AI Engineer"
-    assert row["job_id"] is None
     assert row["saved_job_id"] is None
     assert row["notes"] == "Existing note"

@@ -16,7 +16,7 @@ from .company_discovery import (
     model_response_debug_fields,
     safe_error_detail_fields,
 )
-from .db.models import Application, ApplicationMaterialBundle, ApplicationMaterialItem, JobListing, JobListingSource, JobPosting
+from .db.models import Application, ApplicationMaterialBundle, ApplicationMaterialItem, JobListing, JobListingSource
 from .model_connector import (
     ModelConfigurationError,
     ModelConnector,
@@ -182,11 +182,10 @@ def generate_application_material_bundle(
 
 def build_application_materials_context(session: Session, application: Application) -> tuple[dict[str, Any], dict[str, Any]]:
     profile = application.candidate_profile
-    job = application.job
     saved_job = application.saved_job
     job_listing = saved_job.job_listing if saved_job is not None else None
     source_context = select_application_fields_source(job_listing)
-    job_description, job_description_source, job_description_original_length = select_job_description(job, job_listing)
+    job_description, job_description_source, job_description_original_length = select_job_description(job_listing, application=application)
     private_profile_context = candidate_profile_to_private_context_dict(profile)
     compact_profile_context = compact_private_profile_context(private_profile_context)
     application_notes = normalize_text(application.notes)
@@ -206,7 +205,7 @@ def build_application_materials_context(session: Session, application: Applicati
             "location": application.location,
             "notes": application_notes,
         },
-        "jobPosting": serialize_job_posting(job, job_listing, job_description, job_description_source),
+        "jobPosting": serialize_job_context(application, job_listing, job_description, job_description_source),
         "savedJob": {
             "id": saved_job.id,
             "status": saved_job.status,
@@ -235,7 +234,6 @@ def build_application_materials_context(session: Session, application: Applicati
         "applicationNotesIncluded": bool(application_notes or saved_job_notes),
         "materialTypesRequested": APPLICATION_MATERIAL_TYPES,
         "applicationId": application.id,
-        "jobId": job.id if job is not None else None,
         "savedJobId": saved_job.id if saved_job is not None else None,
         "jobListingId": job_listing.id if job_listing is not None else None,
         "applicationFieldsIncluded": source_context["applicationFieldsIncluded"],
@@ -369,51 +367,29 @@ def persist_application_materials_bundle(
     return bundle
 
 
-def select_job_description(job: JobPosting | None, job_listing: JobListing | None = None) -> tuple[str | None, str, int]:
-    if job is None and job_listing is None:
-        return None, "missing", 0
-    if job is None and job_listing is not None:
+def select_job_description(job_listing: JobListing | None, *, application: Application | None = None) -> tuple[str | None, str, int]:
+    if job_listing is not None:
         full_description = normalize_multiline_text(job_listing.full_description)
         if full_description:
             return truncate_context_text(full_description, JOB_DESCRIPTION_CONTEXT_LIMIT), "synced_full_stored", len(full_description)
         excerpt = normalize_multiline_text(job_listing.description_excerpt)
         if excerpt:
             return excerpt, "synced_excerpt_fallback", len(excerpt)
-        return None, "missing", 0
-    full_description = normalize_multiline_text(getattr(job, "full_description", None))
-    if full_description:
-        return truncate_context_text(full_description, JOB_DESCRIPTION_CONTEXT_LIMIT), "full_stored", len(full_description)
 
-    provider_raw = extract_provider_raw_description(job.provider_raw_metadata)
-    if provider_raw:
-        return truncate_context_text(provider_raw, JOB_DESCRIPTION_CONTEXT_LIMIT), "provider_raw", len(provider_raw)
-
-    excerpt = normalize_multiline_text(job.description_excerpt)
-    if excerpt:
-        return excerpt, "excerpt_fallback", len(excerpt)
-
+    if application is not None:
+        notes = normalize_multiline_text(application.notes)
+        if notes:
+            return truncate_context_text(notes, JOB_DESCRIPTION_CONTEXT_LIMIT), "application_notes_fallback", len(notes)
     return None, "missing", 0
 
 
-def extract_provider_raw_description(metadata: dict[str, Any] | None) -> str | None:
-    if not isinstance(metadata, dict):
-        return None
-    for key in ("full_description", "description", "body", "content"):
-        value = normalize_multiline_text(metadata.get(key))
-        if value:
-            return value
-    return None
-
-
-def serialize_job_posting(
-    job: JobPosting | None,
+def serialize_job_context(
+    application: Application,
     job_listing: JobListing | None,
     job_description: str | None,
     job_description_source: str,
 ) -> dict[str, Any] | None:
-    if job is None and job_listing is None:
-        return None
-    if job is None and job_listing is not None:
+    if job_listing is not None:
         return {
             "id": None,
             "jobListingId": job_listing.id,
@@ -438,28 +414,29 @@ def serialize_job_posting(
             "descriptionExcerpt": job_listing.description_excerpt,
         }
     return {
-        "id": job.id,
-        "title": job.title,
-        "companyName": job.company_name,
-        "jobUrl": job.job_url,
-        "canonicalUrl": job.canonical_url,
-        "applyUrl": job.apply_url,
-        "source": job.source,
-        "sourceProvider": job.source_provider,
-        "providerType": job.provider_type,
-        "sourceResultId": job.source_result_id,
-        "sourceUrl": job.source_url,
-        "location": job.location,
-        "remoteWorkMode": job.remote_work_mode,
-        "employmentType": job.employment_type,
-        "salaryText": job.salary_text,
-        "postingDate": job.posting_date.isoformat() if job.posting_date else None,
+        "id": None,
+        "jobListingId": None,
+        "title": application.job_title,
+        "companyName": application.company_name,
+        "jobUrl": application.job_url,
+        "canonicalUrl": application.job_url,
+        "applyUrl": application.job_url,
+        "source": application.source,
+        "sourceProvider": application.source,
+        "providerType": None,
+        "sourceResultId": None,
+        "sourceUrl": application.job_url,
+        "location": application.location,
+        "remoteWorkMode": None,
+        "employmentType": None,
+        "salaryText": None,
+        "postingDate": None,
         "fitSummaryUnavailableHere": True,
         "jobDescriptionSource": job_description_source,
         "jobDescription": job_description,
-        "descriptionExcerpt": job.description_excerpt,
-        "urlVerificationStatus": job.url_verification_status,
-        "urlVerificationSummary": job.url_verification_summary,
+        "descriptionExcerpt": None,
+        "urlVerificationStatus": None,
+        "urlVerificationSummary": None,
     }
 
 

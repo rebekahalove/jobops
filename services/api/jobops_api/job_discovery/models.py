@@ -10,7 +10,6 @@ from pydantic import BaseModel
 class SavedJobResponse(BaseModel):
     id: str
     candidate_profile_id: str
-    job_id: str | None
     job_listing_id: str | None = None
     jobSearchRunId: str | None = None
     highlighted: bool = False
@@ -73,7 +72,6 @@ class SavedJobResponse(BaseModel):
 
 class SavedJobActionResponse(BaseModel):
     ok: bool = True
-    job_id: str | None
     saved_job_id: str
     job_archived: bool = False
     job_restored: bool = False
