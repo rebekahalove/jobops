@@ -19,7 +19,6 @@ from jobops_api.db.models import (
     CandidateSavedJob,
     JobListing,
     JobListingSource,
-    JobPosting,
 )
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
@@ -201,7 +200,6 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         assert profile is not None
         saved_job = create_saved_job(session, candidate_profile_id=profile.id)
         saved_job_id = saved_job.id
-        job_id = saved_job.job_id
         session.commit()
 
     def override_session() -> Iterator[Session]:
@@ -220,13 +218,12 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         assert create_response.status_code == 201
         created = create_response.json()
         assert created["status"] == "in_process"
-        assert created["job_id"] == job_id
         assert created["saved_job_id"] == saved_job_id
         assert created["company_name"] == "Example Civic"
         assert created["job_title"] == "Applied AI Engineer"
-        assert created["job_url"] == "https://jobs.example.test/example-civic/applied-ai"
+        assert created["job_url"] == "https://jobs.example.test/example-civic/apply"
         assert created["location"] == "Remote US"
-        assert created["source"] == "Company careers"
+        assert created["source"] == "greenhouse"
         assert created["date_applied"] is None
         assert created["source_provider"] == "greenhouse"
         assert created["fit_summary"] == "Matches applied AI and platform engineering goals."
@@ -243,7 +240,7 @@ def test_create_application_from_saved_job_links_canonical_job_and_prevents_dupl
         assert duplicate_response.status_code == 201
         assert duplicate_response.json()["id"] == created["id"]
         with Session(engine) as session:
-            assert len(session.scalars(select(Application).where(Application.job_id == job_id)).all()) == 1
+            assert len(session.scalars(select(Application).where(Application.saved_job_id == saved_job_id)).all()) == 1
     finally:
         app.dependency_overrides.clear()
 
@@ -282,7 +279,6 @@ def test_create_application_from_synced_saved_job_without_canonical_posting(monk
         assert create_response.status_code == 201
         created = create_response.json()
         assert created["status"] == "in_process"
-        assert created["job_id"] is None
         assert created["saved_job_id"] == saved_job_id
         assert created["company_name"] == "Synced Civic"
         assert created["job_title"] == "Synced Applied AI Engineer"
@@ -323,7 +319,6 @@ def test_create_application_from_synced_saved_job_without_canonical_posting(monk
         with Session(engine) as session:
             applications = session.scalars(select(Application).where(Application.saved_job_id == saved_job_id)).all()
             assert len(applications) == 1
-            assert applications[0].job_id is None
     finally:
         app.dependency_overrides.clear()
 
@@ -375,7 +370,7 @@ def test_archiving_job_without_application_preserves_job_and_unrelated_applicati
             assert saved_job is not None
             assert saved_job.archived_at is not None
             assert saved_job.archived_by_action == "user_archived_job"
-            assert saved_job.job is not None
+            assert saved_job.job_listing is not None
             unrelated = session.get(Application, unrelated_application_id)
             assert unrelated is not None
             assert unrelated.archived_at is None
@@ -445,7 +440,6 @@ def test_archiving_and_restoring_job_cascades_only_job_archived_application(monk
         saved_job = create_saved_job(session, candidate_profile_id=profile.id)
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -540,7 +534,6 @@ def test_restoring_job_does_not_restore_separately_archived_application(monkeypa
         saved_job = create_saved_job(session, candidate_profile_id=profile.id)
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -804,7 +797,6 @@ def test_job_and_application_list_responses_include_archive_and_linked_applicati
         saved_job = create_saved_job(session, candidate_profile_id=profile.id)
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -844,7 +836,6 @@ def test_job_and_application_list_responses_include_archive_and_linked_applicati
         assert application_payload["status"] == "in_process"
         assert application_payload["archived_at"] is None
         assert "archived_reason" in application_payload
-        assert application_payload["job_id"] == job_payload["job_id"]
         assert application_payload["job_title"] == "Applied AI Engineer"
         assert application_payload["company_name"] == "Example Civic"
     finally:
@@ -868,7 +859,6 @@ def test_get_application_detail_returns_owned_application_with_archive_metadata_
         saved_job = create_saved_job(session, candidate_profile_id=profile.id)
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -904,7 +894,6 @@ def test_get_application_detail_returns_owned_application_with_archive_metadata_
         session.commit()
         application_id = application.id
         saved_job_id = saved_job.id
-        job_id = saved_job.job_id
         bundle_id = bundle.id
 
     def override_session() -> Iterator[Session]:
@@ -927,7 +916,6 @@ def test_get_application_detail_returns_owned_application_with_archive_metadata_
         assert payload["notes"] == "Tailor materials around platform AI."
         assert payload["archived_reason"] == "Application archived by user."
         assert payload["archived_by_action"] == "user_archived_application"
-        assert payload["job_id"] == job_id
         assert payload["saved_job_id"] == saved_job_id
         assert payload["source_provider"] == "greenhouse"
         assert payload["apply_url"] == "https://jobs.example.test/example-civic/apply"
@@ -1056,7 +1044,6 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
         )
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -1086,13 +1073,13 @@ def test_generate_application_materials_creates_bundle_items_and_uses_full_descr
         assert payload["bundle"]["application_id"] == application_id
         assert len(payload["bundle"]["items"]) >= 3
         assert payload["contextManifest"]["fullJobDescriptionIncluded"] is True
-        assert payload["contextManifest"]["jobDescriptionSource"] == "full_stored"
+        assert payload["contextManifest"]["jobDescriptionSource"] == "synced_full_stored"
 
         with Session(engine) as session:
             bundle = session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id))
             assert bundle is not None
             assert bundle.model_provider == "mock"
-            assert bundle.source_context_snapshot["manifest"]["jobDescriptionSource"] == "full_stored"
+            assert bundle.source_context_snapshot["manifest"]["jobDescriptionSource"] == "synced_full_stored"
             assert "Full stored job description" in bundle.source_context_snapshot["context"]["jobPosting"]["jobDescription"]
             assert session.scalar(select(ApplicationMaterialItem).where(ApplicationMaterialItem.bundle_id == bundle.id)) is not None
 
@@ -1269,7 +1256,6 @@ def test_generate_application_materials_falls_back_to_description_excerpt(monkey
         )
         application = Application(
             candidate_profile_id=profile.id,
-            job_id=saved_job.job_id,
             saved_job_id=saved_job.id,
             company_name="Example Civic",
             job_title="Applied AI Engineer",
@@ -1294,7 +1280,7 @@ def test_generate_application_materials_falls_back_to_description_excerpt(monkey
         )
         assert response.status_code == 201
         assert response.json()["contextManifest"]["fullJobDescriptionIncluded"] is False
-        assert response.json()["contextManifest"]["jobDescriptionSource"] == "excerpt_fallback"
+        assert response.json()["contextManifest"]["jobDescriptionSource"] == "synced_excerpt_fallback"
         with Session(engine) as session:
             bundle = session.scalar(select(ApplicationMaterialBundle).where(ApplicationMaterialBundle.application_id == application_id))
             assert bundle is not None
@@ -1419,29 +1405,42 @@ def create_saved_job(
     full_description: str | None = None,
     description_excerpt: str | None = None,
 ) -> CandidateSavedJob:
-    job = JobPosting(
+    job_listing = JobListing(
         title=title,
         company_name="Example Civic",
-        job_url="https://jobs.example.test/example-civic/applied-ai",
         canonical_url="https://jobs.example.test/example-civic/applied-ai",
         apply_url="https://jobs.example.test/example-civic/apply",
-        normalized_url=f"https://jobs.example.test/example-civic/{title.lower().replace(' ', '-')}",
-        source="Company careers",
-        source_provider="greenhouse",
-        provenance="provider_result",
-        location="Remote US",
+        source_url="https://jobs.example.test/example-civic/applied-ai",
+        location_display="Remote US",
+        location_country="us",
         remote_work_mode="remote",
         employment_type="Full-time",
         salary_text="USD 150,000-180,000",
         full_description=full_description,
         description_excerpt=description_excerpt,
         posting_date=date(2026, 5, 20),
+        source_status="active",
     )
-    session.add(job)
+    session.add(job_listing)
     session.flush()
+    session.add(
+        JobListingSource(
+            job_listing_id=job_listing.id,
+            source_provider="greenhouse",
+            provider_type="ats",
+            provider_job_id=f"example-civic-{title.lower().replace(' ', '-')}",
+            source_result_id=f"example-civic-{title.lower().replace(' ', '-')}",
+            source_query="Company careers",
+            source_url="https://jobs.example.test/example-civic/applied-ai",
+            apply_url="https://jobs.example.test/example-civic/apply",
+            canonical_url="https://jobs.example.test/example-civic/applied-ai",
+            is_active=True,
+            raw_metadata_json={},
+        )
+    )
     saved_job = CandidateSavedJob(
         candidate_profile_id=candidate_profile_id,
-        job_id=job.id,
+        job_listing_id=job_listing.id,
         fit_summary="Matches applied AI and platform engineering goals.",
     )
     session.add(saved_job)

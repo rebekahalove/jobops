@@ -15,7 +15,6 @@ const jobTabs: Array<{ id: JobBucketId; label: string }> = [
 export type SavedJob = {
   id: string;
   candidate_profile_id: string;
-  job_id: string | null;
   job_listing_id?: string | null;
   jobSearchRunId?: string | null;
   highlighted?: boolean;

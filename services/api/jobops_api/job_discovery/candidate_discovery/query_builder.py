@@ -113,10 +113,7 @@ class JobListingQueryBuilder:
                     CandidateSavedJob.archived_at.is_(None),
                     ~exists().where(
                         Application.candidate_profile_id == candidate_profile_id,
-                        or_(
-                            Application.saved_job_id == CandidateSavedJob.id,
-                            Application.job_id == CandidateSavedJob.job_id,
-                        ),
+                        Application.saved_job_id == CandidateSavedJob.id,
                     ),
                 )
         elif effective_scope == "all_accessible_jobs" and not query.include_model_rejected:

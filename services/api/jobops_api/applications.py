@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from jobops_api.application_materials import generate_application_material_bundle
 from jobops_api.auth import AuthContext, require_auth_context
 from jobops_api.company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
-from jobops_api.db.models import Application, ApplicationEvent, ApplicationMaterialBundle, CandidateProfile, CandidateSavedJob, Company, JobListing, JobPosting, JobRole
+from jobops_api.db.models import Application, ApplicationEvent, ApplicationMaterialBundle, CandidateProfile, CandidateSavedJob, Company, JobListing, JobRole
 from jobops_api.db.session import get_db_session
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.security import require_internal_api_key
@@ -107,7 +107,6 @@ class ApplicationResponse(BaseModel):
 
     id: str
     candidate_profile_id: str
-    job_id: str | None
     saved_job_id: str | None
     company_id: str | None
     company_name: str
@@ -218,7 +217,6 @@ def list_applications(
     statement = (
         select(Application)
         .options(
-            selectinload(Application.job),
             selectinload(Application.saved_job).selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
             selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
         )
@@ -485,7 +483,6 @@ def get_owned_application_or_404(session: Session, application_id: str, candidat
     application = session.scalar(
         select(Application)
         .options(
-            selectinload(Application.job),
             selectinload(Application.saved_job).selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
             selectinload(Application.candidate_profile),
             selectinload(Application.material_bundles).selectinload(ApplicationMaterialBundle.items),
@@ -543,7 +540,6 @@ def create_application_from_saved_job(
     saved_job = session.scalar(
         select(CandidateSavedJob)
         .options(
-            selectinload(CandidateSavedJob.job),
             selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
         )
         .where(CandidateSavedJob.id == request.saved_job_id)
@@ -558,16 +554,6 @@ def create_application_from_saved_job(
     )
     if existing_application is not None:
         return existing_application
-
-    job = saved_job.job
-    if job is not None:
-        return create_application_from_legacy_saved_job(
-            session,
-            candidate_profile=candidate_profile,
-            saved_job=saved_job,
-            job=job,
-            request=request,
-        )
 
     job_listing = saved_job.job_listing
     if job_listing is None:
@@ -599,58 +585,7 @@ def get_existing_application_for_saved_job(
     )
     if existing_by_saved_job is not None:
         return existing_by_saved_job
-    if not saved_job.job_id:
-        return None
-    return session.scalar(
-        select(Application)
-        .where(
-            Application.candidate_profile_id == candidate_profile_id,
-            Application.job_id == saved_job.job_id,
-        )
-        .order_by(Application.created_at.desc())
-        .limit(1)
-    )
-
-
-def create_application_from_legacy_saved_job(
-    session: Session,
-    *,
-    candidate_profile: CandidateProfile,
-    saved_job: CandidateSavedJob,
-    job: JobPosting,
-    request: ApplicationCreateRequest,
-) -> Application:
-    company = job.company if job.company is not None else get_or_create_company(session, candidate_profile.id, job.company_name)
-    if job.company is not None:
-        ensure_candidate_company_link(
-            session,
-            candidate_profile_id=candidate_profile.id,
-            company=job.company,
-            derivation_status="model_derived",
-            review_status="new",
-        )
-
-    requested_status = request.status or "started"
-    status = normalize_application_status(requested_status)
-    application = Application(
-        candidate_profile_id=candidate_profile.id,
-        company_id=company.id if company is not None else None,
-        job_id=job.id,
-        saved_job_id=saved_job.id,
-        company_name=job.company_name.strip(),
-        job_title=job.title.strip(),
-        job_url=clean_optional_text(job.job_url),
-        location=clean_optional_text(job.location),
-        source=clean_optional_text(job.source or job.source_provider),
-        date_applied=None,
-        status=status,
-        notes=request.notes.strip(),
-        next_follow_up_date=request.next_follow_up_date,
-    )
-    session.add(application)
-    session.commit()
-    session.refresh(application)
-    return application
+    return None
 
 
 def create_application_from_synced_saved_job(
@@ -677,7 +612,6 @@ def create_application_from_synced_saved_job(
     application = Application(
         candidate_profile_id=candidate_profile.id,
         company_id=company.id if company is not None else None,
-        job_id=None,
         saved_job_id=saved_job.id,
         company_name=job_listing.company_name.strip(),
         job_title=job_listing.title.strip(),

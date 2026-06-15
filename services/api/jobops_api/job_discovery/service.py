@@ -63,11 +63,11 @@ def list_jobs(
     statement = (
         select(CandidateSavedJob)
         .options(
-            selectinload(CandidateSavedJob.job),
             selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
         )
         .where(
             CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id,
+            CandidateSavedJob.job_listing_id.is_not(None),
             CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
         )
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
@@ -700,12 +700,12 @@ def load_added_jobs_for_search_run(session: Session, run_id: str, candidate_prof
     statement = (
         select(CandidateSavedJob)
         .options(
-            selectinload(CandidateSavedJob.job),
             selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
         )
         .where(
             CandidateSavedJob.candidate_profile_id == candidate_profile_id,
             CandidateSavedJob.job_search_run_id == run_id,
+            CandidateSavedJob.job_listing_id.is_not(None),
             CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
         )
         .order_by(CandidateSavedJob.added_at.desc(), CandidateSavedJob.created_at.desc())
@@ -726,7 +726,6 @@ def load_saved_jobs_by_ids(session: Session, saved_job_ids: list[str], candidate
         session.scalars(
             select(CandidateSavedJob)
             .options(
-                selectinload(CandidateSavedJob.job),
                 selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
             )
             .where(
@@ -1444,38 +1443,25 @@ def complete_job_search_run(
 def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) -> list[dict[str, Any]]:
     links = list(
         session.scalars(
-            select(CandidateSavedJob)
-            .options(
-                selectinload(CandidateSavedJob.job),
-                selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
-            )
-            .where(
-                CandidateSavedJob.candidate_profile_id == candidate_profile_id,
-                CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
-            )
+        select(CandidateSavedJob)
+        .options(
+            selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
+        )
+        .where(
+            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+            CandidateSavedJob.job_listing_id.is_not(None),
+            CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
+        )
             .order_by(CandidateSavedJob.added_at.desc())
             .limit(50)
         )
     )
     serialized: list[dict[str, Any]] = []
     for link in links:
-        if link.job is not None:
-            serialized.append({
-                "saved_job_id": link.id,
-                "job_id": link.job.id,
-                "job_listing_id": None,
-                "title": link.job.title,
-                "company_name": link.job.company_name,
-                "job_url": link.job.job_url,
-                "normalized_url": link.job.normalized_url,
-                "status": link.status,
-                "added_at": link.added_at.isoformat() if link.added_at else None,
-            })
-        elif link.job_listing is not None:
+        if link.job_listing is not None:
             job_listing_url = job_listing_primary_url(link.job_listing)
             serialized.append({
                 "saved_job_id": link.id,
-                "job_id": None,
                 "job_listing_id": link.job_listing.id,
                 "title": link.job_listing.title,
                 "company_name": link.job_listing.company_name,
@@ -1536,7 +1522,6 @@ def get_owned_saved_job_or_404(session: Session, saved_job_id: str, candidate_pr
     saved_job = session.scalar(
         select(CandidateSavedJob)
         .options(
-            selectinload(CandidateSavedJob.job),
             selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
         )
         .where(
@@ -1555,40 +1540,22 @@ def load_application_lookup_for_saved_jobs(
     candidate_profile_id: str,
 ) -> dict[str, Application]:
     saved_job_ids = [link.id for link in links]
-    job_id_to_saved_job_id = {link.job_id: link.id for link in links if link.job_id}
-    if not saved_job_ids and not job_id_to_saved_job_id:
+    if not saved_job_ids:
         return {}
     lookup: dict[str, Application] = {}
-    if saved_job_ids:
-        applications_by_saved_job = list(
-            session.scalars(
-                select(Application)
-                .where(
-                    Application.candidate_profile_id == candidate_profile_id,
-                    Application.saved_job_id.in_(saved_job_ids),
-                )
-                .order_by(Application.created_at.desc())
-            )
-        )
-        for application in applications_by_saved_job:
-            if application.saved_job_id and application.saved_job_id not in lookup:
-                lookup[application.saved_job_id] = application
-    if not job_id_to_saved_job_id:
-        return lookup
-    applications_by_job = list(
+    applications_by_saved_job = list(
         session.scalars(
             select(Application)
             .where(
                 Application.candidate_profile_id == candidate_profile_id,
-                Application.job_id.in_(job_id_to_saved_job_id),
+                Application.saved_job_id.in_(saved_job_ids),
             )
             .order_by(Application.created_at.desc())
         )
     )
-    for application in applications_by_job:
-        saved_job_id = job_id_to_saved_job_id.get(application.job_id)
-        if saved_job_id and saved_job_id not in lookup:
-            lookup[saved_job_id] = application
+    for application in applications_by_saved_job:
+        if application.saved_job_id and application.saved_job_id not in lookup:
+            lookup[application.saved_job_id] = application
     return lookup
 
 
@@ -1604,17 +1571,7 @@ def get_application_for_saved_job(session: Session, saved_job: CandidateSavedJob
     )
     if application is not None:
         return application
-    if not saved_job.job_id:
-        return None
-    return session.scalar(
-        select(Application)
-        .where(
-            Application.candidate_profile_id == candidate_profile_id,
-            Application.job_id == saved_job.job_id,
-        )
-        .order_by(Application.created_at.desc())
-        .limit(1)
-    )
+    return None
 
 
 def saved_job_action_response(
@@ -1630,7 +1587,6 @@ def saved_job_action_response(
 ) -> dict[str, Any]:
     return {
         "ok": True,
-        "job_id": saved_job.job_id,
         "saved_job_id": saved_job.id,
         "job_archived": job_archived,
         "job_restored": job_restored,
@@ -1650,14 +1606,8 @@ def serialize_saved_job(
     application: Application | None = None,
     highlighted_job_search_run_id: str | None = None,
 ) -> dict[str, Any]:
-    if link.job is not None:
-        return serialize_legacy_saved_job(
-            link,
-            application=application,
-            highlighted_job_search_run_id=highlighted_job_search_run_id,
-        )
     if link.job_listing is None:
-        raise ValueError(f"Saved job {link.id} is missing both job_id and job_listing_id.")
+        raise ValueError(f"Saved job {link.id} is missing job_listing_id.")
     job = link.job_listing
     job_url = job_listing_primary_url(job)
     highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
@@ -1665,7 +1615,6 @@ def serialize_saved_job(
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
-        "job_id": None,
         "job_listing_id": job.id,
         "jobSearchRunId": link.job_search_run_id,
         "highlighted": highlighted,
@@ -1693,73 +1642,6 @@ def serialize_saved_job(
         "url_verification_checked_at": None,
         "url_verification_summary": "Synced provider inventory; URL was not verified during candidate discovery.",
         "location": job.location_display,
-        "remote_work_mode": job.remote_work_mode,
-        "employment_type": job.employment_type,
-        "salary_min": job.salary_min,
-        "salary_max": job.salary_max,
-        "salary_currency": job.salary_currency,
-        "salary_text": job.salary_text,
-        "full_description": job.full_description,
-        "description_excerpt": job.description_excerpt,
-        "fit_summary": link.fit_summary,
-        "user_notes": link.user_notes,
-        "status": link.status,
-        "added_at": link.added_at.isoformat() if link.added_at else None,
-        "archived_at": link.archived_at.isoformat() if link.archived_at else None,
-        "archived_reason": link.archived_reason,
-        "archived_by_action": link.archived_by_action,
-        "has_application": application is not None,
-        "application_id": application.id if application is not None else None,
-        "application_status": application.status if application is not None else None,
-        "application_archived_at": application.archived_at.isoformat() if application is not None and application.archived_at else None,
-        "posting_date": job.posting_date.isoformat() if job.posting_date else None,
-        "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
-        "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
-        "created_at": link.created_at.isoformat() if link.created_at else None,
-        "updated_at": link.updated_at.isoformat() if link.updated_at else None,
-    }
-
-
-def serialize_legacy_saved_job(
-    link: CandidateSavedJob,
-    *,
-    application: Application | None = None,
-    highlighted_job_search_run_id: str | None = None,
-) -> dict[str, Any]:
-    job = link.job
-    if job is None:
-        raise ValueError(f"Saved job {link.id} is missing job_id.")
-    highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
-    return {
-        "id": link.id,
-        "candidate_profile_id": link.candidate_profile_id,
-        "job_id": link.job_id,
-        "job_listing_id": link.job_listing_id,
-        "jobSearchRunId": link.job_search_run_id,
-        "highlighted": highlighted,
-        "justAdded": highlighted,
-        "latestDiscoveryRunId": highlighted_job_search_run_id,
-        "title": job.title,
-        "company_name": job.company_name,
-        "job_url": job.job_url,
-        "canonical_url": job.canonical_url,
-        "apply_url": job.apply_url,
-        "source": job.source,
-        "source_provider": job.source_provider,
-        "provider_type": job.provider_type,
-        "source_result_id": job.source_result_id,
-        "source_query": job.source_query,
-        "source_url": job.source_url,
-        "source_updated_at": job.source_updated_at.isoformat() if job.source_updated_at else None,
-        "company_website_url": job.company_website_url,
-        "company_careers_url": job.company_careers_url,
-        "ats_provider": job.ats_provider,
-        "ats_board_token": job.ats_board_token,
-        "provenance": job.provenance,
-        "url_verification_status": job.url_verification_status,
-        "url_verification_checked_at": job.url_verification_checked_at.isoformat() if job.url_verification_checked_at else None,
-        "url_verification_summary": job.url_verification_summary,
-        "location": job.location,
         "remote_work_mode": job.remote_work_mode,
         "employment_type": job.employment_type,
         "salary_min": job.salary_min,

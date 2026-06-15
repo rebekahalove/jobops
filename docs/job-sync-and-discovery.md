@@ -15,7 +15,7 @@ Job Sync uses four core database tables:
 
 `job_sync_signatures` are desired sync sources. `job_sync_runs` are history. A broad provider search should be refreshed because a signature row says so, not because a broad term is hard-coded in source code, migrations, or seed data.
 
-Existing `job_postings`, `candidate_saved_jobs`, and `applications` remain in place so applied jobs and application relationships stay intact. `candidate_saved_jobs.job_id` continues to support older live-provider saved jobs and applications. DB-backed discovery writes `candidate_saved_jobs.job_listing_id` for synced inventory entries and preserves application links that still point at `job_postings`.
+The legacy `job_postings` table and `job_id` saved-job/application links have been removed. Jobs-list rows now point at synced inventory through `candidate_saved_jobs.job_listing_id`, and applications link through `applications.saved_job_id` plus denormalized application fields. Data that only existed in the removed live-provider `job_postings` path is intentionally not preserved by this cleanup branch.
 
 ## Candidate-Facing Discovery
 
@@ -214,4 +214,4 @@ Raw provider job locations are still stored separately on synced listings and so
 
 ## Application Materials
 
-Application materials generation can use synced `job_listings` even when there is no legacy canonical `job_postings` row. For Greenhouse-backed saved jobs, materials context includes the normalized application requirements summary and compact application-fields summary from `job_listing_sources`. The prompt treats those provider fields as untrusted context, grounds checklist and short-answer drafts in the actual application questions, and does not invent form requirements when fields are unavailable. Saved-job API serialization exposes a compact application-requirements summary so the UI can tell whether a synced job has form details such as resume, cover-letter, URL, or short-answer fields.
+Application materials generation uses synced `job_listings` for saved jobs. For Greenhouse-backed saved jobs, materials context includes the normalized application requirements summary and compact application-fields summary from `job_listing_sources`. If an application is not linked to a saved synced listing, materials context falls back only to denormalized application fields such as company, role, URL, notes, and source. The prompt treats provider fields as untrusted context, grounds checklist and short-answer drafts in the actual application questions, and does not invent form requirements when fields are unavailable. Saved-job API serialization exposes a compact application-requirements summary so the UI can tell whether a synced job has form details such as resume, cover-letter, URL, or short-answer fields.

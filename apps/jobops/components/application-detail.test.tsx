@@ -135,7 +135,6 @@ function applicationFixture(): TrackedApplication {
   return {
     id: "app-1",
     candidate_profile_id: "profile-1",
-    job_id: "job-1",
     saved_job_id: "saved-job-1",
     company_id: "company-1",
     company_name: "Acme AI",

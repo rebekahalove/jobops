@@ -32,7 +32,6 @@ describe("Jobs list", () => {
           {
             id: "saved-job-1",
             candidate_profile_id: "profile-1",
-            job_id: "job-1",
             title: "Applied AI Engineer",
             company_name: "Example Civic",
             job_url: "https://jobs.example.test/example-civic/applied-ai",
@@ -97,7 +96,6 @@ describe("Jobs list", () => {
           {
             id: "saved-job-1",
             candidate_profile_id: "profile-1",
-            job_id: "job-1",
             title: "AI Platform Engineer",
             company_name: "Example Civic",
             job_url: "https://jobs.example.test/example-civic/platform",
@@ -135,7 +133,6 @@ describe("Jobs list", () => {
           {
             id: "saved-job-1",
             candidate_profile_id: "profile-1",
-            job_id: "job-1",
             title: "Studio Assistant",
             company_name: "Example Studio",
             job_url: "https://provider.example/jobs/studio",
@@ -205,7 +202,6 @@ describe("Jobs list", () => {
           {
             id: "saved-job-1",
             candidate_profile_id: "profile-1",
-            job_id: "job-1",
             title: "AI Platform Engineer",
             company_name: "Example Civic",
             job_url: "https://jobs.example.test/example-civic/platform",
@@ -651,7 +647,6 @@ function jobFixture(overrides: Partial<SavedJob> = {}): SavedJob {
   return {
     id: "saved-job-1",
     candidate_profile_id: "profile-1",
-    job_id: "job-1",
     title: "Applied AI Engineer",
     company_name: "Example Civic",
     job_url: "https://jobs.example.test/example-civic/applied-ai",

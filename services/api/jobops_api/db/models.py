@@ -308,7 +308,6 @@ class Company(Base, TimestampMixin):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     candidate_links: Mapped[list[CandidateCompany]] = relationship(back_populates="company", cascade="all, delete-orphan")
-    job_postings: Mapped[list[JobPosting]] = relationship(back_populates="company")
     job_listings: Mapped[list[JobListing]] = relationship(back_populates="company")
     job_roles: Mapped[list[JobRole]] = relationship(back_populates="company")
     applications: Mapped[list[Application]] = relationship(back_populates="company")
@@ -348,61 +347,9 @@ class CandidateCompany(Base, TimestampMixin):
         return self.company.name
 
 
-class JobPosting(Base, TimestampMixin):
-    __tablename__ = "job_postings"
-    __table_args__ = (
-        UniqueConstraint("normalized_url", name="uq_job_postings_normalized_url"),
-        Index("ix_job_postings_company_title", "company_name", "title"),
-        Index("ix_job_postings_last_seen", "last_seen_at"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    title: Mapped[str] = mapped_column(Text)
-    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
-    company_name: Mapped[str] = mapped_column(String(240))
-    job_url: Mapped[str] = mapped_column(Text)
-    canonical_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    apply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    normalized_url: Mapped[str] = mapped_column(Text)
-    source: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    source_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    provider_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    source_result_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    provider_raw_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    company_website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    company_careers_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ats_provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    ats_board_token: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    provenance: Mapped[str] = mapped_column(String(40), default="unknown")
-    location: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    remote_work_mode: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    employment_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    salary_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
-    salary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    full_description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    description_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    discovered_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    url_verification_status: Mapped[str] = mapped_column(String(60), default="unverified")
-    url_verification_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    url_verification_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    posting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    company: Mapped[Company | None] = relationship(back_populates="job_postings")
-    saved_links: Mapped[list[CandidateSavedJob]] = relationship(back_populates="job", cascade="all, delete-orphan")
-    applications: Mapped[list[Application]] = relationship(back_populates="job")
-
-
 class CandidateSavedJob(Base, TimestampMixin):
     __tablename__ = "candidate_saved_jobs"
     __table_args__ = (
-        UniqueConstraint("candidate_profile_id", "job_id", name="uq_candidate_saved_jobs_profile_job"),
         Index(
             "uq_candidate_saved_jobs_profile_listing",
             "candidate_profile_id",
@@ -422,7 +369,6 @@ class CandidateSavedJob(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
-    job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=True)
     job_listing_id: Mapped[str | None] = mapped_column(ForeignKey("job_listings.id", ondelete="CASCADE"), nullable=True)
     job_search_run_id: Mapped[str | None] = mapped_column(ForeignKey("job_search_runs.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="new")
@@ -441,7 +387,6 @@ class CandidateSavedJob(Base, TimestampMixin):
     archived_by_action: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="saved_jobs")
-    job: Mapped[JobPosting | None] = relationship(back_populates="saved_links")
     job_listing: Mapped[JobListing | None] = relationship()
     job_search_run: Mapped[JobSearchRun | None] = relationship()
     applications: Mapped[list[Application]] = relationship(back_populates="saved_job")
@@ -843,7 +788,6 @@ class JobRole(Base, TimestampMixin):
 class Application(Base, TimestampMixin):
     __tablename__ = "applications"
     __table_args__ = (
-        UniqueConstraint("candidate_profile_id", "job_id", name="uq_applications_profile_job"),
         Index("ix_applications_profile_status", "candidate_profile_id", "status"),
         Index("ix_applications_next_follow_up", "candidate_profile_id", "next_follow_up_date"),
         Index("ix_applications_profile_created", "candidate_profile_id", "created_at"),
@@ -853,7 +797,6 @@ class Application(Base, TimestampMixin):
     candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     job_role_id: Mapped[str | None] = mapped_column(ForeignKey("job_roles.id", ondelete="SET NULL"), nullable=True)
-    job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="SET NULL"), nullable=True)
     saved_job_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_saved_jobs.id", ondelete="SET NULL"), nullable=True)
     company_name: Mapped[str] = mapped_column(String(240))
     job_title: Mapped[str] = mapped_column(String(240))
@@ -871,7 +814,6 @@ class Application(Base, TimestampMixin):
     candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="applications")
     company: Mapped[Company | None] = relationship(back_populates="applications")
     job_role: Mapped[JobRole | None] = relationship(back_populates="applications")
-    job: Mapped[JobPosting | None] = relationship(back_populates="applications")
     saved_job: Mapped[CandidateSavedJob | None] = relationship(back_populates="applications")
     events: Mapped[list[ApplicationEvent]] = relationship(back_populates="application", cascade="all, delete-orphan")
     material_bundles: Mapped[list[ApplicationMaterialBundle]] = relationship(
@@ -882,20 +824,16 @@ class Application(Base, TimestampMixin):
 
     @property
     def source_provider(self) -> str | None:
-        if self.job is not None:
-            return self.job.source_provider
         job_listing = self.synced_job_listing
         if job_listing is None:
-            return None
+            return self.source
         for source in job_listing.sources:
             if source.source_provider:
                 return source.source_provider
-        return None
+        return self.source
 
     @property
     def posting_date(self) -> date | None:
-        if self.job is not None:
-            return self.job.posting_date
         job_listing = self.synced_job_listing
         return job_listing.posting_date if job_listing is not None else None
 
@@ -905,31 +843,23 @@ class Application(Base, TimestampMixin):
 
     @property
     def salary_text(self) -> str | None:
-        if self.job is not None:
-            return self.job.salary_text
         job_listing = self.synced_job_listing
         return job_listing.salary_text if job_listing is not None else None
 
     @property
     def remote_work_mode(self) -> str | None:
-        if self.job is not None:
-            return self.job.remote_work_mode
         job_listing = self.synced_job_listing
         return job_listing.remote_work_mode if job_listing is not None else None
 
     @property
     def employment_type(self) -> str | None:
-        if self.job is not None:
-            return self.job.employment_type
         job_listing = self.synced_job_listing
         return job_listing.employment_type if job_listing is not None else None
 
     @property
     def apply_url(self) -> str | None:
-        if self.job is not None:
-            return self.job.apply_url
         job_listing = self.synced_job_listing
-        return job_listing.apply_url if job_listing is not None else None
+        return job_listing.apply_url if job_listing is not None else self.job_url
 
     @property
     def synced_job_listing(self) -> JobListing | None:
