@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .....db.models import JobListingSource
-from ....providers.greenhouse import normalize_greenhouse_board_token
+from ....greenhouse_utils import normalize_greenhouse_board_token
 from .models import GREENHOUSE_MISSING_CLOSE_REASON
 
 

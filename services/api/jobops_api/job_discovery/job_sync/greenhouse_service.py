@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...db.models import CandidateCompany, Company
 from ...settings import Settings
-from ..providers.greenhouse import greenhouse_board_token_from_company, normalize_greenhouse_board_token
+from ..greenhouse_utils import greenhouse_board_token_from_company, normalize_greenhouse_board_token
 from .models import JobSyncResult
 from .providers.greenhouse import GreenhouseBoardSyncTarget, GreenhouseJobSyncProvider
 

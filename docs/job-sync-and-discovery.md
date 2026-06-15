@@ -4,7 +4,7 @@ JobOps separates provider/API inventory refresh work from candidate-facing job d
 
 ## Job Sync
 
-Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching. Candidate-facing discovery now searches this synced inventory instead of calling live provider search adapters directly.
+Job Sync is provider/API inventory refresh. It stores normalized provider inventory for later search, filtering, and matching. Candidate-facing discovery is DB-backed only: it searches this synced inventory instead of calling live provider search adapters or direct URL ingestion code.
 
 Job Sync uses four core database tables:
 
@@ -23,11 +23,13 @@ Candidate-facing job discovery keeps the existing chat/run shell and `job_search
 
 - The model planner emits a structured JSON plan for both sync signatures/sync tokens and DB search queries, not SQL.
 - The query builder translates the plan into SQLAlchemy queries over `job_listings`, `job_listing_sources`, and jobs-list state.
-- The model chooses a discovery `mode`: `new_job_discovery`, `jobs_list_review`, `mixed_new_and_existing`, `direct_job_url`, or `clarification_needed`.
+- The model chooses a discovery `mode`: `new_job_discovery`, `jobs_list_review`, `mixed_new_and_existing`, or `clarification_needed`.
 - The backend maps model-selected modes onto internal query scopes only after validating the model plan structure.
 - For new discovery, the reviewer model chooses which synced jobs should be added to the jobs list and which should be recorded as model rejected.
 - For jobs-list ranking, the reviewer model recommends the best existing jobs-list entries without adding or rejecting rows.
 - Chat-facing summaries use the reviewer-provided `userVisibleSummary`.
+
+Pre-revamp live-provider discovery and direct URL ingestion are intentionally removed. Future direct URL ingestion or enrichment work should write normalized inventory into the Job Sync/listing model first, then let candidate-facing discovery consume it through the DB-backed path.
 
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 

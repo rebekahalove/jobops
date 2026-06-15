@@ -3,7 +3,7 @@ from __future__ import annotations
 import urllib.error
 
 from ....provider_utils import clean_text_value, fetch_json
-from ....providers.greenhouse import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
+from ....greenhouse_utils import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
 from .diagnostics import GREENHOUSE_DETAIL_REQUEST_PARAMS, GreenhouseDetailRequestStats, greenhouse_detail_request, safe_greenhouse_detail_error
 from .models import GreenhouseDetailFetchResult, GreenhouseListJobsResult
 

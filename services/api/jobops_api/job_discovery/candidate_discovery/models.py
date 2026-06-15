@@ -11,7 +11,6 @@ DiscoveryMode = Literal[
     "new_job_discovery",
     "jobs_list_review",
     "mixed_new_and_existing",
-    "direct_job_url",
     "clarification_needed",
 ]
 
@@ -20,7 +19,6 @@ MODE_TO_SCOPE: dict[str, JobScope] = {
     "new_job_discovery": "new_to_candidate",
     "jobs_list_review": "candidate_jobs_list",
     "mixed_new_and_existing": "all_accessible_jobs",
-    "direct_job_url": "new_to_candidate",
     "clarification_needed": "new_to_candidate",
 }
 
