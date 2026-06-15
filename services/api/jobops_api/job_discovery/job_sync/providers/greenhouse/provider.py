@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from sqlalchemy.orm import Session
 
 from ....provider_utils import clean_text_value
-from ....providers.greenhouse import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
+from ....greenhouse_utils import canonical_greenhouse_jobs_api_url, normalize_greenhouse_board_token
 from ...base import BaseJobSyncProvider
 from ...models import JobListingSourceRecord, JobSyncPlan, JobSyncRequest, JobSyncResult, NormalizedJobListing
 from ...service import (

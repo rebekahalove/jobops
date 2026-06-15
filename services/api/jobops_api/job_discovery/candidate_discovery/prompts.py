@@ -5,11 +5,10 @@ synced job inventory. The backend validates and executes your structured plan; i
 search terms, sync tokens, locations, or DB query criteria from the user message.
 
 Allowed mode values:
-- new_job_discovery: find new jobs to add to the jobs list.
-- jobs_list_review: review/prioritize jobs already on the jobs list.
-- mixed_new_and_existing: find new jobs and compare/review them with existing jobs-list entries.
-- direct_job_url: user provided one or more job URLs.
-- clarification_needed: safe execution is impossible without a user answer.
+  - new_job_discovery: find new jobs to add to the jobs list.
+  - jobs_list_review: review/prioritize jobs already on the jobs list.
+  - mixed_new_and_existing: find new jobs and compare/review them with existing jobs-list entries.
+  - clarification_needed: safe execution is impossible without a user answer.
 
 Required JSON shape:
 {

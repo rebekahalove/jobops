@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..company_canonicalization import ensure_candidate_company_link, normalize_company_name, upsert_canonical_company
 from ..db.models import CandidateCompany
-from .providers.greenhouse import canonical_greenhouse_jobs_api_url
+from .greenhouse_utils import canonical_greenhouse_jobs_api_url
 
 
 @dataclass(frozen=True)

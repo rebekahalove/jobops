@@ -8,9 +8,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from urllib.parse import urlencode
 
-from .models import LiveJobSourceResult
-
-
 ADZUNA_COUNTRY_CURRENCY_CODES = {
     "at": "EUR",
     "au": "AUD",
@@ -48,25 +45,6 @@ def fetch_json(url: str, *, params: dict[str, object] | None = None) -> Any:
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         return json.loads(response.read().decode("utf-8"))
-
-
-def dedupe_provider_results(results: list[LiveJobSourceResult]) -> list[LiveJobSourceResult]:
-    deduped: list[LiveJobSourceResult] = []
-    seen_urls: set[str] = set()
-    seen_provider_ids: set[tuple[str, str]] = set()
-    for result in results:
-        normalized_url = normalize_job_url_for_dedupe(result.job_url)
-        provider_key = (result.source_provider, result.source_result_id or "")
-        if normalized_url and normalized_url in seen_urls:
-            continue
-        if provider_key[1] and provider_key in seen_provider_ids:
-            continue
-        if normalized_url:
-            seen_urls.add(normalized_url)
-        if provider_key[1]:
-            seen_provider_ids.add(provider_key)
-        deduped.append(result)
-    return deduped
 
 
 def normalize_job_url_for_dedupe(value: str | None) -> str | None:
