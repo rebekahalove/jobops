@@ -1443,15 +1443,15 @@ def complete_job_search_run(
 def serialize_current_saved_jobs(session: Session, candidate_profile_id: str) -> list[dict[str, Any]]:
     links = list(
         session.scalars(
-        select(CandidateSavedJob)
-        .options(
-            selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
-        )
-        .where(
-            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
-            CandidateSavedJob.job_listing_id.is_not(None),
-            CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
-        )
+            select(CandidateSavedJob)
+            .options(
+                selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
+            )
+            .where(
+                CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+                CandidateSavedJob.job_listing_id.is_not(None),
+                CandidateSavedJob.status.not_in(HIDDEN_JOB_STATUSES),
+            )
             .order_by(CandidateSavedJob.added_at.desc())
             .limit(50)
         )
