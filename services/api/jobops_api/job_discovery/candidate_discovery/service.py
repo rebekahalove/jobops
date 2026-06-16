@@ -261,6 +261,7 @@ class CandidateJobDiscoveryService:
             settings=self.settings,
             plan=plan,
             current_saved_jobs=current_saved_jobs,
+            current_saved_companies=current_saved_companies,
             inventory_context=inventory_context,
         )
         critic_attempt_count += 1

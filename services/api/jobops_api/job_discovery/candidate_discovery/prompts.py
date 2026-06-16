@@ -64,6 +64,9 @@ Mode examples:
 - "Search for US remote jobs." -> new_job_discovery.
 - "Find new jobs and compare them to the jobs already on my list." -> mixed_new_and_existing.
 - "Find new US remote jobs and rank them with my saved jobs." -> mixed_new_and_existing.
+- "Find jobs from my companies list." -> new_job_discovery with syncPlan.useFollowedCompanyBoards=true.
+- "Look for jobs at my saved companies." -> new_job_discovery with syncPlan.useFollowedCompanyBoards=true.
+- "Find new jobs from companies I'm following." -> new_job_discovery with syncPlan.useFollowedCompanyBoards=true.
 - "Add this job to my list https://job-boards.greenhouse.io/example/jobs/123" -> direct_job_url.
 - "Save this Greenhouse job https://boards.greenhouse.io/example/jobs/123" -> direct_job_url.
 - "Add this Greenhouse job https://boards-api.greenhouse.io/v1/boards/example/jobs/123" -> direct_job_url.
@@ -78,6 +81,13 @@ For new_job_discovery and mixed_new_and_existing, plan an inventory strategy. Sy
 capture a useful inventory slice; DB queries can be more selective after sync. Select existing signatures when they
 fit, and propose new Adzuna signatures when inventory is likely missing or stale. Do not assume the database already
 contains enough jobs unless syncedInventorySummary and recent history support that choice.
+
+For requests to find/search/look for new jobs from saved, followed, watched, or "my companies list" companies, use
+mode="new_job_discovery", syncPlan.useFollowedCompanyBoards=true, reviewPlan.task="select_new_jobs", and DB queries
+scoped to followed-company Greenhouse inventory where possible (for example sourceProvidersAny=["greenhouse"] or
+atsBoardTokensAny if tokens are known). Do not use jobs_list_review for these requests; the user is asking to sync and
+search company boards for new jobs, not rank existing jobs-list entries. Do not add broad Adzuna search unless company
+boards are insufficient and the user allows broader search.
 
 For jobs_list_review, search jobs-list entries. Do not sync by default unless the user also asks for new jobs or you
 explicitly explain why refresh is necessary. A jobs-list review plan can use:
@@ -129,6 +139,13 @@ Validate:
 - If the user asks which/what jobs to apply to or prioritize, including with filters like US remote, London, AI,
   salary, company, or role terms, the plan should be jobs_list_review unless the user explicitly asks to
   find/search/discover/add new jobs.
+- If the user asks to find/search/look for jobs from saved/followed/watched companies or "my companies list", the plan
+  should be new_job_discovery or mixed_new_and_existing with syncPlan.useFollowedCompanyBoards=true when
+  currentSavedCompaniesSummary.greenhouseSyncableCompanyCount is greater than zero. Use
+  issueCode="missing_followed_company_board_sync" when rejecting a plan that forgets this.
+- If no saved/followed companies have syncable Greenhouse board tokens, the plan should explain that there are no
+  syncable company boards yet rather than broad-searching unless the user explicitly allows broader search.
+- Reject jobs_list_review plans that sync boards unless the user explicitly asked for new jobs too.
 - Reject mode=mixed_new_and_existing for apply-prioritization requests unless the plan clearly explains that the user
   explicitly asked to find/search/discover new jobs. Use issueCode="mode_mismatch_apply_prioritization" when rejecting
   that mistake.

@@ -37,7 +37,17 @@ TheirStack is a company/enrichment source, not the canonical job detail source. 
 
 TheirStack model-planned company enrichment is available for company discovery/enrichment and hiring-signal leads. The command-center company discovery path can ask a dedicated planner whether to use TheirStack. TheirStack is called only when that model plan explicitly requests company enrichment; there is no backend keyword router that turns words like Greenhouse, AI, or marketing into provider calls.
 
-TheirStack is not used for saved-jobs ranking, direct job URL ingestion, or verified job-detail retrieval. TheirStack-discovered Greenhouse boards are not auto-synced until a later branch. First-party board sync after enrichment is required before JobOps can verify actual current company-board jobs.
+TheirStack is not used for saved-jobs ranking, direct job URL ingestion, or verified job-detail retrieval. TheirStack-discovered company leads can optionally feed first-party Greenhouse board sync when the model-planned enrichment request explicitly asks to act on those leads by finding jobs. First-party board sync after enrichment is required before JobOps can verify actual current company-board jobs.
+
+When a company-enrichment plan sets `syncDiscoveredGreenhouseBoards=true`, JobOps collects Greenhouse board tokens from the companies linked by that enrichment run and calls Greenhouse Job Sync with those explicit board tokens. It does not include unrelated configured/global boards by default. When the same plan sets `searchSyncedJobsAfterBoardSync=true`, JobOps searches synced `job_listings` / `job_listing_sources` from those boards, asks the job reviewer model to select matching jobs, and saves selected rows to `candidate_saved_jobs.job_listing_id` only if `saveMatchingJobsToCandidateList=true` and `recommendOnly=false`.
+
+Diagnostics for the company enrichment to board sync loop separate each stage:
+
+- Company leads: `enrichedCompanyCount`, `linkedCompanyCount`, and ATS counts such as `greenhouseBoardTokenCount`.
+- Board sync: `boardsSelectedForSync`, `boardTokensSynced`, `boardSyncAttempted`, completed/failed/skipped counts, and raw/normalized/created/updated job counts.
+- Synced-job search: `syncedJobPoolCount`, `jobsReviewedAfterBoardSyncCount`, `jobsAddedAfterBoardSyncCount`, `addedJobIds`, and `addedJobListingIds`.
+
+Assistant copy must keep the source boundary clear: TheirStack found company hiring signals, Greenhouse board sync fetched first-party jobs, and only those synced Greenhouse jobs may be added or recommended as actual jobs.
 
 Configuration uses:
 
@@ -63,6 +73,8 @@ TheirStack response language must describe results as company leads or hiring si
 Role, domain, geography, technology, and hiring-signal filters in TheirStack plans are derived from the latest user message, authenticated profile, candidate target context, saved-company context, or recent discovery context. They are not hardcoded to any role or field such as Applied AI, AI Engineer, LLM, software engineering, healthcare, product marketing, or Greenhouse.
 
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
+
+For requests such as `find jobs from my companies list`, `look for jobs at my saved companies`, `find new jobs from companies I'm following`, or `search my watched companies for jobs`, the correct DB-backed job-discovery plan is new-job discovery with `syncPlan.useFollowedCompanyBoards=true`. JobOps uses the candidate's non-archived `CandidateCompany` links, finds companies with Greenhouse board metadata, syncs those first-party Greenhouse boards, searches the synced inventory, and saves/recommends selected jobs. If no followed companies have syncable board tokens, the response should say so and should not silently fall back to broad provider search unless the model plan explicitly asks for a broader search.
 
 For `direct_job_url`, the planner must choose that mode because the user supplied a specific job URL to add/save. The backend may structurally extract HTTP URLs only after the model-selected plan mode is `direct_job_url`; it does not route direct URL ingestion by keyword matching. Direct URL plans do not run broad provider sync, DB search queries, model review, model rejection recording, or stale/closed marking.
 
