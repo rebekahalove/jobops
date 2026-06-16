@@ -3,6 +3,8 @@
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
+export type CompanyBucketId = "watch" | "avoid" | "archived";
+
 export type TrackedCompany = {
   id: string;
   company_id?: string;
@@ -49,6 +51,27 @@ export type TrackedCompany = {
   sync_providers?: string[];
 };
 
+const companyBuckets: Array<{ id: CompanyBucketId; label: string }> = [
+  { id: "watch", label: "Watch list" },
+  { id: "avoid", label: "Avoid list" },
+  { id: "archived", label: "Archived" }
+];
+
+const companyEmptyStates: Record<CompanyBucketId, { title: string; copy: string }> = {
+  watch: {
+    title: "No watched companies yet",
+    copy: "Companies you follow or save will appear here."
+  },
+  avoid: {
+    title: "No avoided companies",
+    copy: "Companies you mark as avoid will appear here."
+  },
+  archived: {
+    title: "No archived companies",
+    copy: "Archived companies are hidden from active company discovery but preserved here."
+  }
+};
+
 export function CompaniesList({
   apiBasePath = "/api",
   initialCompanies = [],
@@ -60,6 +83,9 @@ export function CompaniesList({
 }) {
   const [companies, setCompanies] = useState(initialCompanies);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
+  const [activeBucket, setActiveBucket] = useState<CompanyBucketId>(() => defaultCompanyBucket(initialCompanies));
+  const [pendingCompanyAction, setPendingCompanyAction] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -70,12 +96,14 @@ export function CompaniesList({
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Company API returned an unexpected response.");
           }
           return;
@@ -86,6 +114,7 @@ export function CompaniesList({
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Company API is unavailable. Start FastAPI to load saved records.");
         }
       }
@@ -99,10 +128,46 @@ export function CompaniesList({
     };
   }, [apiBasePath]);
 
+  const companyCounts = useMemo(() => buildCompanyBucketCounts(companies), [companies]);
+  useEffect(() => {
+    if (companyCounts[activeBucket] > 0 || companies.length === 0) {
+      return;
+    }
+    setActiveBucket(defaultCompanyBucket(companies));
+  }, [activeBucket, companies, companyCounts]);
+
   const sortedCompanies = useMemo(
-    () => [...companies].sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
-    [companies]
+    () =>
+      [...companies]
+        .filter((company) => companyBucket(company) === activeBucket)
+        .sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
+    [activeBucket, companies]
   );
+  const activeEmptyState = companyEmptyStates[activeBucket];
+
+  async function runCompanyAction(company: TrackedCompany, action: "archive" | "restore" | "avoid" | "watch") {
+    setPendingCompanyAction(`${company.id}:${action}`);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBasePath}/companies/${company.id}/${action}`, {
+        method: "POST"
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload || typeof payload !== "object" || !("company" in payload)) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      const updatedCompany = payload.company as TrackedCompany;
+      setCompanies((current) => current.map((item) => (item.id === updatedCompany.id ? updatedCompany : item)));
+      setMessageKind("success");
+      setMessage(typeof payload.message === "string" ? payload.message : "Company updated.");
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : "Company action failed.");
+    } finally {
+      setPendingCompanyAction(null);
+    }
+  }
 
   return (
     <main className="dashboard-main company-workspace">
@@ -112,7 +177,7 @@ export function CompaniesList({
         <p>Review model-derived companies to follow for future roles, with source links kept close for verification.</p>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={messageKind === "error" ? "application-error" : "application-message"}>{message}</p> : null}
 
       <section className="company-list" aria-labelledby="company-list-title">
         <div className="application-list-header">
@@ -120,19 +185,41 @@ export function CompaniesList({
             <p className="eyebrow">Watchlist</p>
             <h2 id="company-list-title">Saved companies</h2>
           </div>
-          <span>{companies.length}</span>
+          <span>{companyCounts[activeBucket]}</span>
+        </div>
+
+        <div className="queue-tabs" role="tablist" aria-label="Company list filters">
+          {companyBuckets.map((tab) => (
+            <button
+              aria-selected={activeBucket === tab.id}
+              className={`queue-tab${activeBucket === tab.id ? " active" : ""}`}
+              key={tab.id}
+              onClick={() => setActiveBucket(tab.id)}
+              role="tab"
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <strong>{companyCounts[tab.id]}</strong>
+            </button>
+          ))}
         </div>
 
         {sortedCompanies.length > 0 ? (
           <div className="company-card-grid">
             {sortedCompanies.map((company) => (
-              <CompanyCard company={company} key={company.id} workspaceBasePath={workspaceBasePath} />
+              <CompanyCard
+                company={company}
+                key={company.id}
+                onCompanyAction={runCompanyAction}
+                pendingAction={pendingCompanyAction}
+                workspaceBasePath={workspaceBasePath}
+              />
             ))}
           </div>
         ) : (
           <div className="empty-state-block">
-            <h2>No companies yet</h2>
-            <p>Ask the AI Command Center to discover companies to follow. New model-derived records will appear here for review.</p>
+            <h2>{activeEmptyState.title}</h2>
+            <p>{activeEmptyState.copy}</p>
           </div>
         )}
       </section>
@@ -140,7 +227,17 @@ export function CompaniesList({
   );
 }
 
-export function CompanyCard({ company, workspaceBasePath = "" }: { company: TrackedCompany; workspaceBasePath?: string }) {
+export function CompanyCard({
+  company,
+  onCompanyAction,
+  pendingAction,
+  workspaceBasePath = ""
+}: {
+  company: TrackedCompany;
+  onCompanyAction?: (company: TrackedCompany, action: "archive" | "restore" | "avoid" | "watch") => void;
+  pendingAction?: string | null;
+  workspaceBasePath?: string;
+}) {
   const detailHref = `${workspaceBasePath}/companies/${company.id}`;
   const websiteUrl = safeExternalUrl(company.website_url);
   const careersUrl = safeExternalUrl(company.careers_url);
@@ -217,6 +314,48 @@ export function CompanyCard({ company, workspaceBasePath = "" }: { company: Trac
 
         <div className="company-links company-card-actions" aria-label={`${company.name} actions`}>
           <Link href={detailHref}>View Company</Link>
+          {onCompanyAction ? (
+            <>
+              {company.archived_at ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:restore`}
+                  onClick={() => onCompanyAction(company, "restore")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:restore` ? "Restoring..." : "Restore"}
+                </button>
+              ) : (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:archive`}
+                  onClick={() => onCompanyAction(company, "archive")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:archive` ? "Archiving..." : "Archive"}
+                </button>
+              )}
+              {companyBucket(company) === "avoid" ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:watch`}
+                  onClick={() => onCompanyAction(company, "watch")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:watch` ? "Saving..." : "Watch"}
+                </button>
+              ) : !company.archived_at ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:avoid`}
+                  onClick={() => onCompanyAction(company, "avoid")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:avoid` ? "Saving..." : "Mark Avoid"}
+                </button>
+              ) : null}
+            </>
+          ) : null}
           <ExternalLink href={websiteUrl} label="Visit Website" />
           <ExternalLink href={careersUrl} label="Careers" />
           <ExternalLink href={jobListingsUrl} label="Jobs" />
@@ -235,6 +374,42 @@ function apiErrorMessage(payload: unknown, status: number) {
     return payload.detail;
   }
   return `Company API request failed with HTTP ${status}.`;
+}
+
+export function companyBucket(company: TrackedCompany): CompanyBucketId {
+  if (company.archived_at) {
+    return "archived";
+  }
+  if (isAvoidedCompany(company)) {
+    return "avoid";
+  }
+  return "watch";
+}
+
+export function buildCompanyBucketCounts(companies: TrackedCompany[]): Record<CompanyBucketId, number> {
+  return companies.reduce(
+    (counts, company) => {
+      counts[companyBucket(company)] += 1;
+      return counts;
+    },
+    { watch: 0, avoid: 0, archived: 0 }
+  );
+}
+
+export function defaultCompanyBucket(companies: TrackedCompany[]): CompanyBucketId {
+  const counts = buildCompanyBucketCounts(companies);
+  if (counts.watch > 0 || companies.length === 0) {
+    return "watch";
+  }
+  if (counts.avoid > 0) {
+    return "avoid";
+  }
+  return "archived";
+}
+
+function isAvoidedCompany(company: TrackedCompany) {
+  const status = (company.review_status || "").trim().toLowerCase().replace(/-/g, "_");
+  return ["avoid", "avoided", "do_not_target", "do_not_pursue", "rejected"].includes(status);
 }
 
 function SourceLinks({ urls }: { urls: string[] }) {

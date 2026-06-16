@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import CompaniesPage from "../app/companies/page";
-import { CompaniesList } from "./companies-list";
+import { buildCompanyBucketCounts, CompaniesList, companyBucket, defaultCompanyBucket, type TrackedCompany } from "./companies-list";
 import { CompanyDetail } from "./company-detail";
 import MountedCompaniesPage from "../../portfolio/app/jobops/companies/page";
 
@@ -13,7 +13,7 @@ describe("Companies list", () => {
 
     expect(html).toContain("Company watchlist");
     expect(html).toContain("Saved companies");
-    expect(html).toContain("No companies yet");
+    expect(html).toContain("No watched companies yet");
   });
 
   it("renders the real companies workspace in the mounted portfolio app", () => {
@@ -95,6 +95,48 @@ describe("Companies list", () => {
     expect(html).toContain('href="https://civicactions.com/careers"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("buckets watched, avoided, and archived companies into exactly one tab", () => {
+    const watched = companyFixture({ id: "watch", review_status: "new" });
+    const avoided = companyFixture({ id: "avoid", review_status: "avoided" });
+    const archivedAvoided = companyFixture({ id: "archived", review_status: "avoided", archived_at: "2026-06-01T12:00:00Z" });
+
+    expect(companyBucket(watched)).toBe("watch");
+    expect(companyBucket(avoided)).toBe("avoid");
+    expect(companyBucket(archivedAvoided)).toBe("archived");
+    expect(buildCompanyBucketCounts([watched, avoided, archivedAvoided])).toEqual({
+      watch: 1,
+      avoid: 1,
+      archived: 1
+    });
+  });
+
+  it("chooses watch list by default unless it is empty", () => {
+    expect(defaultCompanyBucket([])).toBe("watch");
+    expect(defaultCompanyBucket([companyFixture({ review_status: "avoided" })])).toBe("avoid");
+    expect(defaultCompanyBucket([companyFixture({ archived_at: "2026-06-01T12:00:00Z" })])).toBe("archived");
+    expect(defaultCompanyBucket([companyFixture({ review_status: "new" }), companyFixture({ review_status: "avoided" })])).toBe("watch");
+  });
+
+  it("renders company status tabs with selected-tab counts and specific empty states", async () => {
+    const emptyHtml = renderToStaticMarkup(<CompaniesList />);
+    const source = await readFile(new URL("./companies-list.tsx", import.meta.url), "utf-8");
+
+    expect(emptyHtml).toContain("queue-tabs");
+    expect(emptyHtml).toContain("Watch list");
+    expect(emptyHtml).toContain("Avoid list");
+    expect(emptyHtml).toContain("Archived");
+    expect(emptyHtml).toContain("No watched companies yet");
+    expect(source).toContain("No avoided companies");
+    expect(source).toContain("No archived companies");
+  });
+
+  it("renders avoid and archive action buttons for active companies", () => {
+    const html = renderToStaticMarkup(<CompaniesList initialCompanies={[companyFixture({ id: "company-1" })]} />);
+
+    expect(html).toContain("Mark Avoid");
+    expect(html).toContain("Archive");
   });
 
   it("does not render broken company URLs as links", () => {
@@ -233,3 +275,36 @@ describe("Companies list", () => {
     expect(source).toContain('window.removeEventListener("jobops:companies-updated", loadCompanies)');
   });
 });
+
+function companyFixture(overrides: Partial<TrackedCompany> = {}): TrackedCompany {
+  return {
+    id: "company-1",
+    company_id: "canonical-company-1",
+    name: "Example Company",
+    normalized_name: "example company",
+    website_url: "https://example.com",
+    careers_url: null,
+    job_listings_url: null,
+    description: "Example description.",
+    headquarters_city: null,
+    headquarters_country: null,
+    operating_countries: [],
+    hiring_locations: [],
+    remote_policy: "unknown",
+    role_fit_tags: [],
+    mission_fit_tags: [],
+    fit_reason: null,
+    source_urls: [],
+    source_summary: null,
+    discovery_query: null,
+    search_queries_used: [],
+    discovered_by: null,
+    derivation_status: "model_derived",
+    review_status: "new",
+    notes: "",
+    created_at: "2026-05-18T12:00:00Z",
+    updated_at: "2026-05-18T12:00:00Z",
+    last_checked_at: null,
+    ...overrides
+  };
+}

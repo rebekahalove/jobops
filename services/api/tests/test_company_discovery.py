@@ -15,6 +15,8 @@ from jobops_api.company_discovery import (
     CompanyDiscoveryRecord,
     CompanyDiscoveryRequest,
     SkippedExistingCompany,
+    archive_company,
+    avoid_company,
     build_candidate_target_context,
     build_company_discovery_profile_context,
     build_company_discovery_model_request,
@@ -24,6 +26,8 @@ from jobops_api.company_discovery import (
     run_company_discovery,
     save_model_derived_companies,
     serialize_company,
+    restore_company,
+    watch_company,
     validate_company_discovery_output,
 )
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
@@ -1134,6 +1138,45 @@ def test_company_without_supported_ats_is_not_sync_capable() -> None:
 
     assert payload["can_sync_jobs"] is False
     assert payload["sync_providers"] == []
+
+
+def test_company_actions_move_between_archived_avoided_and_watch_states() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        link = add_candidate_company(session, profile.id, "Actionable Co", website_url="https://actionable.example")
+        session.commit()
+        auth = SimpleNamespace(candidate_profile=profile)
+
+        archived = archive_company(link.id, session=session, auth=auth)
+        session.refresh(link)
+        assert archived["company"]["archived_at"] is not None
+        assert archived["company"]["review_status"] == "new"
+
+        restored = restore_company(link.id, session=session, auth=auth)
+        session.refresh(link)
+        assert restored["company"]["archived_at"] is None
+        assert restored["company"]["review_status"] == "new"
+
+        avoided = avoid_company(link.id, session=session, auth=auth)
+        session.refresh(link)
+        assert avoided["company"]["archived_at"] is None
+        assert avoided["company"]["review_status"] == "avoided"
+
+        archived_avoid = archive_company(link.id, session=session, auth=auth)
+        session.refresh(link)
+        assert archived_avoid["company"]["archived_at"] is not None
+        assert archived_avoid["company"]["review_status"] == "avoided"
+
+        restored_avoid = restore_company(link.id, session=session, auth=auth)
+        session.refresh(link)
+        assert restored_avoid["company"]["archived_at"] is None
+        assert restored_avoid["company"]["review_status"] == "avoided"
+
+        watched = watch_company(link.id, session=session, auth=auth)
+        assert watched["company"]["archived_at"] is None
+        assert watched["company"]["review_status"] == "reviewed"
 
 
 def create_seeded_engine():

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal
@@ -456,6 +456,15 @@ class CompanyDetailResponse(CompanyResponse):
     applications: list[CompanyDetailApplicationResponse] = Field(default_factory=list)
 
 
+class CompanyActionResponse(BaseModel):
+    ok: bool = True
+    company_id: str
+    candidate_company_id: str
+    action: str
+    message: str
+    company: CompanyResponse
+
+
 @dataclass(frozen=True)
 class CompanyDiscoveryRequest:
     latest_user_message: str
@@ -553,6 +562,95 @@ def get_company_detail(
     ]
     payload["applications"] = [serialize_company_detail_application(application) for application in applications]
     return payload
+
+
+@router.post("/companies/{company_ref}/archive", response_model=CompanyActionResponse)
+def archive_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    archived = link.archived_at is None
+    if archived:
+        link.archived_at = datetime.now(timezone.utc)
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="archive",
+        message="Company archived. It is hidden from active company discovery but preserved."
+        if archived
+        else "Company was already archived.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/restore", response_model=CompanyActionResponse)
+def restore_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    restored = link.archived_at is not None
+    if restored:
+        link.archived_at = None
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="restore",
+        message="Company restored." if restored else "Company was already active.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/avoid", response_model=CompanyActionResponse)
+def avoid_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    link.archived_at = None
+    link.review_status = "avoided"
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="avoid",
+        message="Company moved to the avoid list.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/watch", response_model=CompanyActionResponse)
+def watch_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    link.archived_at = None
+    if is_avoided_review_status(link.review_status):
+        link.review_status = "reviewed"
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="watch",
+        message="Company moved to the watch list.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
 
 
 def run_company_discovery(
@@ -2153,6 +2251,29 @@ def company_sync_providers(company: Company) -> list[str]:
     if company.lever_slug:
         providers.append("lever")
     return providers
+
+
+def company_action_response(
+    link: CandidateCompany,
+    *,
+    action: str,
+    message: str,
+    session: Session,
+    candidate_profile_id: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "company_id": link.company_id,
+        "candidate_company_id": link.id,
+        "action": action,
+        "message": message,
+        "company": serialize_company(link, session=session, candidate_profile_id=candidate_profile_id),
+    }
+
+
+def is_avoided_review_status(value: str | None) -> bool:
+    normalized = (value or "").strip().casefold().replace("-", "_")
+    return normalized in {"avoid", "avoided", "do_not_target", "do_not_pursue", "rejected"}
 
 
 def company_counts(session: Session, company: Company, candidate_profile_id: str) -> dict[str, int]:
