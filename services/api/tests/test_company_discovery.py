@@ -23,10 +23,11 @@ from jobops_api.company_discovery import (
     parse_company_discovery_json,
     run_company_discovery,
     save_model_derived_companies,
+    serialize_company,
     validate_company_discovery_output,
 )
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Base, CandidateCompany, Company, ProfileFactDraft, RoleTarget, SkillClaim
+from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, Company, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
@@ -1019,6 +1020,120 @@ def test_company_discovery_duplicate_only_result_reports_clear_no_new_reason(tmp
     assert result.body["result"]["searchQueriesUsed"] == ["ceramic studio hiring", "ceramic studios"]
     assert result.body["result"]["discoveryAngles"] == ["ceramic studios"]
     assert "No new companies were added" in result.body["result"]["assistantMessage"]
+
+
+def test_company_serialization_includes_provider_fields_counts_and_compact_metadata() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        seed_public_profile(
+            session,
+            {
+                "slug": "other-profile",
+                "displayName": "Other Profile",
+                "headline": "Other profile",
+                "summary": "",
+                "profileStatus": "draft",
+            },
+            hostname="other.example",
+        )
+        other_profile = command_center_module.get_candidate_profile_by_slug(session, "other-profile")
+        assert other_profile is not None
+
+        company = upsert_canonical_company(
+            session,
+            name="Hightouch",
+            normalized_name="hightouch",
+            domain="hightouch.com",
+            greenhouse_board_token="hightouch",
+            ashby_board_url="https://jobs.ashbyhq.com/hightouch",
+            lever_slug="hightouch",
+            description="Customer data platform.",
+        )
+        link = ensure_candidate_company_link(
+            session,
+            candidate_profile_id=profile.id,
+            company=company,
+            provider_grounding_metadata={
+                "provider": "theirstack",
+                "technologyNames": ["Python", "Postgres"],
+                "rawProviderPayload": {"huge": "do not expose"},
+            },
+        ).link
+        job = JobListing(
+            company_id=company.id,
+            company_name="Hightouch",
+            title="Applied AI Engineer",
+            location_display="Remote US",
+            remote_work_mode="remote",
+            is_active=True,
+        )
+        session.add(job)
+        session.flush()
+        session.add(
+            JobListingSource(
+                job_listing_id=job.id,
+                source_provider="greenhouse",
+                provider_type="ats_board",
+                provider_job_id="123",
+            )
+        )
+        saved_job = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="saved")
+        other_saved_job = CandidateSavedJob(candidate_profile_id=other_profile.id, job_listing_id=job.id, status="saved")
+        session.add_all([saved_job, other_saved_job])
+        session.flush()
+        session.add_all(
+            [
+                Application(
+                    candidate_profile_id=profile.id,
+                    company_id=company.id,
+                    saved_job_id=saved_job.id,
+                    company_name="Hightouch",
+                    job_title="Applied AI Engineer",
+                    status="applied",
+                ),
+                Application(
+                    candidate_profile_id=other_profile.id,
+                    company_id=company.id,
+                    saved_job_id=other_saved_job.id,
+                    company_name="Hightouch",
+                    job_title="Applied AI Engineer",
+                    status="applied",
+                ),
+            ]
+        )
+        session.commit()
+
+        payload = serialize_company(link, session=session, candidate_profile_id=profile.id)
+
+    assert payload["domain"] == "hightouch.com"
+    assert payload["greenhouse_board_token"] == "hightouch"
+    assert payload["ashby_board_url"] == "https://jobs.ashbyhq.com/hightouch"
+    assert payload["lever_slug"] == "hightouch"
+    assert payload["can_sync_jobs"] is True
+    assert payload["sync_providers"] == ["greenhouse", "ashby", "lever"]
+    assert payload["active_job_count"] == 1
+    assert payload["saved_job_count"] == 1
+    assert payload["application_count"] == 1
+    assert payload["open_application_count"] == 1
+    assert payload["provider_grounding_metadata_summary"]["provider"] == "theirstack"
+    assert payload["provider_grounding_metadata_summary"]["technologyNames"] == ["Python", "Postgres"]
+    assert "rawProviderPayload" not in payload["provider_grounding_metadata_summary"]
+
+
+def test_company_without_supported_ats_is_not_sync_capable() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        link = add_candidate_company(session, profile.id, "Plain Company", website_url="https://plain.example")
+        session.commit()
+
+        payload = serialize_company(link, session=session, candidate_profile_id=profile.id)
+
+    assert payload["can_sync_jobs"] is False
+    assert payload["sync_providers"] == []
 
 
 def create_seeded_engine():

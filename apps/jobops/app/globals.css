@@ -3126,16 +3126,24 @@ input:disabled {
   gap: 10px;
 }
 
+.company-card-main {
+  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.company-card-header,
 .job-card-header {
   grid-column: 1 / -1;
 }
 
+.company-card-content,
 .job-card-content {
   display: grid;
   gap: 8px;
   min-width: 0;
 }
 
+.company-provider-metadata,
 .job-primary-metadata {
   display: grid;
   grid-template-areas:
@@ -3146,6 +3154,10 @@ input:disabled {
     "compensation";
   gap: 6px;
   margin: 2px 0 0;
+}
+
+.company-provider-metadata {
+  grid-template-areas: none;
 }
 
 .job-primary-metadata-item {
@@ -3176,7 +3188,9 @@ input:disabled {
   grid-area: compensation;
 }
 
-.job-primary-metadata dt,
+.company-provider-metadata dt,
+.company-description-panel h3,
+.company-fit-panel h3,
 .job-info-panel h3 {
   margin: 0;
   color: var(--muted);
@@ -3186,6 +3200,7 @@ input:disabled {
   text-transform: uppercase;
 }
 
+.company-provider-metadata dd,
 .job-primary-metadata dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
@@ -3221,6 +3236,16 @@ input:disabled {
 
 .job-fit-panel .job-scroll-text {
   max-height: 112px;
+}
+
+.company-description-panel .company-scroll-text {
+  max-height: 256px;
+  white-space: pre-wrap;
+}
+
+.company-fit-panel .company-scroll-text {
+  max-height: 120px;
+  white-space: pre-wrap;
 }
 
 .job-scroll-text p,
@@ -3272,6 +3297,11 @@ input:disabled {
 }
 
 .job-card-rail {
+  grid-template-columns: minmax(0, 1fr) minmax(132px, max-content);
+  gap: 10px;
+}
+
+.company-card-rail {
   grid-template-columns: minmax(0, 1fr) minmax(132px, max-content);
   gap: 10px;
 }
@@ -3394,6 +3424,26 @@ p.job-verification {
   align-items: stretch;
 }
 
+.company-card-rail .company-links,
+.company-card-actions {
+  grid-column: auto;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.company-card-meta {
+  color: var(--muted);
+}
+
+.company-card-meta .company-details dt {
+  font-size: 0.58rem;
+}
+
+.company-card-meta .company-details dd {
+  color: #475569;
+  font-size: 0.72rem;
+}
+
 .job-card-rail .company-links a,
 .job-card-rail .company-links button {
   display: inline-flex;
@@ -3401,6 +3451,27 @@ p.job-verification {
   justify-content: center;
   width: 100%;
   min-height: 38px;
+}
+
+.company-card-actions a,
+.company-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+}
+
+.company-card-actions details {
+  width: 100%;
+}
+
+.company-card-actions details summary {
+  display: inline-flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
 }
 
 .job-card-rail .job-details {
@@ -3447,6 +3518,60 @@ p.job-verification {
   font-size: 0.72rem;
   line-height: 1.25;
   padding: 0;
+}
+
+.company-detail-workspace,
+.company-detail-section,
+.company-related-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.company-related-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(132px, max-content);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.company-related-card h3 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.company-related-card .company-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.company-related-details {
+  margin-top: 8px;
+}
+
+.company-related-description {
+  margin-top: 8px;
+}
+
+.company-related-description .company-scroll-text {
+  max-height: 180px;
+}
+
+.company-detail-collapsed {
+  display: grid;
+  gap: 8px;
+}
+
+.company-detail-collapsed > summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 900;
 }
 
 .application-details,
@@ -4979,6 +5104,7 @@ main.page-shell dd {
   .application-card,
   .company-card,
   .job-card,
+  .company-card-main,
   .job-card-main,
   .application-card-rail,
   .company-card-rail,
@@ -4990,7 +5116,9 @@ main.page-shell dd {
   .application-details,
   .company-details,
   .job-details,
+  .company-provider-metadata,
   .job-primary-metadata,
+  .company-related-card,
   .application-form-grid,
   .profile-review-details,
   .status-edit {
@@ -5009,8 +5137,13 @@ main.page-shell dd {
     gap: 8px;
   }
 
+  .company-card-rail .company-links,
   .job-card-rail .company-links {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .company-provider-metadata {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -5018,7 +5151,15 @@ main.page-shell dd {
     max-height: 260px;
   }
 
+  .company-description-panel .company-scroll-text {
+    max-height: 260px;
+  }
+
   .job-fit-panel .job-scroll-text {
+    max-height: 96px;
+  }
+
+  .company-fit-panel .company-scroll-text {
     max-height: 96px;
   }
 

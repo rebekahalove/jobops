@@ -31,6 +31,26 @@ Candidate-facing job discovery keeps the existing chat/run shell and `job_search
 
 Pre-revamp live-provider discovery is intentionally removed. Direct URL ingestion is DB-backed: supported direct job URLs write normalized inventory into `job_listings` and `job_listing_sources`, then create or refresh `candidate_saved_jobs.job_listing_id`.
 
+## Company Workspace and Detail Page
+
+The Companies workspace now has a company detail page for each profile-linked `CandidateCompany`. Company cards and detail headers separate provider-derived company facts, readable company description, user/internal metadata, and actions:
+
+- Provider facts are shown prominently: website/domain, careers URL, job-listings URL, Greenhouse board token, Ashby board URL, Lever slug, headquarters, hiring locations, remote policy, source count, and compact provider metadata such as technologies or keywords when already stored.
+- The company description is shown as a multi-line scrollable panel. It is not truncated to a one-line preview.
+- User/internal metadata is secondary: added date, first/last seen, last checked, review status, derivation status, data confidence, discovered-by label, and archive state.
+- External links render only for safe `http:` or `https:` URLs. Internal placeholders or malformed values are not shown as website/careers/job links.
+
+The company detail page shows related synced jobs and applications without reintroducing legacy `JobPosting` behavior. Related jobs come from `job_listings.company_id = companies.id`, with a normalized-name fallback only for synced rows that lack `company_id`. Related applications are scoped to the authenticated candidate profile and come from `applications.company_id` or from the saved-job path `applications.saved_job_id -> candidate_saved_jobs.job_listing_id -> job_listings.company_id`.
+
+Company list counts are calculated server-side for the current candidate profile:
+
+- Active job count: active synced `job_listings` associated with the company.
+- Saved job count: visible, unarchived `candidate_saved_jobs` for this profile linked to the company's synced listings.
+- Application count: this profile's applications associated with the company directly or through saved synced jobs.
+- Open application count: profile-scoped applications that are not archived and not terminal withdrawn/rejected rows.
+
+Company pages do not automatically sync boards merely because a user views a company. A future explicit company-level sync action can call first-party Greenhouse/Ashby sync for that company's stored board metadata, but passive page rendering remains read-only in this branch.
+
 ## TheirStack Company Enrichment Foundation
 
 TheirStack is a company/enrichment source, not the canonical job detail source. The TheirStack foundation can search companies explicitly through the provider service, normalize company metadata, infer supported ATS identifiers from returned job/career URLs, and persist companies through the existing canonical company path.
