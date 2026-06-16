@@ -146,6 +146,7 @@ class CandidateDiscoveryPlanCritic:
         settings: Settings,
         plan: DbJobSearchPlan,
         current_saved_jobs: list[dict[str, Any]],
+        current_saved_companies: list[dict[str, Any]],
         inventory_context: dict[str, Any],
     ) -> CandidateDiscoveryPlanCritique:
         if connector is None:
@@ -168,6 +169,7 @@ class CandidateDiscoveryPlanCritic:
                         {
                             "latestUserMessage": request.latest_user_message,
                             "currentJobsListSummary": summarize_jobs_list(current_saved_jobs),
+                            "currentSavedCompaniesSummary": summarize_saved_companies(current_saved_companies),
                             "inventoryContext": inventory_context,
                             "proposedPlan": serialize_plan_for_model(plan),
                         },
@@ -415,6 +417,24 @@ def summarize_jobs_list(current_saved_jobs: list[dict[str, Any]]) -> dict[str, A
     return {
         "visibleJobsListCount": len(current_saved_jobs),
         "sample": current_saved_jobs[:10],
+    }
+
+
+def summarize_saved_companies(current_saved_companies: list[dict[str, Any]]) -> dict[str, Any]:
+    syncable = [
+        company
+        for company in current_saved_companies
+        if isinstance(company, dict)
+        and (
+            company.get("greenhouse_board_token")
+            or company.get("greenhouseBoardToken")
+            or "greenhouse" in json.dumps(company, default=str).casefold()
+        )
+    ]
+    return {
+        "savedCompanyCount": len(current_saved_companies),
+        "greenhouseSyncableCompanyCount": len(syncable),
+        "sample": current_saved_companies[:10],
     }
 
 

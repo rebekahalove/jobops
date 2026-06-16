@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 import jobops_api.job_discovery.candidate_discovery.planner as planner_module
 import jobops_api.job_discovery.candidate_discovery.service as candidate_service_module
-from jobops_api.db.models import JobSearchQueryRun, JobSyncRun, JobSyncSignature
+from jobops_api.db.models import CandidateCompany, Company, JobListing, JobListingSource, JobSearchQueryRun, JobSyncRun, JobSyncSignature
 from jobops_api.job_discovery.candidate_discovery.models import (
     DbJobSearchPlan,
     DbJobSearchQuery,
@@ -63,6 +63,9 @@ def test_planner_prompt_contains_broadening_and_override_instructions() -> None:
     assert "You choose the discovery mode" in prompt
     assert "plan inventory refresh sync tokens" in prompt
     assert "Find me some jobs to apply to." in prompt
+    assert "Find jobs from my companies list." in prompt
+    assert "syncPlan.useFollowedCompanyBoards=true" in prompt
+    assert "missing_followed_company_board_sync" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
     assert "new_job_discovery" in prompt
     assert "Do not call job results \"candidates.\"" in prompt
     assert "Return JSON only" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
@@ -719,6 +722,129 @@ def test_jobs_list_review_does_not_sync_when_model_does_not_plan_sync(tmp_path, 
     assert result.search_plan.mode == "jobs_list_review"
     assert result.search_plan.job_scope == "candidate_jobs_list"
     assert result.unique_job_pool_count == 1
+
+
+def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(tmp_path, monkeypatch) -> None:
+    engine = create_candidate_discovery_engine()
+    synced_tokens: list[str] = []
+
+    def fake_sync_greenhouse_boards(session_arg, **kwargs):
+        assert kwargs["candidate_profile_id"] == profile.id
+        assert kwargs["include_configured"] is False
+        rows = session_arg.execute(
+            select(CandidateCompany, Company)
+            .join(Company, Company.id == CandidateCompany.company_id)
+            .where(CandidateCompany.candidate_profile_id == kwargs["candidate_profile_id"])
+        ).all()
+        results = []
+        for _link, company in rows:
+            token = company.greenhouse_board_token
+            if not token:
+                continue
+            synced_tokens.append(token)
+            now = datetime.now(UTC)
+            listing = JobListing(
+                title=f"{company.name} Product Marketing Manager",
+                company_id=company.id,
+                company_name=company.name,
+                canonical_url=f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                apply_url=f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                source_url=f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                location_display="Remote US",
+                location_country="us",
+                remote_work_mode="remote",
+                employment_type="full_time",
+                description_excerpt=f"{company.name} product marketing role.",
+                source_status="active",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                source_updated_at=now,
+                last_synced_at=now,
+            )
+            source = JobListingSource(
+                job_listing=listing,
+                source_provider="greenhouse",
+                provider_type="ats_board",
+                provider_job_id=f"{token}-1",
+                source_result_id=f"{token}-1",
+                ats_provider="greenhouse",
+                ats_board_token=token,
+                source_url=listing.source_url,
+                apply_url=listing.apply_url,
+                canonical_url=listing.canonical_url,
+                raw_metadata_json={"provider": "greenhouse"},
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                last_synced_at=now,
+            )
+            session_arg.add(source)
+            session_arg.flush()
+            results.append(
+                JobSyncResult(
+                    request=JobSyncRequest(
+                        sync_key=f"greenhouse:{token}",
+                        provider_name="greenhouse",
+                        provider_type="ats_board",
+                        sync_kind="company_board",
+                        company_id=company.id,
+                        company_name=company.name,
+                        ats_provider="greenhouse",
+                        ats_board_token=token,
+                    ),
+                    raw_result_count=1,
+                    normalized_count=1,
+                    created_count=1,
+                )
+            )
+        return results
+
+    monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fake_sync_greenhouse_boards)
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        companies = [
+            Company(name="Acme", normalized_name="acme", greenhouse_board_token="acme"),
+            Company(name="Beta", normalized_name="beta", greenhouse_board_token="beta"),
+        ]
+        session.add_all(companies)
+        session.flush()
+        session.add_all(
+            [
+                CandidateCompany(candidate_profile_id=profile.id, company_id=companies[0].id),
+                CandidateCompany(candidate_profile_id=profile.id, company_id=companies[1].id),
+            ]
+        )
+        session.commit()
+
+        service = CandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=FollowedCompanyBoardsPlanner(),
+            reviewer=SelectAllReviewer(),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="find jobs from my companies list", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[{"name": "Acme", "greenhouse_board_token": "acme"}, {"name": "Beta", "greenhouse_board_token": "beta"}],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+
+        saved_jobs = list(session.scalars(select(CandidateSavedJob)).all())
+        sources = list(session.scalars(select(JobListingSource)).all())
+
+    assert synced_tokens == ["acme", "beta"]
+    assert result.search_plan.mode == "new_job_discovery"
+    assert result.search_plan.use_followed_company_boards is True
+    assert result.added_count == 2
+    assert result.unique_job_pool_count == 2
+    assert {source.source_provider for source in sources} == {"greenhouse"}
+    assert {source.ats_board_token for source in sources} == {"acme", "beta"}
+    assert len(saved_jobs) == 2
+    assert all(job.job_listing_id for job in saved_jobs)
 
 
 def test_jobs_list_ranking_reviews_all_eligible_jobs_and_recommends_top_five(tmp_path) -> None:
@@ -1540,6 +1666,47 @@ class JobsListReviewConnector:
         if request.task == "candidate_db_job_plan_critique":
             return SimpleNamespace(text=json.dumps({"valid": True, "issueCode": None, "issueMessage": None, "correctedPlan": None}))
         raise AssertionError(f"Unexpected task {request.task}")
+
+
+class FollowedCompanyBoardsPlanner:
+    def plan(self, *args, **kwargs) -> DbJobSearchPlan:
+        return DbJobSearchPlan(
+            mode="new_job_discovery",
+            job_scope="new_to_candidate",
+            mode_rationale="The user asked to find new jobs from saved companies.",
+            use_followed_company_boards=True,
+            sync_plan_rationale="Sync followed company Greenhouse boards.",
+            queries=(
+                DbJobSearchQuery(
+                    label="Search Greenhouse jobs from followed companies",
+                    source_providers_any=("greenhouse",),
+                    source_statuses_any=("active",),
+                    limit=300,
+                ),
+            ),
+            min_job_pool_size=1,
+            max_job_pool_size=300,
+            max_jobs_for_model_review=80,
+            review_plan=ReviewPlan(
+                task="select_new_jobs",
+                requested_count=5,
+                allow_rejections=True,
+                review_all_eligible_jobs=False,
+                rationale="Select matching jobs from synced company boards.",
+            ),
+        )
+
+
+class SelectAllReviewer:
+    def review(self, *args, job_pool, **kwargs) -> JobReviewResult:
+        return JobReviewResult(
+            user_visible_summary=f"I selected {len(job_pool)} synced jobs from your companies list.",
+            selected_jobs=tuple(
+                SelectedJobDecision(job_listing_id=entry.job_listing_id, rationale="Matches followed-company search.")
+                for entry in job_pool
+            ),
+            diagnostics={"modelReviewCompleted": True},
+        )
 
 
 class StaticJobsListRankingPlanner:
