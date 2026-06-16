@@ -32,6 +32,8 @@ from ..profiles import candidate_profile_to_private_context_dict, get_candidate_
 from ..security import require_internal_api_key
 from ..settings import Settings, load_settings
 from .models import (
+    BatchFavoriteJobsRequest,
+    BatchFavoriteJobsResponse,
     JobDiscoveryRequest,
     JobDiscoveryServiceResult,
     SavedJobActionResponse,
@@ -247,6 +249,67 @@ def favorite_job(
         application=application,
         message="Job added to Favorites." if changed else "Job was already in Favorites.",
     )
+
+
+@router.post("/jobs/favorite-batch", response_model=BatchFavoriteJobsResponse)
+def favorite_jobs_batch(
+    request: BatchFavoriteJobsRequest,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    requested_ids = ordered_unique_nonempty_strings(request.saved_job_ids)
+    if not requested_ids:
+        return {
+            "ok": True,
+            "requested_count": 0,
+            "updated_count": 0,
+            "already_favorite_count": 0,
+            "not_found_count": 0,
+            "updated_job_ids": [],
+            "already_favorite_job_ids": [],
+            "not_found_job_ids": [],
+            "message": "No jobs were selected.",
+        }
+
+    links = list(
+        session.scalars(
+            select(CandidateSavedJob).where(
+                CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id,
+                CandidateSavedJob.id.in_(requested_ids),
+            )
+        )
+    )
+    link_by_id = {link.id: link for link in links}
+    updated_job_ids: list[str] = []
+    already_favorite_job_ids: list[str] = []
+    not_found_job_ids: list[str] = []
+    for saved_job_id in requested_ids:
+        link = link_by_id.get(saved_job_id)
+        if link is None:
+            not_found_job_ids.append(saved_job_id)
+            continue
+        if is_favorite_saved_job_status(link.status):
+            already_favorite_job_ids.append(saved_job_id)
+            continue
+        link.status = "saved"
+        updated_job_ids.append(saved_job_id)
+
+    session.commit()
+    return {
+        "ok": True,
+        "requested_count": len(requested_ids),
+        "updated_count": len(updated_job_ids),
+        "already_favorite_count": len(already_favorite_job_ids),
+        "not_found_count": len(not_found_job_ids),
+        "updated_job_ids": updated_job_ids,
+        "already_favorite_job_ids": already_favorite_job_ids,
+        "not_found_job_ids": not_found_job_ids,
+        "message": batch_favorite_message(
+            updated_count=len(updated_job_ids),
+            already_favorite_count=len(already_favorite_job_ids),
+            not_found_count=len(not_found_job_ids),
+        ),
+    }
 
 
 @router.post("/jobs/{saved_job_id}/unfavorite", response_model=SavedJobActionResponse)
@@ -1600,6 +1663,35 @@ def saved_job_action_response(
     }
 
 
+def ordered_unique_nonempty_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        if cleaned and cleaned not in seen:
+            unique.append(cleaned)
+            seen.add(cleaned)
+    return unique
+
+
+def is_favorite_saved_job_status(status: str | None) -> bool:
+    return (status or "").casefold() in {"favorite", "favorited", "saved", "watchlisted", "watchlist"}
+
+
+def batch_favorite_message(*, updated_count: int, already_favorite_count: int, not_found_count: int) -> str:
+    if updated_count and not_found_count:
+        return f"Added {updated_count} job(s) to Favorites. {not_found_count} job(s) were unavailable."
+    if updated_count:
+        return f"Added {updated_count} job(s) to Favorites."
+    if already_favorite_count and not_found_count:
+        return f"{already_favorite_count} job(s) were already in Favorites. {not_found_count} job(s) were unavailable."
+    if already_favorite_count:
+        return "All selected jobs were already in Favorites."
+    if not_found_count:
+        return "Selected jobs were unavailable or not on your jobs list."
+    return "No jobs were changed."
+
+
 def serialize_saved_job(
     link: CandidateSavedJob,
     *,
@@ -1612,6 +1704,12 @@ def serialize_saved_job(
     job_url = job_listing_primary_url(job)
     highlighted = bool(highlighted_job_search_run_id and link.job_search_run_id == highlighted_job_search_run_id)
     application_requirements = compact_application_requirements_summary(job)
+    primary_source = first_job_listing_source(job)
+    source_provider = primary_source.source_provider if primary_source is not None else None
+    provider_type = primary_source.provider_type if primary_source is not None else "job_sync"
+    source_result_id = primary_source.source_result_id if primary_source is not None else None
+    source_query = primary_source.source_query if primary_source is not None else None
+    source_url = primary_source.source_url if primary_source is not None and primary_source.source_url else job.source_url
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
@@ -1625,13 +1723,13 @@ def serialize_saved_job(
         "job_url": job_url,
         "canonical_url": job.canonical_url,
         "apply_url": job.apply_url,
-        "source": "job_sync",
-        "source_provider": first_job_listing_source_provider(job),
+        "source": source_provider,
+        "source_provider": source_provider,
         **application_requirements,
-        "provider_type": "job_sync",
-        "source_result_id": None,
-        "source_query": None,
-        "source_url": job.source_url,
+        "provider_type": provider_type,
+        "source_result_id": source_result_id,
+        "source_query": source_query,
+        "source_url": source_url,
         "source_updated_at": job.source_updated_at.isoformat() if job.source_updated_at else None,
         "company_website_url": None,
         "company_careers_url": None,
@@ -1674,10 +1772,15 @@ def job_listing_primary_url(job: Any) -> str:
 
 
 def first_job_listing_source_provider(job: Any) -> str | None:
+    source = first_job_listing_source(job)
+    return source.source_provider if source is not None else None
+
+
+def first_job_listing_source(job: Any) -> Any | None:
     sources = getattr(job, "sources", None) or []
     for source in sources:
         if source.source_provider:
-            return source.source_provider
+            return source
     return None
 
 

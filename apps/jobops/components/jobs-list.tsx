@@ -49,6 +49,7 @@ export type SavedJob = {
   salary_max?: number | null;
   salary_currency?: string | null;
   salary_text: string | null;
+  full_description?: string | null;
   description_excerpt: string | null;
   fit_summary: string | null;
   user_notes: string | null;
@@ -282,6 +283,7 @@ export function JobsList({
                       <p>{job.company_name}</p>
                     </div>
                     <div className="job-card-badges">
+                      {isRecentlyPostedJob(job) ? <span className="application-status application-status-highlight">New</span> : null}
                       {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
                       {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
                       {job.has_application ? (
@@ -292,37 +294,43 @@ export function JobsList({
                     </div>
                   </div>
 
-                  <FoldedText className="job-description" value={job.description_excerpt} />
-                  <FoldedText className="job-fit" value={job.fit_summary} />
+                  <dl className="job-primary-metadata">
+                    <div>
+                      <dt>Posted</dt>
+                      <dd>{formatDateOnly(job.posting_date)}</dd>
+                    </div>
+                    <div>
+                      <dt>Location</dt>
+                      <dd>{job.location || "Unknown"}</dd>
+                    </div>
+                    <div>
+                      <dt>Work mode</dt>
+                      <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
+                    </div>
+                    <div>
+                      <dt>Employment</dt>
+                      <dd>{job.employment_type || "Unknown"}</dd>
+                    </div>
+                    <div>
+                      <dt>Compensation</dt>
+                      <dd>{formatCompensation(job)}</dd>
+                    </div>
+                  </dl>
+
+                  <section className="job-info-panel" aria-label={`${job.title} job description`}>
+                    <h3>Job Description</h3>
+                    <FoldedText className="job-description" value={job.full_description || job.description_excerpt} />
+                  </section>
+                  {job.fit_summary ? (
+                    <section className="job-info-panel" aria-label={`${job.title} fit summary`}>
+                      <h3>Fit Summary</h3>
+                      <FoldedText className="job-fit" value={job.fit_summary} />
+                    </section>
+                  ) : null}
                   {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
                 </div>
 
                 <aside className="job-card-rail" aria-label={`${job.title} details`}>
-                  <div className="record-rail-section">
-                    <dl className="job-details record-detail-grid">
-                      <div>
-                        <dt>Location</dt>
-                        <dd>{job.location || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Work mode</dt>
-                        <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
-                      </div>
-                      <div>
-                        <dt>Employment</dt>
-                        <dd>{job.employment_type || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Compensation</dt>
-                        <dd>{formatCompensation(job)}</dd>
-                      </div>
-                      <div>
-                        <dt>Posted</dt>
-                        <dd>{formatDateOnly(job.posting_date)}</dd>
-                      </div>
-                    </dl>
-                  </div>
-
                   <div className="record-rail-section">
                     <dl className="job-details record-detail-grid">
                       <div>
@@ -335,7 +343,7 @@ export function JobsList({
                       </div>
                       <div>
                         <dt>Source</dt>
-                        <dd>{job.source || job.source_provider || "Unknown"}</dd>
+                        <dd>{formatProviderLabel(job.source_provider || job.source)}</dd>
                       </div>
                       <div>
                         <dt>Provenance</dt>
@@ -381,7 +389,7 @@ export function JobsList({
                       </button>
                     ) : null}
                     <a href={job.job_url} rel="noopener noreferrer" target="_blank">
-                      Job posting
+                      View Posting
                     </a>
                     {job.apply_url && job.apply_url !== job.job_url ? (
                       <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
@@ -946,6 +954,19 @@ function isJustAddedJob(job: SavedJob) {
   return Boolean(job.justAdded);
 }
 
+function isRecentlyPostedJob(job: SavedJob) {
+  if (!job.posting_date) {
+    return false;
+  }
+  const postedAt = new Date(`${job.posting_date}T00:00:00Z`).getTime();
+  if (Number.isNaN(postedAt)) {
+    return false;
+  }
+  const now = Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  return postedAt <= now && postedAt >= now - sevenDaysMs;
+}
+
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
   const counts = buildJobBucketCounts(jobs);
   return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
@@ -1261,6 +1282,13 @@ function formatStatus(value: string) {
 }
 
 function formatOptionalStatus(value: string | null) {
+  if (!value || value === "unknown") {
+    return "Unknown";
+  }
+  return formatStatus(value);
+}
+
+function formatProviderLabel(value?: string | null) {
   if (!value || value === "unknown") {
     return "Unknown";
   }

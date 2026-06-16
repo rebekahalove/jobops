@@ -79,6 +79,7 @@ export type JobSearchRunStatus = {
 
 export type JobDiscoverySavedJob = {
   id: string;
+  job_listing_id?: string | null;
   title?: string | null;
   company_name?: string | null;
   job_url?: string | null;
@@ -86,7 +87,11 @@ export type JobDiscoverySavedJob = {
   canonical_url?: string | null;
   source?: string | null;
   source_provider?: string | null;
+  source_result_id?: string | null;
+  source_query?: string | null;
+  source_url?: string | null;
   provider_type?: string | null;
+  provenance?: string | null;
   hasApplicationFields?: boolean;
   requiredFieldCount?: number | null;
   shortAnswerQuestionCount?: number | null;
@@ -97,6 +102,16 @@ export type JobDiscoverySavedJob = {
   requiresWebsite?: boolean | null;
   location?: string | null;
   remote_work_mode?: string | null;
+  employment_type?: string | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  salary_text?: string | null;
+  full_description?: string | null;
+  description_excerpt?: string | null;
+  fit_summary?: string | null;
+  added_at?: string | null;
+  posting_date?: string | null;
   status?: string | null;
   jobSearchRunId?: string | null;
   highlighted?: boolean;

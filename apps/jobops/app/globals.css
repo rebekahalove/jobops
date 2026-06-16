@@ -765,9 +765,42 @@ textarea {
   font-size: 0.9rem;
 }
 
+.agent-action-jobs-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .agent-action-jobs > div {
   display: grid;
   gap: 8px;
+}
+
+.agent-action-jobs > .agent-action-jobs-header {
+  display: flex;
+}
+
+.agent-action-batch-status {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.agent-action-batch-status-success {
+  border-color: rgba(15, 118, 110, 0.24);
+  background: rgba(240, 253, 250, 0.85);
+  color: var(--accent-strong);
+}
+
+.agent-action-batch-status-error {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: #fff5f5;
+  color: var(--danger);
 }
 
 .agent-action-job-row {
@@ -3088,6 +3121,47 @@ input:disabled {
   gap: 6px;
 }
 
+.job-primary-metadata {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 2px 0 0;
+}
+
+.job-primary-metadata div {
+  min-width: 0;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 6px;
+  background: var(--surface-strong);
+  padding: 6px 7px;
+}
+
+.job-primary-metadata dt,
+.job-info-panel h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.job-primary-metadata dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.job-info-panel {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
 .application-card-rail,
 .company-card-rail,
 .job-card-rail {
@@ -4777,6 +4851,7 @@ main.page-shell dd {
   .application-details,
   .company-details,
   .job-details,
+  .job-primary-metadata,
   .application-form-grid,
   .profile-review-details,
   .status-edit {
