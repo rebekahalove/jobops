@@ -91,6 +91,8 @@ describe("Jobs list", () => {
     expect(html).toContain("View Posting");
     expect(html).not.toContain("Job posting");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
+    expect(html).toContain('href="https://jobs.example.test/example-civic/apply"');
+    expect(html).toContain("Apply link");
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
   });
@@ -228,6 +230,77 @@ describe("Jobs list", () => {
     expect(html).toContain('href="https://jobs.example.test/details"');
     expect(html).not.toContain("Flattened text should not render");
     expect(html).not.toContain("Excerpt should not render");
+  });
+
+  it("does not render View Posting for non-web fallback job URLs", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "fallback-url",
+            title: "Fallback URL Role",
+            job_url: "job_listing:abc",
+            canonical_url: null,
+            apply_url: null
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Fallback URL Role");
+    expect(html).not.toContain("View Posting");
+    expect(html).not.toContain('href="job_listing:abc"');
+  });
+
+  it("does not render broken posting links for empty or malformed job URLs", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "empty-url",
+            title: "Empty URL Role",
+            job_url: "",
+            canonical_url: null,
+            apply_url: null
+          }),
+          jobFixture({
+            id: "malformed-url",
+            title: "Malformed URL Role",
+            job_url: "not a url",
+            canonical_url: null,
+            apply_url: null
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Empty URL Role");
+    expect(html).toContain("Malformed URL Role");
+    expect(html).not.toContain("View Posting");
+    expect(html).not.toContain('href=""');
+    expect(html).not.toContain('href="not a url"');
+  });
+
+  it("uses safe canonical and apply links when job_url is not a real posting URL", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "canonical-fallback",
+            title: "Canonical Fallback Role",
+            job_url: "job_listing:abc",
+            canonical_url: "https://jobs.example.test/canonical",
+            apply_url: "https://jobs.example.test/apply"
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Canonical Fallback Role");
+    expect(html).toContain("View Posting");
+    expect(html).toContain('href="https://jobs.example.test/canonical"');
+    expect(html).toContain("Apply link");
+    expect(html).toContain('href="https://jobs.example.test/apply"');
   });
 
   it("keeps job card layout split into metadata, scrollable content, and action rail", async () => {

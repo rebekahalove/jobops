@@ -328,8 +328,34 @@ describe("AI command center", () => {
 
     expect(html).toContain("Recommended existing jobs");
     expect(html).toContain("Add all to Favorites");
+    expect(html).toContain("View jobs list");
+    expect(html).not.toContain("Open Jobs");
+    expect(html).not.toContain("agent-action-link");
     expect(html).not.toContain("Just added to your jobs list");
     expect(html).toContain("AI Platform Engineer");
+  });
+
+  it("keeps normal workspace CTAs on non-prioritization action cards", () => {
+    const html = renderToStaticMarkup(
+      <AiCommandCenter
+        initialActions={[
+          {
+            id: "action-profile",
+            type: "profile_intake",
+            title: "Update profile",
+            summary: "Profile updated.",
+            status: "completed",
+            targetWorkspace: "profile",
+            ctaLabel: "Open Profile",
+            resultPayload: {}
+          }
+        ]}
+      />
+    );
+
+    expect(html).toContain("Open Profile");
+    expect(html).toContain("agent-action-link");
+    expect(html).not.toContain("Add all to Favorites");
   });
 
   it("wires batch favorite actions for prioritization result cards", async () => {

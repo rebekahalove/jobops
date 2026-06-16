@@ -1242,6 +1242,8 @@ function AgentActionCard({
   const isBusyJobDiscovery = action.type === "job_discovery" && action.status === "running";
   const jobsLabel = jobDiscoveryJobsLabel(action.resultPayload);
   const canBatchFavoriteShownJobs = jobsLabel === "Recommended existing jobs";
+  const targetWorkspace = action.targetWorkspace;
+  const showWorkspaceCta = Boolean(targetWorkspace && !canBatchFavoriteShownJobs);
   const [favoriteBatchState, setFavoriteBatchState] = useState<{ pending: boolean; message: string | null; kind: "success" | "error" | "info" }>({
     pending: false,
     message: null,
@@ -1380,9 +1382,13 @@ function AgentActionCard({
           <pre>{formatModelRequestDebugPayload(modelResponse)}</pre>
         </details>
       ) : null}
-      {action.targetWorkspace ? (
-        <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(action.targetWorkspace, workspaceBasePath)}>
-          {action.ctaLabel ?? `Open ${formatWorkspaceLabel(action.targetWorkspace)}`}
+      {canBatchFavoriteShownJobs ? (
+        <Link className="agent-action-secondary-link" href={getWorkspaceRoute(targetWorkspace ?? "jobs", workspaceBasePath)}>
+          View jobs list
+        </Link>
+      ) : showWorkspaceCta && targetWorkspace ? (
+        <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(targetWorkspace, workspaceBasePath)}>
+          {action.ctaLabel ?? `Open ${formatWorkspaceLabel(targetWorkspace)}`}
         </Link>
       ) : (
         <span className="planned-affordance" aria-disabled="true">

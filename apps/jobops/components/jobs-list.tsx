@@ -275,134 +275,141 @@ export function JobsList({
 
         {sortedJobs.length > 0 ? (
           <div className="job-card-grid">
-            {sortedJobs.map((job) => (
-              <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
-                <div className="job-card-main">
-                  <div className="job-card-header">
-                    <div>
-                      <h2>{job.title}</h2>
-                      <p>{job.company_name}</p>
+            {sortedJobs.map((job) => {
+              const postingUrl = externalJobPostingUrl(job);
+              const applyUrl = safeExternalUrl(job.apply_url);
+              const showDistinctApplyLink = Boolean(applyUrl && applyUrl !== postingUrl);
+              return (
+                <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
+                  <div className="job-card-main">
+                    <div className="job-card-header">
+                      <div>
+                        <h2>{job.title}</h2>
+                        <p>{job.company_name}</p>
+                      </div>
+                      <div className="job-card-badges">
+                        {isRecentlyPostedJob(job) ? <span className="application-status application-status-highlight">New</span> : null}
+                        {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
+                        {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
+                        {job.has_application ? (
+                          <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
+                            {applicationBadgeLabel(job)}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="job-card-badges">
-                      {isRecentlyPostedJob(job) ? <span className="application-status application-status-highlight">New</span> : null}
-                      {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
-                      {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
-                      {job.has_application ? (
-                        <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
-                          {applicationBadgeLabel(job)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
 
-                  <dl className="job-primary-metadata">
-                    <div className="job-primary-metadata-item job-primary-posted">
-                      <dt>Posted</dt>
-                      <dd>{formatDateOnly(job.posting_date)}</dd>
-                    </div>
-                    <div className="job-primary-metadata-item job-primary-location">
-                      <dt>Location</dt>
-                      <dd>{job.location || "Unknown"}</dd>
-                    </div>
-                    <div className="job-primary-metadata-item job-primary-work-mode">
-                      <dt>Work mode</dt>
-                      <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
-                    </div>
-                    <div className="job-primary-metadata-item job-primary-employment">
-                      <dt>Employment</dt>
-                      <dd>{job.employment_type || "Unknown"}</dd>
-                    </div>
-                    <div className="job-primary-metadata-item job-primary-compensation">
-                      <dt>Compensation</dt>
-                      <dd>{formatCompensation(job)}</dd>
-                    </div>
-                  </dl>
-
-                  <div className="job-card-content">
-                    <section className="job-info-panel job-description-panel" aria-label={`${job.title} job description`}>
-                      <h3>Job Description</h3>
-                      <ScrollableJobText className="job-description" html={job.description_html} value={job.full_description || job.description_excerpt} />
-                    </section>
-                    {job.fit_summary ? (
-                      <section className="job-info-panel job-fit-panel" aria-label={`${job.title} fit summary`}>
-                        <h3>Fit Summary</h3>
-                        <ScrollableJobText className="job-fit" value={job.fit_summary} />
-                      </section>
-                    ) : null}
-                    {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
-                  </div>
-                </div>
-
-                <aside className="job-card-rail" aria-label={`${job.title} details`}>
-                  <div className="record-rail-section">
-                    <dl className="job-details record-detail-grid">
-                      <div>
-                        <dt>Saved</dt>
-                        <dd>{formatDateTime(job.added_at)}</dd>
+                    <dl className="job-primary-metadata">
+                      <div className="job-primary-metadata-item job-primary-posted">
+                        <dt>Posted</dt>
+                        <dd>{formatDateOnly(job.posting_date)}</dd>
                       </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{formatStatus(job.status)}</dd>
+                      <div className="job-primary-metadata-item job-primary-location">
+                        <dt>Location</dt>
+                        <dd>{job.location || "Unknown"}</dd>
                       </div>
-                      <div>
-                        <dt>Source</dt>
-                        <dd>{formatProviderLabel(job.source_provider || job.source)}</dd>
+                      <div className="job-primary-metadata-item job-primary-work-mode">
+                        <dt>Work mode</dt>
+                        <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
                       </div>
-                      <div>
-                        <dt>Provenance</dt>
-                        <dd>{job.provenance ? formatStatus(job.provenance) : "Unknown"}</dd>
+                      <div className="job-primary-metadata-item job-primary-employment">
+                        <dt>Employment</dt>
+                        <dd>{job.employment_type || "Unknown"}</dd>
                       </div>
-                      {isVerifiedJobUrl(job) ? (
-                        <div>
-                          <dt>URL check</dt>
-                          <dd>Verified</dd>
-                        </div>
-                      ) : null}
+                      <div className="job-primary-metadata-item job-primary-compensation">
+                        <dt>Compensation</dt>
+                        <dd>{formatCompensation(job)}</dd>
+                      </div>
                     </dl>
+
+                    <div className="job-card-content">
+                      <section className="job-info-panel job-description-panel" aria-label={`${job.title} job description`}>
+                        <h3>Job Description</h3>
+                        <ScrollableJobText className="job-description" html={job.description_html} value={job.full_description || job.description_excerpt} />
+                      </section>
+                      {job.fit_summary ? (
+                        <section className="job-info-panel job-fit-panel" aria-label={`${job.title} fit summary`}>
+                          <h3>Fit Summary</h3>
+                          <ScrollableJobText className="job-fit" value={job.fit_summary} />
+                        </section>
+                      ) : null}
+                      {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
+                    </div>
                   </div>
 
-                  <div className="company-links" aria-label={`${job.title} links`}>
-                    <a href={job.job_url} rel="noopener noreferrer" target="_blank">
-                      View Posting
-                    </a>
-                    {!job.archived_at && !job.application_id ? (
+                  <aside className="job-card-rail" aria-label={`${job.title} details`}>
+                    <div className="record-rail-section">
+                      <dl className="job-details record-detail-grid">
+                        <div>
+                          <dt>Saved</dt>
+                          <dd>{formatDateTime(job.added_at)}</dd>
+                        </div>
+                        <div>
+                          <dt>Status</dt>
+                          <dd>{formatStatus(job.status)}</dd>
+                        </div>
+                        <div>
+                          <dt>Source</dt>
+                          <dd>{formatProviderLabel(job.source_provider || job.source)}</dd>
+                        </div>
+                        <div>
+                          <dt>Provenance</dt>
+                          <dd>{job.provenance ? formatStatus(job.provenance) : "Unknown"}</dd>
+                        </div>
+                        {isVerifiedJobUrl(job) ? (
+                          <div>
+                            <dt>URL check</dt>
+                            <dd>Verified</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+                    </div>
+
+                    <div className="company-links" aria-label={`${job.title} links`}>
+                      {postingUrl ? (
+                        <a href={postingUrl} rel="noopener noreferrer" target="_blank">
+                          View Posting
+                        </a>
+                      ) : null}
+                      {!job.archived_at && !job.application_id ? (
+                        <button
+                          className="secondary-action compact-action"
+                          disabled={pendingFavoriteJobId === job.id}
+                          suppressHydrationWarning
+                          type="button"
+                          onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                        >
+                          {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                        </button>
+                      ) : null}
                       <button
                         className="secondary-action compact-action"
-                        disabled={pendingFavoriteJobId === job.id}
+                        disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
                         suppressHydrationWarning
                         type="button"
-                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                        onClick={() => applyToJob(job)}
                       >
-                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                        {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "View application" : "Apply"}
                       </button>
-                    ) : null}
-                    <button
-                      className="secondary-action compact-action"
-                      disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
-                      suppressHydrationWarning
-                      type="button"
-                      onClick={() => applyToJob(job)}
-                    >
-                      {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "View application" : "Apply"}
-                    </button>
-                    <button
-                      className="secondary-action compact-action"
-                      disabled={pendingArchiveJobId === job.id}
-                      suppressHydrationWarning
-                      type="button"
-                      onClick={() => setJobArchiveState(job, job.archived_at ? "restore" : "archive")}
-                    >
-                      {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
-                    </button>
-                    {job.apply_url && job.apply_url !== job.job_url ? (
-                      <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
-                        Apply link
-                      </a>
-                    ) : null}
-                  </div>
-                </aside>
-              </article>
-            ))}
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingArchiveJobId === job.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => setJobArchiveState(job, job.archived_at ? "restore" : "archive")}
+                      >
+                        {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
+                      </button>
+                      {showDistinctApplyLink && applyUrl ? (
+                        <a href={applyUrl} rel="noopener noreferrer" target="_blank">
+                          Apply link
+                        </a>
+                      ) : null}
+                    </div>
+                  </aside>
+                </article>
+              );
+            })}
           </div>
         ) : (
           <div className="empty-state-block">
@@ -1296,6 +1303,25 @@ function formatProviderLabel(value?: string | null) {
     return "Unknown";
   }
   return formatStatus(value);
+}
+
+function externalJobPostingUrl(job: SavedJob) {
+  return safeExternalUrl(job.job_url) || safeExternalUrl(job.canonical_url) || safeExternalUrl(job.apply_url);
+}
+
+function safeExternalUrl(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function shouldShowVerificationSummary(job: SavedJob) {

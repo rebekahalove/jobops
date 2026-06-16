@@ -3824,6 +3824,18 @@ p.job-verification {
   text-decoration: none;
 }
 
+.agent-action-secondary-link {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.agent-action-secondary-link:hover,
+.agent-action-secondary-link:focus-visible {
+  text-decoration: underline;
+}
+
 .planned-affordance {
   display: inline-flex;
   min-height: 42px;
