@@ -50,6 +50,7 @@ export type SavedJob = {
   salary_currency?: string | null;
   salary_text: string | null;
   full_description?: string | null;
+  description_html?: string | null;
   description_excerpt: string | null;
   fit_summary: string | null;
   user_notes: string | null;
@@ -295,39 +296,41 @@ export function JobsList({
                   </div>
 
                   <dl className="job-primary-metadata">
-                    <div>
+                    <div className="job-primary-metadata-item job-primary-posted">
                       <dt>Posted</dt>
                       <dd>{formatDateOnly(job.posting_date)}</dd>
                     </div>
-                    <div>
+                    <div className="job-primary-metadata-item job-primary-location">
                       <dt>Location</dt>
                       <dd>{job.location || "Unknown"}</dd>
                     </div>
-                    <div>
+                    <div className="job-primary-metadata-item job-primary-work-mode">
                       <dt>Work mode</dt>
                       <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
                     </div>
-                    <div>
+                    <div className="job-primary-metadata-item job-primary-employment">
                       <dt>Employment</dt>
                       <dd>{job.employment_type || "Unknown"}</dd>
                     </div>
-                    <div>
+                    <div className="job-primary-metadata-item job-primary-compensation">
                       <dt>Compensation</dt>
                       <dd>{formatCompensation(job)}</dd>
                     </div>
                   </dl>
 
-                  <section className="job-info-panel" aria-label={`${job.title} job description`}>
-                    <h3>Job Description</h3>
-                    <FoldedText className="job-description" value={job.full_description || job.description_excerpt} />
-                  </section>
-                  {job.fit_summary ? (
-                    <section className="job-info-panel" aria-label={`${job.title} fit summary`}>
-                      <h3>Fit Summary</h3>
-                      <FoldedText className="job-fit" value={job.fit_summary} />
+                  <div className="job-card-content">
+                    <section className="job-info-panel job-description-panel" aria-label={`${job.title} job description`}>
+                      <h3>Job Description</h3>
+                      <ScrollableJobText className="job-description" html={job.description_html} value={job.full_description || job.description_excerpt} />
                     </section>
-                  ) : null}
-                  {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
+                    {job.fit_summary ? (
+                      <section className="job-info-panel job-fit-panel" aria-label={`${job.title} fit summary`}>
+                        <h3>Fit Summary</h3>
+                        <ScrollableJobText className="job-fit" value={job.fit_summary} />
+                      </section>
+                    ) : null}
+                    {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
+                  </div>
                 </div>
 
                 <aside className="job-card-rail" aria-label={`${job.title} details`}>
@@ -359,6 +362,20 @@ export function JobsList({
                   </div>
 
                   <div className="company-links" aria-label={`${job.title} links`}>
+                    <a href={job.job_url} rel="noopener noreferrer" target="_blank">
+                      View Posting
+                    </a>
+                    {!job.archived_at && !job.application_id ? (
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingFavoriteJobId === job.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                      >
+                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                      </button>
+                    ) : null}
                     <button
                       className="secondary-action compact-action"
                       disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
@@ -377,20 +394,6 @@ export function JobsList({
                     >
                       {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
                     </button>
-                    {!job.archived_at && !job.application_id ? (
-                      <button
-                        className="secondary-action compact-action"
-                        disabled={pendingFavoriteJobId === job.id}
-                        suppressHydrationWarning
-                        type="button"
-                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
-                      >
-                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
-                      </button>
-                    ) : null}
-                    <a href={job.job_url} rel="noopener noreferrer" target="_blank">
-                      View Posting
-                    </a>
                     {job.apply_url && job.apply_url !== job.job_url ? (
                       <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
                         Apply link
@@ -1372,6 +1375,138 @@ function FoldedText({ value, className }: { value?: string | null; className: st
       <p>{value}</p>
     </details>
   );
+}
+
+function ScrollableJobText({ value, html, className }: { value?: string | null; html?: string | null; className: string }) {
+  if (html) {
+    return <div className={`job-scroll-text ${className}`} dangerouslySetInnerHTML={{ __html: html }} />;
+  }
+  const cleaned = normalizeDisplayText(value);
+  if (!cleaned) {
+    return <p className={`${className} job-text-empty`}>No details available.</p>;
+  }
+  return (
+    <div className={`job-scroll-text ${className}`}>
+      {formatJobTextBlocks(cleaned)}
+    </div>
+  );
+}
+
+function normalizeDisplayText(value?: string | null) {
+  return value ? value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() : "";
+}
+
+function formatJobTextBlocks(value: string) {
+  const blocks = value.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) {
+    return [<p key="empty">No details available.</p>];
+  }
+  return blocks.map((block, blockIndex) => {
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (lines.some(isListLine)) {
+      return (
+        <React.Fragment key={`block-${blockIndex}`}>
+          {formatMixedJobTextLines(lines, blockIndex)}
+        </React.Fragment>
+      );
+    }
+    return (
+      <p key={`block-${blockIndex}`}>
+        {lines.map((line, lineIndex) => (
+          <React.Fragment key={`line-${blockIndex}-${lineIndex}`}>
+            {lineIndex > 0 ? <br /> : null}
+            {renderInlineJobFormatting(line)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+  });
+}
+
+function isListLine(value: string) {
+  return /^[-*]\s+\S/.test(value);
+}
+
+function formatMixedJobTextLines(lines: string[], blockIndex: number) {
+  const nodes: React.ReactNode[] = [];
+  let paragraphLines: string[] = [];
+  let listLines: string[] = [];
+
+  function flushParagraph() {
+    if (!paragraphLines.length) {
+      return;
+    }
+    const paragraphIndex = nodes.length;
+    nodes.push(
+      <p key={`paragraph-${blockIndex}-${paragraphIndex}`}>
+        {paragraphLines.map((line, lineIndex) => (
+          <React.Fragment key={`paragraph-line-${blockIndex}-${paragraphIndex}-${lineIndex}`}>
+            {lineIndex > 0 ? <br /> : null}
+            {renderInlineJobFormatting(line)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+    paragraphLines = [];
+  }
+
+  function flushList() {
+    if (!listLines.length) {
+      return;
+    }
+    const listIndex = nodes.length;
+    nodes.push(
+      <ul key={`list-${blockIndex}-${listIndex}`}>
+        {listLines.map((line, lineIndex) => (
+          <li key={`list-line-${blockIndex}-${listIndex}-${lineIndex}`}>{renderInlineJobFormatting(line.replace(/^[-*]\s+/, ""))}</li>
+        ))}
+      </ul>
+    );
+    listLines = [];
+  }
+
+  for (const line of lines) {
+    if (isListLine(line)) {
+      flushParagraph();
+      listLines.push(line);
+    } else {
+      flushList();
+      paragraphLines.push(line);
+    }
+  }
+  flushParagraph();
+  flushList();
+  return nodes;
+}
+
+function renderInlineJobFormatting(value: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|https?:\/\/[^\s<]+)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(value.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith("**") && token.endsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else {
+      nodes.push(
+        <a href={token} key={key} rel="noopener noreferrer" target="_blank">
+          {token}
+        </a>
+      );
+    }
+    lastIndex = tokenPattern.lastIndex;
+  }
+  if (lastIndex < value.length) {
+    nodes.push(value.slice(lastIndex));
+  }
+  return nodes;
 }
 
 function previewText(value: string) {

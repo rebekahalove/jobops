@@ -173,6 +173,75 @@ describe("Jobs list", () => {
     expect(html).not.toContain("HTTP 429");
   });
 
+  it("shows complete scrollable job description and fit summary without repeated preview text", () => {
+    const longDescription = [
+      "**Role overview**",
+      "Build applied AI workflows for civic data products without UI-added truncation.",
+      "- Own retrieval quality",
+      "- Partner with product teams",
+      "See https://jobs.example.test/details for more."
+    ].join("\n");
+    const fitSummary = "Strong fit because of `LLM` product work, platform depth, and deployment experience.";
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "long-description",
+            title: "Formatted Description Role",
+            full_description: longDescription,
+            description_excerpt: "This excerpt should not be used when full description exists.",
+            fit_summary: fitSummary
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("job-scroll-text job-description");
+    expect(html).toContain("<strong>Role overview</strong>");
+    expect(html).toContain("<li>Own retrieval quality</li>");
+    expect(html).toContain('href="https://jobs.example.test/details"');
+    expect(html).toContain("<code>LLM</code>");
+    expect(html).not.toContain("This excerpt should not be used");
+    expect(html).not.toContain(" More");
+    expect(html).not.toContain("Build applied AI workflows for civic data products without UI-added truncation...");
+  });
+
+  it("renders sanitized provider HTML for job descriptions when available", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "html-description",
+            title: "HTML Description Role",
+            description_html:
+              '<h2>About Hightouch</h2><p>Build <strong>agentic marketing</strong> systems.</p><ul><li>Own product development</li></ul><a href="https://jobs.example.test/details" rel="noopener noreferrer" target="_blank">Details</a>',
+            full_description: "Flattened text should not render when HTML is available.",
+            description_excerpt: "Excerpt should not render."
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("<h2>About Hightouch</h2>");
+    expect(html).toContain("<strong>agentic marketing</strong>");
+    expect(html).toContain("<li>Own product development</li>");
+    expect(html).toContain('href="https://jobs.example.test/details"');
+    expect(html).not.toContain("Flattened text should not render");
+    expect(html).not.toContain("Excerpt should not render");
+  });
+
+  it("keeps job card layout split into metadata, scrollable content, and action rail", async () => {
+    const source = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(source).toContain("grid-template-areas:");
+    expect(source).toContain("\"posted compensation\"");
+    expect(source).toContain("\"location employment\"");
+    expect(source).toContain("\"work .\"");
+    expect(source).toContain(".job-description-panel .job-scroll-text");
+    expect(source).toContain(".job-fit-panel .job-scroll-text");
+    expect(source).toContain(".job-card-rail .company-links");
+  });
+
   it("refreshes when command-center job discovery completes", async () => {
     const source = await readFile(new URL("./jobs-list.tsx", import.meta.url), "utf-8");
     const commandCenterSource = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");

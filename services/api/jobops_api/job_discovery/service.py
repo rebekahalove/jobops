@@ -46,6 +46,7 @@ from .candidate_discovery.statuses import HIDDEN_JOB_STATUSES
 from .provider_utils import (
     clean_text_value,
     safe_log_preview,
+    sanitize_job_description_html,
 )
 ACTIVE_JOB_DISCOVERY_RUN_STATUSES = {"queued", "running", "started"}
 TERMINAL_JOB_DISCOVERY_RUN_STATUSES = {"completed", "failed", "cancelled", "needs_confirmation"}
@@ -1710,6 +1711,7 @@ def serialize_saved_job(
     source_result_id = primary_source.source_result_id if primary_source is not None else None
     source_query = primary_source.source_query if primary_source is not None else None
     source_url = primary_source.source_url if primary_source is not None and primary_source.source_url else job.source_url
+    description_html = sanitized_job_description_html_from_source(primary_source)
     return {
         "id": link.id,
         "candidate_profile_id": link.candidate_profile_id,
@@ -1747,6 +1749,7 @@ def serialize_saved_job(
         "salary_currency": job.salary_currency,
         "salary_text": job.salary_text,
         "full_description": job.full_description,
+        "description_html": description_html,
         "description_excerpt": job.description_excerpt,
         "fit_summary": link.fit_summary,
         "user_notes": link.user_notes,
@@ -1781,6 +1784,24 @@ def first_job_listing_source(job: Any) -> Any | None:
     for source in sources:
         if source.source_provider:
             return source
+    return None
+
+
+def sanitized_job_description_html_from_source(source: Any | None) -> str | None:
+    raw_metadata = getattr(source, "raw_metadata_json", None) if source is not None else None
+    if not isinstance(raw_metadata, dict):
+        return None
+    for key in ("content", "description"):
+        value = raw_metadata.get(key)
+        if isinstance(value, str):
+            sanitized = sanitize_job_description_html(value)
+            if sanitized:
+                return sanitized
+    retrieve_payload = raw_metadata.get("job_board_retrieve_payload")
+    if isinstance(retrieve_payload, dict):
+        content = retrieve_payload.get("content")
+        if isinstance(content, str):
+            return sanitize_job_description_html(content)
     return None
 
 

@@ -51,6 +51,7 @@ class SavedJobResponse(BaseModel):
     salary_currency: str | None
     salary_text: str | None
     full_description: str | None
+    description_html: str | None = None
     description_excerpt: str | None
     fit_summary: str | None
     user_notes: str | None

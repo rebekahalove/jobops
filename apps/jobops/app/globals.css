@@ -3061,7 +3061,7 @@ input:disabled {
 .company-card,
 .job-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(380px, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.34fr);
   gap: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -3121,19 +3121,59 @@ input:disabled {
   gap: 6px;
 }
 
+.job-card-main {
+  grid-template-columns: minmax(170px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.job-card-header {
+  grid-column: 1 / -1;
+}
+
+.job-card-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .job-primary-metadata {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-areas:
+    "posted"
+    "location"
+    "work"
+    "employment"
+    "compensation";
   gap: 6px;
   margin: 2px 0 0;
 }
 
-.job-primary-metadata div {
+.job-primary-metadata-item {
   min-width: 0;
   border: 1px solid rgba(100, 116, 139, 0.18);
   border-radius: 6px;
   background: var(--surface-strong);
   padding: 6px 7px;
+}
+
+.job-primary-posted {
+  grid-area: posted;
+}
+
+.job-primary-location {
+  grid-area: location;
+}
+
+.job-primary-work-mode {
+  grid-area: work;
+}
+
+.job-primary-employment {
+  grid-area: employment;
+}
+
+.job-primary-compensation {
+  grid-area: compensation;
 }
 
 .job-primary-metadata dt,
@@ -3162,11 +3202,78 @@ input:disabled {
   padding-top: 7px;
 }
 
+.job-scroll-text {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #35445d;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  padding: 8px;
+  scrollbar-width: thin;
+}
+
+.job-description-panel .job-scroll-text {
+  max-height: 250px;
+}
+
+.job-fit-panel .job-scroll-text {
+  max-height: 112px;
+}
+
+.job-scroll-text p,
+.job-scroll-text ul,
+.job-scroll-text ol {
+  margin: 0 0 8px;
+}
+
+.job-scroll-text p:last-child,
+.job-scroll-text ul:last-child,
+.job-scroll-text ol:last-child {
+  margin-bottom: 0;
+}
+
+.job-scroll-text h2,
+.job-scroll-text h3 {
+  margin: 12px 0 6px;
+  color: var(--ink);
+  font-size: 0.94rem;
+  line-height: 1.25;
+}
+
+.job-scroll-text h2:first-child,
+.job-scroll-text h3:first-child {
+  margin-top: 0;
+}
+
+.job-scroll-text ul,
+.job-scroll-text ol {
+  padding-left: 18px;
+}
+
+.job-scroll-text a {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.job-scroll-text code {
+  border-radius: 4px;
+  background: var(--surface-strong);
+  padding: 1px 4px;
+}
+
 .application-card-rail,
 .company-card-rail,
 .job-card-rail {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
+}
+
+.job-card-rail {
+  grid-template-columns: minmax(0, 1fr) minmax(132px, max-content);
+  gap: 10px;
 }
 
 .application-card-rail {
@@ -3279,6 +3386,25 @@ p.job-verification {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.job-card-rail .company-links {
+  grid-column: auto;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.job-card-rail .company-links a,
+.job-card-rail .company-links button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+}
+
+.job-card-rail .job-details {
+  grid-template-columns: 1fr;
 }
 
 .company-badges {
@@ -4841,6 +4967,7 @@ main.page-shell dd {
   .application-card,
   .company-card,
   .job-card,
+  .job-card-main,
   .application-card-rail,
   .company-card-rail,
   .job-card-rail,
@@ -4856,6 +4983,31 @@ main.page-shell dd {
   .profile-review-details,
   .status-edit {
     grid-template-columns: 1fr;
+  }
+
+  .job-primary-metadata {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "posted compensation"
+      "location employment"
+      "work .";
+  }
+
+  .job-card-rail {
+    gap: 8px;
+  }
+
+  .job-card-rail .company-links {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .job-description-panel .job-scroll-text {
+    max-height: 260px;
+  }
+
+  .job-fit-panel .job-scroll-text {
+    max-height: 96px;
   }
 
   .profile-review-panel-header {

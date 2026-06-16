@@ -108,6 +108,7 @@ export type JobDiscoverySavedJob = {
   salary_currency?: string | null;
   salary_text?: string | null;
   full_description?: string | null;
+  description_html?: string | null;
   description_excerpt?: string | null;
   fit_summary?: string | null;
   added_at?: string | null;
