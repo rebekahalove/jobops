@@ -15,10 +15,12 @@ from .company_sources.theirstack import TheirStackCompanyEnrichmentService, Thei
 from .company_sources.theirstack.client import TheirStackCompanySearchClient
 from .company_sources.theirstack.service import build_candidate_company_metadata
 from .db.models import CandidateCompany, CandidateProfile, JobListingSource, JobSearchQueryRun, JobSearchRun
+from .job_discovery.ashby_utils import parse_ashby_job_board_url
 from .job_discovery.candidate_discovery.models import DbJobSearchPlan, DbJobSearchQuery, JobPoolEntry
 from .job_discovery.candidate_discovery.query_builder import JobListingQueryBuilder, job_listing_to_pool_entry
 from .job_discovery.candidate_discovery.repositories import CandidateJobRepository, rejection_reason_counts
 from .job_discovery.candidate_discovery.reviewer import JobReviewSelector, validate_review_result
+from .job_discovery.job_sync.ashby_service import sync_ashby_boards
 from .job_discovery.job_sync.greenhouse_service import sync_greenhouse_boards
 from .job_discovery.models import JobDiscoveryRequest
 from .model_connector import (
@@ -46,7 +48,9 @@ class CompanyEnrichmentPlan:
     link_discovered_companies_to_profile: bool = True
     require_supported_ats: bool = False
     require_greenhouse: bool = False
+    sync_discovered_ats_boards: bool = False
     sync_discovered_greenhouse_boards: bool = False
+    sync_discovered_ashby_boards: bool = False
     search_synced_jobs_after_board_sync: bool = False
     save_matching_jobs_to_candidate_list: bool = False
     recommend_only: bool = False
@@ -88,10 +92,20 @@ class EnrichmentPlanModel(BaseModel):
         validation_alias=AliasChoices("require_greenhouse", "requireGreenhouse"),
         serialization_alias="requireGreenhouse",
     )
+    sync_discovered_ats_boards: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("sync_discovered_ats_boards", "syncDiscoveredAtsBoards", "syncDiscoveredCompanyBoards"),
+        serialization_alias="syncDiscoveredAtsBoards",
+    )
     sync_discovered_greenhouse_boards: bool = Field(
         default=False,
         validation_alias=AliasChoices("sync_discovered_greenhouse_boards", "syncDiscoveredGreenhouseBoards"),
         serialization_alias="syncDiscoveredGreenhouseBoards",
+    )
+    sync_discovered_ashby_boards: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("sync_discovered_ashby_boards", "syncDiscoveredAshbyBoards"),
+        serialization_alias="syncDiscoveredAshbyBoards",
     )
     search_synced_jobs_after_board_sync: bool = Field(
         default=False,
@@ -153,7 +167,9 @@ def model_to_plan(model: EnrichmentPlanModel) -> CompanyEnrichmentPlan:
         link_discovered_companies_to_profile=model.link_discovered_companies_to_profile,
         require_supported_ats=model.require_supported_ats,
         require_greenhouse=model.require_greenhouse,
+        sync_discovered_ats_boards=model.sync_discovered_ats_boards,
         sync_discovered_greenhouse_boards=model.sync_discovered_greenhouse_boards,
+        sync_discovered_ashby_boards=model.sync_discovered_ashby_boards,
         search_synced_jobs_after_board_sync=model.search_synced_jobs_after_board_sync,
         save_matching_jobs_to_candidate_list=model.save_matching_jobs_to_candidate_list,
         recommend_only=model.recommend_only,
@@ -236,7 +252,7 @@ def validate_company_enrichment_plan(
             }
         )
 
-    if plan.search_synced_jobs_after_board_sync and not plan.sync_discovered_greenhouse_boards:
+    if plan.search_synced_jobs_after_board_sync and not plan_requests_any_board_sync(plan):
         issues.append(
             {
                 "code": "post_enrichment_search_requires_board_sync",
@@ -387,6 +403,12 @@ class ModelPlannedCompanyEnrichmentService:
             plan=plan,
             linked_companies=companies,
         )
+        ashby_sync = run_post_enrichment_ashby_sync(
+            self.session,
+            settings=self.settings,
+            plan=plan,
+            linked_companies=companies,
+        )
         job_search = run_post_enrichment_synced_job_search(
             self.session,
             settings=self.settings,
@@ -394,7 +416,11 @@ class ModelPlannedCompanyEnrichmentService:
             plan=plan,
             candidate_profile=candidate_profile,
             latest_user_message=latest_user_message,
-            board_tokens=board_sync["board_tokens_synced"] or board_sync["boards_selected_for_sync"],
+            board_tokens=[
+                *board_sync["board_tokens_synced"],
+                *ashby_sync["board_tokens_synced"],
+            ],
+            source_providers=post_enrichment_synced_source_providers(board_sync, ashby_sync),
         )
         result_payload = build_enrichment_result_payload(
             plan=plan,
@@ -404,6 +430,7 @@ class ModelPlannedCompanyEnrichmentService:
             latest_user_message=latest_user_message,
             context=context,
             board_sync=board_sync,
+            ashby_sync=ashby_sync,
             job_search=job_search,
         )
         return CompanyEnrichmentServiceResult(
@@ -454,6 +481,10 @@ def company_has_supported_ats(company: Any) -> bool:
     )
 
 
+def plan_requests_any_board_sync(plan: CompanyEnrichmentPlan) -> bool:
+    return bool(plan.sync_discovered_ats_boards or plan.sync_discovered_greenhouse_boards or plan.sync_discovered_ashby_boards)
+
+
 def run_post_enrichment_greenhouse_sync(
     session: Session,
     *,
@@ -477,7 +508,7 @@ def run_post_enrichment_greenhouse_sync(
         "sync_unavailable_reason": None,
         "job_sync_results": (),
     }
-    if not plan.sync_discovered_greenhouse_boards:
+    if not (plan.sync_discovered_greenhouse_boards or plan.sync_discovered_ats_boards):
         diagnostics["sync_unavailable_reason"] = "sync_not_requested"
         return diagnostics
     if not tokens:
@@ -517,6 +548,87 @@ def run_post_enrichment_greenhouse_sync(
     return diagnostics
 
 
+def run_post_enrichment_ashby_sync(
+    session: Session,
+    *,
+    settings: Settings,
+    plan: CompanyEnrichmentPlan,
+    linked_companies: list[CandidateCompany],
+) -> dict[str, Any]:
+    board_urls = unique_ashby_board_urls(linked_companies)
+    diagnostics = {
+        "ashby_board_url_count": len(board_urls),
+        "boards_selected_for_sync": board_urls,
+        "board_tokens_synced": [],
+        "board_urls_synced": [],
+        "board_sync_attempted": False,
+        "board_sync_completed_count": 0,
+        "board_sync_failed_count": 0,
+        "board_sync_raw_result_count": 0,
+        "board_sync_normalized_count": 0,
+        "board_sync_created_count": 0,
+        "board_sync_updated_count": 0,
+        "board_sync_skipped_fresh_count": 0,
+        "sync_unavailable_reason": None,
+        "job_sync_results": (),
+    }
+    if not (plan.sync_discovered_ashby_boards or plan.sync_discovered_ats_boards):
+        diagnostics["sync_unavailable_reason"] = "sync_not_requested"
+        return diagnostics
+    if not board_urls:
+        diagnostics["sync_unavailable_reason"] = "no_ashby_board_urls"
+        return diagnostics
+
+    results = tuple(
+        sync_ashby_boards(
+            session,
+            settings=settings,
+            board_urls=board_urls,
+            include_configured=False,
+            force=False,
+            freshness_hours=24,
+        )
+    )
+    diagnostics.update(
+        {
+            "board_sync_attempted": True,
+            "board_tokens_synced": [
+                result.request.ats_board_token
+                for result in results
+                if getattr(result, "request", None) is not None
+                and result.request.ats_board_token
+                and result.status != "failed"
+            ],
+            "board_urls_synced": [
+                result.request.criteria_json.get("boardUrl")
+                for result in results
+                if getattr(result, "request", None) is not None
+                and result.request.criteria_json
+                and result.request.criteria_json.get("boardUrl")
+                and result.status != "failed"
+            ],
+            "board_sync_completed_count": sum(1 for result in results if result.status == "completed"),
+            "board_sync_failed_count": sum(1 for result in results if result.status == "failed"),
+            "board_sync_raw_result_count": sum(int(getattr(result, "raw_result_count", 0) or 0) for result in results),
+            "board_sync_normalized_count": sum(int(getattr(result, "normalized_count", 0) or 0) for result in results),
+            "board_sync_created_count": sum(int(getattr(result, "created_count", 0) or 0) for result in results),
+            "board_sync_updated_count": sum(int(getattr(result, "updated_count", 0) or 0) for result in results),
+            "board_sync_skipped_fresh_count": sum(1 for result in results if str(getattr(result, "status", "")).startswith("skipped")),
+            "job_sync_results": results,
+        }
+    )
+    return diagnostics
+
+
+def post_enrichment_synced_source_providers(board_sync: dict[str, Any], ashby_sync: dict[str, Any]) -> tuple[str, ...]:
+    providers: list[str] = []
+    if board_sync["board_tokens_synced"]:
+        providers.append("greenhouse")
+    if ashby_sync["board_tokens_synced"]:
+        providers.append("ashby")
+    return tuple(providers)
+
+
 def run_post_enrichment_synced_job_search(
     session: Session,
     *,
@@ -526,6 +638,7 @@ def run_post_enrichment_synced_job_search(
     candidate_profile: CandidateProfile,
     latest_user_message: str,
     board_tokens: list[str],
+    source_providers: tuple[str, ...],
 ) -> dict[str, Any]:
     empty = {
         "job_search_attempted": False,
@@ -547,15 +660,15 @@ def run_post_enrichment_synced_job_search(
     if not plan.search_synced_jobs_after_board_sync:
         empty["search_unavailable_reason"] = "search_not_requested"
         return empty
-    if not board_tokens:
-        empty["search_unavailable_reason"] = "no_synced_greenhouse_boards"
+    if not board_tokens or not source_providers:
+        empty["search_unavailable_reason"] = "no_synced_supported_ats_boards"
         return empty
 
-    query = build_post_enrichment_job_query(plan, board_tokens=tuple(board_tokens))
+    query = build_post_enrichment_job_query(plan, board_tokens=tuple(board_tokens), source_providers=source_providers)
     search_plan = DbJobSearchPlan(
         mode="new_job_discovery",
         job_scope="new_to_candidate",
-        mode_rationale="Search first-party Greenhouse jobs synced from enriched company boards.",
+        mode_rationale="Search first-party ATS jobs synced from enriched company boards.",
         queries=(query,),
         min_job_pool_size=1,
         max_job_pool_size=300,
@@ -565,15 +678,18 @@ def run_post_enrichment_synced_job_search(
         candidate_profile_id=candidate_profile.id,
         command_text=latest_user_message,
         search_plan_json={
-            "source": "company_enrichment_post_greenhouse_sync",
+            "source": "company_enrichment_post_ats_sync",
             "syncDiscoveredGreenhouseBoards": plan.sync_discovered_greenhouse_boards,
+            "syncDiscoveredAshbyBoards": plan.sync_discovered_ashby_boards,
+            "syncDiscoveredAtsBoards": plan.sync_discovered_ats_boards,
             "searchSyncedJobsAfterBoardSync": plan.search_synced_jobs_after_board_sync,
             "saveMatchingJobsToCandidateList": plan.save_matching_jobs_to_candidate_list,
             "recommendOnly": plan.recommend_only,
+            "sourceProviders": list(source_providers),
             "queries": [query.__dict__],
         },
         run_diagnostics_json={},
-        provider_names=["greenhouse", "database", "model_review"],
+        provider_names=[*source_providers, "database", "model_review"],
         search_mode="company_enrichment_post_sync",
         status="running",
         started_at=datetime.now(UTC),
@@ -619,7 +735,8 @@ def run_post_enrichment_synced_job_search(
     run.skipped_count = len(rejected_links)
     run.provider_error_count = 0
     run.run_diagnostics_json = {
-        "source": "company_enrichment_post_greenhouse_sync",
+        "source": "company_enrichment_post_ats_sync",
+        "sourceProviders": list(source_providers),
         "queryCounts": [{"label": label, "jobCount": count} for label, count in query_counts],
         "syncedJobPoolCount": len(job_listings),
         "jobsReviewedCount": len(pool_entries) if model_review_completed else 0,
@@ -650,7 +767,12 @@ def run_post_enrichment_synced_job_search(
     }
 
 
-def build_post_enrichment_job_query(plan: CompanyEnrichmentPlan, *, board_tokens: tuple[str, ...]) -> DbJobSearchQuery:
+def build_post_enrichment_job_query(
+    plan: CompanyEnrichmentPlan,
+    *,
+    board_tokens: tuple[str, ...],
+    source_providers: tuple[str, ...],
+) -> DbJobSearchQuery:
     title_terms = tuple(
         compact_strings(
             [
@@ -661,8 +783,8 @@ def build_post_enrichment_job_query(plan: CompanyEnrichmentPlan, *, board_tokens
         )
     )
     return DbJobSearchQuery(
-        label="Search first-party Greenhouse jobs from enriched company boards",
-        source_providers_any=("greenhouse",),
+        label="Search first-party synced jobs from enriched company boards",
+        source_providers_any=source_providers,
         ats_board_tokens_any=board_tokens,
         title_terms_any=title_terms,
         source_statuses_any=("active",),
@@ -726,6 +848,17 @@ def unique_greenhouse_board_tokens(links: list[CandidateCompany]) -> list[str]:
     return tokens
 
 
+def unique_ashby_board_urls(links: list[CandidateCompany]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for link in links:
+        parsed = parse_ashby_job_board_url(getattr(getattr(link, "company", None), "ashby_board_url", None))
+        if parsed and parsed.org_slug.casefold() not in seen:
+            urls.append(parsed.canonical_board_url)
+            seen.add(parsed.org_slug.casefold())
+    return urls
+
+
 def build_company_enrichment_context(
     *,
     latest_user_message: str,
@@ -750,6 +883,8 @@ def build_company_enrichment_context(
             "not_canonical_job_detail_source": True,
             "requires_first_party_sync_for_verified_jobs": True,
             "can_sync_discovered_greenhouse_boards": True,
+            "can_sync_discovered_ashby_boards": True,
+            "can_sync_discovered_ats_boards": ["greenhouse", "ashby"],
             "can_search_synced_jobs_after_board_sync": True,
         },
     }
@@ -788,16 +923,17 @@ Provider capability context:
 - TheirStack can help infer Greenhouse, Ashby, and Lever ATS metadata.
 - TheirStack is not the canonical job-detail provider.
 - First-party board sync is required before JobOps can verify actual current board jobs.
-- If the user asks to act on discovered company leads by finding jobs from them, set syncDiscoveredGreenhouseBoards=true
+- If the user asks to act on discovered company leads by finding jobs from them, set syncDiscoveredAtsBoards=true
   and searchSyncedJobsAfterBoardSync=true. Set saveMatchingJobsToCandidateList=true only when the user asks to add
-  matching jobs or find jobs to apply to.
+  matching jobs or find jobs to apply to. Use provider-specific sync fields only when the user explicitly constrains
+  the request to Greenhouse or Ashby.
 
 Planning rules:
 - If the user explicitly asks for Greenhouse companies or companies with Greenhouse boards, set requireGreenhouse=true.
 - For requests like "find companies with Greenhouse boards and then find jobs from them", "find companies like
   Hightouch and look for jobs", or "find jobs from companies discovered through TheirStack", keep TheirStack as the
-  company lead source, then request first-party Greenhouse board sync through syncDiscoveredGreenhouseBoards.
-- Do not describe TheirStack job snippets as verified jobs. Only post-sync Greenhouse JobListing rows are actual jobs
+  company lead source, then request first-party ATS board sync through syncDiscoveredAtsBoards.
+- Do not describe TheirStack job snippets as verified jobs. Only post-sync Greenhouse or Ashby JobListing rows are actual jobs
   that may be searched, recommended, or added to the jobs list.
 - If the user asks for companies "hiring for X", use TheirStack job_filters only when X is present in latest_user_message, candidate_target_context, candidate_profile_context, saved-company context, or recent discovery context.
 - Preserve latest-message constraints.
@@ -814,7 +950,9 @@ Return this JSON shape:
   "linkDiscoveredCompaniesToProfile": true,
   "requireSupportedAts": false,
   "requireGreenhouse": false,
+  "syncDiscoveredAtsBoards": false,
   "syncDiscoveredGreenhouseBoards": false,
+  "syncDiscoveredAshbyBoards": false,
   "searchSyncedJobsAfterBoardSync": false,
   "saveMatchingJobsToCandidateList": false,
   "recommendOnly": false,
@@ -849,7 +987,9 @@ def build_mock_company_enrichment_plan_response(request: ModelRequest) -> str:
             "linkDiscoveredCompaniesToProfile": True,
             "requireSupportedAts": False,
             "requireGreenhouse": False,
+            "syncDiscoveredAtsBoards": False,
             "syncDiscoveredGreenhouseBoards": False,
+            "syncDiscoveredAshbyBoards": False,
             "searchSyncedJobsAfterBoardSync": False,
             "saveMatchingJobsToCandidateList": False,
             "recommendOnly": False,
@@ -871,6 +1011,7 @@ def build_enrichment_result_payload(
     latest_user_message: str,
     context: dict[str, Any],
     board_sync: dict[str, Any],
+    ashby_sync: dict[str, Any],
     job_search: dict[str, Any],
 ) -> dict[str, Any]:
     companies_payload = [serialize_enriched_company(link) for link in linked_companies]
@@ -903,8 +1044,12 @@ def build_enrichment_result_payload(
         require_greenhouse=plan.require_greenhouse,
         require_supported_ats=plan.require_supported_ats,
         board_sync=board_sync,
+        ashby_sync=ashby_sync,
         job_search=job_search,
     )
+    total_board_sync_completed_count = board_sync["board_sync_completed_count"] + ashby_sync["board_sync_completed_count"]
+    total_board_sync_failed_count = board_sync["board_sync_failed_count"] + ashby_sync["board_sync_failed_count"]
+    total_board_sync_normalized_count = board_sync["board_sync_normalized_count"] + ashby_sync["board_sync_normalized_count"]
     return {
         "assistantMessage": message,
         "companies": companies_payload,
@@ -927,6 +1072,21 @@ def build_enrichment_result_payload(
         "boardSyncUpdatedCount": board_sync["board_sync_updated_count"],
         "boardSyncSkippedFreshCount": board_sync["board_sync_skipped_fresh_count"],
         "syncUnavailableReason": board_sync["sync_unavailable_reason"],
+        "ashbyBoardsSelectedForSync": ashby_sync["boards_selected_for_sync"],
+        "ashbyBoardTokensSynced": ashby_sync["board_tokens_synced"],
+        "ashbyBoardUrlsSynced": ashby_sync["board_urls_synced"],
+        "ashbyBoardSyncAttempted": ashby_sync["board_sync_attempted"],
+        "ashbyBoardSyncCompletedCount": ashby_sync["board_sync_completed_count"],
+        "ashbyBoardSyncFailedCount": ashby_sync["board_sync_failed_count"],
+        "ashbyBoardSyncRawResultCount": ashby_sync["board_sync_raw_result_count"],
+        "ashbyBoardSyncNormalizedCount": ashby_sync["board_sync_normalized_count"],
+        "ashbyBoardSyncCreatedCount": ashby_sync["board_sync_created_count"],
+        "ashbyBoardSyncUpdatedCount": ashby_sync["board_sync_updated_count"],
+        "ashbyBoardSyncSkippedFreshCount": ashby_sync["board_sync_skipped_fresh_count"],
+        "ashbySyncUnavailableReason": ashby_sync["sync_unavailable_reason"],
+        "totalBoardSyncCompletedCount": total_board_sync_completed_count,
+        "totalBoardSyncFailedCount": total_board_sync_failed_count,
+        "totalBoardSyncNormalizedCount": total_board_sync_normalized_count,
         "searchSyncedJobsAttempted": job_search["job_search_attempted"],
         "postEnrichmentJobSearchRunId": job_search["job_search_run_id"],
         "syncedJobQueryCount": job_search["synced_job_query_count"],
@@ -954,8 +1114,8 @@ def build_enrichment_result_payload(
         "zeroResultReason": None if linked_companies else ("theirstackUnavailable" if enrichment.status == "unavailable" else "noTheirStackCompanyLeadsLinked"),
         "clarifyingQuestions": [],
         "sourceCaveat": (
-            "TheirStack returned company hiring signals. Jobs are verified only after first-party Greenhouse board sync."
-            if board_sync["board_sync_attempted"]
+            "TheirStack returned company hiring signals. Jobs are verified only after first-party Greenhouse or Ashby board sync."
+            if board_sync["board_sync_attempted"] or ashby_sync["board_sync_attempted"]
             else "TheirStack returned hiring signals; JobOps has not synced first-party company boards for verification yet."
         ),
     }
@@ -999,6 +1159,7 @@ def build_enrichment_assistant_message(
     require_greenhouse: bool,
     require_supported_ats: bool,
     board_sync: dict[str, Any],
+    ashby_sync: dict[str, Any],
     job_search: dict[str, Any],
 ) -> str:
     if linked_count == 0:
@@ -1006,12 +1167,19 @@ def build_enrichment_assistant_message(
             "I did not add company leads from TheirStack. TheirStack hiring signals are not verified JobOps board matches, "
             "and first-party board sync is still required before treating them as current openings."
         )
-    if board_sync["board_sync_attempted"]:
+    if board_sync["board_sync_attempted"] or ashby_sync["board_sync_attempted"]:
+        ashby_count = len(ashby_sync["boards_selected_for_sync"])
+        synced_job_count = board_sync["board_sync_normalized_count"] + ashby_sync["board_sync_normalized_count"]
+        provider_parts = []
+        if greenhouse_count:
+            provider_parts.append(f"{greenhouse_count} Greenhouse board{'s' if greenhouse_count != 1 else ''}")
+        if ashby_count:
+            provider_parts.append(f"{ashby_count} Ashby board{'s' if ashby_count != 1 else ''}")
+        provider_summary = " and ".join(provider_parts) if provider_parts else "no supported ATS boards"
         base = (
-            f"I enriched {linked_count} company lead{'s' if linked_count != 1 else ''} and found "
-            f"{greenhouse_count} Greenhouse board{'s' if greenhouse_count != 1 else ''}. "
-            f"I synced those boards directly and found {board_sync['board_sync_normalized_count']} active Greenhouse job"
-            f"{'s' if board_sync['board_sync_normalized_count'] != 1 else ''}."
+            f"I enriched {linked_count} company lead{'s' if linked_count != 1 else ''} and found {provider_summary}. "
+            f"I synced those first-party boards and found {synced_job_count} active job"
+            f"{'s' if synced_job_count != 1 else ''}."
         )
         if job_search["job_search_attempted"]:
             if job_search["jobs_added_count"]:
@@ -1077,7 +1245,9 @@ def serialize_plan(plan: CompanyEnrichmentPlan) -> dict[str, Any]:
         "linkDiscoveredCompaniesToProfile": plan.link_discovered_companies_to_profile,
         "requireSupportedAts": plan.require_supported_ats,
         "requireGreenhouse": plan.require_greenhouse,
+        "syncDiscoveredAtsBoards": plan.sync_discovered_ats_boards,
         "syncDiscoveredGreenhouseBoards": plan.sync_discovered_greenhouse_boards,
+        "syncDiscoveredAshbyBoards": plan.sync_discovered_ashby_boards,
         "searchSyncedJobsAfterBoardSync": plan.search_synced_jobs_after_board_sync,
         "saveMatchingJobsToCandidateList": plan.save_matching_jobs_to_candidate_list,
         "recommendOnly": plan.recommend_only,

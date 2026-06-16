@@ -37,17 +37,17 @@ TheirStack is a company/enrichment source, not the canonical job detail source. 
 
 TheirStack model-planned company enrichment is available for company discovery/enrichment and hiring-signal leads. The command-center company discovery path can ask a dedicated planner whether to use TheirStack. TheirStack is called only when that model plan explicitly requests company enrichment; there is no backend keyword router that turns words like Greenhouse, AI, or marketing into provider calls.
 
-TheirStack is not used for saved-jobs ranking, direct job URL ingestion, or verified job-detail retrieval. TheirStack-discovered company leads can optionally feed first-party Greenhouse board sync when the model-planned enrichment request explicitly asks to act on those leads by finding jobs. First-party board sync after enrichment is required before JobOps can verify actual current company-board jobs.
+TheirStack is not used for saved-jobs ranking, direct job URL ingestion, or verified job-detail retrieval. TheirStack-discovered company leads can optionally feed first-party Greenhouse or Ashby board sync when the model-planned enrichment request explicitly asks to act on those leads by finding jobs. First-party board sync after enrichment is required before JobOps can verify actual current company-board jobs.
 
-When a company-enrichment plan sets `syncDiscoveredGreenhouseBoards=true`, JobOps collects Greenhouse board tokens from the companies linked by that enrichment run and calls Greenhouse Job Sync with those explicit board tokens. It does not include unrelated configured/global boards by default. When the same plan sets `searchSyncedJobsAfterBoardSync=true`, JobOps searches synced `job_listings` / `job_listing_sources` from those boards, asks the job reviewer model to select matching jobs, and saves selected rows to `candidate_saved_jobs.job_listing_id` only if `saveMatchingJobsToCandidateList=true` and `recommendOnly=false`.
+When a company-enrichment plan sets `syncDiscoveredAtsBoards=true`, JobOps collects supported first-party ATS metadata from the companies linked by that enrichment run and calls the matching board sync providers. Supported post-enrichment board sync providers are currently Greenhouse and Ashby. Provider-specific flags such as `syncDiscoveredGreenhouseBoards=true` and `syncDiscoveredAshbyBoards=true` can narrow the sync when the user or model plan intentionally does so. Post-enrichment board sync uses only the explicit boards from that enrichment run; it does not include unrelated configured/global boards by default. When the same plan sets `searchSyncedJobsAfterBoardSync=true`, JobOps searches synced `job_listings` / `job_listing_sources` from those boards, asks the job reviewer model to select matching jobs, and saves selected rows to `candidate_saved_jobs.job_listing_id` only if `saveMatchingJobsToCandidateList=true` and `recommendOnly=false`.
 
 Diagnostics for the company enrichment to board sync loop separate each stage:
 
-- Company leads: `enrichedCompanyCount`, `linkedCompanyCount`, and ATS counts such as `greenhouseBoardTokenCount`.
-- Board sync: `boardsSelectedForSync`, `boardTokensSynced`, `boardSyncAttempted`, completed/failed/skipped counts, and raw/normalized/created/updated job counts.
+- Company leads: `enrichedCompanyCount`, `linkedCompanyCount`, and ATS counts such as `greenhouseBoardTokenCount` and `ashbyBoardUrlCount`.
+- Board sync: `boardsSelectedForSync`, `boardTokensSynced`, `ashbyBoardsSelectedForSync`, `ashbyBoardTokensSynced`, `boardSyncAttempted`, provider-specific completed/failed/skipped counts, total board sync counts, and raw/normalized/created/updated job counts.
 - Synced-job search: `syncedJobPoolCount`, `jobsReviewedAfterBoardSyncCount`, `jobsAddedAfterBoardSyncCount`, `addedJobIds`, and `addedJobListingIds`.
 
-Assistant copy must keep the source boundary clear: TheirStack found company hiring signals, Greenhouse board sync fetched first-party jobs, and only those synced Greenhouse jobs may be added or recommended as actual jobs.
+Assistant copy must keep the source boundary clear: TheirStack found company hiring signals, Greenhouse or Ashby board sync fetched first-party jobs, and only those synced first-party jobs may be added or recommended as actual jobs.
 
 Configuration uses:
 
@@ -72,9 +72,9 @@ TheirStack response language must describe results as company leads or hiring si
 
 Role, domain, geography, technology, and hiring-signal filters in TheirStack plans are derived from the latest user message, authenticated profile, candidate target context, saved-company context, or recent discovery context. They are not hardcoded to any role or field such as Applied AI, AI Engineer, LLM, software engineering, healthcare, product marketing, or Greenhouse.
 
-The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse boards for followed companies can be refreshed before DB search only when the model plan asks for them, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
+The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse and Ashby boards for followed companies can be refreshed before DB search only when the model plan asks for followed-company board sync, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 
-For requests such as `find jobs from my companies list`, `look for jobs at my saved companies`, `find new jobs from companies I'm following`, or `search my watched companies for jobs`, the correct DB-backed job-discovery plan is new-job discovery with `syncPlan.useFollowedCompanyBoards=true`. JobOps uses the candidate's non-archived `CandidateCompany` links, finds companies with Greenhouse board metadata, syncs those first-party Greenhouse boards, searches the synced inventory, and saves/recommends selected jobs. If no followed companies have syncable board tokens, the response should say so and should not silently fall back to broad provider search unless the model plan explicitly asks for a broader search.
+For requests such as `find jobs from my companies list`, `look for jobs at my saved companies`, `find new jobs from companies I'm following`, or `search my watched companies for jobs`, the correct DB-backed job-discovery plan is new-job discovery with `syncPlan.useFollowedCompanyBoards=true`. JobOps uses the candidate's non-archived `CandidateCompany` links, finds companies with Greenhouse or Ashby board metadata, syncs those first-party boards, searches the synced inventory, and saves/recommends selected jobs. If no followed companies have syncable board metadata, the response should say so and should not silently fall back to broad provider search unless the model plan explicitly asks for a broader search.
 
 For `direct_job_url`, the planner must choose that mode because the user supplied a specific job URL to add/save. The backend may structurally extract HTTP URLs only after the model-selected plan mode is `direct_job_url`; it does not route direct URL ingestion by keyword matching. Direct URL plans do not run broad provider sync, DB search queries, model review, model rejection recording, or stale/closed marking.
 
@@ -165,6 +165,7 @@ Each provider refresh has a `sync_key`. A completed `job_sync_runs` row within t
 Examples:
 
 - `greenhouse:board:<board-token>`
+- `ashby:board:<org-slug>`
 - `adzuna:broad:<provider-country>:<location-key>:<query-text>`
 
 ## Provider Identity
@@ -174,6 +175,7 @@ Job Sync identity is provider-scoped only. This phase does not implement cross-p
 Provider identity rules:
 
 - Greenhouse: `source_provider + ats_board_token + provider_job_id`.
+- Ashby: `source_provider + provider_job_id`; the stored provider job id includes the normalized Ashby org slug to avoid cross-board collisions.
 - Adzuna: `source_provider + provider_job_id`.
 
 If a provider record does not include the stable provider id expected for that provider, treat it as failed normalization. Do not use job URLs for identity.
@@ -186,6 +188,7 @@ Examples:
 
 - Adzuna: provider country endpoint, API path, page, `what`, `where`, `what_exclude`, `results_per_page`, content type, and sync key.
 - Greenhouse: board token, list API URL, `content=true`, retrieve-job URL template, per-job retrieve URL and params, `questions=true`, `pay_transparency=true`, detail request counts, and sync key.
+- Ashby: org slug, canonical board URL, posting API URL, response validity, raw job count, provider-id count, and sync key.
 
 Never store provider secrets in diagnostics: no app ids, app keys, cookies, auth headers, bearer tokens, or private profile dumps.
 
@@ -203,6 +206,12 @@ Greenhouse run diagnostics include board token, list URL, `content=true`, raw li
 
 Greenhouse sync records a failed `job_sync_runs` row for a board-level list failure or malformed list response and continues syncing later board targets in the same service call.
 
+Ashby board sync refreshes a public Ashby board through the first-party posting API for a normalized `jobs.ashbyhq.com/{org}` board URL. Board targets can come from explicit board URLs, configured board URLs, or candidate company records with `companies.ashby_board_url`. Ashby sync stores normalized `job_listings` and `job_listing_sources` with `source_provider="ashby"`, `provider_type="ats_board"`, `ats_provider="ashby"`, and the normalized Ashby org slug in `ats_board_token`. Raw Ashby job payloads are preserved in `job_listing_sources.raw_metadata_json`.
+
+Ashby application-form normalization is intentionally limited in this branch. If Ashby exposes application fields in the public payload, the raw provider payload is preserved for future normalization, but Greenhouse remains the provider with normalized `application_fields_json` and material-generation application requirements today.
+
+Ashby run diagnostics include org slug, board URL, posting API URL, response validity, raw job count, provider-id count, normalized/created/updated counts, and safe error details. A malformed or unavailable Ashby board records a failed `job_sync_runs` row and does not silently look complete.
+
 Manual Greenhouse Job Sync examples:
 
 ```powershell
@@ -210,6 +219,8 @@ python -m jobops_api.cli sync-greenhouse-job-boards --board-token anthropic --fo
 python -m jobops_api.cli sync-greenhouse-job-boards --candidate-slug rebekah-love
 python -m jobops_api.cli sync-greenhouse-job-boards --all-configured
 ```
+
+Configured Ashby board sync targets can be supplied with `JOBOPS_ASHBY_BOARD_URLS` as a comma-separated list of `https://jobs.ashbyhq.com/{org}` board URLs or org slugs. Candidate-facing followed-company discovery usually gets Ashby targets from `companies.ashby_board_url` instead.
 
 ## Adzuna Signature-Driven Broad Sync
 

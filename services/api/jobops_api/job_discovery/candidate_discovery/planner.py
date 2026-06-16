@@ -421,7 +421,7 @@ def summarize_jobs_list(current_saved_jobs: list[dict[str, Any]]) -> dict[str, A
 
 
 def summarize_saved_companies(current_saved_companies: list[dict[str, Any]]) -> dict[str, Any]:
-    syncable = [
+    greenhouse_syncable = [
         company
         for company in current_saved_companies
         if isinstance(company, dict)
@@ -431,9 +431,24 @@ def summarize_saved_companies(current_saved_companies: list[dict[str, Any]]) -> 
             or "greenhouse" in json.dumps(company, default=str).casefold()
         )
     ]
+    ashby_syncable = [
+        company
+        for company in current_saved_companies
+        if isinstance(company, dict)
+        and (
+            company.get("ashby_board_url")
+            or company.get("ashbyBoardUrl")
+            or "jobs.ashbyhq.com" in json.dumps(company, default=str).casefold()
+        )
+    ]
+    supported_keys: set[str] = set()
+    for company in [*greenhouse_syncable, *ashby_syncable]:
+        supported_keys.add(str(company.get("id") or json.dumps(company, sort_keys=True, default=str)))
     return {
         "savedCompanyCount": len(current_saved_companies),
-        "greenhouseSyncableCompanyCount": len(syncable),
+        "greenhouseSyncableCompanyCount": len(greenhouse_syncable),
+        "ashbySyncableCompanyCount": len(ashby_syncable),
+        "supportedAtsSyncableCompanyCount": len(supported_keys),
         "sample": current_saved_companies[:10],
     }
 
