@@ -390,7 +390,7 @@ class ModelPlannedCompanyEnrichmentService:
         job_search = run_post_enrichment_synced_job_search(
             self.session,
             settings=self.settings,
-            connector=self.connector,
+            connector=active_connector,
             plan=plan,
             candidate_profile=candidate_profile,
             latest_user_message=latest_user_message,

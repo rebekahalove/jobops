@@ -487,6 +487,60 @@ def test_theirstack_greenhouse_enrichment_can_sync_boards_and_save_synced_jobs(t
     assert "added 1 matching job" in payload["assistantMessage"]
 
 
+def test_post_enrichment_job_review_uses_internally_created_connector(tmp_path: Path, monkeypatch) -> None:
+    engine = create_seeded_engine()
+    synced_tokens: list[str] = []
+    connector = PlannerAndReviewConnector(
+        theirstack_plan(
+            {"jobFilters": {"job_title_pattern_or": ["Product Marketing Manager"]}},
+            terms=["Product Marketing Manager"],
+            require_greenhouse=True,
+            sync_boards=True,
+            search_synced_jobs=True,
+            save_matching_jobs=True,
+        )
+    )
+
+    def fake_create_model_connector(*args, **kwargs):
+        return connector
+
+    monkeypatch.setattr("jobops_api.company_enrichment.create_model_connector", fake_create_model_connector)
+    monkeypatch.setattr("jobops_api.company_enrichment.sync_greenhouse_boards", fake_greenhouse_sync(synced_tokens))
+    client = FakeTheirStackClient(
+        [theirstack_payload("Greenhouse Co", domain="greenhouse.example", job_url="https://job-boards.greenhouse.io/greenhouseco/jobs/1")]
+    )
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=None,
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies with Greenhouse boards and then find product marketing jobs from them.",
+            current_saved_companies=[],
+            target_context={"target_role_titles": ["Product Marketing Manager"]},
+            profile_context={},
+            discovery_context={},
+        )
+        session.commit()
+
+    payload = result.body["result"]
+    with Session(engine) as session:
+        saved_jobs = list(session.scalars(select(CandidateSavedJob)).all())
+
+    assert synced_tokens == ["greenhouseco"]
+    assert any(request.task == "company_enrichment_planner" for request in connector.requests)
+    assert any(request.task == "candidate_job_review" for request in connector.requests)
+    assert len(saved_jobs) == 1
+    assert saved_jobs[0].job_listing_id is not None
+    assert payload["jobsAddedAfterBoardSyncCount"] == 1
+
+
 def test_theirstack_board_sync_skips_when_no_greenhouse_tokens(tmp_path: Path, monkeypatch) -> None:
     def fail_sync(*args, **kwargs):
         raise AssertionError("Greenhouse sync should not run without board tokens")
@@ -658,6 +712,7 @@ class StaticPlanConnector:
 class PlannerAndReviewConnector(StaticPlanConnector):
     def generate(self, request):
         if request.task == "candidate_job_review":
+            self.requests.append(request)
             payload = json.loads(request.messages[-1].content)
             jobs = payload["jobPool"]
             selected = [
@@ -681,6 +736,67 @@ class PlannerAndReviewConnector(StaticPlanConnector):
                 metadata={},
             )
         return super().generate(request)
+
+
+def fake_greenhouse_sync(synced_tokens: list[str]):
+    def fake_sync_greenhouse_boards(session: Session, **kwargs):
+        tokens = list(kwargs["board_tokens"])
+        synced_tokens.extend(tokens)
+        results = []
+        for token in tokens:
+            listing = JobListing(
+                title="Product Marketing Manager",
+                company_name="Greenhouse Co",
+                canonical_url=f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                apply_url=f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                location_display="Remote US",
+                location_country="us",
+                remote_work_mode="remote",
+                description_excerpt="Product marketing role.",
+                source_status="active",
+                source_updated_at=datetime.now(UTC),
+                last_seen_at=datetime.now(UTC),
+                last_synced_at=datetime.now(UTC),
+                is_active=True,
+            )
+            session.add(listing)
+            session.flush()
+            session.add(
+                JobListingSource(
+                    job_listing_id=listing.id,
+                    source_provider="greenhouse",
+                    provider_type="ats_board",
+                    provider_job_id=f"{token}-1",
+                    source_result_id=f"{token}-1",
+                    ats_provider="greenhouse",
+                    ats_board_token=token,
+                    source_url=listing.canonical_url,
+                    canonical_url=listing.canonical_url,
+                    apply_url=listing.apply_url,
+                    raw_metadata_json={"provider": "greenhouse"},
+                    last_seen_at=datetime.now(UTC),
+                    last_synced_at=datetime.now(UTC),
+                    is_active=True,
+                )
+            )
+            results.append(
+                JobSyncResult(
+                    request=JobSyncRequest(
+                        sync_key=f"greenhouse:{token}",
+                        provider_name="greenhouse",
+                        provider_type="ats_board",
+                        sync_kind="company_board",
+                        ats_provider="greenhouse",
+                        ats_board_token=token,
+                    ),
+                    raw_result_count=1,
+                    normalized_count=1,
+                    created_count=1,
+                )
+            )
+        return results
+
+    return fake_sync_greenhouse_boards
 
 
 class FakeTheirStackClient:
