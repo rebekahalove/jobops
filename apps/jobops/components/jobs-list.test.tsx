@@ -49,6 +49,7 @@ describe("Jobs list", () => {
             salary_max: 180000,
             salary_currency: "USD",
             salary_text: "USD 150,000-180,000",
+            full_description: "Full provider job description with responsibilities, outcomes, and qualifications.",
             description_excerpt: "Build applied AI workflows for civic data products.",
             fit_summary: "Matches applied AI and platform engineering goals.",
             user_notes: null,
@@ -80,11 +81,18 @@ describe("Jobs list", () => {
     expect(html).toContain("URL check");
     expect(html).toContain("Verified");
     expect(html).toContain("Fetched page confirmed the job title and company.");
+    expect(html).toContain("Job Description");
+    expect(html).toContain("Full provider job description with responsibilities, outcomes, and qualifications.");
+    expect(html).toContain("Fit Summary");
     expect(html).toContain("Matches applied AI and platform engineering goals.");
     expect(html).toContain("In process");
     expect(html).toContain("View application");
     expect(html).toContain("Archive");
+    expect(html).toContain("View Posting");
+    expect(html).not.toContain("Job posting");
     expect(html).toContain('href="https://jobs.example.test/example-civic/applied-ai"');
+    expect(html).toContain('href="https://jobs.example.test/example-civic/apply"');
+    expect(html).toContain("Apply link");
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
   });
@@ -165,6 +173,146 @@ describe("Jobs list", () => {
 
     expect(html).not.toContain("Provider unverified");
     expect(html).not.toContain("HTTP 429");
+  });
+
+  it("shows complete scrollable job description and fit summary without repeated preview text", () => {
+    const longDescription = [
+      "**Role overview**",
+      "Build applied AI workflows for civic data products without UI-added truncation.",
+      "- Own retrieval quality",
+      "- Partner with product teams",
+      "See https://jobs.example.test/details for more."
+    ].join("\n");
+    const fitSummary = "Strong fit because of `LLM` product work, platform depth, and deployment experience.";
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "long-description",
+            title: "Formatted Description Role",
+            full_description: longDescription,
+            description_excerpt: "This excerpt should not be used when full description exists.",
+            fit_summary: fitSummary
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("job-scroll-text job-description");
+    expect(html).toContain("<strong>Role overview</strong>");
+    expect(html).toContain("<li>Own retrieval quality</li>");
+    expect(html).toContain('href="https://jobs.example.test/details"');
+    expect(html).toContain("<code>LLM</code>");
+    expect(html).not.toContain("This excerpt should not be used");
+    expect(html).not.toContain(" More");
+    expect(html).not.toContain("Build applied AI workflows for civic data products without UI-added truncation...");
+  });
+
+  it("renders sanitized provider HTML for job descriptions when available", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "html-description",
+            title: "HTML Description Role",
+            description_html:
+              '<h2>About Hightouch</h2><p>Build <strong>agentic marketing</strong> systems.</p><ul><li>Own product development</li></ul><a href="https://jobs.example.test/details" rel="noopener noreferrer" target="_blank">Details</a>',
+            full_description: "Flattened text should not render when HTML is available.",
+            description_excerpt: "Excerpt should not render."
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("<h2>About Hightouch</h2>");
+    expect(html).toContain("<strong>agentic marketing</strong>");
+    expect(html).toContain("<li>Own product development</li>");
+    expect(html).toContain('href="https://jobs.example.test/details"');
+    expect(html).not.toContain("Flattened text should not render");
+    expect(html).not.toContain("Excerpt should not render");
+  });
+
+  it("does not render View Posting for non-web fallback job URLs", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "fallback-url",
+            title: "Fallback URL Role",
+            job_url: "job_listing:abc",
+            canonical_url: null,
+            apply_url: null
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Fallback URL Role");
+    expect(html).not.toContain("View Posting");
+    expect(html).not.toContain('href="job_listing:abc"');
+  });
+
+  it("does not render broken posting links for empty or malformed job URLs", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "empty-url",
+            title: "Empty URL Role",
+            job_url: "",
+            canonical_url: null,
+            apply_url: null
+          }),
+          jobFixture({
+            id: "malformed-url",
+            title: "Malformed URL Role",
+            job_url: "not a url",
+            canonical_url: null,
+            apply_url: null
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Empty URL Role");
+    expect(html).toContain("Malformed URL Role");
+    expect(html).not.toContain("View Posting");
+    expect(html).not.toContain('href=""');
+    expect(html).not.toContain('href="not a url"');
+  });
+
+  it("uses safe canonical and apply links when job_url is not a real posting URL", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "canonical-fallback",
+            title: "Canonical Fallback Role",
+            job_url: "job_listing:abc",
+            canonical_url: "https://jobs.example.test/canonical",
+            apply_url: "https://jobs.example.test/apply"
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Canonical Fallback Role");
+    expect(html).toContain("View Posting");
+    expect(html).toContain('href="https://jobs.example.test/canonical"');
+    expect(html).toContain("Apply link");
+    expect(html).toContain('href="https://jobs.example.test/apply"');
+  });
+
+  it("keeps job card layout split into metadata, scrollable content, and action rail", async () => {
+    const source = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(source).toContain("grid-template-areas:");
+    expect(source).toContain("\"posted compensation\"");
+    expect(source).toContain("\"location employment\"");
+    expect(source).toContain("\"work .\"");
+    expect(source).toContain(".job-description-panel .job-scroll-text");
+    expect(source).toContain(".job-fit-panel .job-scroll-text");
+    expect(source).toContain(".job-card-rail .company-links");
   });
 
   it("refreshes when command-center job discovery completes", async () => {
@@ -501,6 +649,48 @@ describe("Jobs list", () => {
     expect(html).toContain("Recommended Existing Role");
     expect(html).not.toContain("job-card-just-added");
     expect(html).not.toContain("Just added");
+  });
+
+  it("badges newly posted jobs by posting date, not saved date", () => {
+    const recentPostingDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "recent-posting",
+            added_at: "2026-05-01T00:00:00Z",
+            posting_date: recentPostingDate,
+            title: "Recently Posted Role"
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Recently Posted Role");
+    expect(html).toContain("New");
+    expect(html).not.toContain("Just added");
+  });
+
+  it("renders provider as source and provenance as how the job entered the list", () => {
+    const html = renderToStaticMarkup(
+      <JobsList
+        initialJobs={[
+          jobFixture({
+            id: "synced-provider",
+            source: "greenhouse",
+            source_provider: "greenhouse",
+            provenance: "job_sync",
+            title: "Provider Labeled Role"
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("Provider Labeled Role");
+    expect(html).toContain("Source");
+    expect(html).toContain("Greenhouse");
+    expect(html).toContain("Provenance");
+    expect(html).toContain("Job sync");
   });
 });
 

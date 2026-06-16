@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class SavedJobResponse(BaseModel):
@@ -51,6 +51,7 @@ class SavedJobResponse(BaseModel):
     salary_currency: str | None
     salary_text: str | None
     full_description: str | None
+    description_html: str | None = None
     description_excerpt: str | None
     fit_summary: str | None
     user_notes: str | None
@@ -82,6 +83,24 @@ class SavedJobActionResponse(BaseModel):
     application_archived_by_action: str | None = None
     message: str
     job: SavedJobResponse
+
+
+class BatchFavoriteJobsRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    saved_job_ids: list[str] = Field(validation_alias=AliasChoices("saved_job_ids", "savedJobIds"))
+
+
+class BatchFavoriteJobsResponse(BaseModel):
+    ok: bool = True
+    requested_count: int
+    updated_count: int
+    already_favorite_count: int
+    not_found_count: int
+    updated_job_ids: list[str]
+    already_favorite_job_ids: list[str]
+    not_found_job_ids: list[str]
+    message: str
 
 
 @dataclass(frozen=True)

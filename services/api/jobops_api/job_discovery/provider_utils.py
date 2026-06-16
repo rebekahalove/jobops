@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape, unescape
+from html.parser import HTMLParser
 import json
 import re
 import urllib.request
@@ -406,6 +408,100 @@ def html_to_text(value: str) -> str:
     text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def sanitize_job_description_html(value: str | None) -> str | None:
+    cleaned = decode_html_markup(value)
+    if not cleaned or "<" not in cleaned:
+        return None
+    sanitizer = JobDescriptionHtmlSanitizer()
+    sanitizer.feed(cleaned)
+    sanitizer.close()
+    html = re.sub(r"\s+", " ", "".join(sanitizer.parts)).strip()
+    return html or None
+
+
+def decode_html_markup(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    for _ in range(3):
+        decoded = unescape(cleaned)
+        if decoded == cleaned:
+            break
+        cleaned = decoded
+    return cleaned.strip() or None
+
+
+class JobDescriptionHtmlSanitizer(HTMLParser):
+    ALLOWED_TAGS = {"h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a", "br"}
+    TAG_ALIASES = {"h1": "h2", "h4": "h3", "h5": "h3", "h6": "h3", "b": "strong", "i": "em"}
+    SKIPPED_TAGS = {"script", "style", "iframe", "object", "embed", "svg"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = self.normalize_tag(tag)
+        if normalized_tag in self.SKIPPED_TAGS:
+            self.skip_depth += 1
+            return
+        if self.skip_depth or normalized_tag not in self.ALLOWED_TAGS:
+            return
+        if normalized_tag == "br":
+            self.parts.append("<br>")
+            return
+        if normalized_tag == "a":
+            href = safe_html_href(dict(attrs).get("href"))
+            if href:
+                self.parts.append(f'<a href="{escape(href, quote=True)}" rel="noopener noreferrer" target="_blank">')
+            else:
+                self.parts.append("<a>")
+            return
+        self.parts.append(f"<{normalized_tag}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = self.normalize_tag(tag)
+        if normalized_tag in self.SKIPPED_TAGS:
+            if self.skip_depth:
+                self.skip_depth -= 1
+            return
+        if self.skip_depth or normalized_tag not in self.ALLOWED_TAGS or normalized_tag == "br":
+            return
+        if normalized_tag == "a":
+            self.parts.append("</a>")
+            return
+        self.parts.append(f"</{normalized_tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        self.parts.append(escape(data, quote=False))
+
+    def handle_entityref(self, name: str) -> None:
+        if self.skip_depth:
+            return
+        self.parts.append(escape(unescape(f"&{name};"), quote=False))
+
+    def handle_charref(self, name: str) -> None:
+        if self.skip_depth:
+            return
+        self.parts.append(escape(unescape(f"&#{name};"), quote=False))
+
+    def normalize_tag(self, tag: str) -> str:
+        lowered = tag.lower()
+        return self.TAG_ALIASES.get(lowered, lowered)
+
+
+def safe_html_href(value: str | None) -> str | None:
+    if not value:
+        return None
+    href = value.strip()
+    if href.startswith(("http://", "https://")):
+        return href
+    return None
 
 
 def compact_unique_strings(values: list[str], *, limit: int) -> list[str]:

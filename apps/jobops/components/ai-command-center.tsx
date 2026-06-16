@@ -610,7 +610,9 @@ export function AiCommandCenter({
 
         <aside className="agent-action-rail" aria-label="Agent action cards">
           {actions.length > 0 ? (
-            actions.slice(0, 3).map((action) => <AgentActionCard action={action} key={action.id} workspaceBasePath={workspaceBasePath} />)
+            actions
+              .slice(0, 3)
+              .map((action) => <AgentActionCard action={action} apiBasePath={apiBasePath} key={action.id} workspaceBasePath={workspaceBasePath} />)
           ) : (
             <div className="agent-action-empty">
               <h2>Planned actions</h2>
@@ -1223,13 +1225,67 @@ function safeMarkdownHref(rawHref: string) {
   }
 }
 
-function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommandAction; workspaceBasePath: string }) {
+function AgentActionCard({
+  action,
+  apiBasePath,
+  workspaceBasePath
+}: {
+  action: PlannedCommandAction;
+  apiBasePath: string;
+  workspaceBasePath: string;
+}) {
   const modelRequest = getModelRequestDebugPayload(action.resultPayload);
   const modelResponse = getModelResponseDebugPayload(action.resultPayload);
   const jobDiscoveryDiagnostics = getJobDiscoveryDiagnostics(action.resultPayload);
   const jobDiscoveryJobs = getJobDiscoveryJobs(action.resultPayload);
   const noJobsAddedReason = getNoJobsAddedReason(action.resultPayload);
   const isBusyJobDiscovery = action.type === "job_discovery" && action.status === "running";
+  const jobsLabel = jobDiscoveryJobsLabel(action.resultPayload);
+  const canBatchFavoriteShownJobs = jobsLabel === "Recommended existing jobs";
+  const targetWorkspace = action.targetWorkspace;
+  const showWorkspaceCta = Boolean(targetWorkspace && !canBatchFavoriteShownJobs);
+  const [favoriteBatchState, setFavoriteBatchState] = useState<{ pending: boolean; message: string | null; kind: "success" | "error" | "info" }>({
+    pending: false,
+    message: null,
+    kind: "info"
+  });
+  const favoriteBatchJobIds = jobDiscoveryJobs.map((job) => job.id).filter(Boolean);
+
+  async function addAllShownJobsToFavorites() {
+    if (!favoriteBatchJobIds.length) {
+      setFavoriteBatchState({ pending: false, message: "No jobs on this card can be added to Favorites.", kind: "info" });
+      return;
+    }
+    setFavoriteBatchState({ pending: true, message: null, kind: "info" });
+    try {
+      const response = await fetch(`${apiBasePath}/jobs/favorite-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ savedJobIds: favoriteBatchJobIds })
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setFavoriteBatchState({
+          pending: false,
+          message: apiErrorMessage(payload, response.status),
+          kind: "error"
+        });
+        return;
+      }
+      setFavoriteBatchState({
+        pending: false,
+        message: favoriteBatchResultMessage(payload),
+        kind: batchFavoriteHasPartialFailure(payload) ? "info" : "success"
+      });
+      window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+    } catch {
+      setFavoriteBatchState({
+        pending: false,
+        message: "Saved jobs API is unavailable. Start FastAPI to update favorites.",
+        kind: "error"
+      });
+    }
+  }
 
   return (
     <article className={`agent-action-card${isBusyJobDiscovery ? " agent-action-card-busy" : ""}`}>
@@ -1260,7 +1316,24 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
       ) : null}
       {jobDiscoveryJobs.length ? (
         <section className="agent-action-jobs" aria-label="Recommended jobs">
-          <h3>{jobDiscoveryJobsLabel(action.resultPayload)}</h3>
+          <div className="agent-action-jobs-header">
+            <h3>{jobsLabel}</h3>
+            {canBatchFavoriteShownJobs ? (
+              <button
+                className="secondary-action compact-action"
+                disabled={favoriteBatchState.pending || favoriteBatchJobIds.length === 0}
+                type="button"
+                onClick={addAllShownJobsToFavorites}
+              >
+                {favoriteBatchState.pending ? "Adding..." : "Add all to Favorites"}
+              </button>
+            ) : null}
+          </div>
+          {favoriteBatchState.message ? (
+            <p className={`agent-action-batch-status agent-action-batch-status-${favoriteBatchState.kind}`} role="status">
+              {favoriteBatchState.message}
+            </p>
+          ) : null}
           <div>
             {jobDiscoveryJobs.slice(0, 5).map((job) => (
               <article className="agent-action-job-row" key={job.id}>
@@ -1309,9 +1382,13 @@ function AgentActionCard({ action, workspaceBasePath }: { action: PlannedCommand
           <pre>{formatModelRequestDebugPayload(modelResponse)}</pre>
         </details>
       ) : null}
-      {action.targetWorkspace ? (
-        <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(action.targetWorkspace, workspaceBasePath)}>
-          {action.ctaLabel ?? `Open ${formatWorkspaceLabel(action.targetWorkspace)}`}
+      {canBatchFavoriteShownJobs ? (
+        <Link className="agent-action-secondary-link" href={getWorkspaceRoute(targetWorkspace ?? "jobs", workspaceBasePath)}>
+          View jobs list
+        </Link>
+      ) : showWorkspaceCta && targetWorkspace ? (
+        <Link className="secondary-action agent-action-link" href={getWorkspaceRoute(targetWorkspace, workspaceBasePath)}>
+          {action.ctaLabel ?? `Open ${formatWorkspaceLabel(targetWorkspace)}`}
         </Link>
       ) : (
         <span className="planned-affordance" aria-disabled="true">
@@ -1348,6 +1425,27 @@ function getJobDiscoveryDiagnostics(resultPayload: unknown) {
     skippedReasonsDiagnostic(payload.skippedReasons)
   ].filter((item): item is { label: string; value: string } => Boolean(item));
   return diagnostics.length ? diagnostics : null;
+}
+
+function favoriteBatchResultMessage(payload: unknown) {
+  if (isRecord(payload) && typeof payload.message === "string" && payload.message) {
+    return payload.message;
+  }
+  return "Shown jobs were added to Favorites.";
+}
+
+function batchFavoriteHasPartialFailure(payload: unknown) {
+  return isRecord(payload) && typeof payload.not_found_count === "number" && payload.not_found_count > 0;
+}
+
+function apiErrorMessage(payload: unknown, status: number) {
+  if (isRecord(payload) && typeof payload.error === "string") {
+    return payload.error;
+  }
+  if (isRecord(payload) && typeof payload.detail === "string") {
+    return payload.detail;
+  }
+  return `Saved jobs API request failed with HTTP ${status}.`;
 }
 
 function getJobDiscoveryJobs(resultPayload: unknown): Array<Record<string, unknown> & { id: string }> {

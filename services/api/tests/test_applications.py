@@ -423,6 +423,191 @@ def test_favorite_and_unfavorite_job_updates_saved_job_status(monkeypatch) -> No
         app.dependency_overrides.clear()
 
 
+def test_batch_favorite_jobs_updates_current_user_only_and_reports_missing(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    create_auth_session_token(
+        engine,
+        username="other-user",
+        email="other-user@jobops.local",
+        display_name="Other User",
+        password="other user alpha password",
+    )
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        other_profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "other-user"))
+        assert profile is not None
+        assert other_profile is not None
+        first_job = create_saved_job(session, candidate_profile_id=profile.id, title="First Favorite Batch Job")
+        second_job = create_saved_job(session, candidate_profile_id=profile.id, title="Second Favorite Batch Job")
+        second_job.status = "saved"
+        other_job = create_saved_job(session, candidate_profile_id=other_profile.id, title="Other User Job")
+        session.commit()
+        first_job_id = first_job.id
+        second_job_id = second_job.id
+        other_job_id = other_job.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/v1/jobs/favorite-batch",
+            json={"savedJobIds": [first_job_id, second_job_id, other_job_id, "missing-job-id", first_job_id]},
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["requested_count"] == 4
+        assert payload["updated_count"] == 1
+        assert payload["already_favorite_count"] == 1
+        assert payload["not_found_count"] == 2
+        assert payload["updated_job_ids"] == [first_job_id]
+        assert payload["already_favorite_job_ids"] == [second_job_id]
+        assert set(payload["not_found_job_ids"]) == {other_job_id, "missing-job-id"}
+
+        repeat_response = client.post(
+            "/v1/jobs/favorite-batch",
+            json={"saved_job_ids": [first_job_id, second_job_id]},
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert repeat_response.status_code == 200
+        repeat_payload = repeat_response.json()
+        assert repeat_payload["updated_count"] == 0
+        assert repeat_payload["already_favorite_count"] == 2
+
+        with Session(engine) as session:
+            assert session.get(CandidateSavedJob, first_job_id).status == "saved"
+            assert session.get(CandidateSavedJob, second_job_id).status == "saved"
+            assert session.get(CandidateSavedJob, other_job_id).status == "new"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_saved_job_serialization_separates_provider_source_and_provenance(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(
+            session,
+            candidate_profile_id=profile.id,
+            full_description="Full provider job description with responsibilities and qualifications.",
+            description_excerpt="Generated or provider excerpt.",
+        )
+        session.commit()
+        saved_job_id = saved_job.id
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/v1/jobs",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 200
+        [payload] = response.json()
+        assert payload["id"] == saved_job_id
+        assert payload["job_listing_id"]
+        assert payload["source"] == "greenhouse"
+        assert payload["source_provider"] == "greenhouse"
+        assert payload["provenance"] == "job_sync"
+        assert payload["source_result_id"]
+        assert payload["source_query"] == "Company careers"
+        assert payload["full_description"] == "Full provider job description with responsibilities and qualifications."
+        assert payload["description_html"] is None
+        assert payload["fit_summary"] == "Matches applied AI and platform engineering goals."
+        assert payload["posting_date"] == "2026-05-20"
+        assert payload["location"] == "Remote US"
+        assert payload["remote_work_mode"] == "remote"
+        assert payload["employment_type"] == "Full-time"
+        assert payload["salary_text"] == "USD 150,000-180,000"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_saved_job_serialization_includes_sanitized_provider_description_html(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+
+    session_token = create_auth_session_token(engine)
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        saved_job = create_saved_job(session, candidate_profile_id=profile.id)
+        source = session.scalar(select(JobListingSource).where(JobListingSource.job_listing_id == saved_job.job_listing_id))
+        assert source is not None
+        source.raw_metadata_json = {
+            "content": (
+                '&lt;h2&gt;About Hightouch&lt;/h2&gt;'
+                '&lt;p&gt;Build &lt;strong&gt;agentic marketing&lt;/strong&gt; systems.&lt;/p&gt;'
+                '&lt;ul&gt;&lt;li&gt;Own product development&lt;/li&gt;&lt;/ul&gt;'
+                '&lt;script&gt;alert("bad")&lt;/script&gt;'
+                '&lt;a href="javascript:alert(1)" onclick="bad()"&gt;Unsafe&lt;/a&gt;'
+                '&lt;a href="https://jobs.example.test/details"&gt;Details&lt;/a&gt;'
+            )
+        }
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/v1/jobs",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        assert response.status_code == 200
+        [payload] = response.json()
+        assert payload["description_html"]
+        assert "<h2>About Hightouch</h2>" in payload["description_html"]
+        assert "<strong>agentic marketing</strong>" in payload["description_html"]
+        assert "<li>Own product development</li>" in payload["description_html"]
+        assert 'href="https://jobs.example.test/details"' in payload["description_html"]
+        assert "script" not in payload["description_html"].casefold()
+        assert "javascript:" not in payload["description_html"].casefold()
+        assert "onclick" not in payload["description_html"].casefold()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_archiving_and_restoring_job_cascades_only_job_archived_application(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")

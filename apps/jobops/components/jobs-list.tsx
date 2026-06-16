@@ -49,6 +49,8 @@ export type SavedJob = {
   salary_max?: number | null;
   salary_currency?: string | null;
   salary_text: string | null;
+  full_description?: string | null;
+  description_html?: string | null;
   description_excerpt: string | null;
   fit_summary: string | null;
   user_notes: string | null;
@@ -273,125 +275,141 @@ export function JobsList({
 
         {sortedJobs.length > 0 ? (
           <div className="job-card-grid">
-            {sortedJobs.map((job) => (
-              <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
-                <div className="job-card-main">
-                  <div className="job-card-header">
-                    <div>
-                      <h2>{job.title}</h2>
-                      <p>{job.company_name}</p>
+            {sortedJobs.map((job) => {
+              const postingUrl = externalJobPostingUrl(job);
+              const applyUrl = safeExternalUrl(job.apply_url);
+              const showDistinctApplyLink = Boolean(applyUrl && applyUrl !== postingUrl);
+              return (
+                <article className={`job-card${isJustAddedJob(job) ? " job-card-just-added" : ""}`} id={`saved-job-${job.id}`} key={job.id}>
+                  <div className="job-card-main">
+                    <div className="job-card-header">
+                      <div>
+                        <h2>{job.title}</h2>
+                        <p>{job.company_name}</p>
+                      </div>
+                      <div className="job-card-badges">
+                        {isRecentlyPostedJob(job) ? <span className="application-status application-status-highlight">New</span> : null}
+                        {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
+                        {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
+                        {job.has_application ? (
+                          <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
+                            {applicationBadgeLabel(job)}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="job-card-badges">
-                      {isJustAddedJob(job) ? <span className="application-status application-status-highlight">Just added</span> : null}
-                      {job.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
-                      {job.has_application ? (
-                        <span className={`application-status application-status-${applicationBadgeClass(job)}`}>
-                          {applicationBadgeLabel(job)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
 
-                  <FoldedText className="job-description" value={job.description_excerpt} />
-                  <FoldedText className="job-fit" value={job.fit_summary} />
-                  {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
-                </div>
-
-                <aside className="job-card-rail" aria-label={`${job.title} details`}>
-                  <div className="record-rail-section">
-                    <dl className="job-details record-detail-grid">
-                      <div>
-                        <dt>Location</dt>
-                        <dd>{job.location || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Work mode</dt>
-                        <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
-                      </div>
-                      <div>
-                        <dt>Employment</dt>
-                        <dd>{job.employment_type || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Compensation</dt>
-                        <dd>{formatCompensation(job)}</dd>
-                      </div>
-                      <div>
+                    <dl className="job-primary-metadata">
+                      <div className="job-primary-metadata-item job-primary-posted">
                         <dt>Posted</dt>
                         <dd>{formatDateOnly(job.posting_date)}</dd>
                       </div>
+                      <div className="job-primary-metadata-item job-primary-location">
+                        <dt>Location</dt>
+                        <dd>{job.location || "Unknown"}</dd>
+                      </div>
+                      <div className="job-primary-metadata-item job-primary-work-mode">
+                        <dt>Work mode</dt>
+                        <dd>{formatOptionalStatus(job.remote_work_mode)}</dd>
+                      </div>
+                      <div className="job-primary-metadata-item job-primary-employment">
+                        <dt>Employment</dt>
+                        <dd>{job.employment_type || "Unknown"}</dd>
+                      </div>
+                      <div className="job-primary-metadata-item job-primary-compensation">
+                        <dt>Compensation</dt>
+                        <dd>{formatCompensation(job)}</dd>
+                      </div>
                     </dl>
-                  </div>
 
-                  <div className="record-rail-section">
-                    <dl className="job-details record-detail-grid">
-                      <div>
-                        <dt>Saved</dt>
-                        <dd>{formatDateTime(job.added_at)}</dd>
-                      </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{formatStatus(job.status)}</dd>
-                      </div>
-                      <div>
-                        <dt>Source</dt>
-                        <dd>{job.source || job.source_provider || "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Provenance</dt>
-                        <dd>{job.provenance ? formatStatus(job.provenance) : "Unknown"}</dd>
-                      </div>
-                      {isVerifiedJobUrl(job) ? (
-                        <div>
-                          <dt>URL check</dt>
-                          <dd>Verified</dd>
-                        </div>
+                    <div className="job-card-content">
+                      <section className="job-info-panel job-description-panel" aria-label={`${job.title} job description`}>
+                        <h3>Job Description</h3>
+                        <ScrollableJobText className="job-description" html={job.description_html} value={job.full_description || job.description_excerpt} />
+                      </section>
+                      {job.fit_summary ? (
+                        <section className="job-info-panel job-fit-panel" aria-label={`${job.title} fit summary`}>
+                          <h3>Fit Summary</h3>
+                          <ScrollableJobText className="job-fit" value={job.fit_summary} />
+                        </section>
                       ) : null}
-                    </dl>
+                      {shouldShowVerificationSummary(job) ? <FoldedText className="job-verification" value={job.url_verification_summary} /> : null}
+                    </div>
                   </div>
 
-                  <div className="company-links" aria-label={`${job.title} links`}>
-                    <button
-                      className="secondary-action compact-action"
-                      disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
-                      suppressHydrationWarning
-                      type="button"
-                      onClick={() => applyToJob(job)}
-                    >
-                      {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "View application" : "Apply"}
-                    </button>
-                    <button
-                      className="secondary-action compact-action"
-                      disabled={pendingArchiveJobId === job.id}
-                      suppressHydrationWarning
-                      type="button"
-                      onClick={() => setJobArchiveState(job, job.archived_at ? "restore" : "archive")}
-                    >
-                      {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
-                    </button>
-                    {!job.archived_at && !job.application_id ? (
+                  <aside className="job-card-rail" aria-label={`${job.title} details`}>
+                    <div className="record-rail-section">
+                      <dl className="job-details record-detail-grid">
+                        <div>
+                          <dt>Saved</dt>
+                          <dd>{formatDateTime(job.added_at)}</dd>
+                        </div>
+                        <div>
+                          <dt>Status</dt>
+                          <dd>{formatStatus(job.status)}</dd>
+                        </div>
+                        <div>
+                          <dt>Source</dt>
+                          <dd>{formatProviderLabel(job.source_provider || job.source)}</dd>
+                        </div>
+                        <div>
+                          <dt>Provenance</dt>
+                          <dd>{job.provenance ? formatStatus(job.provenance) : "Unknown"}</dd>
+                        </div>
+                        {isVerifiedJobUrl(job) ? (
+                          <div>
+                            <dt>URL check</dt>
+                            <dd>Verified</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+                    </div>
+
+                    <div className="company-links" aria-label={`${job.title} links`}>
+                      {postingUrl ? (
+                        <a href={postingUrl} rel="noopener noreferrer" target="_blank">
+                          View Posting
+                        </a>
+                      ) : null}
+                      {!job.archived_at && !job.application_id ? (
+                        <button
+                          className="secondary-action compact-action"
+                          disabled={pendingFavoriteJobId === job.id}
+                          suppressHydrationWarning
+                          type="button"
+                          onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                        >
+                          {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                        </button>
+                      ) : null}
                       <button
                         className="secondary-action compact-action"
-                        disabled={pendingFavoriteJobId === job.id}
+                        disabled={pendingApplyJobId === job.id || (Boolean(job.archived_at) && !job.application_id)}
                         suppressHydrationWarning
                         type="button"
-                        onClick={() => setJobFavoriteState(job, isFavoriteJobStatus(job.status) ? "unfavorite" : "favorite")}
+                        onClick={() => applyToJob(job)}
                       >
-                        {pendingFavoriteJobId === job.id ? "Saving..." : isFavoriteJobStatus(job.status) ? "Unfavorite" : "Favorite"}
+                        {pendingApplyJobId === job.id ? "Starting..." : job.application_id ? "View application" : "Apply"}
                       </button>
-                    ) : null}
-                    <a href={job.job_url} rel="noopener noreferrer" target="_blank">
-                      Job posting
-                    </a>
-                    {job.apply_url && job.apply_url !== job.job_url ? (
-                      <a href={job.apply_url} rel="noopener noreferrer" target="_blank">
-                        Apply link
-                      </a>
-                    ) : null}
-                  </div>
-                </aside>
-              </article>
-            ))}
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={pendingArchiveJobId === job.id}
+                        suppressHydrationWarning
+                        type="button"
+                        onClick={() => setJobArchiveState(job, job.archived_at ? "restore" : "archive")}
+                      >
+                        {pendingArchiveJobId === job.id ? "Saving..." : job.archived_at ? "Restore" : "Archive"}
+                      </button>
+                      {showDistinctApplyLink && applyUrl ? (
+                        <a href={applyUrl} rel="noopener noreferrer" target="_blank">
+                          Apply link
+                        </a>
+                      ) : null}
+                    </div>
+                  </aside>
+                </article>
+              );
+            })}
           </div>
         ) : (
           <div className="empty-state-block">
@@ -946,6 +964,19 @@ function isJustAddedJob(job: SavedJob) {
   return Boolean(job.justAdded);
 }
 
+function isRecentlyPostedJob(job: SavedJob) {
+  if (!job.posting_date) {
+    return false;
+  }
+  const postedAt = new Date(`${job.posting_date}T00:00:00Z`).getTime();
+  if (Number.isNaN(postedAt)) {
+    return false;
+  }
+  const now = Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  return postedAt <= now && postedAt >= now - sevenDaysMs;
+}
+
 function defaultJobBucket(jobs: SavedJob[]): JobBucketId {
   const counts = buildJobBucketCounts(jobs);
   return jobTabs.find((tab) => counts[tab.id] > 0)?.id ?? "new";
@@ -1267,6 +1298,32 @@ function formatOptionalStatus(value: string | null) {
   return formatStatus(value);
 }
 
+function formatProviderLabel(value?: string | null) {
+  if (!value || value === "unknown") {
+    return "Unknown";
+  }
+  return formatStatus(value);
+}
+
+function externalJobPostingUrl(job: SavedJob) {
+  return safeExternalUrl(job.job_url) || safeExternalUrl(job.canonical_url) || safeExternalUrl(job.apply_url);
+}
+
+function safeExternalUrl(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function shouldShowVerificationSummary(job: SavedJob) {
   return Boolean(job.url_verification_summary && isVerifiedJobUrl(job));
 }
@@ -1344,6 +1401,138 @@ function FoldedText({ value, className }: { value?: string | null; className: st
       <p>{value}</p>
     </details>
   );
+}
+
+function ScrollableJobText({ value, html, className }: { value?: string | null; html?: string | null; className: string }) {
+  if (html) {
+    return <div className={`job-scroll-text ${className}`} dangerouslySetInnerHTML={{ __html: html }} />;
+  }
+  const cleaned = normalizeDisplayText(value);
+  if (!cleaned) {
+    return <p className={`${className} job-text-empty`}>No details available.</p>;
+  }
+  return (
+    <div className={`job-scroll-text ${className}`}>
+      {formatJobTextBlocks(cleaned)}
+    </div>
+  );
+}
+
+function normalizeDisplayText(value?: string | null) {
+  return value ? value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() : "";
+}
+
+function formatJobTextBlocks(value: string) {
+  const blocks = value.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) {
+    return [<p key="empty">No details available.</p>];
+  }
+  return blocks.map((block, blockIndex) => {
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (lines.some(isListLine)) {
+      return (
+        <React.Fragment key={`block-${blockIndex}`}>
+          {formatMixedJobTextLines(lines, blockIndex)}
+        </React.Fragment>
+      );
+    }
+    return (
+      <p key={`block-${blockIndex}`}>
+        {lines.map((line, lineIndex) => (
+          <React.Fragment key={`line-${blockIndex}-${lineIndex}`}>
+            {lineIndex > 0 ? <br /> : null}
+            {renderInlineJobFormatting(line)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+  });
+}
+
+function isListLine(value: string) {
+  return /^[-*]\s+\S/.test(value);
+}
+
+function formatMixedJobTextLines(lines: string[], blockIndex: number) {
+  const nodes: React.ReactNode[] = [];
+  let paragraphLines: string[] = [];
+  let listLines: string[] = [];
+
+  function flushParagraph() {
+    if (!paragraphLines.length) {
+      return;
+    }
+    const paragraphIndex = nodes.length;
+    nodes.push(
+      <p key={`paragraph-${blockIndex}-${paragraphIndex}`}>
+        {paragraphLines.map((line, lineIndex) => (
+          <React.Fragment key={`paragraph-line-${blockIndex}-${paragraphIndex}-${lineIndex}`}>
+            {lineIndex > 0 ? <br /> : null}
+            {renderInlineJobFormatting(line)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+    paragraphLines = [];
+  }
+
+  function flushList() {
+    if (!listLines.length) {
+      return;
+    }
+    const listIndex = nodes.length;
+    nodes.push(
+      <ul key={`list-${blockIndex}-${listIndex}`}>
+        {listLines.map((line, lineIndex) => (
+          <li key={`list-line-${blockIndex}-${listIndex}-${lineIndex}`}>{renderInlineJobFormatting(line.replace(/^[-*]\s+/, ""))}</li>
+        ))}
+      </ul>
+    );
+    listLines = [];
+  }
+
+  for (const line of lines) {
+    if (isListLine(line)) {
+      flushParagraph();
+      listLines.push(line);
+    } else {
+      flushList();
+      paragraphLines.push(line);
+    }
+  }
+  flushParagraph();
+  flushList();
+  return nodes;
+}
+
+function renderInlineJobFormatting(value: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|https?:\/\/[^\s<]+)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(value.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith("**") && token.endsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else {
+      nodes.push(
+        <a href={token} key={key} rel="noopener noreferrer" target="_blank">
+          {token}
+        </a>
+      );
+    }
+    lastIndex = tokenPattern.lastIndex;
+  }
+  if (lastIndex < value.length) {
+    nodes.push(value.slice(lastIndex));
+  }
+  return nodes;
 }
 
 function previewText(value: string) {
