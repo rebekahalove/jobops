@@ -11,6 +11,7 @@ from ...db.models import CandidateProfile, CandidateSavedJob, JobListing, JobLis
 from ...model_connector import ModelConnector
 from ...settings import Settings
 from ..job_sync.adzuna_service import sync_adzuna_signatures, upsert_adzuna_sync_signature
+from ..job_sync.ashby_service import sync_ashby_boards
 from ..job_sync.greenhouse_service import sync_greenhouse_boards
 from ..models import JobDiscoveryRequest
 from .diagnostics import build_candidate_discovery_diagnostics
@@ -443,6 +444,16 @@ class CandidateJobDiscoveryService:
         if plan.use_followed_company_boards:
             results.extend(
                 sync_greenhouse_boards(
+                    self.session,
+                    settings=self.settings,
+                    candidate_profile_id=candidate_profile_id,
+                    include_configured=False,
+                    force=False,
+                    freshness_hours=24,
+                )
+            )
+            results.extend(
+                sync_ashby_boards(
                     self.session,
                     settings=self.settings,
                     candidate_profile_id=candidate_profile_id,

@@ -235,6 +235,30 @@ def test_db_backed_saved_job_serializes_from_job_listing() -> None:
     assert payload["source_provider"] == "greenhouse"
 
 
+def test_ashby_saved_job_serializes_source_provider_and_job_sync_provenance() -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        job = create_job_listing(
+            session,
+            title="Ashby Synced Role",
+            provider="ashby",
+            provider_job_id="ashbyco:job-1",
+            canonical_url="https://jobs.ashbyhq.com/ashbyco/job-1",
+        )
+        link = CandidateSavedJob(candidate_profile_id=profile.id, job_listing_id=job.id, status="new")
+        session.add(link)
+        session.commit()
+        session.refresh(link)
+
+        payload = serialize_saved_job(link)
+
+    assert payload["source_provider"] == "ashby"
+    assert payload["source"] == "ashby"
+    assert payload["provenance"] == "job_sync"
+    assert payload["job_listing_id"] == job.id
+
+
 class StaticPlanner:
     def plan(self, *args, **kwargs) -> DbJobSearchPlan:
         return DbJobSearchPlan(
@@ -360,11 +384,11 @@ def create_job_listing(
     source = JobListingSource(
         job_listing=job,
         source_provider=provider,
-        provider_type="ats_board" if provider == "greenhouse" else "broad_search",
+        provider_type="ats_board" if provider in {"greenhouse", "ashby"} else "broad_search",
         provider_job_id=provider_job_id,
         source_result_id=provider_job_id,
-        ats_provider=provider if provider == "greenhouse" else None,
-        ats_board_token="example" if provider == "greenhouse" else None,
+        ats_provider=provider if provider in {"greenhouse", "ashby"} else None,
+        ats_board_token="example" if provider in {"greenhouse", "ashby"} else None,
         source_url=job.source_url,
         apply_url=job.apply_url,
         canonical_url=job.canonical_url,

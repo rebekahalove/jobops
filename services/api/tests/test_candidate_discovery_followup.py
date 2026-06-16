@@ -65,6 +65,7 @@ def test_planner_prompt_contains_broadening_and_override_instructions() -> None:
     assert "Find me some jobs to apply to." in prompt
     assert "Find jobs from my companies list." in prompt
     assert "syncPlan.useFollowedCompanyBoards=true" in prompt
+    assert 'sourceProvidersAny=["greenhouse","ashby"]' in prompt
     assert "missing_followed_company_board_sync" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
     assert "new_job_discovery" in prompt
     assert "Do not call job results \"candidates.\"" in prompt
@@ -700,6 +701,7 @@ def test_jobs_list_review_does_not_sync_when_model_does_not_plan_sync(tmp_path, 
             return []
 
         monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fake_sync)
+        monkeypatch.setattr(candidate_service_module, "sync_ashby_boards", fake_sync)
         monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fake_sync)
         service = CandidateJobDiscoveryService(
             session=session,
@@ -724,9 +726,10 @@ def test_jobs_list_review_does_not_sync_when_model_does_not_plan_sync(tmp_path, 
     assert result.unique_job_pool_count == 1
 
 
-def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(tmp_path, monkeypatch) -> None:
+def test_followed_company_job_discovery_syncs_supported_ats_boards_and_saves_jobs(tmp_path, monkeypatch) -> None:
     engine = create_candidate_discovery_engine()
-    synced_tokens: list[str] = []
+    synced_greenhouse_tokens: list[str] = []
+    synced_ashby_profiles: list[str] = []
 
     def fake_sync_greenhouse_boards(session_arg, **kwargs):
         assert kwargs["candidate_profile_id"] == profile.id
@@ -741,7 +744,7 @@ def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(t
             token = company.greenhouse_board_token
             if not token:
                 continue
-            synced_tokens.append(token)
+            synced_greenhouse_tokens.append(token)
             now = datetime.now(UTC)
             listing = JobListing(
                 title=f"{company.name} Product Marketing Manager",
@@ -800,12 +803,86 @@ def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(t
             )
         return results
 
+    def fake_sync_ashby_boards(session_arg, **kwargs):
+        assert kwargs["candidate_profile_id"] == profile.id
+        assert kwargs["include_configured"] is False
+        synced_ashby_profiles.append(kwargs["candidate_profile_id"])
+        rows = session_arg.execute(
+            select(CandidateCompany, Company)
+            .join(Company, Company.id == CandidateCompany.company_id)
+            .where(CandidateCompany.candidate_profile_id == kwargs["candidate_profile_id"])
+        ).all()
+        results = []
+        for _link, company in rows:
+            if not company.ashby_board_url:
+                continue
+            token = company.ashby_board_url.rstrip("/").split("/")[-1]
+            now = datetime.now(UTC)
+            listing = JobListing(
+                title=f"{company.name} Product Marketing Manager",
+                company_id=company.id,
+                company_name=company.name,
+                canonical_url=f"https://jobs.ashbyhq.com/{token}/1",
+                apply_url=f"https://jobs.ashbyhq.com/{token}/1",
+                source_url=f"https://jobs.ashbyhq.com/{token}/1",
+                location_display="Remote US",
+                location_country="us",
+                remote_work_mode="remote",
+                employment_type="full_time",
+                description_excerpt=f"{company.name} product marketing role.",
+                source_status="active",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                source_updated_at=now,
+                last_synced_at=now,
+            )
+            source = JobListingSource(
+                job_listing=listing,
+                source_provider="ashby",
+                provider_type="ats_board",
+                provider_job_id=f"{token}:1",
+                source_result_id=f"{token}:1",
+                ats_provider="ashby",
+                ats_board_token=token,
+                source_url=listing.source_url,
+                apply_url=listing.apply_url,
+                canonical_url=listing.canonical_url,
+                raw_metadata_json={"provider": "ashby"},
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                last_synced_at=now,
+            )
+            session_arg.add(source)
+            session_arg.flush()
+            results.append(
+                JobSyncResult(
+                    request=JobSyncRequest(
+                        sync_key=f"ashby:{token}",
+                        provider_name="ashby",
+                        provider_type="ats_board",
+                        sync_kind="company_board",
+                        company_id=company.id,
+                        company_name=company.name,
+                        ats_provider="ashby",
+                        ats_board_token=token,
+                    ),
+                    raw_result_count=1,
+                    normalized_count=1,
+                    created_count=1,
+                )
+            )
+        return results
+
     monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fake_sync_greenhouse_boards)
+    monkeypatch.setattr(candidate_service_module, "sync_ashby_boards", fake_sync_ashby_boards)
     with Session(engine) as session:
         profile = create_candidate_profile(session)
+        profile_id = profile.id
         companies = [
             Company(name="Acme", normalized_name="acme", greenhouse_board_token="acme"),
-            Company(name="Beta", normalized_name="beta", greenhouse_board_token="beta"),
+            Company(name="Beta", normalized_name="beta", ashby_board_url="https://jobs.ashbyhq.com/beta"),
         ]
         session.add_all(companies)
         session.flush()
@@ -827,7 +904,10 @@ def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(t
             JobDiscoveryRequest(latest_user_message="find jobs from my companies list", candidate_profile_slug=profile.slug),
             candidate_profile=profile,
             current_saved_jobs=[],
-            current_saved_companies=[{"name": "Acme", "greenhouse_board_token": "acme"}, {"name": "Beta", "greenhouse_board_token": "beta"}],
+            current_saved_companies=[
+                {"name": "Acme", "greenhouse_board_token": "acme"},
+                {"name": "Beta", "ashby_board_url": "https://jobs.ashbyhq.com/beta"},
+            ],
             target_context={},
             private_profile_context={},
         )
@@ -836,12 +916,13 @@ def test_followed_company_job_discovery_syncs_greenhouse_boards_and_saves_jobs(t
         saved_jobs = list(session.scalars(select(CandidateSavedJob)).all())
         sources = list(session.scalars(select(JobListingSource)).all())
 
-    assert synced_tokens == ["acme", "beta"]
+    assert synced_greenhouse_tokens == ["acme"]
+    assert synced_ashby_profiles == [profile_id]
     assert result.search_plan.mode == "new_job_discovery"
     assert result.search_plan.use_followed_company_boards is True
     assert result.added_count == 2
     assert result.unique_job_pool_count == 2
-    assert {source.source_provider for source in sources} == {"greenhouse"}
+    assert {source.source_provider for source in sources} == {"greenhouse", "ashby"}
     assert {source.ats_board_token for source in sources} == {"acme", "beta"}
     assert len(saved_jobs) == 2
     assert all(job.job_listing_id for job in saved_jobs)
@@ -1080,6 +1161,7 @@ def test_filtered_apply_prioritization_corrects_mixed_plan_to_jobs_list_ranking(
         raise AssertionError("jobs-list ranking must not run sync")
 
     monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fail_sync)
+    monkeypatch.setattr(candidate_service_module, "sync_ashby_boards", fail_sync)
     monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fail_sync)
     engine = create_candidate_discovery_engine()
     with Session(engine) as session:
@@ -1130,6 +1212,7 @@ def test_rank_existing_jobs_executor_guard_ignores_unsaved_recommendations(tmp_p
         raise AssertionError("rank_existing_jobs must not run sync")
 
     monkeypatch.setattr(candidate_service_module, "sync_greenhouse_boards", fail_sync)
+    monkeypatch.setattr(candidate_service_module, "sync_ashby_boards", fail_sync)
     monkeypatch.setattr(candidate_service_module, "sync_adzuna_signatures", fail_sync)
     engine = create_candidate_discovery_engine()
     with Session(engine) as session:
@@ -1675,11 +1758,11 @@ class FollowedCompanyBoardsPlanner:
             job_scope="new_to_candidate",
             mode_rationale="The user asked to find new jobs from saved companies.",
             use_followed_company_boards=True,
-            sync_plan_rationale="Sync followed company Greenhouse boards.",
+            sync_plan_rationale="Sync followed company first-party ATS boards.",
             queries=(
                 DbJobSearchQuery(
-                    label="Search Greenhouse jobs from followed companies",
-                    source_providers_any=("greenhouse",),
+                    label="Search first-party ATS jobs from followed companies",
+                    source_providers_any=("greenhouse", "ashby"),
                     source_statuses_any=("active",),
                     limit=300,
                 ),

@@ -483,8 +483,76 @@ def test_theirstack_greenhouse_enrichment_can_sync_boards_and_save_synced_jobs(t
     assert len(saved_jobs) == 1
     assert saved_jobs[0].job_listing_id is not None
     assert {source.source_provider for source in sources} == {"greenhouse"}
-    assert "synced those boards directly" in payload["assistantMessage"]
+    assert "synced those first-party boards" in payload["assistantMessage"]
     assert "added 1 matching job" in payload["assistantMessage"]
+
+
+def test_theirstack_enrichment_can_sync_greenhouse_and_ashby_boards_and_save_jobs(tmp_path: Path, monkeypatch) -> None:
+    engine = create_seeded_engine()
+    synced_greenhouse_tokens: list[str] = []
+    synced_ashby_urls: list[str] = []
+    monkeypatch.setattr("jobops_api.company_enrichment.sync_greenhouse_boards", fake_greenhouse_sync(synced_greenhouse_tokens))
+    monkeypatch.setattr("jobops_api.company_enrichment.sync_ashby_boards", fake_ashby_sync(synced_ashby_urls))
+    client = FakeTheirStackClient(
+        [
+            theirstack_payload("Greenhouse Co", domain="greenhouse.example", job_url="https://job-boards.greenhouse.io/greenhouseco/jobs/1"),
+            theirstack_payload("Ashby Co", domain="ashby.example", job_url="https://jobs.ashbyhq.com/ashbyco/1"),
+        ]
+    )
+    connector = PlannerAndReviewConnector(
+        theirstack_plan(
+            {"jobFilters": {"job_title_pattern_or": ["Product Marketing Manager"]}},
+            terms=["Product Marketing Manager"],
+            require_supported_ats=True,
+            sync_ats_boards=True,
+            search_synced_jobs=True,
+            save_matching_jobs=True,
+        )
+    )
+
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=connector,
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies like Hightouch and find jobs from them.",
+            current_saved_companies=[],
+            target_context={"target_role_titles": ["Product Marketing Manager"]},
+            profile_context={},
+            discovery_context={},
+        )
+        session.commit()
+
+    payload = result.body["result"]
+    with Session(engine) as session:
+        saved_jobs = list(session.scalars(select(CandidateSavedJob)).all())
+        sources = list(session.scalars(select(JobListingSource)).all())
+
+    assert result.handled is True
+    assert synced_greenhouse_tokens == ["greenhouseco"]
+    assert synced_ashby_urls == ["https://jobs.ashbyhq.com/ashbyco"]
+    assert payload["linkedCompanyCount"] == 2
+    assert payload["boardsSelectedForSync"] == ["greenhouseco"]
+    assert payload["ashbyBoardsSelectedForSync"] == ["https://jobs.ashbyhq.com/ashbyco"]
+    assert payload["boardTokensSynced"] == ["greenhouseco"]
+    assert payload["ashbyBoardTokensSynced"] == ["ashbyco"]
+    assert payload["totalBoardSyncCompletedCount"] == 2
+    assert payload["totalBoardSyncNormalizedCount"] == 2
+    assert payload["syncedJobPoolCount"] == 2
+    assert payload["jobsReviewedAfterBoardSyncCount"] == 2
+    assert payload["jobsAddedAfterBoardSyncCount"] == 1
+    assert {source.source_provider for source in sources} == {"greenhouse", "ashby"}
+    assert len(saved_jobs) == 1
+    assert saved_jobs[0].job_listing_id is not None
+    assert "Greenhouse" in payload["assistantMessage"]
+    assert "Ashby" in payload["assistantMessage"]
 
 
 def test_post_enrichment_job_review_uses_internally_created_connector(tmp_path: Path, monkeypatch) -> None:
@@ -581,7 +649,7 @@ def test_theirstack_board_sync_skips_when_no_greenhouse_tokens(tmp_path: Path, m
     assert payload["boardSyncAttempted"] is False
     assert payload["syncUnavailableReason"] == "no_greenhouse_board_tokens"
     assert payload["searchSyncedJobsAttempted"] is False
-    assert payload["postBoardSyncJobSearchUnavailableReason"] == "no_synced_greenhouse_boards"
+    assert payload["postBoardSyncJobSearchUnavailableReason"] == "no_synced_supported_ats_boards"
 
 
 def test_model_planned_enrichment_dedupes_existing_link_and_preserves_metadata(tmp_path: Path) -> None:
@@ -799,6 +867,69 @@ def fake_greenhouse_sync(synced_tokens: list[str]):
     return fake_sync_greenhouse_boards
 
 
+def fake_ashby_sync(synced_urls: list[str]):
+    def fake_sync_ashby_boards(session: Session, **kwargs):
+        urls = list(kwargs["board_urls"])
+        synced_urls.extend(urls)
+        results = []
+        for url in urls:
+            token = url.rstrip("/").split("/")[-1]
+            listing = JobListing(
+                title="Product Marketing Manager",
+                company_name="Ashby Co",
+                canonical_url=f"https://jobs.ashbyhq.com/{token}/1",
+                apply_url=f"https://jobs.ashbyhq.com/{token}/1",
+                location_display="Remote US",
+                location_country="us",
+                remote_work_mode="remote",
+                description_excerpt="Product marketing role.",
+                source_status="active",
+                source_updated_at=datetime.now(UTC),
+                last_seen_at=datetime.now(UTC),
+                last_synced_at=datetime.now(UTC),
+                is_active=True,
+            )
+            session.add(listing)
+            session.flush()
+            session.add(
+                JobListingSource(
+                    job_listing_id=listing.id,
+                    source_provider="ashby",
+                    provider_type="ats_board",
+                    provider_job_id=f"{token}:1",
+                    source_result_id=f"{token}:1",
+                    ats_provider="ashby",
+                    ats_board_token=token,
+                    source_url=listing.canonical_url,
+                    canonical_url=listing.canonical_url,
+                    apply_url=listing.apply_url,
+                    raw_metadata_json={"provider": "ashby"},
+                    last_seen_at=datetime.now(UTC),
+                    last_synced_at=datetime.now(UTC),
+                    is_active=True,
+                )
+            )
+            results.append(
+                JobSyncResult(
+                    request=JobSyncRequest(
+                        sync_key=f"ashby:{token}",
+                        provider_name="ashby",
+                        provider_type="ats_board",
+                        sync_kind="company_board",
+                        ats_provider="ashby",
+                        ats_board_token=token,
+                        criteria_json={"boardUrl": url},
+                    ),
+                    raw_result_count=1,
+                    normalized_count=1,
+                    created_count=1,
+                )
+            )
+        return results
+
+    return fake_sync_ashby_boards
+
+
 class FakeTheirStackClient:
     def __init__(self, companies: list[dict[str, Any]]) -> None:
         self.companies = companies
@@ -826,6 +957,8 @@ def theirstack_plan(
     require_supported_ats: bool | None = None,
     require_greenhouse: bool = False,
     sync_boards: bool = False,
+    sync_ats_boards: bool = False,
+    sync_ashby_boards: bool = False,
     search_synced_jobs: bool = False,
     save_matching_jobs: bool = False,
     recommend_only: bool = False,
@@ -837,7 +970,9 @@ def theirstack_plan(
         "linkDiscoveredCompaniesToProfile": True,
         "requireSupportedAts": supported_ats,
         "requireGreenhouse": require_greenhouse,
+        "syncDiscoveredAtsBoards": sync_ats_boards,
         "syncDiscoveredGreenhouseBoards": sync_boards,
+        "syncDiscoveredAshbyBoards": sync_ashby_boards,
         "searchSyncedJobsAfterBoardSync": search_synced_jobs,
         "saveMatchingJobsToCandidateList": save_matching_jobs,
         "recommendOnly": recommend_only,

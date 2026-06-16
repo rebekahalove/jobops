@@ -38,6 +38,7 @@ class Settings:
     adzuna_country: str = "us"
     greenhouse_board_tokens: tuple[str, ...] = ()
     greenhouse_company_boards: dict[str, str] | None = None
+    ashby_board_urls: tuple[str, ...] = ()
     theirstack_api_key: str | None = None
     theirstack_company_search_enabled: bool = False
     theirstack_company_search_limit: int = 25
@@ -140,6 +141,7 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         adzuna_country=(merged.get("JOBOPS_ADZUNA_COUNTRY") or "us").strip().lower(),
         greenhouse_board_tokens=parse_csv_list(merged.get("JOBOPS_GREENHOUSE_BOARD_TOKENS")),
         greenhouse_company_boards=parse_json_object(merged.get("JOBOPS_GREENHOUSE_COMPANY_BOARDS")),
+        ashby_board_urls=parse_csv_list(merged.get("JOBOPS_ASHBY_BOARD_URLS")),
         theirstack_api_key=theirstack_api_key,
         theirstack_company_search_enabled=parse_bool(
             theirstack_enabled_value,

@@ -107,6 +107,21 @@ def test_load_settings_reads_theirstack_company_search_settings(tmp_path: Path, 
     assert settings.theirstack_company_search_freshness_days == 45
 
 
+def test_load_settings_reads_configured_ashby_board_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("JOBOPS_ASHBY_BOARD_URLS", raising=False)
+
+    (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
+    (tmp_path / ".env.dev").write_text(
+        "JOBOPS_ASHBY_BOARD_URLS=https://jobs.ashbyhq.com/acme, https://jobs.ashbyhq.com/beta/\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.ashby_board_urls == ("https://jobs.ashbyhq.com/acme", "https://jobs.ashbyhq.com/beta/")
+
+
 def test_load_settings_can_disable_theirstack_even_with_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.delenv("JOBOPS_THEIRSTACK_API_KEY", raising=False)
