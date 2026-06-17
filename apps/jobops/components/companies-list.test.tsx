@@ -85,10 +85,25 @@ describe("Companies list", () => {
     expect(html).toContain("Washington, DC");
     expect(html).toContain("Added");
     expect(html).toContain("May 18, 2026");
-    expect(html).toContain("Greenhouse");
+    expect(html).toContain('class="company-card-title-link" href="/companies/company-1"');
+    expect(html).toContain('class="company-card-site-link" href="https://civicactions.com/"');
+    expect(html).toContain("<summary>Metadata</summary>");
+    expect(html).not.toContain("<dt>Website</dt>");
+    expect(html).not.toContain("<dt>Careers</dt>");
+    expect(html).not.toContain("<dt>Job board</dt>");
+    expect(html).not.toContain("View Company");
+    expect(html).not.toContain('href="https://civicactions.com/jobs"');
+    expect(html).toContain('aria-label="Greenhouse"');
+    expect(html).toContain(">GH</span>");
     expect(html).toContain("civicactions");
-    expect(html).toContain("3 active");
-    expect(html).toContain("2 application");
+    expect(html).toContain("<h3>Jobs</h3>");
+    expect(html).toContain("<dd>3</dd>");
+    expect(html).toContain("<dt>active</dt>");
+    expect(html).toContain("<dd>1</dd>");
+    expect(html).toContain("<dt>saved</dt>");
+    expect(html).toContain("<dd>2</dd>");
+    expect(html).toContain("<dt>applied</dt>");
+    expect(html).toContain("<dt>open</dt>");
     expect(html).toContain("Applied AI");
     expect(html).toContain("Public-interest technology");
     expect(html).toContain('href="/companies/company-1"');
@@ -178,6 +193,7 @@ describe("Companies list", () => {
 
     expect(html).not.toContain('href="company:123"');
     expect(html).not.toContain('href="job_listing:abc"');
+    expect(html).not.toContain("No company site");
     expect(html).toContain('href="https://safe.example/source"');
   });
 
@@ -227,6 +243,7 @@ describe("Companies list", () => {
             {
               id: "job-1",
               saved_job_id: "saved-job-1",
+              job_listing_id: "job-1",
               title: "AI Engineer",
               company_name: "Hightouch",
               job_url: "https://boards.greenhouse.io/hightouch/jobs/1",
@@ -238,9 +255,28 @@ describe("Companies list", () => {
               full_description: "Build data products.",
               is_active: true,
               posting_date: "2026-06-01",
-              saved_status: "saved",
-              has_application: true,
-              application_id: "app-1"
+              saved_status: "new",
+              has_application: false,
+              application_id: null
+            },
+            {
+              id: "job-2",
+              saved_job_id: null,
+              job_listing_id: "job-2",
+              title: "Unsaved Data Engineer",
+              company_name: "Hightouch",
+              job_url: "https://boards.greenhouse.io/hightouch/jobs/2",
+              location: "Remote US",
+              source_provider: "greenhouse",
+              remote_work_mode: "remote",
+              employment_type: "Full time",
+              salary_text: "$140,000",
+              full_description: "Build data pipelines.",
+              is_active: true,
+              posting_date: "2026-06-02",
+              saved_status: null,
+              has_application: false,
+              application_id: null
             }
           ],
           applications: [
@@ -262,8 +298,14 @@ describe("Companies list", () => {
     );
 
     expect(html).toContain("Company jobs");
+    expect(html).toContain("job-card");
+    expect(html).toContain("job-primary-metadata");
     expect(html).toContain("AI Engineer");
-    expect(html).toContain("View Application");
+    expect(html).toContain("Favorite");
+    expect(html).toContain("Apply");
+    expect(html).toContain("Archive");
+    expect(html).toContain("Unsaved Data Engineer");
+    expect(html).toContain("Add to jobs list");
     expect(html).toContain("Company applications");
     expect(html).toContain("Build data products.");
   });

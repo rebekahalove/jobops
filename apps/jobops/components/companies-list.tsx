@@ -241,7 +241,7 @@ export function CompanyCard({
   const detailHref = `${workspaceBasePath}/companies/${company.id}`;
   const websiteUrl = safeExternalUrl(company.website_url);
   const careersUrl = safeExternalUrl(company.careers_url);
-  const jobListingsUrl = safeExternalUrl(company.job_listings_url);
+  const companySiteUrl = websiteUrl || websiteUrlFromDomain(company.domain);
   const providerMetadata = company.provider_grounding_metadata_summary || {};
 
   return (
@@ -249,8 +249,16 @@ export function CompanyCard({
       <div className="company-card-main">
         <div className="company-card-header">
           <div>
-            <h2>{company.name}</h2>
-            <p>{company.domain || company.normalized_name || "Tracked company"}</p>
+            <h2>
+              <Link className="company-card-title-link" href={detailHref}>
+                {company.name}
+              </Link>
+            </h2>
+            {companySiteUrl ? (
+              <a className="company-card-site-link" href={companySiteUrl} rel="noopener noreferrer" target="_blank">
+                {displayUrlHost(companySiteUrl) || company.domain || companySiteUrl}
+              </a>
+            ) : null}
           </div>
           <div className="job-card-badges" aria-label={`${company.name} company status`}>
             {company.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
@@ -258,20 +266,15 @@ export function CompanyCard({
           </div>
         </div>
 
-        <dl className="company-provider-metadata">
-          <MetadataBox label="Website" value={displayUrlHost(websiteUrl) || company.domain || "Unknown"} />
-          <MetadataBox label="Careers" value={displayUrlHost(careersUrl) || "Unknown"} />
-          <MetadataBox label="Job board" value={displayUrlHost(jobListingsUrl) || "Unknown"} />
-          <MetadataBox label="Greenhouse" value={company.greenhouse_board_token || "None"} />
-          <MetadataBox label="Ashby" value={displayUrlHost(safeExternalUrl(company.ashby_board_url)) || "None"} />
-          <MetadataBox label="Lever" value={company.lever_slug || "None"} />
-          <MetadataBox label="Headquarters" value={formatHeadquarters(company)} />
-          <MetadataBox label="Remote policy" value={formatStatus(company.remote_policy)} />
-          <MetadataBox label="Jobs" value={formatCount(company.active_job_count, "active")} />
-          <MetadataBox label="Saved" value={formatCount(company.saved_job_count, "saved")} />
-          <MetadataBox label="Applications" value={formatCount(company.application_count, "application")} />
-          <MetadataBox label="Open apps" value={formatCount(company.open_application_count, "open")} />
-        </dl>
+        <div className="company-provider-metadata">
+          <CompanyCounts company={company} />
+          <dl className="company-provider-facts">
+            <MetadataBox label="Headquarters" value={companyHeadquartersValue(company)} />
+            <MetadataBox label={<ProviderIcon label="Greenhouse" mark="GH" provider="greenhouse" />} value={company.greenhouse_board_token} />
+            <MetadataBox label={<ProviderIcon label="Ashby" mark="A" provider="ashby" />} value={displayUrlHost(safeExternalUrl(company.ashby_board_url))} />
+            <MetadataBox label={<ProviderIcon label="Lever" mark="L" provider="lever" />} value={company.lever_slug} />
+          </dl>
+        </div>
 
         <div className="company-card-content">
           <section className="job-info-panel company-description-panel" aria-label={`${company.name} company description`}>
@@ -298,7 +301,8 @@ export function CompanyCard({
       </div>
 
       <aside className="company-card-rail" aria-label={`${company.name} details`}>
-        <div className="record-rail-section company-card-meta">
+        <details className="record-rail-section company-card-meta">
+          <summary>Metadata</summary>
           <dl className="company-details record-detail-grid">
             <DetailItem label="Added" value={formatDate(company.added_at || company.created_at)} />
             <DetailItem label="First seen" value={formatDate(company.first_seen_at || company.created_at)} />
@@ -310,10 +314,9 @@ export function CompanyCard({
             <DetailItem label="Discovered by" value={company.discovered_by || "Unknown"} />
             <DetailItem label="Source URLs" value={`${safeSourceUrls(company.source_urls).length}`} />
           </dl>
-        </div>
+        </details>
 
         <div className="company-links company-card-actions" aria-label={`${company.name} actions`}>
-          <Link href={detailHref}>View Company</Link>
           {onCompanyAction ? (
             <>
               {company.archived_at ? (
@@ -358,7 +361,6 @@ export function CompanyCard({
           ) : null}
           <ExternalLink href={websiteUrl} label="Visit Website" />
           <ExternalLink href={careersUrl} label="Careers" />
-          <ExternalLink href={jobListingsUrl} label="Jobs" />
           <SourceLinks urls={company.source_urls} />
         </div>
       </aside>
@@ -443,7 +445,55 @@ function ExternalLink({ href, label }: { href: string | null | undefined; label:
   );
 }
 
-function MetadataBox({ label, value }: { label: string; value: string }) {
+function CompanyCounts({ company }: { company: TrackedCompany }) {
+  return (
+    <section className="company-count-panel" aria-label={`${company.name} jobs and applications`}>
+      <h3>Jobs</h3>
+      <dl>
+        <div>
+          <dd>{company.active_job_count ?? 0}</dd>
+          <dt>active</dt>
+        </div>
+        <div>
+          <dd>{company.saved_job_count ?? 0}</dd>
+          <dt>saved</dt>
+        </div>
+        <div>
+          <dd>{company.application_count ?? 0}</dd>
+          <dt>applied</dt>
+        </div>
+        <div>
+          <dd>{company.open_application_count ?? 0}</dd>
+          <dt>open</dt>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function companyHeadquartersValue(company: TrackedCompany) {
+  const value = formatHeadquarters(company);
+  return value === "Unknown" ? null : value;
+}
+
+function ProviderIcon({ label, mark, provider }: { label: string; mark: string; provider: "greenhouse" | "ashby" | "lever" }) {
+  return (
+    <span
+      aria-label={label}
+      className={`company-provider-icon company-provider-icon-${provider}`}
+      role="img"
+      title={label}
+    >
+      {mark}
+    </span>
+  );
+}
+
+function MetadataBox({ label, value }: { label: React.ReactNode; value?: string | null }) {
+  if (!value) {
+    return null;
+  }
+
   return (
     <div className="job-primary-metadata-item">
       <dt>{label}</dt>
@@ -504,6 +554,14 @@ export function safeExternalUrl(value?: string | null) {
   }
 }
 
+function websiteUrlFromDomain(value: string | null | undefined) {
+  const cleaned = (value || "").trim();
+  if (!cleaned || /\s/.test(cleaned) || cleaned.includes("/")) {
+    return null;
+  }
+  return safeExternalUrl(`https://${cleaned}`);
+}
+
 function safeSourceUrls(urls: string[]) {
   return urls.map((url) => safeExternalUrl(url)).filter((url): url is string => Boolean(url));
 }
@@ -517,10 +575,6 @@ function displayUrlHost(value?: string | null) {
   } catch {
     return null;
   }
-}
-
-function formatCount(value: number | undefined, label: string) {
-  return `${value ?? 0} ${label}`;
 }
 
 function metadataList(value: unknown) {

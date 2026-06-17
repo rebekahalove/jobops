@@ -89,6 +89,58 @@ def list_jobs(
     )
 
 
+@router.post("/jobs/from-listing/{job_listing_id}", response_model=SavedJobActionResponse)
+def add_job_listing_to_jobs_list(
+    job_listing_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    job_listing = session.scalar(
+        select(JobListing)
+        .options(selectinload(JobListing.sources))
+        .where(JobListing.id == job_listing_id)
+    )
+    if job_listing is None:
+        raise HTTPException(status_code=404, detail="Job listing not found.")
+    saved_job = session.scalar(
+        select(CandidateSavedJob)
+        .options(selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources))
+        .where(
+            CandidateSavedJob.candidate_profile_id == auth.candidate_profile.id,
+            CandidateSavedJob.job_listing_id == job_listing_id,
+        )
+    )
+    created = saved_job is None
+    if saved_job is None:
+        saved_job = CandidateSavedJob(
+            candidate_profile_id=auth.candidate_profile.id,
+            job_listing_id=job_listing_id,
+            status="new",
+            source_command="manual_add_from_company_detail",
+            discovery_metadata={"manualAddSource": "company_detail"},
+        )
+        session.add(saved_job)
+    else:
+        if saved_job.archived_at is not None or saved_job.status in HIDDEN_JOB_STATUSES:
+            saved_job.status = "new"
+        saved_job.archived_at = None
+        saved_job.archived_reason = None
+        saved_job.archived_by_action = None
+        saved_job.discovery_metadata = {
+            **(saved_job.discovery_metadata or {}),
+            "manualAddSource": "company_detail",
+        }
+        session.add(saved_job)
+    session.commit()
+    session.refresh(saved_job, attribute_names=["job_listing"])
+    application = get_application_for_saved_job(session, saved_job, auth.candidate_profile.id)
+    return saved_job_action_response(
+        saved_job,
+        application=application,
+        message="Job added to your jobs list." if created else "Job was already on your jobs list and was refreshed.",
+    )
+
+
 @router.get("/job-search-runs/latest")
 def get_latest_job_search_run_status(
     session: Session = Depends(get_db_session),

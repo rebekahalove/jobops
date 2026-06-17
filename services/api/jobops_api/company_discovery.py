@@ -2302,9 +2302,10 @@ def company_counts(session: Session, company: Company, candidate_profile_id: str
             company_application_predicate(company),
         )
     )
-    application_count = session.scalar(application_statement) or 0
+    applied_application_statement = application_statement.where(Application.status == "applied")
+    application_count = session.scalar(applied_application_statement) or 0
     open_application_count = session.scalar(
-        application_statement.where(
+        applied_application_statement.where(
             Application.archived_at.is_(None),
             Application.status.not_in(TERMINAL_APPLICATION_STATUSES),
         )
@@ -2394,34 +2395,59 @@ def serialize_company_detail_job(
 ) -> dict[str, Any]:
     primary_source = first_job_listing_source(job)
     return {
-        "id": job.id,
+        "id": saved_job.id if saved_job is not None else job.id,
         "saved_job_id": saved_job.id if saved_job is not None else None,
+        "candidate_profile_id": saved_job.candidate_profile_id if saved_job is not None else None,
+        "job_listing_id": job.id,
+        "jobSearchRunId": saved_job.job_search_run_id if saved_job is not None else None,
+        "highlighted": False,
+        "justAdded": False,
+        "latestDiscoveryRunId": None,
         "title": job.title,
         "company_name": job.company_name,
         "job_url": job_listing_primary_url(job),
         "canonical_url": job.canonical_url,
         "apply_url": job.apply_url,
+        "source": primary_source.source_provider if primary_source is not None else None,
+        "source_result_id": primary_source.source_result_id if primary_source is not None else None,
+        "source_query": primary_source.source_query if primary_source is not None else None,
         "source_url": job.source_url,
         "source_provider": primary_source.source_provider if primary_source is not None else None,
         "provider_type": primary_source.provider_type if primary_source is not None else None,
         "ats_provider": primary_source.ats_provider if primary_source is not None else None,
         "ats_board_token": primary_source.ats_board_token if primary_source is not None else None,
+        "provenance": "job_sync",
+        "url_verification_status": "provider_unverified",
+        "url_verification_checked_at": None,
+        "url_verification_summary": "Synced provider inventory; URL was not verified during candidate discovery.",
         "location": job.location_display,
         "remote_work_mode": job.remote_work_mode,
         "employment_type": job.employment_type,
+        "salary_min": job.salary_min,
+        "salary_max": job.salary_max,
+        "salary_currency": job.salary_currency,
         "salary_text": job.salary_text,
         "description_excerpt": job.description_excerpt,
         "full_description": job.full_description,
         "description_html": sanitized_job_description_html_from_source(primary_source),
+        "fit_summary": saved_job.fit_summary if saved_job is not None else None,
+        "user_notes": saved_job.user_notes if saved_job is not None else None,
         "source_status": job.source_status,
         "is_active": job.is_active,
         "posting_date": job.posting_date.isoformat() if job.posting_date else None,
         "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
         "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
         "saved_status": saved_job.status if saved_job is not None else None,
+        "added_at": saved_job.added_at.isoformat() if saved_job is not None and saved_job.added_at else None,
         "saved_archived_at": saved_job.archived_at.isoformat() if saved_job is not None and saved_job.archived_at else None,
+        "archived_reason": saved_job.archived_reason if saved_job is not None else None,
+        "archived_by_action": saved_job.archived_by_action if saved_job is not None else None,
         "has_application": application is not None,
         "application_id": application.id if application is not None else None,
+        "application_status": application.status if application is not None else None,
+        "application_archived_at": application.archived_at.isoformat() if application is not None and application.archived_at else None,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
 
 

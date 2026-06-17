@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 import jobops_api.job_discovery.service as job_discovery_service_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
-from jobops_api.db.models import Base, CandidateProfile, JobSearchRun
+from jobops_api.db.models import Base, CandidateProfile, CandidateSavedJob, JobListing, JobSearchRun
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
 from jobops_api.job_discovery import JobDiscoveryRequest, run_job_discovery
@@ -177,6 +177,53 @@ def test_job_search_run_status_is_scoped_to_authenticated_candidate(monkeypatch)
         assert response.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_add_job_listing_to_jobs_list_creates_saved_job_without_duplicates(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("JOBOPS_INTERNAL_API_KEY", "test-secret")
+    engine = create_engine_for_job_discovery_tests()
+    with Session(engine) as session:
+        profile = seed_profile(session, slug="rebekah-love")
+        listing = JobListing(
+            id="listing-1",
+            company_name="Example Civic",
+            title="Applied AI Engineer",
+            is_active=True,
+        )
+        session.add(listing)
+        session.commit()
+        listing_id = listing.id
+        _ = profile
+    session_token = create_auth_session_token(engine)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    try:
+        client = TestClient(app)
+        first = client.post(
+            f"/v1/jobs/from-listing/{listing_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+        second = client.post(
+            f"/v1/jobs/from-listing/{listing_id}",
+            headers={INTERNAL_API_KEY_HEADER: "test-secret"},
+            cookies={SESSION_COOKIE_NAME: session_token},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert first.json()["job"]["job_listing_id"] == listing_id
+    assert first.json()["job"]["status"] == "new"
+    assert second.status_code == 200
+    with Session(engine) as session:
+        saved_jobs = list(session.scalars(select(CandidateSavedJob).where(CandidateSavedJob.job_listing_id == listing_id)))
+    assert len(saved_jobs) == 1
 
 
 def create_engine_for_job_discovery_tests():

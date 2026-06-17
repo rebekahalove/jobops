@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1098,6 +1099,21 @@ def test_company_serialization_includes_provider_fields_counts_and_compact_metad
                     status="applied",
                 ),
                 Application(
+                    candidate_profile_id=profile.id,
+                    company_id=company.id,
+                    company_name="Hightouch",
+                    job_title="Archived Applied Role",
+                    status="applied",
+                    archived_at=datetime.now(timezone.utc),
+                ),
+                Application(
+                    candidate_profile_id=profile.id,
+                    company_id=company.id,
+                    company_name="Hightouch",
+                    job_title="Draft Role",
+                    status="draft",
+                ),
+                Application(
                     candidate_profile_id=other_profile.id,
                     company_id=company.id,
                     saved_job_id=other_saved_job.id,
@@ -1119,7 +1135,7 @@ def test_company_serialization_includes_provider_fields_counts_and_compact_metad
     assert payload["sync_providers"] == ["greenhouse", "ashby", "lever"]
     assert payload["active_job_count"] == 1
     assert payload["saved_job_count"] == 1
-    assert payload["application_count"] == 1
+    assert payload["application_count"] == 2
     assert payload["open_application_count"] == 1
     assert payload["provider_grounding_metadata_summary"]["provider"] == "theirstack"
     assert payload["provider_grounding_metadata_summary"]["technologyNames"] == ["Python", "Postgres"]
