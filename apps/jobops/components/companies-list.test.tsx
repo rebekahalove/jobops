@@ -24,6 +24,16 @@ describe("Companies list", () => {
     expect(html).not.toContain("Coming soon");
   });
 
+  it("mounts the company-detail add-to-jobs-list proxy route in the portfolio app", async () => {
+    const source = await readFile(
+      new URL("../../portfolio/app/jobops/api/jobs/from-listing/[jobListingId]/route.ts", import.meta.url),
+      "utf-8"
+    );
+
+    expect(source).toContain('export { POST } from "../../../../../../../jobops/app/api/jobs/from-listing/[jobListingId]/route"');
+    expect(source).toContain('export const runtime = "nodejs"');
+  });
+
   it("renders model-derived companies with badges and external verification links", () => {
     const html = renderToStaticMarkup(
       <CompaniesList
