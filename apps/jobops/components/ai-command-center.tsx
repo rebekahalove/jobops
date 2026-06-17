@@ -356,7 +356,7 @@ export function AiCommandCenter({
     if (nextActions.some((action) => action.type === "company_discovery" && action.status === "completed")) {
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
-    if (nextActions.some((action) => action.type === "job_discovery" && action.status === "completed")) {
+    if (nextActions.some((action) => (action.type === "job_discovery" || action.type === "add_job_from_url") && action.status === "completed")) {
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }

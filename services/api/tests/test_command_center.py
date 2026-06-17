@@ -14,14 +14,32 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import jobops_api.command_center as command_center_module
+import jobops_api.job_discovery.candidate_discovery.service as candidate_service_module
+import jobops_api.job_discovery.service as job_discovery_service_module
 from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, seed_initial_user
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Base, CandidateCompany, ExperienceProjectDraft, JobSearchRun, ProfileFactDraft, ProfileIntakeSession, RoleTarget, SkillClaim
+from jobops_api.db.models import (
+    Base,
+    CandidateCompany,
+    CandidateSavedJob,
+    ExperienceProjectDraft,
+    JobListing,
+    JobListingSource,
+    JobSearchRun,
+    ProfileFactDraft,
+    ProfileIntakeSession,
+    RoleTarget,
+    SkillClaim,
+)
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import get_db_session
+from jobops_api.job_discovery.candidate_discovery.direct_url.providers.greenhouse import GreenhouseDirectJobUrlProvider
+from jobops_api.job_discovery.candidate_discovery.direct_url.service import DirectJobUrlDiscoveryService
+from jobops_api.model_connector import ModelResponse
 from jobops_api.main import app
 from jobops_api.security import INTERNAL_API_KEY_HEADER
 from jobops_api.settings import Settings
+from test_candidate_discovery_direct_url import DIRECT_URL, FakeGreenhouseClient
 
 
 def test_interprets_profile_related_commands_as_profile_intake() -> None:
@@ -29,6 +47,7 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("Update my profile with this project.") == "profile_intake"
     assert command_center_module.interpret_command("My experience includes Python and LLM evals.") == "profile_intake"
     assert command_center_module.interpret_command("Add it to my jobs list.") == "add_job_from_url"
+    assert command_center_module.interpret_command(f"Add this job to my list {DIRECT_URL}") == "add_job_from_url"
     assert command_center_module.interpret_command("https://example.com/careers") == "unknown"
     assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
@@ -40,6 +59,69 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     )
     assert command_center_module.interpret_command("Tell JobOps this detail.", active_workspace="profile") == "profile_intake"
     assert command_center_module.interpret_command("What should I emphasize for AI platform roles?", active_workspace="profile") == "profile_guidance"
+
+
+def test_command_center_add_job_from_greenhouse_url_creates_db_backed_saved_job(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    monkeypatch.setattr(job_discovery_service_module, "create_model_connector", lambda config: DirectUrlPlannerConnector())
+
+    def direct_service_factory(**kwargs):
+        return DirectJobUrlDiscoveryService(
+            session=kwargs["session"],
+            settings=kwargs["settings"],
+            providers=(GreenhouseDirectJobUrlProvider(client=FakeGreenhouseClient()),),
+        )
+
+    monkeypatch.setattr(candidate_service_module, "DirectJobUrlDiscoveryService", direct_service_factory)
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command=f"add this job to my list {DIRECT_URL}",
+                active_workspace="jobs",
+            ),
+            session=session,
+        )
+        saved = session.scalar(select(CandidateSavedJob))
+        listing = session.scalar(select(JobListing))
+        source = session.scalar(select(JobListingSource))
+        legacy_job_id = getattr(saved, "job_id", None) if saved is not None else None
+
+    assert response.actions[0].type == "add_job_from_url"
+    assert response.actions[0].status == "completed"
+    assert response.target_workspace == "jobs"
+    assert saved is not None
+    assert listing is not None
+    assert source is not None
+    assert saved.job_listing_id == listing.id
+    assert legacy_job_id is None
+    assert source.source_provider == "greenhouse"
+    assert response.result_payload is not None
+    assert response.result_payload["searchPlan"]["mode"] == "direct_job_url"
+    assert response.result_payload["diagnostics"]["directUrlIngestion"]["noBroadSearch"] is True
+    assert response.result_payload["diagnostics"]["planner"]["commandRouterAction"] == "add_job_from_url"
+
+
+def test_command_center_ambiguous_url_does_not_mutate_when_router_asks_clarification(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+
+    with Session(engine) as session:
+        response = command_center_module.execute_command_center_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="this URL is https://example.com",
+                active_workspace="jobs",
+            ),
+            session=session,
+        )
+        saved_count = len(list(session.scalars(select(CandidateSavedJob))))
+        listing_count = len(list(session.scalars(select(JobListing))))
+
+    assert response.actions[0].type == "unknown"
+    assert response.actions[0].status == "needs_confirmation"
+    assert saved_count == 0
+    assert listing_count == 0
 
 
 def test_company_following_advice_executes_company_discovery(tmp_path: Path, monkeypatch) -> None:
@@ -1206,6 +1288,29 @@ def create_auth_session_token(engine) -> str:
         _, raw_token = create_session_for_username(session, username="rebekah-love", password="rebekah alpha password")
         session.commit()
         return raw_token
+
+
+class DirectUrlPlannerConnector:
+    def generate(self, request) -> ModelResponse:
+        if request.task == "candidate_db_job_plan_critique":
+            return ModelResponse(text=json.dumps({"valid": True}), provider="fake", model="fake")
+        return ModelResponse(
+            text=json.dumps(
+                {
+                    "mode": "direct_job_url",
+                    "modeRationale": "The user asked to save a specific Greenhouse job URL.",
+                    "syncPlan": {
+                        "useFollowedCompanyBoards": False,
+                        "proposedAdzunaSignatures": [],
+                        "existingAdzunaSignatureIdsToRefresh": [],
+                    },
+                    "dbSearchPlan": {"queries": []},
+                    "reviewPlan": {"task": "select_new_jobs", "allowRejections": False},
+                }
+            ),
+            provider="fake",
+            model="fake",
+        )
 
 
 def make_settings(repo_root: Path) -> Settings:

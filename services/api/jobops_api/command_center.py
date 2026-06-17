@@ -797,13 +797,14 @@ def execute_job_discovery_command(
     router_decision: CommandRouterOutput | None = None,
     action_type: CommandActionType = "job_discovery",
 ) -> CommandCenterCommandResponse:
+    router_extracted = router_extracted_payload(router_decision, action_type=action_type)
     discovery_result = run_job_discovery(
         JobDiscoveryRequest(
             latest_user_message=request.command,
             candidate_profile_slug=candidate_slug,
             active_workspace=request.active_workspace,
             client_context=request.client_context,
-            router_extracted=router_decision.extracted.model_dump(by_alias=True) if router_decision is not None else None,
+            router_extracted=router_extracted,
         ),
         db_session=session,
         settings=settings,
@@ -872,12 +873,13 @@ def start_async_job_discovery_command(
     router_decision: CommandRouterOutput | None = None,
     background_tasks: BackgroundTasks | None = None,
 ) -> CommandCenterCommandResponse:
+    router_extracted = router_extracted_payload(router_decision, action_type="job_discovery")
     job_request = JobDiscoveryRequest(
         latest_user_message=request.command,
         candidate_profile_slug=candidate_slug,
         active_workspace=request.active_workspace,
         client_context=request.client_context,
-        router_extracted=router_decision.extracted.model_dump(by_alias=True) if router_decision is not None else None,
+        router_extracted=router_extracted,
     )
     run, created = start_job_discovery_run(
         job_request,
@@ -1141,6 +1143,8 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "company_update"
     if is_company_discovery_command(normalized, active_workspace):
         return "company_discovery"
+    if is_job_url_intake_command(normalized):
+        return "add_job_from_url"
     if is_job_discovery_command(normalized, active_workspace):
         return "job_discovery"
     if is_profile_discussion_command(normalized):
@@ -1155,8 +1159,6 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
         return "mark_applied"
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return "prioritize_jobs"
-    if is_job_url_intake_command(normalized):
-        return "add_job_from_url"
     return "unknown"
 
 
@@ -1699,6 +1701,21 @@ def router_debug_payload(router_payload: dict[str, Any] | None) -> dict[str, Any
         }.items()
         if value is not None
     }
+
+
+def router_extracted_payload(
+    router_decision: CommandRouterOutput | None,
+    *,
+    action_type: CommandActionType,
+) -> dict[str, Any] | None:
+    payload = router_decision.extracted.model_dump(by_alias=True) if router_decision is not None else {}
+    if router_decision is not None:
+        payload["commandRouterAction"] = normalize_dispatch_action(router_decision.action_type)
+        payload["commandRouterConfidence"] = router_decision.confidence
+        payload["commandRouterTargetWorkspace"] = router_decision.target_workspace
+    elif action_type:
+        payload["commandRouterAction"] = action_type
+    return payload or None
 
 
 def normalize_dispatch_action(action_type: CommandActionType | RouterActionType) -> CommandActionType:

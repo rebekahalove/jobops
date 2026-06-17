@@ -179,6 +179,8 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Update CivicActions job listings URL to https://civicactions.com/careers", "company_update"),
             ("Set the careers URL for Higher Ground Labs to https://highergroundlabs.com/jobs", "company_update"),
             ("Add this job: https://company.com/jobs/123", "add_job_from_url"),
+            ("Add this job to my list https://job-boards.greenhouse.io/example/jobs/123", "add_job_from_url"),
+            ("Save this job posting https://job-boards.greenhouse.io/example/jobs/123", "add_job_from_url"),
             ("Find me some jobs to apply to", "job_discovery"),
             ("Find some jobs for me to apply to", "job_discovery"),
             ("Find applied AI engineer jobs", "job_discovery"),

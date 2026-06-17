@@ -404,6 +404,7 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain('action.type === "job_discovery"');
+    expect(source).toContain('action.type === "add_job_from_url"');
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
   });

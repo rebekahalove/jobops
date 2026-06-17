@@ -408,7 +408,7 @@ def run_job_discovery(
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
     private_profile_context = candidate_profile_to_private_context_dict(candidate_profile)
-    if should_prompt_for_discovery_targets(
+    if not is_direct_job_url_intake_request(request) and should_prompt_for_discovery_targets(
         request.latest_user_message,
         target_context=target_context,
         private_profile_context=private_profile_context,
@@ -572,6 +572,29 @@ def build_db_backed_job_discovery_result(
         "databaseQueryCount": len(database_queries.get("queries", [])) if isinstance(database_queries.get("queries"), list) else 0,
     }
     return JobDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
+
+
+def is_direct_job_url_intake_request(request: JobDiscoveryRequest) -> bool:
+    extracted = request.router_extracted if isinstance(request.router_extracted, dict) else {}
+    if extracted.get("commandRouterAction") == "add_job_from_url":
+        return True
+    extracted_url = clean_text_value(extracted.get("url"))
+    if not extracted_url:
+        return False
+    normalized = " ".join((request.latest_user_message or "").casefold().split())
+    return any(
+        signal in normalized
+        for signal in (
+            "add this job",
+            "save this job",
+            "track this role",
+            "job posting",
+            "job url",
+            "add it to my jobs",
+            "add this role",
+            "save this role",
+        )
+    )
 
 
 def start_job_discovery_run(
@@ -1131,6 +1154,7 @@ def sanitize_db_backed_run_diagnostics(
     model_review = stored_diagnostics.get("modelReview") if isinstance(stored_diagnostics.get("modelReview"), dict) else {}
     return {
         "planner": sanitize_db_backed_planner_diagnostics(stored_diagnostics.get("planner")),
+        "directUrlIngestion": sanitize_direct_url_ingestion_diagnostics(stored_diagnostics.get("directUrlIngestion")),
         "jobSync": {
             "runs": sanitize_db_backed_sync_rows(job_sync.get("runs")),
             "runCount": diagnostic_int(job_sync.get("runCount")) or 0,
@@ -1186,7 +1210,45 @@ def sanitize_db_backed_planner_diagnostics(value: object) -> dict[str, Any]:
         "plannedSyncSignatures": sanitize_planner_signature_rows(value.get("plannedSyncSignatures")),
         "existingSyncSignaturesSelected": sanitize_planner_signature_rows(value.get("existingSyncSignaturesSelected")),
         "plannedDbQueries": sanitize_planner_query_rows(value.get("plannedDbQueries")),
+        "commandRouterAction": clean_user_facing_explanation(value.get("commandRouterAction"), limit=80),
+        "directUrlCount": diagnostic_int(value.get("directUrlCount")) or 0,
     }
+
+
+def sanitize_direct_url_ingestion_diagnostics(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "successfulCount": diagnostic_int(value.get("successfulCount")) or 0,
+        "addedCount": diagnostic_int(value.get("addedCount")) or 0,
+        "updatedCount": diagnostic_int(value.get("updatedCount")) or 0,
+        "failedCount": diagnostic_int(value.get("failedCount")) or 0,
+        "supportedUrlCount": diagnostic_int(value.get("supportedUrlCount")) or 0,
+        "unsupportedUrlCount": diagnostic_int(value.get("unsupportedUrlCount")) or 0,
+        "noBroadSearch": bool(value.get("noBroadSearch")),
+        "results": sanitize_direct_url_result_rows(value.get("results")),
+    }
+
+
+def sanitize_direct_url_result_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:20]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "status": clean_user_facing_explanation(item.get("status"), limit=80),
+                "provider": clean_user_facing_explanation(item.get("provider"), limit=80),
+                "jobListingId": clean_user_facing_explanation(item.get("jobListingId"), limit=80),
+                "savedJobId": clean_user_facing_explanation(item.get("savedJobId"), limit=80),
+                "createdSavedJob": bool(item.get("createdSavedJob")),
+                "refreshedSavedJob": bool(item.get("refreshedSavedJob")),
+                "error": clean_user_facing_explanation(item.get("error"), limit=160),
+            }
+        )
+    return rows
 
 
 def sanitize_rejected_plan_rows(value: object) -> list[dict[str, Any]]:

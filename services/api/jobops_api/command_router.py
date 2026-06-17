@@ -433,6 +433,8 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
     current_companies = [company for company in context.get("current_saved_companies") or [] if isinstance(company, dict)]
     matched_company = match_company_from_message(normalized, current_companies)
 
+    if url and looks_like_job_url_intake(normalized):
+        return router_json("add_job_from_url", "high", "jobs", "User is saving a specific job posting URL.", url=url)
     if looks_like_job_discovery(normalized, context.get("active_workspace")):
         return router_json(
             "job_discovery",
@@ -465,8 +467,6 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
         return router_json("mark_applied", "high", "applications", "User is marking an application as applied.")
     if "prioritize" in normalized or "which jobs" in normalized or "apply to today" in normalized:
         return router_json("prioritize_jobs", "high", "jobs", "User is asking to prioritize saved jobs.")
-    if url and looks_like_job_url_intake(normalized):
-        return router_json("add_job_from_url", "high", "jobs", "User is saving a specific job posting URL.", url=url)
     if looks_like_profile_discussion(normalized):
         return router_json("profile_guidance", "high", "profile", "User is asking for profile or career guidance, not a saved profile update.")
     if looks_like_profile_intake(normalized, context.get("active_workspace")):
