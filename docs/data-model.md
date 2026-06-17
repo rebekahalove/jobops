@@ -95,6 +95,7 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 - Profile-specific links between a candidate profile and a canonical company.
 - Stores private relationship state such as review status, derivation status, fit reason, role and mission fit tags, notes, discovery query, search queries, discovered-by provider, added date, archive date, and last checked date.
 - Different profiles can follow the same canonical company with separate notes, statuses, and fit reasons.
+- Company cards and the company detail page combine canonical company facts with this user-scoped link state. Provider-derived company facts, such as domain, website, careers URL, job-listings URL, Greenhouse token, Ashby board URL, Lever slug, headquarters, hiring locations, remote policy, source summary, and compact provider metadata, come from `companies` plus summarized `candidate_companies.provider_grounding_metadata`. User/internal metadata, such as review status, derivation status, discovered-by label, added date, archived date, confidence, and last checked date, stays visually secondary.
 
 `job_roles`
 
@@ -108,12 +109,14 @@ This is a planning-level model for the Neon Postgres schema. Exact columns shoul
 - Tracks status, dates, next action, and human-approved materials.
 - Implemented with company name, job title, job URL, location, source, date applied, status, notes, next follow-up date, and timestamps.
 - Current statuses: `saved`, `applied`, `interviewing`, `rejected`, `offer`, `closed`, `withdrawn`.
+- Company detail pages include applications for the authenticated profile when `applications.company_id` matches the canonical company or when the application links through `applications.saved_job_id -> candidate_saved_jobs.job_listing_id -> job_listings.company_id`.
 
 `job_listings`
 
 - Provider/API-backed job inventory refreshed by Job Sync.
 - Stores normalized job facts used for DB-backed discovery, including provider URLs, title, company, location, work mode, compensation, description excerpt/full description, posting/source dates, active/closed state, and location target links.
 - Does not create candidate saved-job rows by itself; candidate-facing selection happens separately.
+- Company detail pages show jobs associated by `job_listings.company_id = companies.id` first. Rows without `company_id` can be shown by normalized company-name fallback only when the synced job has not been canonicalized to a company yet.
 
 `job_listing_sources`
 

@@ -4,11 +4,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from html import escape, unescape
+from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import select
+from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import AuthContext, require_auth_context
@@ -19,7 +21,7 @@ from .company_canonicalization import (
     normalize_company_name,
     upsert_canonical_company,
 )
-from .db.models import CandidateCompany, CandidateProfile, RoleTarget
+from .db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, Company, JobListing, RoleTarget
 from .db.session import get_db_session
 from .model_connector import (
     ModelConfigurationError,
@@ -364,6 +366,9 @@ class CompanyResponse(BaseModel):
     website_url: str | None
     careers_url: str | None
     job_listings_url: str | None
+    greenhouse_board_token: str | None = None
+    ashby_board_url: str | None = None
+    lever_slug: str | None = None
     description: str | None
     headquarters_city: str | None
     headquarters_country: str | None
@@ -375,6 +380,8 @@ class CompanyResponse(BaseModel):
     fit_reason: str | None
     source_urls: list[str]
     source_summary: str | None
+    data_confidence: str
+    provider_grounding_metadata_summary: dict[str, Any] = Field(default_factory=dict)
     discovery_query: str | None
     search_queries_used: list[str]
     discovered_by: str | None
@@ -386,6 +393,76 @@ class CompanyResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_checked_at: datetime | None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    active_job_count: int = 0
+    saved_job_count: int = 0
+    application_count: int = 0
+    open_application_count: int = 0
+    can_sync_jobs: bool = False
+    sync_providers: list[str] = Field(default_factory=list)
+
+
+class CompanyDetailJobResponse(BaseModel):
+    id: str
+    saved_job_id: str | None = None
+    title: str
+    company_name: str
+    job_url: str | None = None
+    canonical_url: str | None = None
+    apply_url: str | None = None
+    source_url: str | None = None
+    source_provider: str | None = None
+    provider_type: str | None = None
+    ats_provider: str | None = None
+    ats_board_token: str | None = None
+    location: str | None = None
+    remote_work_mode: str | None = None
+    employment_type: str | None = None
+    salary_text: str | None = None
+    description_excerpt: str | None = None
+    full_description: str | None = None
+    description_html: str | None = None
+    source_status: str | None = None
+    is_active: bool
+    posting_date: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    saved_status: str | None = None
+    saved_archived_at: str | None = None
+    has_application: bool = False
+    application_id: str | None = None
+
+
+class CompanyDetailApplicationResponse(BaseModel):
+    id: str
+    saved_job_id: str | None = None
+    company_id: str | None = None
+    company_name: str
+    job_title: str
+    job_url: str | None = None
+    location: str | None = None
+    source: str | None = None
+    status: str
+    date_applied: str | None = None
+    next_follow_up_date: str | None = None
+    archived_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CompanyDetailResponse(CompanyResponse):
+    jobs: list[CompanyDetailJobResponse] = Field(default_factory=list)
+    applications: list[CompanyDetailApplicationResponse] = Field(default_factory=list)
+
+
+class CompanyActionResponse(BaseModel):
+    ok: bool = True
+    company_id: str
+    candidate_company_id: str
+    action: str
+    message: str
+    company: CompanyResponse
 
 
 @dataclass(frozen=True)
@@ -453,7 +530,127 @@ def list_companies(
     if review_status is not None:
         statement = statement.where(CandidateCompany.review_status == review_status)
 
-    return [serialize_company(link) for link in session.scalars(statement)]
+    return [serialize_company(link, session=session, candidate_profile_id=auth.candidate_profile.id) for link in session.scalars(statement)]
+
+
+@router.get("/companies/{company_ref}", response_model=CompanyDetailResponse)
+def get_company_detail(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    company = link.company
+    jobs = list_company_job_listings(session, company)
+    saved_links_by_listing_id = load_saved_jobs_by_listing_id(session, jobs, auth.candidate_profile.id)
+    applications = list_company_applications(session, company, auth.candidate_profile.id)
+    applications_by_saved_job_id = {
+        application.saved_job_id: application
+        for application in applications
+        if application.saved_job_id
+    }
+    payload = serialize_company(link, session=session, candidate_profile_id=auth.candidate_profile.id)
+    payload["jobs"] = [
+        serialize_company_detail_job(
+            job,
+            saved_job=saved_links_by_listing_id.get(job.id),
+            application=applications_by_saved_job_id.get(saved_links_by_listing_id[job.id].id)
+            if job.id in saved_links_by_listing_id
+            else None,
+        )
+        for job in jobs
+    ]
+    payload["applications"] = [serialize_company_detail_application(application) for application in applications]
+    return payload
+
+
+@router.post("/companies/{company_ref}/archive", response_model=CompanyActionResponse)
+def archive_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    archived = link.archived_at is None
+    if archived:
+        link.archived_at = datetime.now(timezone.utc)
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="archive",
+        message="Company archived. It is hidden from active company discovery but preserved."
+        if archived
+        else "Company was already archived.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/restore", response_model=CompanyActionResponse)
+def restore_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    restored = link.archived_at is not None
+    if restored:
+        link.archived_at = None
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="restore",
+        message="Company restored." if restored else "Company was already active.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/avoid", response_model=CompanyActionResponse)
+def avoid_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    link.archived_at = None
+    link.review_status = "avoided"
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="avoid",
+        message="Company moved to the avoid list.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
+
+
+@router.post("/companies/{company_ref}/watch", response_model=CompanyActionResponse)
+def watch_company(
+    company_ref: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    link = get_owned_candidate_company_or_404(session, company_ref, auth.candidate_profile.id)
+    link.archived_at = None
+    if is_avoided_review_status(link.review_status):
+        link.review_status = "reviewed"
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return company_action_response(
+        link,
+        action="watch",
+        message="Company moved to the watch list.",
+        session=session,
+        candidate_profile_id=auth.candidate_profile.id,
+    )
 
 
 def run_company_discovery(
@@ -1933,8 +2130,58 @@ def preview_model_response(text: str) -> str:
     return text.replace("\r", " ").replace("\n", " ").strip()[:MODEL_RESPONSE_LOG_PREVIEW_CHARS]
 
 
-def serialize_company(link: CandidateCompany) -> dict[str, Any]:
+HIDDEN_SAVED_JOB_STATUSES = {"model_rejected", "model_rejection_reset"}
+TERMINAL_APPLICATION_STATUSES = {"rejected", "withdrawn"}
+PROVIDER_METADATA_SUMMARY_KEYS = {
+    "provider",
+    "source",
+    "searchQuery",
+    "search_query",
+    "discoveryQuery",
+    "discovery_query",
+    "industry",
+    "employeeCount",
+    "employee_count",
+    "employeeCountRange",
+    "employee_count_range",
+    "fundingStage",
+    "funding_stage",
+    "totalFundingUsd",
+    "total_funding_usd",
+    "technologyNames",
+    "technologySlugs",
+    "keywordSlugs",
+    "linkedinUrl",
+    "linkedin_url",
+    "numJobs",
+    "numJobsFound",
+    "numJobsLast30Days",
+    "atsInference",
+    "greenhouseBoardToken",
+    "ashbyBoardUrl",
+    "leverSlug",
+    "unsupportedAtsUrls",
+}
+
+
+def serialize_company(
+    link: CandidateCompany,
+    *,
+    session: Session | None = None,
+    candidate_profile_id: str | None = None,
+) -> dict[str, Any]:
     company = link.company
+    counts = (
+        company_counts(session, company, candidate_profile_id or link.candidate_profile_id)
+        if session is not None
+        else {
+            "active_job_count": 0,
+            "saved_job_count": 0,
+            "application_count": 0,
+            "open_application_count": 0,
+        }
+    )
+    sync_providers = company_sync_providers(company)
     return {
         "id": link.id,
         "company_id": link.company_id,
@@ -1946,6 +2193,9 @@ def serialize_company(link: CandidateCompany) -> dict[str, Any]:
         "website_url": company.website_url,
         "careers_url": company.careers_url,
         "job_listings_url": company.job_listings_url,
+        "greenhouse_board_token": company.greenhouse_board_token,
+        "ashby_board_url": company.ashby_board_url,
+        "lever_slug": company.lever_slug,
         "description": company.description,
         "headquarters_city": company.headquarters_city,
         "headquarters_country": company.headquarters_country,
@@ -1957,6 +2207,8 @@ def serialize_company(link: CandidateCompany) -> dict[str, Any]:
         "fit_reason": link.fit_reason,
         "source_urls": clean_company_source_urls([*(company.source_urls or []), *(link.personal_source_urls or [])]),
         "source_summary": company.source_summary,
+        "data_confidence": company.data_confidence,
+        "provider_grounding_metadata_summary": compact_provider_grounding_metadata_summary(link.provider_grounding_metadata),
         "discovery_query": link.discovery_query,
         "search_queries_used": link.search_queries_used or [],
         "discovered_by": link.discovered_by,
@@ -1968,7 +2220,396 @@ def serialize_company(link: CandidateCompany) -> dict[str, Any]:
         "created_at": link.created_at.isoformat() if link.created_at else None,
         "updated_at": link.updated_at.isoformat() if link.updated_at else None,
         "last_checked_at": link.last_checked_at.isoformat() if link.last_checked_at else None,
+        "first_seen_at": company.first_seen_at.isoformat() if company.first_seen_at else None,
+        "last_seen_at": company.last_seen_at.isoformat() if company.last_seen_at else None,
+        **counts,
+        "can_sync_jobs": bool(sync_providers),
+        "sync_providers": sync_providers,
     }
+
+
+def get_owned_candidate_company_or_404(session: Session, company_ref: str, candidate_profile_id: str) -> CandidateCompany:
+    link = session.scalar(
+        select(CandidateCompany)
+        .options(selectinload(CandidateCompany.company))
+        .where(
+            CandidateCompany.candidate_profile_id == candidate_profile_id,
+            or_(CandidateCompany.id == company_ref, CandidateCompany.company_id == company_ref),
+        )
+    )
+    if link is None or link.company is None:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    return link
+
+
+def company_sync_providers(company: Company) -> list[str]:
+    providers: list[str] = []
+    if company.greenhouse_board_token:
+        providers.append("greenhouse")
+    if company.ashby_board_url:
+        providers.append("ashby")
+    if company.lever_slug:
+        providers.append("lever")
+    return providers
+
+
+def company_action_response(
+    link: CandidateCompany,
+    *,
+    action: str,
+    message: str,
+    session: Session,
+    candidate_profile_id: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "company_id": link.company_id,
+        "candidate_company_id": link.id,
+        "action": action,
+        "message": message,
+        "company": serialize_company(link, session=session, candidate_profile_id=candidate_profile_id),
+    }
+
+
+def is_avoided_review_status(value: str | None) -> bool:
+    normalized = (value or "").strip().casefold().replace("-", "_")
+    return normalized in {"avoid", "avoided", "do_not_target", "do_not_pursue", "rejected"}
+
+
+def company_counts(session: Session, company: Company, candidate_profile_id: str) -> dict[str, int]:
+    active_job_count = session.scalar(
+        select(func.count(distinct(JobListing.id))).where(
+            company_job_listing_predicate(company),
+            JobListing.is_active.is_(True),
+        )
+    ) or 0
+    saved_job_count = session.scalar(
+        select(func.count(distinct(CandidateSavedJob.id)))
+        .join(JobListing, CandidateSavedJob.job_listing_id == JobListing.id)
+        .where(
+            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+            CandidateSavedJob.archived_at.is_(None),
+            CandidateSavedJob.status.not_in(HIDDEN_SAVED_JOB_STATUSES),
+            company_job_listing_predicate(company),
+        )
+    ) or 0
+    application_statement = (
+        select(func.count(distinct(Application.id)))
+        .outerjoin(CandidateSavedJob, Application.saved_job_id == CandidateSavedJob.id)
+        .outerjoin(JobListing, CandidateSavedJob.job_listing_id == JobListing.id)
+        .where(
+            Application.candidate_profile_id == candidate_profile_id,
+            company_application_predicate(company),
+        )
+    )
+    applied_application_statement = application_statement.where(Application.status == "applied")
+    application_count = session.scalar(applied_application_statement) or 0
+    open_application_count = session.scalar(
+        applied_application_statement.where(
+            Application.archived_at.is_(None),
+            Application.status.not_in(TERMINAL_APPLICATION_STATUSES),
+        )
+    ) or 0
+    return {
+        "active_job_count": active_job_count,
+        "saved_job_count": saved_job_count,
+        "application_count": application_count,
+        "open_application_count": open_application_count,
+    }
+
+
+def list_company_job_listings(session: Session, company: Company) -> list[JobListing]:
+    return list(
+        session.scalars(
+            select(JobListing)
+            .options(selectinload(JobListing.sources))
+            .where(company_job_listing_predicate(company))
+            .order_by(JobListing.is_active.desc(), JobListing.last_seen_at.desc(), JobListing.created_at.desc())
+        )
+    )
+
+
+def list_company_applications(session: Session, company: Company, candidate_profile_id: str) -> list[Application]:
+    rows = list(
+        session.scalars(
+            select(Application)
+            .options(
+                selectinload(Application.saved_job).selectinload(CandidateSavedJob.job_listing).selectinload(JobListing.sources),
+            )
+            .outerjoin(CandidateSavedJob, Application.saved_job_id == CandidateSavedJob.id)
+            .outerjoin(JobListing, CandidateSavedJob.job_listing_id == JobListing.id)
+            .where(
+                Application.candidate_profile_id == candidate_profile_id,
+                company_application_predicate(company),
+            )
+            .order_by(Application.created_at.desc())
+        )
+    )
+    by_id = {application.id: application for application in rows}
+    return list(by_id.values())
+
+
+def load_saved_jobs_by_listing_id(
+    session: Session,
+    jobs: list[JobListing],
+    candidate_profile_id: str,
+) -> dict[str, CandidateSavedJob]:
+    if not jobs:
+        return {}
+    links = session.scalars(
+        select(CandidateSavedJob)
+        .where(
+            CandidateSavedJob.candidate_profile_id == candidate_profile_id,
+            CandidateSavedJob.job_listing_id.in_([job.id for job in jobs]),
+        )
+        .order_by(CandidateSavedJob.created_at.desc())
+    )
+    return {link.job_listing_id: link for link in links if link.job_listing_id}
+
+
+def company_job_listing_predicate(company: Company):
+    clauses = [JobListing.company_id == company.id]
+    normalized_name = normalize_company_name(company.normalized_name or company.name)
+    if normalized_name:
+        clauses.append(
+            and_(
+                JobListing.company_id.is_(None),
+                func.lower(JobListing.company_name) == normalized_name,
+            )
+        )
+    return or_(*clauses)
+
+
+def company_application_predicate(company: Company):
+    return or_(
+        Application.company_id == company.id,
+        company_job_listing_predicate(company),
+    )
+
+
+def serialize_company_detail_job(
+    job: JobListing,
+    *,
+    saved_job: CandidateSavedJob | None = None,
+    application: Application | None = None,
+) -> dict[str, Any]:
+    primary_source = first_job_listing_source(job)
+    return {
+        "id": saved_job.id if saved_job is not None else job.id,
+        "saved_job_id": saved_job.id if saved_job is not None else None,
+        "candidate_profile_id": saved_job.candidate_profile_id if saved_job is not None else None,
+        "job_listing_id": job.id,
+        "jobSearchRunId": saved_job.job_search_run_id if saved_job is not None else None,
+        "highlighted": False,
+        "justAdded": False,
+        "latestDiscoveryRunId": None,
+        "title": job.title,
+        "company_name": job.company_name,
+        "job_url": job_listing_primary_url(job),
+        "canonical_url": job.canonical_url,
+        "apply_url": job.apply_url,
+        "source": primary_source.source_provider if primary_source is not None else None,
+        "source_result_id": primary_source.source_result_id if primary_source is not None else None,
+        "source_query": primary_source.source_query if primary_source is not None else None,
+        "source_url": job.source_url,
+        "source_provider": primary_source.source_provider if primary_source is not None else None,
+        "provider_type": primary_source.provider_type if primary_source is not None else None,
+        "ats_provider": primary_source.ats_provider if primary_source is not None else None,
+        "ats_board_token": primary_source.ats_board_token if primary_source is not None else None,
+        "provenance": "job_sync",
+        "url_verification_status": "provider_unverified",
+        "url_verification_checked_at": None,
+        "url_verification_summary": "Synced provider inventory; URL was not verified during candidate discovery.",
+        "location": job.location_display,
+        "remote_work_mode": job.remote_work_mode,
+        "employment_type": job.employment_type,
+        "salary_min": job.salary_min,
+        "salary_max": job.salary_max,
+        "salary_currency": job.salary_currency,
+        "salary_text": job.salary_text,
+        "description_excerpt": job.description_excerpt,
+        "full_description": job.full_description,
+        "description_html": sanitized_job_description_html_from_source(primary_source),
+        "fit_summary": saved_job.fit_summary if saved_job is not None else None,
+        "user_notes": saved_job.user_notes if saved_job is not None else None,
+        "source_status": job.source_status,
+        "is_active": job.is_active,
+        "posting_date": job.posting_date.isoformat() if job.posting_date else None,
+        "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
+        "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
+        "saved_status": saved_job.status if saved_job is not None else None,
+        "added_at": saved_job.added_at.isoformat() if saved_job is not None and saved_job.added_at else None,
+        "saved_archived_at": saved_job.archived_at.isoformat() if saved_job is not None and saved_job.archived_at else None,
+        "archived_reason": saved_job.archived_reason if saved_job is not None else None,
+        "archived_by_action": saved_job.archived_by_action if saved_job is not None else None,
+        "has_application": application is not None,
+        "application_id": application.id if application is not None else None,
+        "application_status": application.status if application is not None else None,
+        "application_archived_at": application.archived_at.isoformat() if application is not None and application.archived_at else None,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+def serialize_company_detail_application(application: Application) -> dict[str, Any]:
+    return {
+        "id": application.id,
+        "saved_job_id": application.saved_job_id,
+        "company_id": application.company_id,
+        "company_name": application.company_name,
+        "job_title": application.job_title,
+        "job_url": application.job_url,
+        "location": application.location,
+        "source": application.source,
+        "status": application.status,
+        "date_applied": application.date_applied.isoformat() if application.date_applied else None,
+        "next_follow_up_date": application.next_follow_up_date.isoformat() if application.next_follow_up_date else None,
+        "archived_at": application.archived_at.isoformat() if application.archived_at else None,
+        "created_at": application.created_at.isoformat() if application.created_at else None,
+        "updated_at": application.updated_at.isoformat() if application.updated_at else None,
+    }
+
+
+def job_listing_primary_url(job: JobListing) -> str:
+    return job.apply_url or job.canonical_url or job.source_url or f"job_listing:{job.id}"
+
+
+def first_job_listing_source(job: JobListing):
+    for source in job.sources or []:
+        if source.source_provider:
+            return source
+    return None
+
+
+def sanitized_job_description_html_from_source(source: Any | None) -> str | None:
+    raw_metadata = getattr(source, "raw_metadata_json", None) if source is not None else None
+    if not isinstance(raw_metadata, dict):
+        return None
+    for key in ("content", "description"):
+        value = raw_metadata.get(key)
+        if isinstance(value, str):
+            sanitized = sanitize_job_description_html(value)
+            if sanitized:
+                return sanitized
+    retrieve_payload = raw_metadata.get("job_board_retrieve_payload")
+    if isinstance(retrieve_payload, dict):
+        content = retrieve_payload.get("content")
+        if isinstance(content, str):
+            return sanitize_job_description_html(content)
+    return None
+
+
+def sanitize_job_description_html(value: str | None) -> str | None:
+    cleaned = decode_html_markup(value)
+    if not cleaned or "<" not in cleaned:
+        return None
+    sanitizer = CompanyJobDescriptionHtmlSanitizer()
+    sanitizer.feed(cleaned)
+    sanitizer.close()
+    html = re.sub(r"\s+", " ", "".join(sanitizer.parts)).strip()
+    return html or None
+
+
+def decode_html_markup(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    for _ in range(3):
+        decoded = unescape(cleaned)
+        if decoded == cleaned:
+            break
+        cleaned = decoded
+    return cleaned.strip() or None
+
+
+class CompanyJobDescriptionHtmlSanitizer(HTMLParser):
+    ALLOWED_TAGS = {"h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a", "br"}
+    TAG_ALIASES = {"h1": "h2", "h4": "h3", "h5": "h3", "h6": "h3", "b": "strong", "i": "em"}
+    SKIPPED_TAGS = {"script", "style", "iframe", "object", "embed", "svg"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = self.normalize_tag(tag)
+        if normalized_tag in self.SKIPPED_TAGS:
+            self.skip_depth += 1
+            return
+        if self.skip_depth or normalized_tag not in self.ALLOWED_TAGS:
+            return
+        if normalized_tag == "br":
+            self.parts.append("<br>")
+            return
+        if normalized_tag == "a":
+            href = safe_html_href(dict(attrs).get("href"))
+            if href:
+                self.parts.append(f'<a href="{escape(href, quote=True)}" rel="noopener noreferrer" target="_blank">')
+            else:
+                self.parts.append("<a>")
+            return
+        self.parts.append(f"<{normalized_tag}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = self.normalize_tag(tag)
+        if normalized_tag in self.SKIPPED_TAGS:
+            if self.skip_depth:
+                self.skip_depth -= 1
+            return
+        if self.skip_depth or normalized_tag not in self.ALLOWED_TAGS or normalized_tag == "br":
+            return
+        self.parts.append(f"</{normalized_tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(escape(data, quote=False))
+
+    def handle_entityref(self, name: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(escape(unescape(f"&{name};"), quote=False))
+
+    def handle_charref(self, name: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(escape(unescape(f"&#{name};"), quote=False))
+
+    def normalize_tag(self, tag: str) -> str:
+        lowered = tag.lower()
+        return self.TAG_ALIASES.get(lowered, lowered)
+
+
+def safe_html_href(value: str | None) -> str | None:
+    if not value:
+        return None
+    href = value.strip()
+    if href.startswith(("http://", "https://")):
+        return href
+    return None
+
+
+def compact_provider_grounding_metadata_summary(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, dict) or not metadata:
+        return {}
+    summary: dict[str, Any] = {}
+    for key in PROVIDER_METADATA_SUMMARY_KEYS:
+        value = metadata.get(key)
+        if is_compact_metadata_value(value):
+            summary[key] = value
+    return summary
+
+
+def is_compact_metadata_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return len(value) <= 500
+    if isinstance(value, (int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return len(value) <= 20 and all(isinstance(item, (str, int, float, bool)) and len(str(item)) <= 160 for item in value)
+    if isinstance(value, dict):
+        return len(json.dumps(value, default=str)) <= 1200
+    return False
 
 
 def resolve_optional_candidate_profile(

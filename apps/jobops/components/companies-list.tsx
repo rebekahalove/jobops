@@ -1,15 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
+
+export type CompanyBucketId = "watch" | "avoid" | "archived";
 
 export type TrackedCompany = {
   id: string;
   company_id?: string;
   name: string;
   normalized_name: string | null;
+  domain?: string | null;
   website_url: string | null;
   careers_url: string | null;
   job_listings_url: string | null;
+  greenhouse_board_token?: string | null;
+  ashby_board_url?: string | null;
+  lever_slug?: string | null;
   description: string | null;
   headquarters_city: string | null;
   headquarters_country: string | null;
@@ -21,6 +28,8 @@ export type TrackedCompany = {
   fit_reason: string | null;
   source_urls: string[];
   source_summary: string | null;
+  data_confidence?: string | null;
+  provider_grounding_metadata_summary?: Record<string, unknown>;
   discovery_query: string | null;
   search_queries_used: string[];
   discovered_by: string | null;
@@ -28,20 +37,55 @@ export type TrackedCompany = {
   review_status: string;
   notes: string;
   added_at?: string;
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
   last_checked_at: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  active_job_count?: number;
+  saved_job_count?: number;
+  application_count?: number;
+  open_application_count?: number;
+  can_sync_jobs?: boolean;
+  sync_providers?: string[];
+};
+
+const companyBuckets: Array<{ id: CompanyBucketId; label: string }> = [
+  { id: "watch", label: "Watch list" },
+  { id: "avoid", label: "Avoid list" },
+  { id: "archived", label: "Archived" }
+];
+
+const companyEmptyStates: Record<CompanyBucketId, { title: string; copy: string }> = {
+  watch: {
+    title: "No watched companies yet",
+    copy: "Companies you follow or save will appear here."
+  },
+  avoid: {
+    title: "No avoided companies",
+    copy: "Companies you mark as avoid will appear here."
+  },
+  archived: {
+    title: "No archived companies",
+    copy: "Archived companies are hidden from active company discovery but preserved here."
+  }
 };
 
 export function CompaniesList({
   apiBasePath = "/api",
-  initialCompanies = []
+  initialCompanies = [],
+  workspaceBasePath = ""
 }: {
   apiBasePath?: string;
   initialCompanies?: TrackedCompany[];
+  workspaceBasePath?: string;
 }) {
   const [companies, setCompanies] = useState(initialCompanies);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error" | "info">("info");
+  const [activeBucket, setActiveBucket] = useState<CompanyBucketId>(() => defaultCompanyBucket(initialCompanies));
+  const [pendingCompanyAction, setPendingCompanyAction] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -52,12 +96,14 @@ export function CompaniesList({
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
           if (active) {
+            setMessageKind("error");
             setMessage(apiErrorMessage(payload, response.status));
           }
           return;
         }
         if (!Array.isArray(payload)) {
           if (active) {
+            setMessageKind("error");
             setMessage("Company API returned an unexpected response.");
           }
           return;
@@ -68,6 +114,7 @@ export function CompaniesList({
         }
       } catch {
         if (active) {
+          setMessageKind("error");
           setMessage("Company API is unavailable. Start FastAPI to load saved records.");
         }
       }
@@ -81,10 +128,46 @@ export function CompaniesList({
     };
   }, [apiBasePath]);
 
+  const companyCounts = useMemo(() => buildCompanyBucketCounts(companies), [companies]);
+  useEffect(() => {
+    if (companyCounts[activeBucket] > 0 || companies.length === 0) {
+      return;
+    }
+    setActiveBucket(defaultCompanyBucket(companies));
+  }, [activeBucket, companies, companyCounts]);
+
   const sortedCompanies = useMemo(
-    () => [...companies].sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
-    [companies]
+    () =>
+      [...companies]
+        .filter((company) => companyBucket(company) === activeBucket)
+        .sort((left, right) => (right.added_at || right.created_at).localeCompare(left.added_at || left.created_at)),
+    [activeBucket, companies]
   );
+  const activeEmptyState = companyEmptyStates[activeBucket];
+
+  async function runCompanyAction(company: TrackedCompany, action: "archive" | "restore" | "avoid" | "watch") {
+    setPendingCompanyAction(`${company.id}:${action}`);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBasePath}/companies/${company.id}/${action}`, {
+        method: "POST"
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload || typeof payload !== "object" || !("company" in payload)) {
+        throw new Error(apiErrorMessage(payload, response.status));
+      }
+      const updatedCompany = payload.company as TrackedCompany;
+      setCompanies((current) => current.map((item) => (item.id === updatedCompany.id ? updatedCompany : item)));
+      setMessageKind("success");
+      setMessage(typeof payload.message === "string" ? payload.message : "Company updated.");
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : "Company action failed.");
+    } finally {
+      setPendingCompanyAction(null);
+    }
+  }
 
   return (
     <main className="dashboard-main company-workspace">
@@ -94,7 +177,7 @@ export function CompaniesList({
         <p>Review model-derived companies to follow for future roles, with source links kept close for verification.</p>
       </section>
 
-      {message ? <p className="application-message">{message}</p> : null}
+      {message ? <p className={messageKind === "error" ? "application-error" : "application-message"}>{message}</p> : null}
 
       <section className="company-list" aria-labelledby="company-list-title">
         <div className="application-list-header">
@@ -102,82 +185,186 @@ export function CompaniesList({
             <p className="eyebrow">Watchlist</p>
             <h2 id="company-list-title">Saved companies</h2>
           </div>
-          <span>{companies.length}</span>
+          <span>{companyCounts[activeBucket]}</span>
+        </div>
+
+        <div className="queue-tabs" role="tablist" aria-label="Company list filters">
+          {companyBuckets.map((tab) => (
+            <button
+              aria-selected={activeBucket === tab.id}
+              className={`queue-tab${activeBucket === tab.id ? " active" : ""}`}
+              key={tab.id}
+              onClick={() => setActiveBucket(tab.id)}
+              role="tab"
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <strong>{companyCounts[tab.id]}</strong>
+            </button>
+          ))}
         </div>
 
         {sortedCompanies.length > 0 ? (
           <div className="company-card-grid">
             {sortedCompanies.map((company) => (
-              <article className="company-card" key={company.id}>
-                <div className="company-card-main">
-                  <div className="company-card-header">
-                    <h2>{company.name}</h2>
-                    <FoldedText className="company-description" value={company.description || company.fit_reason || "No description saved yet."} />
-                  </div>
-
-                  {company.fit_reason && company.description ? <FoldedText className="company-fit" value={company.fit_reason} /> : null}
-                  <FoldedText className="company-source-summary" value={company.source_summary} />
-                </div>
-
-                <aside className="company-card-rail" aria-label={`${company.name} details`}>
-                  <div className="record-rail-section">
-                    <dl className="company-details record-detail-grid">
-                      <div>
-                        <dt>Headquarters</dt>
-                        <dd>{formatHeadquarters(company)}</dd>
-                      </div>
-                      <div>
-                        <dt>Hiring locations</dt>
-                        <dd>{formatList(company.hiring_locations)}</dd>
-                      </div>
-                      <div>
-                        <dt>Remote policy</dt>
-                        <dd>{formatStatus(company.remote_policy)}</dd>
-                      </div>
-                    </dl>
-                    <TagRow label="Role fit" values={company.role_fit_tags} />
-                    <TagRow label="Mission fit" values={company.mission_fit_tags} />
-                  </div>
-
-                  <div className="record-rail-section">
-                    <dl className="company-details record-detail-grid">
-                      <div>
-                        <dt>Added</dt>
-                        <dd>{formatDate(company.added_at || company.created_at)}</dd>
-                      </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{formatStatus(company.review_status)}</dd>
-                      </div>
-                      <div>
-                        <dt>Derived</dt>
-                        <dd>{formatStatus(company.derivation_status)}</dd>
-                      </div>
-                      <div>
-                        <dt>Discovered by</dt>
-                        <dd>{company.discovered_by || "Unknown"}</dd>
-                      </div>
-                    </dl>
-                  </div>
-
-                  <div className="company-links" aria-label={`${company.name} links`}>
-                    <ExternalLink href={company.website_url} label="Website" />
-                    <ExternalLink href={company.careers_url} label="Careers" />
-                    <ExternalLink href={company.job_listings_url} label="Jobs" />
-                    <SourceLinks urls={company.source_urls} />
-                  </div>
-                </aside>
-              </article>
+              <CompanyCard
+                company={company}
+                key={company.id}
+                onCompanyAction={runCompanyAction}
+                pendingAction={pendingCompanyAction}
+                workspaceBasePath={workspaceBasePath}
+              />
             ))}
           </div>
         ) : (
           <div className="empty-state-block">
-            <h2>No companies yet</h2>
-            <p>Ask the AI Command Center to discover companies to follow. New model-derived records will appear here for review.</p>
+            <h2>{activeEmptyState.title}</h2>
+            <p>{activeEmptyState.copy}</p>
           </div>
         )}
       </section>
     </main>
+  );
+}
+
+export function CompanyCard({
+  company,
+  onCompanyAction,
+  pendingAction,
+  workspaceBasePath = ""
+}: {
+  company: TrackedCompany;
+  onCompanyAction?: (company: TrackedCompany, action: "archive" | "restore" | "avoid" | "watch") => void;
+  pendingAction?: string | null;
+  workspaceBasePath?: string;
+}) {
+  const detailHref = `${workspaceBasePath}/companies/${company.id}`;
+  const websiteUrl = safeExternalUrl(company.website_url);
+  const careersUrl = safeExternalUrl(company.careers_url);
+  const companySiteUrl = websiteUrl || websiteUrlFromDomain(company.domain);
+  const providerMetadata = company.provider_grounding_metadata_summary || {};
+
+  return (
+    <article className="company-card">
+      <div className="company-card-main">
+        <div className="company-card-header">
+          <div>
+            <h2>
+              <Link className="company-card-title-link" href={detailHref}>
+                {company.name}
+              </Link>
+            </h2>
+            {companySiteUrl ? (
+              <a className="company-card-site-link" href={companySiteUrl} rel="noopener noreferrer" target="_blank">
+                {displayUrlHost(companySiteUrl) || company.domain || companySiteUrl}
+              </a>
+            ) : null}
+          </div>
+          <div className="job-card-badges" aria-label={`${company.name} company status`}>
+            {company.archived_at ? <span className="application-status application-status-archived">Archived</span> : null}
+            {company.can_sync_jobs ? <span className="application-status application-status-highlight">Sync-ready</span> : null}
+          </div>
+        </div>
+
+        <div className="company-provider-metadata">
+          <CompanyCounts company={company} />
+          <dl className="company-provider-facts">
+            <MetadataBox label="Headquarters" value={companyHeadquartersValue(company)} />
+            <MetadataBox label={<ProviderIcon label="Greenhouse" mark="GH" provider="greenhouse" />} value={company.greenhouse_board_token} />
+            <MetadataBox label={<ProviderIcon label="Ashby" mark="A" provider="ashby" />} value={displayUrlHost(safeExternalUrl(company.ashby_board_url))} />
+            <MetadataBox label={<ProviderIcon label="Lever" mark="L" provider="lever" />} value={company.lever_slug} />
+          </dl>
+        </div>
+
+        <div className="company-card-content">
+          <section className="job-info-panel company-description-panel" aria-label={`${company.name} company description`}>
+            <h3>Company Description</h3>
+            <div className="job-scroll-text company-scroll-text">
+              {company.description ? preserveText(company.description) : <p>No description available.</p>}
+            </div>
+          </section>
+          {company.fit_reason || company.source_summary ? (
+            <section className="job-info-panel company-fit-panel" aria-label={`${company.name} fit and source notes`}>
+              <h3>Fit / Source Notes</h3>
+              <div className="job-scroll-text company-scroll-text">
+                {company.fit_reason ? <p>{company.fit_reason}</p> : null}
+                {company.source_summary ? <p>{company.source_summary}</p> : null}
+              </div>
+            </section>
+          ) : null}
+          <TagRow label="Role fit" values={company.role_fit_tags} />
+          <TagRow label="Mission fit" values={company.mission_fit_tags} />
+          <TagRow label="Hiring locations" values={company.hiring_locations} />
+          <TagRow label="Technologies" values={metadataList(providerMetadata.technologyNames || providerMetadata.technologySlugs)} />
+          <TagRow label="Keywords" values={metadataList(providerMetadata.keywordSlugs)} />
+        </div>
+      </div>
+
+      <aside className="company-card-rail" aria-label={`${company.name} details`}>
+        <details className="record-rail-section company-card-meta">
+          <summary>Metadata</summary>
+          <dl className="company-details record-detail-grid">
+            <DetailItem label="Added" value={formatDate(company.added_at || company.created_at)} />
+            <DetailItem label="First seen" value={formatDate(company.first_seen_at || company.created_at)} />
+            <DetailItem label="Last seen" value={formatDate(company.last_seen_at)} />
+            <DetailItem label="Last checked" value={formatDate(company.last_checked_at)} />
+            <DetailItem label="Status" value={formatStatus(company.review_status)} />
+            <DetailItem label="Derived" value={formatStatus(company.derivation_status)} />
+            <DetailItem label="Confidence" value={formatStatus(company.data_confidence || "unknown")} />
+            <DetailItem label="Discovered by" value={company.discovered_by || "Unknown"} />
+            <DetailItem label="Source URLs" value={`${safeSourceUrls(company.source_urls).length}`} />
+          </dl>
+        </details>
+
+        <div className="company-links company-card-actions" aria-label={`${company.name} actions`}>
+          {onCompanyAction ? (
+            <>
+              {company.archived_at ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:restore`}
+                  onClick={() => onCompanyAction(company, "restore")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:restore` ? "Restoring..." : "Restore"}
+                </button>
+              ) : (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:archive`}
+                  onClick={() => onCompanyAction(company, "archive")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:archive` ? "Archiving..." : "Archive"}
+                </button>
+              )}
+              {companyBucket(company) === "avoid" ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:watch`}
+                  onClick={() => onCompanyAction(company, "watch")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:watch` ? "Saving..." : "Watch"}
+                </button>
+              ) : !company.archived_at ? (
+                <button
+                  className="secondary-action compact-action"
+                  disabled={pendingAction === `${company.id}:avoid`}
+                  onClick={() => onCompanyAction(company, "avoid")}
+                  type="button"
+                >
+                  {pendingAction === `${company.id}:avoid` ? "Saving..." : "Mark Avoid"}
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          <ExternalLink href={websiteUrl} label="Visit Website" />
+          <ExternalLink href={careersUrl} label="Careers" />
+          <SourceLinks urls={company.source_urls} />
+        </div>
+      </aside>
+    </article>
   );
 }
 
@@ -191,16 +378,53 @@ function apiErrorMessage(payload: unknown, status: number) {
   return `Company API request failed with HTTP ${status}.`;
 }
 
+export function companyBucket(company: TrackedCompany): CompanyBucketId {
+  if (company.archived_at) {
+    return "archived";
+  }
+  if (isAvoidedCompany(company)) {
+    return "avoid";
+  }
+  return "watch";
+}
+
+export function buildCompanyBucketCounts(companies: TrackedCompany[]): Record<CompanyBucketId, number> {
+  return companies.reduce(
+    (counts, company) => {
+      counts[companyBucket(company)] += 1;
+      return counts;
+    },
+    { watch: 0, avoid: 0, archived: 0 }
+  );
+}
+
+export function defaultCompanyBucket(companies: TrackedCompany[]): CompanyBucketId {
+  const counts = buildCompanyBucketCounts(companies);
+  if (counts.watch > 0 || companies.length === 0) {
+    return "watch";
+  }
+  if (counts.avoid > 0) {
+    return "avoid";
+  }
+  return "archived";
+}
+
+function isAvoidedCompany(company: TrackedCompany) {
+  const status = (company.review_status || "").trim().toLowerCase().replace(/-/g, "_");
+  return ["avoid", "avoided", "do_not_target", "do_not_pursue", "rejected"].includes(status);
+}
+
 function SourceLinks({ urls }: { urls: string[] }) {
-  if (urls.length === 0) {
+  const safeUrls = safeSourceUrls(urls);
+  if (safeUrls.length === 0) {
     return null;
   }
 
   return (
     <details className="company-source-links">
-      <summary>Sources ({urls.length})</summary>
+      <summary>Sources ({safeUrls.length})</summary>
       <div>
-        {urls.map((url, index) => (
+        {safeUrls.map((url, index) => (
           <ExternalLink href={url} key={`${url}-${index}`} label={`Source ${index + 1}`} />
         ))}
       </div>
@@ -208,15 +432,82 @@ function SourceLinks({ urls }: { urls: string[] }) {
   );
 }
 
-function ExternalLink({ href, label }: { href: string | null; label: string }) {
-  if (!href) {
+function ExternalLink({ href, label }: { href: string | null | undefined; label: string }) {
+  const safeHref = safeExternalUrl(href);
+  if (!safeHref) {
     return null;
   }
 
   return (
-    <a href={href} rel="noopener noreferrer" target="_blank">
+    <a href={safeHref} rel="noopener noreferrer" target="_blank">
       {label}
     </a>
+  );
+}
+
+function CompanyCounts({ company }: { company: TrackedCompany }) {
+  return (
+    <section className="company-count-panel" aria-label={`${company.name} jobs and applications`}>
+      <h3>Jobs</h3>
+      <dl>
+        <div>
+          <dd>{company.active_job_count ?? 0}</dd>
+          <dt>active</dt>
+        </div>
+        <div>
+          <dd>{company.saved_job_count ?? 0}</dd>
+          <dt>saved</dt>
+        </div>
+        <div>
+          <dd>{company.application_count ?? 0}</dd>
+          <dt>applied</dt>
+        </div>
+        <div>
+          <dd>{company.open_application_count ?? 0}</dd>
+          <dt>open</dt>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function companyHeadquartersValue(company: TrackedCompany) {
+  const value = formatHeadquarters(company);
+  return value === "Unknown" ? null : value;
+}
+
+function ProviderIcon({ label, mark, provider }: { label: string; mark: string; provider: "greenhouse" | "ashby" | "lever" }) {
+  return (
+    <span
+      aria-label={label}
+      className={`company-provider-icon company-provider-icon-${provider}`}
+      role="img"
+      title={label}
+    >
+      {mark}
+    </span>
+  );
+}
+
+function MetadataBox({ label, value }: { label: React.ReactNode; value?: string | null }) {
+  if (!value) {
+    return null;
+  }
+
+  return (
+    <div className="job-primary-metadata-item">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
   );
 }
 
@@ -235,43 +526,71 @@ function TagRow({ label, values }: { label: string; values: string[] }) {
   );
 }
 
-function FoldedText({ value, className }: { value?: string | null; className: string }) {
-  if (!value) {
-    return null;
-  }
-  const preview = previewText(value);
-  if (preview === value) {
-    return <p className={className}>{value}</p>;
-  }
-  return (
-    <details className={`folded-text ${className}`}>
-      <summary>{preview}</summary>
-      <p>{value}</p>
-    </details>
-  );
-}
-
-function previewText(value: string) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= 145) {
-    return compact;
-  }
-  return `${compact.slice(0, 145).trimEnd()}...`;
-}
-
 function formatHeadquarters(company: TrackedCompany) {
   const values = [company.headquarters_city, company.headquarters_country].filter(Boolean);
   return values.length > 0 ? values.join(", ") : "Unknown";
 }
 
-function formatList(values: string[]) {
-  return values.length > 0 ? values.join(", ") : "Unknown";
+export function formatStatus(value?: string | null) {
+  return (value || "unknown").replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
-function formatStatus(value: string) {
-  return value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
-}
-
-function formatDate(value: string) {
+export function formatDate(value?: string | null) {
+  if (!value) {
+    return "Unknown";
+  }
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
+export function safeExternalUrl(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function websiteUrlFromDomain(value: string | null | undefined) {
+  const cleaned = (value || "").trim();
+  if (!cleaned || /\s/.test(cleaned) || cleaned.includes("/")) {
+    return null;
+  }
+  return safeExternalUrl(`https://${cleaned}`);
+}
+
+function safeSourceUrls(urls: string[]) {
+  return urls.map((url) => safeExternalUrl(url)).filter((url): url is string => Boolean(url));
+}
+
+function displayUrlHost(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function metadataList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8);
+}
+
+function preserveText(value: string) {
+  const paragraphs = value
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) {
+    return <p>{value}</p>;
+  }
+  return paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>);
 }
