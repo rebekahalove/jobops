@@ -43,12 +43,41 @@ describe("dashboard auth login route", () => {
     expect(setCookie).toContain("jobops_session=test-session");
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Lax");
+    expect(setCookie).not.toContain("Secure");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://api.test/v1/auth/session",
       expect.objectContaining({
         body: JSON.stringify({ username: "rebekah-love", password: "test-password" })
       })
     );
+  });
+
+  it("preserves secure backend session cookies over https", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        headers: {
+          "Set-Cookie": "jobops_session=test-session; Max-Age=43200; Path=/; SameSite=Lax; HttpOnly; Secure"
+        },
+        status: 200
+      })
+    );
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("https://next.test/jobops/api/dashboard-auth/login", {
+        body: new URLSearchParams({
+          username: "rebekah-love",
+          password: "test-password",
+          returnTo: "/jobops/applications"
+        }),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        method: "POST"
+      })
+    );
+
+    expect(response.headers.get("set-cookie")).toContain("Secure");
   });
 
   it("does not create a backend session without a username", async () => {

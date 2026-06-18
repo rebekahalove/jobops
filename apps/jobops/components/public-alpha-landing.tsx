@@ -301,5 +301,5 @@ function displayMetricValue(value: PublicJobOpsMetric["value"]) {
     return "Coming soon";
   }
 
-  return value.toLocaleString();
+  return new Intl.NumberFormat("en-US").format(value);
 }
