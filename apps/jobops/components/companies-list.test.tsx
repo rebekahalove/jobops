@@ -240,6 +240,8 @@ describe("Companies list", () => {
     expect(source).toContain("TheirStack company search or model-grounded discovery");
     expect(source).toContain("Gemini/model-grounded search");
     expect(source).toContain("COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS");
+    expect(source).toContain("loadIfActive({ clearWhenMissing: true })");
+    expect(source).toContain("loadIfActive({ clearWhenMissing: false })");
     expect(source).toContain("Source timeline / Provider calls");
   });
 

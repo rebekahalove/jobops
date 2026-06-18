@@ -23,15 +23,17 @@ export function CompanyDiscoveryDiagnostics({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const pendingStartedAtRef = useRef<string | null>(null);
 
-  const loadLatestRun = useCallback(async () => {
+  const loadLatestRun = useCallback(async ({ clearWhenMissing = false }: { clearWhenMissing?: boolean } = {}) => {
     setIsLoading(true);
     try {
       const response = await fetch(`${apiBasePath}/companies/discovery-runs/latest`, { cache: "no-store" });
       const payload = (await response.json().catch(() => null)) as unknown;
       if (response.status === 404) {
-        if (!pendingStartedAtRef.current) {
+        if (clearWhenMissing && !pendingStartedAtRef.current) {
           setLatestRun(null);
           setStatusMessage("No recent company discovery diagnostics found.");
+        } else if (pendingStartedAtRef.current) {
+          setStatusMessage("Waiting for router/source diagnostics...");
         }
         return false;
       }
@@ -59,9 +61,9 @@ export function CompanyDiscoveryDiagnostics({
   useEffect(() => {
     let active = true;
 
-    async function loadIfActive() {
+    async function loadIfActive(options: { clearWhenMissing?: boolean } = {}) {
       if (active) {
-        await loadLatestRun();
+        await loadLatestRun(options);
       }
     }
 
@@ -85,18 +87,22 @@ export function CompanyDiscoveryDiagnostics({
         setPendingRun(null);
         setStatusMessage(null);
       }
-      loadIfActive();
+      loadIfActive({ clearWhenMissing: false });
     }
 
-    loadIfActive();
+    function handleCompaniesUpdated() {
+      loadIfActive({ clearWhenMissing: false });
+    }
+
+    loadIfActive({ clearWhenMissing: true });
     window.addEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
     window.addEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
-    window.addEventListener("jobops:companies-updated", loadIfActive);
+    window.addEventListener("jobops:companies-updated", handleCompaniesUpdated);
     return () => {
       active = false;
       window.removeEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
       window.removeEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
-      window.removeEventListener("jobops:companies-updated", loadIfActive);
+      window.removeEventListener("jobops:companies-updated", handleCompaniesUpdated);
     };
   }, [loadLatestRun]);
 
