@@ -117,11 +117,17 @@ function CompanyDiscoveryDiagnosticsPanel({
 
         <div className="job-discovery-diagnostics-body">
           {pendingRun ? (
-            <section className="diagnostics-section">
-              <h3>Summary</h3>
-              <p className="diagnostics-muted">Waiting for router/source diagnostics...</p>
-              {pendingRun.commandPreview ? <p className="diagnostics-muted">Command: {pendingRun.commandPreview}</p> : null}
-            </section>
+            <>
+              <section className="diagnostics-section">
+                <h3>Summary</h3>
+                <p className="diagnostics-muted">Waiting for router/source diagnostics...</p>
+                {pendingRun.commandPreview ? <p className="diagnostics-muted">Command: {pendingRun.commandPreview}</p> : null}
+              </section>
+              <section className="diagnostics-section">
+                <h3>Source timeline / Provider calls</h3>
+                <p className="diagnostics-muted">Waiting for provider-call detail from the router and company discovery source...</p>
+              </section>
+            </>
           ) : run ? (
             <>
               <section className="diagnostics-section">

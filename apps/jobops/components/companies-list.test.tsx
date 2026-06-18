@@ -229,6 +229,13 @@ describe("Companies list", () => {
     expect(jobsHtml).not.toContain("Company discovery diagnostics");
   });
 
+  it("keeps the provider-call section visible while company diagnostics are pending", async () => {
+    const source = await readFile(new URL("./company-discovery-diagnostics.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("Waiting for provider-call detail from the router and company discovery source");
+    expect(source).toContain("Source timeline / Provider calls");
+  });
+
   it("renders company provider diagnostics for TheirStack and first-party sync rows", () => {
     const html = renderToStaticMarkup(
       <CompanyDiscoveryDiagnostics
