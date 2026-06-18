@@ -184,6 +184,40 @@ def test_direct_url_plan_with_no_url_fails_safely(tmp_path) -> None:
     assert result.diagnostics["noJobsAddedReason"] == "direct_url_missing_url"
 
 
+def test_direct_url_service_uses_router_extracted_url(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        run = JobSearchRun(candidate_profile_id=profile.id, command_text="add this job", search_mode="db_backed", status="started")
+        session.add(run)
+        session.flush()
+        service = DirectJobUrlDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            providers=(GreenhouseDirectJobUrlProvider(client=FakeGreenhouseClient()),),
+        )
+        result = service.run(
+            JobDiscoveryRequest(
+                latest_user_message="add this job",
+                candidate_profile_slug=profile.slug,
+                router_extracted={"url": DIRECT_URL, "commandRouterAction": "add_job_from_url"},
+            ),
+            candidate_profile=profile,
+            current_saved_companies=[],
+            plan=direct_plan(),
+            run=run,
+        )
+        session.commit()
+        saved = session.scalar(select(CandidateSavedJob))
+
+    assert result.added_count == 1
+    assert saved is not None
+    assert saved.job_listing_id is not None
+    assert result.diagnostics["directUrlIngestion"]["urls"] == [DIRECT_URL]
+    assert result.diagnostics["directUrlIngestion"]["noBroadSearch"] is True
+    assert result.diagnostics["planner"]["commandRouterAction"] == "add_job_from_url"
+
+
 def test_parse_direct_job_url_plan_allows_empty_db_queries() -> None:
     plan = parse_db_search_plan(
         json.dumps(

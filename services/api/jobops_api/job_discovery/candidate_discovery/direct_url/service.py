@@ -43,7 +43,12 @@ class DirectJobUrlDiscoveryService:
         plan: DbJobSearchPlan,
         run: JobSearchRun,
     ) -> CandidateDiscoveryResult:
-        urls = extract_http_urls(request.latest_user_message)
+        urls = extract_direct_job_urls(request)
+        command_router_action = (
+            request.router_extracted.get("commandRouterAction")
+            if isinstance(request.router_extracted, dict)
+            else None
+        )
         planner_diagnostics = {
             "status": "planned",
             "modelUsed": True,
@@ -57,6 +62,7 @@ class DirectJobUrlDiscoveryService:
             "rejectedPlans": list(plan.rejected_plans),
             "finalPlanStatus": plan.final_plan_status,
             "directUrlCount": len(urls),
+            "commandRouterAction": command_router_action,
         }
         if not urls:
             return self.complete_without_ingestion(
@@ -154,6 +160,9 @@ class DirectJobUrlDiscoveryService:
             "updatedCount": updated_count,
             "failedCount": failed_count,
             "unsupportedCount": unsupported_count,
+            "supportedUrlCount": successful_count + failed_count,
+            "unsupportedUrlCount": unsupported_count,
+            "noBroadSearch": True,
         }
         diagnostics["addedJobIds"] = [link.id for link in selected_links]
         diagnostics["addedJobListingIds"] = [link.job_listing_id for link in selected_links if link.job_listing_id]
@@ -221,7 +230,14 @@ class DirectJobUrlDiscoveryService:
             review_diagnostics={"modelReviewCompleted": False, "modelReviewSkippedReason": "direct_job_url"},
             planner_diagnostics=planner_diagnostics,
         )
-        diagnostics["directUrlIngestion"] = {"urls": [], "results": direct_url_results, "successfulCount": 0}
+        diagnostics["directUrlIngestion"] = {
+            "urls": [],
+            "results": direct_url_results,
+            "successfulCount": 0,
+            "supportedUrlCount": 0,
+            "unsupportedUrlCount": 0,
+            "noBroadSearch": True,
+        }
         diagnostics["noJobsAddedReason"] = no_jobs_added_reason
         diagnostics["addedJobIds"] = []
         diagnostics["addedJobListingIds"] = []
@@ -259,6 +275,17 @@ def extract_http_urls(text: str) -> list[str]:
         if url and key not in seen:
             urls.append(url)
             seen.add(key)
+    return urls
+
+
+def extract_direct_job_urls(request: JobDiscoveryRequest) -> list[str]:
+    urls = extract_http_urls(request.latest_user_message)
+    extracted = request.router_extracted if isinstance(request.router_extracted, dict) else {}
+    extracted_url = extracted.get("url")
+    if isinstance(extracted_url, str):
+        for url in extract_http_urls(extracted_url):
+            if url.casefold() not in {existing.casefold() for existing in urls}:
+                urls.append(url)
     return urls
 
 
