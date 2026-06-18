@@ -1274,6 +1274,24 @@ def test_latest_company_discovery_diagnostics_returns_persisted_run_rows() -> No
                 ],
             },
         )
+        session.add(
+            command_log(
+                profile.id,
+                result_payload={
+                    "linkedCompanyCount": 99,
+                    "providerDiagnostics": [
+                        {
+                            "stage": "company_source",
+                            "provider": "legacy-log",
+                            "status": "completed",
+                            "label": "Legacy log row",
+                            "requestSummary": {"api_key": "should-not-exist"},
+                        }
+                    ],
+                    "theirstackDiagnostics": {"rawCompanyCount": 99},
+                },
+            )
+        )
         session.commit()
 
         payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
@@ -1291,6 +1309,9 @@ def test_latest_company_discovery_diagnostics_returns_persisted_run_rows() -> No
     assert "authorization" not in model_row["requestSummary"]
     assert "rawProviderPayload" not in model_row["resultSummary"]
     assert payload["companies"][0]["dataOriginSource"] == "https://civicactions.com/careers"
+    assert payload["linkedCompanyCount"] == 1
+    assert "legacy-log" not in json.dumps(payload)
+    assert "should-not-exist" not in json.dumps(payload)
 
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
