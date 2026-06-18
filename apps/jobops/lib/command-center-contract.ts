@@ -153,6 +153,22 @@ export type JobSearchRunDiagnostics = {
     finalPlanStatus?: string | null;
     resultReplanCount?: number | null;
     resultReplanReason?: string | null;
+    providerConsiderations?: Array<{
+      providerName?: string | null;
+      providerRole?: string | null;
+      registeredAsJobDetailProvider?: boolean;
+      registeredAsCompanyDiscoveryProvider?: boolean;
+      available?: boolean;
+      enabled?: boolean;
+      hasApiKey?: boolean;
+      consideredForFreshDiscovery?: boolean;
+      selectedForFreshDiscovery?: boolean;
+      selectedByPlanner?: boolean;
+      called?: boolean;
+      status?: string | null;
+      skippedReason?: string | null;
+      resultSummary?: string | null;
+    }>;
     plannedSyncSignatures?: JobSearchPlannerSyncSignature[];
     existingSyncSignaturesSelected?: JobSearchPlannerSyncSignature[];
     plannedDbQueries?: Array<{
@@ -193,6 +209,9 @@ export type JobSearchRunDiagnostics = {
       created?: number | null;
       updated?: number | null;
       failed?: number | null;
+      providerName?: string | null;
+      providerType?: string | null;
+      error?: string | null;
     }>;
     runCount?: number;
     rawResultCount?: number;

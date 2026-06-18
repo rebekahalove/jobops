@@ -261,6 +261,19 @@ describe("AI command center", () => {
     expect(html).toContain('role="status"');
   });
 
+  it("wires command running state to a spinner, status note, and duplicate-run guard", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+    const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(source).toContain("const isCommandRunning = isSubmitting || hasActiveDiscoveryRun");
+    expect(source).toContain("disabled={isCommandRunning}");
+    expect(source).toContain("className=\"jobops-inline-spinner\"");
+    expect(source).toContain("Keep this page open until discovery finishes.");
+    expect(source).toContain("finally {\n      setIsSubmitting(false);");
+    expect(css).toContain(".jobops-inline-spinner");
+    expect(css).toContain("animation: jobops-spin");
+  });
+
   it("renders jobs returned by a job-discovery result on the action card", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter

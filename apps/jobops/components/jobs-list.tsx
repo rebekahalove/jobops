@@ -717,6 +717,7 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
   const diagnostics = run.diagnostics;
   const planner = diagnostics?.planner;
   const plannerSyncRows = [...(planner?.plannedSyncSignatures ?? []), ...(planner?.existingSyncSignaturesSelected ?? [])];
+  const plannerProviderRows = planner?.providerConsiderations ?? [];
   const plannerQueryRows = planner?.plannedDbQueries ?? [];
   const syncRows = diagnostics?.jobSync?.runs ?? [];
   const queryRows = diagnostics?.databaseQueries?.queries ?? [];
@@ -771,6 +772,27 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
             Planning failed: {planner.error || "unknown"}
             {planner.errorDetail ? ` - ${planner.errorDetail}` : ""}
           </p>
+        ) : null}
+        {plannerProviderRows.length ? (
+          <div className="diagnostics-provider-list">
+            {plannerProviderRows.map((row, index) => (
+              <article className="diagnostics-provider-row" key={`${row.providerName}-${row.status}-${index}`}>
+                <div className="diagnostics-event-header">
+                  <strong>{row.providerName || "Provider"}</strong>
+                  <span>{formatStatus(row.status || "unknown")}</span>
+                </div>
+                <p className="diagnostics-muted">{row.resultSummary || providerConsiderationSummary(row)}</p>
+                <div className="diagnostics-event-meta">
+                  <CompactDetailItem item={{ label: "Role", value: formatStatus(row.providerRole || "unknown") }} />
+                  <CompactDetailItem item={{ label: "Available", value: row.available ? "Yes" : "No" }} />
+                  <CompactDetailItem item={{ label: "Considered", value: row.consideredForFreshDiscovery ? "Yes" : "No" }} />
+                  <CompactDetailItem item={{ label: "Selected", value: row.selectedForFreshDiscovery ? "Yes" : "No" }} />
+                  <CompactDetailItem item={{ label: "Called", value: row.called ? "Yes" : "No" }} />
+                  <CompactDetailItem item={{ label: "Skip reason", value: formatStatus(row.skippedReason || "None") }} />
+                </div>
+              </article>
+            ))}
+          </div>
         ) : null}
         {plannerSyncRows.length ? (
           <div className="diagnostics-provider-list">
@@ -832,15 +854,17 @@ function DbBackedDiagnosticsSections({ run }: { run: JobSearchRunStatus }) {
             {syncRows.map((row, index) => (
               <article className="diagnostics-provider-row" key={`${row.syncKey}-${row.status}-${index}`}>
                 <div className="diagnostics-event-header">
-                  <strong>{row.syncKey || "job_sync"}</strong>
+                  <strong>{row.syncKey || row.providerName || "job_sync"}</strong>
                   <span>{formatStatus(row.status || "unknown")}</span>
                 </div>
                 <div className="diagnostics-event-meta">
+                  {row.providerName ? <CompactDetailItem item={{ label: "Provider", value: formatStatus(row.providerName) }} /> : null}
                   <CompactDetailItem item={{ label: "Raw", value: formatNumber(row.raw) ?? "0" }} />
                   <CompactDetailItem item={{ label: "Normalized", value: formatNumber(row.normalized) ?? "0" }} />
                   <CompactDetailItem item={{ label: "Created", value: formatNumber(row.created) ?? "0" }} />
                   <CompactDetailItem item={{ label: "Updated", value: formatNumber(row.updated) ?? "0" }} />
                   {row.failed ? <CompactDetailItem item={{ label: "Failed", value: formatNumber(row.failed) ?? "0" }} /> : null}
+                  {row.error ? <CompactDetailItem item={{ label: "Error", value: row.error }} /> : null}
                 </div>
               </article>
             ))}
@@ -1383,6 +1407,19 @@ function formatValidationIssue(issue: unknown) {
 
 function formatStatus(value: string) {
   return value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function providerConsiderationSummary(row: { providerName?: string | null; called?: boolean; selectedForFreshDiscovery?: boolean; skippedReason?: string | null }) {
+  if (row.called) {
+    return `${row.providerName || "Provider"} was called for this run.`;
+  }
+  if (row.selectedForFreshDiscovery) {
+    return `${row.providerName || "Provider"} was selected for fresh discovery consideration but was not called as a job-detail source.`;
+  }
+  if (row.skippedReason) {
+    return `${row.providerName || "Provider"} was skipped: ${formatStatus(row.skippedReason)}.`;
+  }
+  return `${row.providerName || "Provider"} was considered for this run.`;
 }
 
 function formatOptionalStatus(value: string | null) {

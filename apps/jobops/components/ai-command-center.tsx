@@ -89,6 +89,15 @@ export function AiCommandCenter({
     () => (latestAction ? `Latest planned action: ${latestAction.title}` : "Command history"),
     [latestAction]
   );
+  const hasActiveDiscoveryRun = Boolean(activeJobDiscoveryRunId || activeCompanyDiscoveryRunId);
+  const isCommandRunning = isSubmitting || hasActiveDiscoveryRun;
+  const commandRunningLabel = isSubmitting
+    ? "Routing command..."
+    : activeJobDiscoveryRunId
+      ? "Searching providers..."
+      : activeCompanyDiscoveryRunId
+        ? "Grounding company results..."
+        : null;
 
   useEffect(() => {
     const conversation = conversationRef.current;
@@ -859,13 +868,25 @@ export function AiCommandCenter({
             ref={fileInputRef}
             type="file"
           />
-          <button className="secondary-action button-action" onClick={() => fileInputRef.current?.click()} type="button">
+          <button className="secondary-action button-action" disabled={isSubmitting} onClick={() => fileInputRef.current?.click()} type="button">
             Add file
           </button>
-          <button className="primary-action button-action" disabled={isSubmitting} suppressHydrationWarning type="submit">
-            {isSubmitting ? "Working..." : "Run command"}
+          <button
+            aria-busy={isCommandRunning}
+            className="primary-action button-action"
+            disabled={isCommandRunning}
+            suppressHydrationWarning
+            type="submit"
+          >
+            {isCommandRunning ? <span aria-hidden="true" className="jobops-inline-spinner" /> : null}
+            {commandRunningLabel || "Run command"}
           </button>
         </div>
+        {isCommandRunning ? (
+          <p className="attachment-state command-running-state" role="status">
+            {commandRunningLabel} Keep this page open until discovery finishes.
+          </p>
+        ) : null}
         {attachmentStatus ? <p className="attachment-state">{attachmentStatus}</p> : null}
       </form>
     </section>
