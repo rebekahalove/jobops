@@ -16,6 +16,7 @@ from jobops_api.command_router import (
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from jobops_api.db.models import Base, ProfileFactDraft, ProfileFieldValue, RoleTarget
 from jobops_api.db.seed_profile import seed_public_profile
+from jobops_api.model_connector import ModelResponse
 from jobops_api.profiles import get_candidate_profile_by_slug
 from jobops_api.settings import Settings
 
@@ -188,9 +189,12 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             ("Check for relevant jobs at Tomoro", "job_discovery"),
             ("Look for jobs at Tomoro", "job_discovery"),
             ("Find jobs from my companies list", "job_discovery"),
+            ("Find jobs at companies I'm following", "job_discovery"),
             ("Find remote applied AI engineer jobs over $130k", "job_discovery"),
             ("Try something broader", "job_discovery"),
             ("Show me roles I should consider", "job_discovery"),
+            ("Find companies hiring AI engineers", "company_discovery"),
+            ("Find companies hiring for applied AI roles", "company_discovery"),
             ("Find me a dozen progressive politics companies who hire AI engineers", "company_discovery"),
             (
                 "Are there any companies that I should be following, who hire for roles like this? I don't want to work for defense contractors.",
@@ -216,6 +220,33 @@ def test_mock_command_router_routes_examples(tmp_path: Path) -> None:
             assert result.decision is not None
             assert result.decision.action_type == expected_action
             assert result.decision.confidence == "high"
+
+
+def test_command_router_corrects_company_hiring_request_misrouted_as_job_discovery(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+
+        result = run_command_router(
+            CommandRouterRequest(
+                latest_user_message="Find companies hiring AI engineers.",
+                active_workspace="companies",
+                candidate_profile=profile,
+            ),
+            connector=MisroutingCommandRouterConnector(),
+            db_session=session,
+            settings=make_settings(tmp_path),
+        )
+
+    assert result.decision is not None
+    assert result.decision.action_type == "company_discovery"
+    assert result.decision.target_workspace == "companies"
+    assert result.body["result"]["routerCorrection"] == {
+        "fromActionType": "job_discovery",
+        "toActionType": "company_discovery",
+        "reason": "explicit_company_lead_request",
+    }
 
 
 def test_mock_command_router_preserves_company_for_job_search(tmp_path: Path) -> None:
@@ -282,6 +313,33 @@ def add_candidate_company(
         source_urls=source_urls or [],
     )
     ensure_candidate_company_link(session, candidate_profile_id=candidate_profile_id, company=company)
+
+
+class MisroutingCommandRouterConnector:
+    def generate(self, request) -> ModelResponse:
+        return ModelResponse(
+            text=json.dumps(
+                {
+                    "actionType": "job_discovery",
+                    "confidence": "high",
+                    "targetWorkspace": "jobs",
+                    "reason": "Incorrectly interpreted hiring companies as concrete jobs.",
+                    "extracted": {
+                        "companyId": None,
+                        "companyName": None,
+                        "jobId": None,
+                        "applicationId": None,
+                        "url": None,
+                        "field": None,
+                        "rawText": None,
+                    },
+                    "requiresConfirmation": False,
+                    "clarifyingQuestion": None,
+                }
+            ),
+            provider="fake",
+            model="fake",
+        )
 
 
 def make_settings(repo_root: Path) -> Settings:

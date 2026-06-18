@@ -1141,7 +1141,7 @@ def interpret_command(command: str, active_workspace: str | None = None) -> Comm
 
     if is_company_update_command(normalized):
         return "company_update"
-    if is_company_discovery_command(normalized, active_workspace):
+    if is_company_discovery_command(normalized, active_workspace) and not is_concrete_job_search_command(normalized):
         return "company_discovery"
     if is_job_url_intake_command(normalized):
         return "add_job_from_url"
@@ -1241,6 +1241,7 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         "company watchlist",
         "find me companies",
         "find companies",
+        "companies hiring",
         "discover companies",
         "company discovery",
         "companies operating",
@@ -1254,6 +1255,8 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         return True
     if "companies" in normalized_command and "that hire" in normalized_command:
         return True
+    if "companies" in normalized_command and "hiring" in normalized_command:
+        return True
     if "companies" in normalized_command and any(
         signal in normalized_command for signal in ["follow", "following", "watch", "track", "research"]
     ):
@@ -1266,6 +1269,27 @@ def is_company_discovery_command(normalized_command: str, active_workspace: str 
         return True
 
     return False
+
+
+def is_concrete_job_search_command(normalized_command: str) -> bool:
+    return any(
+        signal in normalized_command
+        for signal in [
+            "find jobs",
+            "find me jobs",
+            "find some jobs",
+            "look for jobs",
+            "search for jobs",
+            "discover jobs",
+            "jobs from my companies",
+            "jobs at companies",
+            "openings at companies",
+            "job openings",
+            "job postings",
+            "specific jobs",
+            "concrete jobs",
+        ]
+    )
 
 
 def is_company_update_command(normalized_command: str) -> bool:

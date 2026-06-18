@@ -209,11 +209,15 @@ def run_command_router(
             unavailable=True,
         )
 
+    decision, correction = correct_router_decision(decision, context)
+    result_payload = decision.model_dump(by_alias=True)
+    if correction:
+        result_payload["routerCorrection"] = correction
     return CommandRouterServiceResult(
         decision=decision,
         body={
             "ok": True,
-            "result": decision.model_dump(by_alias=True),
+            "result": result_payload,
             **model_request_debug_fields(settings, routed_request),
             **model_response_debug_fields(settings, response),
         },
@@ -257,6 +261,8 @@ Rules:
 - Route company-specific job-search requests like "check for relevant jobs at Tomoro", "look for jobs at Tomoro", and "look for new jobs at companies I'm following" to job_discovery, not company_discovery or company_update.
 - Do not ask what kind of jobs the user wants when profile_context or target_summary is present; job_discovery can use saved targets, saved companies, and the latest message as search context.
 - Route company research/finding/follow-list requests to company_discovery.
+- Route company-lead requests like "find companies hiring AI engineers", "find companies hiring for applied AI roles", "find companies that hire platform engineers", and "find companies to follow for AI roles" to company_discovery, not job_discovery.
+- Filters or hiring-role phrases attached to "companies" describe what companies to find; they do not imply job_discovery unless the user asks to find concrete jobs, openings, roles, or postings.
 - Route requests asking whether, which, or what companies to follow, watch, track, research, or add to the watchlist to company_discovery, even when phrased as career advice.
 - Route resume/profile/target-role/preference updates to profile_intake.
 - Route profile or career advice, brainstorming, wording help, role targeting discussion, and "what should I emphasize" questions to profile_guidance, career_discovery, discussion_only, clarifying_questions, or suggest_profile_changes_without_applying unless the user explicitly asks to save, update, apply, or add the changes.
@@ -435,6 +441,8 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
 
     if url and looks_like_job_url_intake(normalized):
         return router_json("add_job_from_url", "high", "jobs", "User is saving a specific job posting URL.", url=url)
+    if looks_like_company_discovery(normalized, context.get("active_workspace")) and not looks_like_concrete_job_search(normalized):
+        return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
     if looks_like_job_discovery(normalized, context.get("active_workspace")):
         return router_json(
             "job_discovery",
@@ -457,8 +465,6 @@ def build_mock_command_router_response(request: ModelRequest) -> str:
             field=field,
             raw_text=None if field != "notes" else message,
         )
-    if looks_like_company_discovery(normalized, context.get("active_workspace")):
-        return router_json("company_discovery", "high", "companies", "User is asking to find companies to follow.")
     if "follow-up" in normalized or "follow up" in normalized:
         return router_json("follow_up_review", "high", "follow-ups", "User is asking about follow-ups.")
     if "material" in normalized or "cover letter" in normalized or "resume variant" in normalized:
@@ -498,6 +504,34 @@ def parse_router_context_from_request(request: ModelRequest) -> dict[str, Any]:
         return {}
     context = payload.get("router_context") if isinstance(payload, dict) else None
     return context if isinstance(context, dict) else {}
+
+
+def correct_router_decision(
+    decision: CommandRouterOutput,
+    context: dict[str, Any],
+) -> tuple[CommandRouterOutput, dict[str, Any] | None]:
+    normalized = " ".join(str(context.get("latest_user_message") or "").casefold().split())
+    if (
+        decision.action_type == "job_discovery"
+        and looks_like_company_discovery(normalized, context.get("active_workspace"))
+        and not looks_like_concrete_job_search(normalized)
+    ):
+        corrected = decision.model_copy(
+            update={
+                "action_type": "company_discovery",
+                "target_workspace": "companies",
+                "reason": (
+                    "Corrected from job_discovery because the user asked to find companies, "
+                    "and did not ask to find concrete jobs, openings, roles, or postings."
+                ),
+            }
+        )
+        return corrected, {
+            "fromActionType": "job_discovery",
+            "toActionType": "company_discovery",
+            "reason": "explicit_company_lead_request",
+        }
+    return decision, None
 
 
 def router_json(
@@ -679,6 +713,7 @@ def looks_like_company_discovery(normalized: str, active_workspace: object) -> b
         "company watchlist",
         "find me companies",
         "find companies",
+        "companies hiring",
         "discover companies",
         "company discovery",
         "companies operating",
@@ -693,9 +728,32 @@ def looks_like_company_discovery(normalized: str, active_workspace: object) -> b
         return True
     if "companies" in normalized and "that hire" in normalized:
         return True
+    if "companies" in normalized and "hiring" in normalized:
+        return True
     if "companies" in normalized and any(signal in normalized for signal in ["follow", "following", "watch", "track", "research"]):
         return True
     return active_workspace == "companies" and any(signal in normalized for signal in ["find", "discover", "hire", "hiring"])
+
+
+def looks_like_concrete_job_search(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in [
+            "find jobs",
+            "find me jobs",
+            "find some jobs",
+            "look for jobs",
+            "search for jobs",
+            "discover jobs",
+            "jobs from my companies",
+            "jobs at companies",
+            "openings at companies",
+            "job openings",
+            "job postings",
+            "specific jobs",
+            "concrete jobs",
+        ]
+    )
 
 
 def looks_like_profile_intake(normalized: str, active_workspace: object) -> bool:

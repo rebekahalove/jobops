@@ -51,6 +51,8 @@ def test_interprets_profile_related_commands_as_profile_intake() -> None:
     assert command_center_module.interpret_command("https://example.com/careers") == "unknown"
     assert command_center_module.interpret_command("Update CivicActions job listings URL to https://example.com") == "company_update"
     assert command_center_module.interpret_command("Find companies in civic tech.") == "company_discovery"
+    assert command_center_module.interpret_command("Find companies hiring AI engineers.", active_workspace="companies") == "company_discovery"
+    assert command_center_module.interpret_command("Find jobs at companies I'm following.", active_workspace="jobs") == "job_discovery"
     assert (
         command_center_module.interpret_command(
             "Are there any companies that I should be following, who hire for roles like this?"
