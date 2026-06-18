@@ -232,7 +232,10 @@ describe("Companies list", () => {
   it("keeps the provider-call section visible while company diagnostics are pending", async () => {
     const source = await readFile(new URL("./company-discovery-diagnostics.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain("Waiting for provider-call detail from the router and company discovery source");
+    expect(source).toContain("Command router");
+    expect(source).toContain("Company discovery source");
+    expect(source).toContain("Waiting for TheirStack or model-grounded discovery diagnostics");
+    expect(source).toContain("COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS");
     expect(source).toContain("Source timeline / Provider calls");
   });
 

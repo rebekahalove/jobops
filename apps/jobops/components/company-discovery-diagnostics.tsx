@@ -1,7 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { CompanyDiscoveryDiagnosticsStatus } from "../lib/command-center-contract";
+
+const COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS = 2500;
 
 type PendingDiagnostics = {
   commandPreview?: string | null;
@@ -19,66 +21,100 @@ export function CompanyDiscoveryDiagnostics({
   const [pendingRun, setPendingRun] = useState<PendingDiagnostics | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const pendingStartedAtRef = useRef<string | null>(null);
+
+  const loadLatestRun = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${apiBasePath}/companies/discovery-runs/latest`, { cache: "no-store" });
+      const payload = (await response.json().catch(() => null)) as unknown;
+      if (response.status === 404) {
+        if (!pendingStartedAtRef.current) {
+          setLatestRun(null);
+          setStatusMessage("No recent company discovery diagnostics found.");
+        }
+        return false;
+      }
+      if (!response.ok || !isCompanyDiscoveryDiagnosticsStatus(payload)) {
+        setStatusMessage(`Company discovery diagnostics could not be loaded (HTTP ${response.status}).`);
+        return false;
+      }
+      if (pendingStartedAtRef.current && !isDiagnosticsAtOrAfter(payload.createdAt, pendingStartedAtRef.current)) {
+        setStatusMessage("Waiting for router/source diagnostics...");
+        return false;
+      }
+      pendingStartedAtRef.current = null;
+      setLatestRun(payload);
+      setPendingRun(null);
+      setStatusMessage(null);
+      return true;
+    } catch {
+      setStatusMessage("Company discovery diagnostics API is unavailable.");
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [apiBasePath]);
 
   useEffect(() => {
     let active = true;
 
-    async function loadLatestRun() {
-      setIsLoading(true);
-      try {
-        const response = await fetch(`${apiBasePath}/companies/discovery-runs/latest`, { cache: "no-store" });
-        const payload = (await response.json().catch(() => null)) as unknown;
-        if (!active) {
-          return;
-        }
-        if (response.status === 404) {
-          setLatestRun(null);
-          setStatusMessage("No recent company discovery diagnostics found.");
-          return;
-        }
-        if (!response.ok || !isCompanyDiscoveryDiagnosticsStatus(payload)) {
-          setStatusMessage(`Company discovery diagnostics could not be loaded (HTTP ${response.status}).`);
-          return;
-        }
-        setLatestRun(payload);
-        setPendingRun(null);
-        setStatusMessage(null);
-      } catch {
-        if (active) {
-          setStatusMessage("Company discovery diagnostics API is unavailable.");
-        }
-      } finally {
-        if (active) {
-          setIsLoading(false);
-        }
+    async function loadIfActive() {
+      if (active) {
+        await loadLatestRun();
       }
     }
 
     function handleDiscoveryStarted(event: Event) {
       const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
+      const startedAt = new Date().toISOString();
+      pendingStartedAtRef.current = startedAt;
       setPendingRun({
         commandPreview: typeof detail.commandPreview === "string" ? detail.commandPreview : null,
-        startedAt: new Date().toISOString()
+        startedAt
       });
       setLatestRun(null);
       setStatusMessage("Waiting for router/source diagnostics...");
     }
 
     function handleDiscoveryCompleted() {
-      loadLatestRun();
+      loadIfActive();
     }
 
-    loadLatestRun();
+    loadIfActive();
     window.addEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
     window.addEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
-    window.addEventListener("jobops:companies-updated", loadLatestRun);
+    window.addEventListener("jobops:companies-updated", loadIfActive);
     return () => {
       active = false;
       window.removeEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
       window.removeEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
-      window.removeEventListener("jobops:companies-updated", loadLatestRun);
+      window.removeEventListener("jobops:companies-updated", loadIfActive);
     };
-  }, [apiBasePath]);
+  }, [loadLatestRun]);
+
+  useEffect(() => {
+    if (!pendingRun) {
+      return;
+    }
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    async function pollLatestRun() {
+      await loadLatestRun();
+      if (!cancelled && pendingStartedAtRef.current) {
+        timeoutId = window.setTimeout(pollLatestRun, COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS);
+      }
+    }
+
+    timeoutId = window.setTimeout(pollLatestRun, COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [loadLatestRun, pendingRun]);
 
   return <CompanyDiscoveryDiagnosticsPanel isLoading={isLoading} pendingRun={pendingRun} run={latestRun} statusMessage={statusMessage} />;
 }
@@ -125,7 +161,30 @@ function CompanyDiscoveryDiagnosticsPanel({
               </section>
               <section className="diagnostics-section">
                 <h3>Source timeline / Provider calls</h3>
-                <p className="diagnostics-muted">Waiting for provider-call detail from the router and company discovery source...</p>
+                <div className="diagnostics-provider-list">
+                  <article className="diagnostics-provider-row">
+                    <div className="diagnostics-event-header">
+                      <strong>Command router</strong>
+                      <span>Started</span>
+                    </div>
+                    <div className="diagnostics-event-meta">
+                      <span>Router</span>
+                      <span>Command router</span>
+                    </div>
+                    {pendingRun.commandPreview ? <p className="diagnostics-muted">Request: Command preview: {pendingRun.commandPreview}</p> : null}
+                  </article>
+                  <article className="diagnostics-provider-row">
+                    <div className="diagnostics-event-header">
+                      <strong>Company discovery source</strong>
+                      <span>Waiting</span>
+                    </div>
+                    <div className="diagnostics-event-meta">
+                      <span>Company source</span>
+                      <span>Provider pending</span>
+                    </div>
+                    <p className="diagnostics-muted">Waiting for TheirStack or model-grounded discovery diagnostics...</p>
+                  </article>
+                </div>
               </section>
             </>
           ) : run ? (
@@ -437,6 +496,18 @@ function displayUrlHost(value?: string | null) {
 
 function isCompanyDiscoveryDiagnosticsStatus(value: unknown): value is CompanyDiscoveryDiagnosticsStatus {
   return isRecord(value) && typeof value.id === "string" && typeof value.status === "string";
+}
+
+function isDiagnosticsAtOrAfter(createdAt: string | null | undefined, startedAt: string) {
+  if (!createdAt) {
+    return false;
+  }
+  const createdTime = Date.parse(createdAt);
+  const startedTime = Date.parse(startedAt);
+  if (!Number.isFinite(createdTime) || !Number.isFinite(startedTime)) {
+    return true;
+  }
+  return createdTime >= startedTime - 1000;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
