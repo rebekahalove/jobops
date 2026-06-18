@@ -97,6 +97,9 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     assert response.result_payload["companies"][0]["name"] == "Profile-Aligned Example Co"
     assert response.result_payload["companies"][0]["derivation_status"] == "model_derived"
     assert response.result_payload["companies"][0]["review_status"] == "new"
+    provider_rows = response.result_payload["providerDiagnostics"]
+    assert any(row["stage"] == "company_source" and row["provider"] == "mock" for row in provider_rows)
+    assert any(row["stage"] == "persistence" and row["resultSummary"]["savedCompanyCount"] == 2 for row in provider_rows)
 
     with Session(engine) as session:
         saved = list(session.scalars(select(CandidateCompany).join(Company).order_by(Company.name.asc())))
@@ -1237,6 +1240,16 @@ def test_latest_company_discovery_diagnostics_returns_model_grounded_audit() -> 
                     "skippedCompanyCount": 0,
                     "theirStack": {"checked": True, "enabled": True, "used": False, "skippedReason": "planner_chose_model_grounded"},
                     "firstPartySync": {"attempted": False},
+                    "providerDiagnostics": [
+                        {
+                            "stage": "company_source",
+                            "provider": "gemini",
+                            "status": "completed",
+                            "label": "Gemini model-grounded company discovery",
+                            "requestSummary": {"searchGroundingEnabled": True, "authorization": "Bearer should-not-exist"},
+                            "resultSummary": {"savedCompanyCount": 1, "rawProviderPayload": {"secret": "should-not-exist"}},
+                        }
+                    ],
                     "companies": [
                         {
                             "name": "CivicActions",
@@ -1260,6 +1273,12 @@ def test_latest_company_discovery_diagnostics_returns_model_grounded_audit() -> 
     assert payload["theirStack"]["checked"] is True
     assert payload["theirStack"]["used"] is False
     assert payload["theirStack"]["skippedReason"] == "planner_chose_model_grounded"
+    assert payload["providerDiagnostics"][0]["stage"] == "router"
+    model_row = next(row for row in payload["providerDiagnostics"] if row["stage"] == "company_source")
+    assert model_row["provider"] == "gemini"
+    assert model_row["requestSummary"]["searchGroundingEnabled"] is True
+    assert "authorization" not in model_row["requestSummary"]
+    assert "rawProviderPayload" not in model_row["resultSummary"]
     assert payload["companies"][0]["dataOriginSource"] == "https://civicactions.com/careers"
 
 
@@ -1309,8 +1328,30 @@ def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_
     assert "authorization" not in payload["theirStack"]["requestShape"]
     assert "secretToken" not in payload["theirStack"]["requestShape"]
     assert payload["linkedCompanyCount"] == 2
+    theirstack_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "theirstack")
+    assert theirstack_row["stage"] == "company_source"
+    assert theirstack_row["requestSummary"]["requestShape"]["job_filters"] == "<present>"
+    assert "api_key" not in theirstack_row["requestSummary"]["requestShape"]
     assert "secret-theirstack-key" not in json.dumps(payload)
     assert "should-not-exist" not in json.dumps(payload)
+
+
+def test_latest_company_discovery_diagnostics_explains_legacy_logs() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        log = command_log(profile.id, result_payload={"companies": []})
+        session.add(log)
+        session.commit()
+
+        payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
+
+    assert payload["providerDiagnostics"][0]["stage"] == "router"
+    assert (
+        "This command was logged before company discovery diagnostics were added. Run company discovery again to populate detailed diagnostics."
+        in payload["diagnosticMessages"]
+    )
 
 
 def test_company_without_supported_ats_is_not_sync_capable() -> None:
@@ -1392,14 +1433,16 @@ def create_seeded_engine():
 
 
 class SequentialCompanyDiscoveryConnector:
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str], *, provider: str = "mock", model: str = "mock") -> None:
         self.responses = responses
+        self.provider = provider
+        self.model = model
         self.requests = []
 
     def generate(self, request):
         self.requests.append(request)
         text = self.responses.pop(0)
-        return ModelResponse(text=text, provider="mock", model="mock", finish_reason="stop", metadata={})
+        return ModelResponse(text=text, provider=self.provider, model=self.model, finish_reason="stop", metadata={})
 
 
 def company_discovery_response(

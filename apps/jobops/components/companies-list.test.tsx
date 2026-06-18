@@ -194,6 +194,16 @@ describe("Companies list", () => {
             attempted: false,
             providers: []
           },
+          providerDiagnostics: [
+            {
+              stage: "company_source",
+              provider: "gemini",
+              status: "completed",
+              label: "Gemini model-grounded company discovery",
+              requestSummary: { searchGroundingEnabled: true },
+              resultSummary: { savedCompanyCount: 4 }
+            }
+          ],
           companies: [
             {
               name: "CivicActions",
@@ -209,11 +219,109 @@ describe("Companies list", () => {
 
     expect(companyHtml).toContain("Company discovery diagnostics");
     expect(companyHtml).toContain("Gemini model-grounded discovery saved 4 companies");
+    expect(companyHtml).toContain("Source timeline / Provider calls");
+    expect(companyHtml).toContain("Gemini model-grounded company discovery");
+    expect(companyHtml).toContain("Search Grounding Enabled: Yes");
     expect(companyHtml).toContain("TheirStack");
     expect(companyHtml).toContain("Planner chose model grounded");
     expect(companyHtml).not.toContain("id=\"job-discovery-diagnostics-title\"");
     expect(jobsHtml).toContain("id=\"job-discovery-diagnostics-title\"");
     expect(jobsHtml).not.toContain("Company discovery diagnostics");
+  });
+
+  it("renders company provider diagnostics for TheirStack and first-party sync rows", () => {
+    const html = renderToStaticMarkup(
+      <CompanyDiscoveryDiagnostics
+        initialRun={{
+          id: "company-run-2",
+          status: "completed",
+          sourcePath: "theirstack_company_enrichment",
+          sourceProvider: "theirstack",
+          savedCompanyCount: 2,
+          linkedCompanyCount: 2,
+          duplicateCompanyCount: 0,
+          skippedCompanyCount: 1,
+          theirStack: {
+            checked: true,
+            enabled: true,
+            used: true,
+            requestedPages: 1,
+            fetchedPages: 1,
+            rawCompanyCount: 5,
+            normalizedCompanyCount: 4,
+            linkedCandidateCompanyCount: 2,
+            requestShape: { job_filters: "<present>", limit: 25, max_pages: 1 }
+          },
+          firstPartySync: {
+            attempted: true,
+            providers: ["greenhouse", "ashby"],
+            greenhouseBoardsSelected: ["hightouch"],
+            greenhouseBoardsSynced: ["hightouch"],
+            ashbyBoardsSelected: ["https://jobs.ashbyhq.com/ashbyco"],
+            ashbyBoardsSynced: ["https://jobs.ashbyhq.com/ashbyco"],
+            completedCount: 2,
+            failedCount: 0,
+            normalizedJobCount: 7
+          },
+          providerDiagnostics: [
+            {
+              stage: "company_source",
+              provider: "theirstack",
+              status: "completed",
+              label: "TheirStack company search",
+              requestSummary: { requestedPages: 1, requestShape: { job_filters: "<present>", limit: 25 } },
+              resultSummary: { rawCompanyCount: 5, normalizedCompanyCount: 4, linkedCandidateCompanyCount: 2 }
+            },
+            {
+              stage: "first_party_sync",
+              provider: "greenhouse",
+              status: "completed",
+              label: "Greenhouse board sync",
+              resultSummary: { rawResultCount: 3, normalizedJobCount: 3 }
+            },
+            {
+              stage: "first_party_sync",
+              provider: "ashby",
+              status: "completed",
+              label: "Ashby board sync",
+              resultSummary: { rawResultCount: 4, normalizedJobCount: 4 }
+            }
+          ],
+          companies: []
+        }}
+      />
+    );
+
+    expect(html).toContain("Source timeline / Provider calls");
+    expect(html).toContain("TheirStack company search");
+    expect(html).toContain("Raw Company Count: 5");
+    expect(html).toContain("Greenhouse board sync");
+    expect(html).toContain("Ashby board sync");
+  });
+
+  it("renders the legacy company diagnostics message without blanking the panel", () => {
+    const html = renderToStaticMarkup(
+      <CompanyDiscoveryDiagnostics
+        initialRun={{
+          id: "company-run-legacy",
+          status: "completed",
+          sourcePath: "unknown",
+          sourceProvider: "unknown",
+          savedCompanyCount: 0,
+          linkedCompanyCount: 0,
+          duplicateCompanyCount: 0,
+          skippedCompanyCount: 0,
+          providerDiagnostics: [],
+          diagnosticMessages: [
+            "This command was logged before company discovery diagnostics were added. Run company discovery again to populate detailed diagnostics."
+          ],
+          companies: []
+        }}
+      />
+    );
+
+    expect(html).toContain("Company discovery diagnostics");
+    expect(html).toContain("This command was logged before company discovery diagnostics were added");
   });
 
   it("buckets watched, avoided, and archived companies into exactly one tab", () => {

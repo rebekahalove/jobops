@@ -102,6 +102,7 @@ function CompanyDiscoveryDiagnosticsPanel({
       : statusMessage || (isLoading ? "Loading company discovery diagnostics..." : "No recent company discovery diagnostics found.");
   const theirStack = run?.theirStack ?? {};
   const firstPartySync = run?.firstPartySync ?? {};
+  const providerRows = run?.providerDiagnostics ?? [];
 
   return (
     <section className="job-discovery-diagnostics company-discovery-diagnostics" aria-labelledby="company-discovery-diagnostics-title">
@@ -154,6 +155,21 @@ function CompanyDiscoveryDiagnosticsPanel({
                 <p className="diagnostics-muted">{dataSourceSummary(run)}</p>
                 {run.searchQueriesUsed?.length ? <p className="diagnostics-muted">Search queries: {run.searchQueriesUsed.join(", ")}</p> : null}
                 {run.discoveryAngles?.length ? <p className="diagnostics-muted">Discovery angles: {run.discoveryAngles.join(", ")}</p> : null}
+              </section>
+
+              <section className="diagnostics-section">
+                <h3>Source timeline / Provider calls</h3>
+                {providerRows.length ? (
+                  <div className="diagnostics-provider-list">
+                    {providerRows.map((row, index) => (
+                      <CompanyProviderDiagnosticRow row={row} key={`${row.stage}-${row.provider}-${row.label}-${index}`} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="diagnostics-muted">
+                    {run.diagnosticMessages?.[0] || "No provider-call detail was recorded for this company discovery run."}
+                  </p>
+                )}
               </section>
 
               {run.sourcePath === "model_grounded_company_discovery" ? (
@@ -223,6 +239,16 @@ function CompanyDiscoveryDiagnosticsPanel({
                   <p className="diagnostics-muted">No saved-company rows were recorded for this run.</p>
                 )}
               </section>
+              {run.diagnosticMessages?.length ? (
+                <section className="diagnostics-section">
+                  <h3>Diagnostic messages</h3>
+                  {run.diagnosticMessages.map((message, index) => (
+                    <p className="diagnostics-muted" key={`${message}-${index}`}>
+                      {message}
+                    </p>
+                  ))}
+                </section>
+              ) : null}
             </>
           ) : (
             <section className="diagnostics-section">
@@ -233,6 +259,28 @@ function CompanyDiscoveryDiagnosticsPanel({
         </div>
       </details>
     </section>
+  );
+}
+
+function CompanyProviderDiagnosticRow({ row }: { row: NonNullable<CompanyDiscoveryDiagnosticsStatus["providerDiagnostics"]>[number] }) {
+  const requestItems = formatDiagnosticSummaryItems(row.requestSummary);
+  const resultItems = formatDiagnosticSummaryItems(row.resultSummary);
+  const error = formatDiagnosticError(row.error);
+
+  return (
+    <article className="diagnostics-provider-row">
+      <div className="diagnostics-event-header">
+        <strong>{row.label || formatStatus(row.provider || "Provider call")}</strong>
+        <span>{formatStatus(row.status || "unknown")}</span>
+      </div>
+      <div className="diagnostics-event-meta">
+        <span>{formatStatus(row.stage || "unknown stage")}</span>
+        <span>{formatStatus(row.provider || "unknown provider")}</span>
+      </div>
+      {requestItems.length ? <p className="diagnostics-muted">Request: {requestItems.join("; ")}</p> : null}
+      {resultItems.length ? <p className="diagnostics-muted">Result: {resultItems.join("; ")}</p> : null}
+      {error ? <p className="diagnostics-muted">Error: {error}</p> : null}
+    </article>
   );
 }
 
@@ -290,8 +338,56 @@ function formatCompanyDataOrigin(source?: string | null, type?: string | null) {
 function formatRequestShape(value: Record<string, unknown>) {
   return Object.entries(value)
     .slice(0, 8)
-    .map(([key, item]) => `${formatStatus(key)}=${String(item)}`)
+    .map(([key, item]) => `${formatStatus(key)}=${formatDiagnosticValue(item)}`)
     .join(", ");
+}
+
+function formatDiagnosticSummaryItems(value?: Record<string, unknown> | null) {
+  if (!value) {
+    return [];
+  }
+  return Object.entries(value)
+    .filter(([, item]) => item !== null && item !== undefined && item !== "")
+    .slice(0, 10)
+    .map(([key, item]) => `${formatStatus(key)}: ${formatDiagnosticValue(item)}`);
+}
+
+function formatDiagnosticValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length ? value.slice(0, 6).map((item) => formatDiagnosticValue(item)).join(", ") : "None";
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value)
+      .filter(([, item]) => item !== null && item !== undefined && item !== "")
+      .slice(0, 6)
+      .map(([key, item]) => `${formatStatus(key)}=${formatDiagnosticValue(item)}`);
+    return entries.length ? entries.join(", ") : "None";
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  if (typeof value === "number") {
+    return formatNumber(value) ?? String(value);
+  }
+  return String(value);
+}
+
+function formatDiagnosticError(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (isRecord(value)) {
+    const message = value.message;
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+    const items = formatDiagnosticSummaryItems(value);
+    return items.length ? items.join("; ") : null;
+  }
+  return null;
 }
 
 function formatList(values?: string[] | null) {
@@ -316,7 +412,10 @@ function formatStatus(value?: string | null) {
   if (!value) {
     return "Unknown";
   }
-  return value.replace(/_/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
 function displayUrlHost(value?: string | null) {

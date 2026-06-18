@@ -1113,6 +1113,7 @@ def build_enrichment_result_payload(
         linked_companies=companies_payload,
         board_sync=board_sync,
         ashby_sync=ashby_sync,
+        job_search=job_search,
         total_board_sync_completed_count=total_board_sync_completed_count,
         total_board_sync_failed_count=total_board_sync_failed_count,
         total_board_sync_normalized_count=total_board_sync_normalized_count,
@@ -1121,6 +1122,7 @@ def build_enrichment_result_payload(
         "assistantMessage": message,
         "companies": companies_payload,
         "discoveryAudit": discovery_audit,
+        "providerDiagnostics": discovery_audit["providerDiagnostics"],
         "enrichedCompanyCount": len(enrichment.companies),
         "rawCompanyCount": (enrichment.diagnostics or {}).get("rawCompanyCount"),
         "normalizedCompanyCount": (enrichment.diagnostics or {}).get("normalizedCompanyCount"),
@@ -1195,9 +1197,12 @@ def build_clarifying_result_payload(
     context: dict[str, Any],
 ) -> dict[str, Any]:
     questions = list(plan.clarifying_questions) or ["What kind of companies should I enrich or discover?"]
+    discovery_audit = build_clarifying_discovery_audit(plan, validation_issues)
     return {
         "assistantMessage": questions[0],
         "companies": [],
+        "discoveryAudit": discovery_audit,
+        "providerDiagnostics": discovery_audit["providerDiagnostics"],
         "enrichedCompanyCount": 0,
         "linkedCompanyCount": 0,
         "greenhouseBoardTokenCount": 0,
@@ -1331,6 +1336,105 @@ def serialize_enriched_company(link: CandidateCompany) -> dict[str, Any]:
     }
 
 
+def build_company_enrichment_provider_diagnostic(
+    *,
+    stage: str,
+    provider: str,
+    status: str,
+    label: str,
+    request_summary: dict[str, Any] | None = None,
+    result_summary: dict[str, Any] | None = None,
+    error: str | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .company_discovery import build_company_provider_diagnostic
+
+    return build_company_provider_diagnostic(
+        stage=stage,
+        provider=provider,
+        status=status,
+        label=label,
+        request_summary=request_summary,
+        result_summary=result_summary,
+        error=error,
+    )
+
+
+def build_clarifying_discovery_audit(plan: CompanyEnrichmentPlan, validation_issues: list[dict[str, Any]]) -> dict[str, Any]:
+    provider_diagnostics = [
+        build_company_enrichment_provider_diagnostic(
+            stage="planner",
+            provider="model",
+            status="completed",
+            label="Company enrichment planner",
+            request_summary={"useTheirStackCompanySearch": plan.use_theirstack_company_search},
+            result_summary={
+                "requiresClarification": True,
+                "validationIssueCodes": [issue.get("code") for issue in validation_issues if isinstance(issue.get("code"), str)],
+            },
+        )
+    ]
+    if any(issue.get("code") == "theirstack_unavailable" for issue in validation_issues):
+        provider_diagnostics.append(
+            build_company_enrichment_provider_diagnostic(
+                stage="company_source",
+                provider="theirstack",
+                status="skipped",
+                label="TheirStack company search",
+                request_summary={"enabled": False, "requestShape": plan.search.sanitized_shape()},
+                result_summary={"skippedReason": "missing_api_key", "unavailable": True},
+                error={"message": "TheirStack company search is not configured."},
+            )
+        )
+    return {
+        "sourcePath": "theirstack_company_enrichment",
+        "routerAction": "company_discovery",
+        "sourceProvider": "theirstack",
+        "searchGroundingEnabled": None,
+        "modelProvider": None,
+        "modelName": None,
+        "savedCompanyCount": 0,
+        "linkedCompanyCount": 0,
+        "duplicateCompanyCount": 0,
+        "skippedCompanyCount": 0,
+        "zeroNewCompanyReason": "clarificationNeeded",
+        "searchQueriesUsed": [],
+        "discoveryAngles": list(plan.hiring_signal_terms),
+        "companyDiscoveryPreflightBlocked": False,
+        "preflightReason": None,
+        "theirStack": {
+            "checked": True,
+            "enabled": False,
+            "used": False,
+            "skippedReason": "missing_api_key" if any(issue.get("code") == "theirstack_unavailable" for issue in validation_issues) else "clarification_needed",
+            "requestShape": sanitized_company_diagnostic_request_shape(plan.search.sanitized_shape()),
+            "requestedPages": 0,
+            "fetchedPages": 0,
+            "failedPages": 0,
+            "skippedPages": 0,
+            "rawCompanyCount": 0,
+            "normalizedCompanyCount": 0,
+            "upsertedCompanyCount": 0,
+            "linkedCandidateCompanyCount": 0,
+            "errorType": None,
+            "errorMessage": None,
+        },
+        "firstPartySync": {
+            "attempted": False,
+            "providers": [],
+            "greenhouseBoardsSelected": [],
+            "greenhouseBoardsSynced": [],
+            "ashbyBoardsSelected": [],
+            "ashbyBoardsSynced": [],
+            "completedCount": 0,
+            "failedCount": 0,
+            "normalizedJobCount": 0,
+        },
+        "providerDiagnostics": provider_diagnostics,
+        "companies": [],
+        "diagnosticMessages": [],
+    }
+
+
 def build_theirstack_discovery_audit(
     *,
     plan: CompanyEnrichmentPlan,
@@ -1338,6 +1442,7 @@ def build_theirstack_discovery_audit(
     linked_companies: list[dict[str, Any]],
     board_sync: dict[str, Any],
     ashby_sync: dict[str, Any],
+    job_search: dict[str, Any],
     total_board_sync_completed_count: int,
     total_board_sync_failed_count: int,
     total_board_sync_normalized_count: int,
@@ -1345,6 +1450,43 @@ def build_theirstack_discovery_audit(
     diagnostics = enrichment.diagnostics if isinstance(enrichment.diagnostics, dict) else {}
     status = enrichment.status
     used = status != "unavailable"
+    their_stack_summary = {
+        "checked": True,
+        "enabled": bool(diagnostics.get("enabled", used)),
+        "used": used,
+        "skippedReason": None if used else "missing_api_key",
+        "requestShape": sanitized_company_diagnostic_request_shape(
+            diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else plan.search.sanitized_shape()
+        ),
+        "requestedPages": diagnostics.get("requestedPages", 0),
+        "fetchedPages": diagnostics.get("fetchedPages", 0),
+        "failedPages": diagnostics.get("failedPages", 0),
+        "skippedPages": diagnostics.get("skippedPages", 0),
+        "pageNumbersFetched": diagnostics.get("pageNumbersFetched") or diagnostics.get("page_numbers_fetched"),
+        "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
+        "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
+        "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+        "linkedCandidateCompanyCount": diagnostics.get("linkedCandidateCompanyCount", len(linked_companies)),
+        "totalCompanies": diagnostics.get("totalCompanies"),
+        "totalResults": diagnostics.get("totalResults"),
+        "creditsUsed": diagnostics.get("creditsUsed"),
+        "creditsRemaining": diagnostics.get("creditsRemaining"),
+        "errorType": diagnostics.get("errorType"),
+        "errorMessage": diagnostics.get("errorMessage") or enrichment.error_message,
+    }
+    provider_diagnostics = build_theirstack_provider_diagnostics(
+        plan=plan,
+        status=status,
+        their_stack_summary=their_stack_summary,
+        linked_company_count=len(linked_companies),
+        skipped_company_count=max(0, len(enrichment.companies) - len(linked_companies)),
+        board_sync=board_sync,
+        ashby_sync=ashby_sync,
+        job_search=job_search,
+        total_board_sync_completed_count=total_board_sync_completed_count,
+        total_board_sync_failed_count=total_board_sync_failed_count,
+        total_board_sync_normalized_count=total_board_sync_normalized_count,
+    )
     return {
         "sourcePath": "theirstack_company_enrichment",
         "routerAction": "company_discovery",
@@ -1361,25 +1503,7 @@ def build_theirstack_discovery_audit(
         "discoveryAngles": list(plan.hiring_signal_terms),
         "companyDiscoveryPreflightBlocked": False,
         "preflightReason": None,
-        "theirStack": {
-            "checked": True,
-            "enabled": bool(diagnostics.get("enabled", used)),
-            "used": used,
-            "skippedReason": None if used else "missing_api_key",
-            "requestShape": sanitized_company_diagnostic_request_shape(
-                diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else plan.search.sanitized_shape()
-            ),
-            "requestedPages": diagnostics.get("requestedPages", 0),
-            "fetchedPages": diagnostics.get("fetchedPages", 0),
-            "failedPages": diagnostics.get("failedPages", 0),
-            "skippedPages": diagnostics.get("skippedPages", 0),
-            "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
-            "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
-            "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
-            "linkedCandidateCompanyCount": diagnostics.get("linkedCandidateCompanyCount", len(linked_companies)),
-            "errorType": diagnostics.get("errorType"),
-            "errorMessage": diagnostics.get("errorMessage") or enrichment.error_message,
-        },
+        "theirStack": their_stack_summary,
         "firstPartySync": {
             "attempted": bool(board_sync["board_sync_attempted"] or ashby_sync["board_sync_attempted"]),
             "providers": [
@@ -1398,6 +1522,7 @@ def build_theirstack_discovery_audit(
             "failedCount": total_board_sync_failed_count,
             "normalizedJobCount": total_board_sync_normalized_count,
         },
+        "providerDiagnostics": provider_diagnostics,
         "companies": [
             {
                 "name": company.get("name"),
@@ -1414,6 +1539,134 @@ def build_theirstack_discovery_audit(
         ],
         "diagnosticMessages": [],
     }
+
+
+def build_theirstack_provider_diagnostics(
+    *,
+    plan: CompanyEnrichmentPlan,
+    status: str,
+    their_stack_summary: dict[str, Any],
+    linked_company_count: int,
+    skipped_company_count: int,
+    board_sync: dict[str, Any],
+    ashby_sync: dict[str, Any],
+    job_search: dict[str, Any],
+    total_board_sync_completed_count: int,
+    total_board_sync_failed_count: int,
+    total_board_sync_normalized_count: int,
+) -> list[dict[str, Any]]:
+    rows = [
+        build_company_enrichment_provider_diagnostic(
+            stage="planner",
+            provider="model",
+            status="completed",
+            label="Company enrichment planner",
+            request_summary={"hiringSignalSource": plan.hiring_signal_source},
+            result_summary={
+                "useTheirStackCompanySearch": plan.use_theirstack_company_search,
+                "requireSupportedAts": plan.require_supported_ats,
+                "requireGreenhouse": plan.require_greenhouse,
+                "syncDiscoveredAtsBoards": plan.sync_discovered_ats_boards,
+                "syncDiscoveredGreenhouseBoards": plan.sync_discovered_greenhouse_boards,
+                "syncDiscoveredAshbyBoards": plan.sync_discovered_ashby_boards,
+                "searchSyncedJobsAfterBoardSync": plan.search_synced_jobs_after_board_sync,
+                "saveMatchingJobsToCandidateList": plan.save_matching_jobs_to_candidate_list,
+            },
+        ),
+        build_company_enrichment_provider_diagnostic(
+            stage="company_source",
+            provider="theirstack",
+            status="failed" if their_stack_summary.get("errorMessage") else "completed" if status != "unavailable" else "skipped",
+            label="TheirStack company search",
+            request_summary={
+                "enabled": their_stack_summary.get("enabled"),
+                "requestShape": their_stack_summary.get("requestShape"),
+                "requestedPages": their_stack_summary.get("requestedPages"),
+            },
+            result_summary={
+                "fetchedPages": their_stack_summary.get("fetchedPages"),
+                "failedPages": their_stack_summary.get("failedPages"),
+                "skippedPages": their_stack_summary.get("skippedPages"),
+                "pageNumbersFetched": their_stack_summary.get("pageNumbersFetched"),
+                "rawCompanyCount": their_stack_summary.get("rawCompanyCount"),
+                "normalizedCompanyCount": their_stack_summary.get("normalizedCompanyCount"),
+                "upsertedCompanyCount": their_stack_summary.get("upsertedCompanyCount"),
+                "linkedCandidateCompanyCount": linked_company_count,
+                "skippedCompanyCount": skipped_company_count,
+                "totalCompanies": their_stack_summary.get("totalCompanies"),
+                "totalResults": their_stack_summary.get("totalResults"),
+                "creditsUsed": their_stack_summary.get("creditsUsed"),
+                "creditsRemaining": their_stack_summary.get("creditsRemaining"),
+                "skippedReason": their_stack_summary.get("skippedReason"),
+                "errorType": their_stack_summary.get("errorType"),
+            },
+            error={"message": their_stack_summary.get("errorMessage")} if their_stack_summary.get("errorMessage") else None,
+        ),
+    ]
+    rows.extend(
+        [
+            build_first_party_sync_provider_diagnostic(provider="greenhouse", sync=board_sync),
+            build_first_party_sync_provider_diagnostic(provider="ashby", sync=ashby_sync),
+            build_company_enrichment_provider_diagnostic(
+                stage="post_sync_job_search",
+                provider="jobops",
+                status="completed" if job_search["job_search_attempted"] else "skipped",
+                label="Post-sync job search",
+                request_summary={"attempted": job_search["job_search_attempted"]},
+                result_summary={
+                    "syncedJobQueryCount": job_search["synced_job_query_count"],
+                    "syncedJobPoolCount": job_search["synced_job_pool_count"],
+                    "jobsReviewed": job_search["jobs_reviewed_count"],
+                    "jobsAdded": job_search["jobs_added_count"],
+                    "jobsRecommended": job_search["jobs_recommended_count"],
+                    "jobsRejected": job_search["jobs_rejected_count"],
+                    "unavailableReason": job_search["search_unavailable_reason"],
+                },
+            ),
+            build_company_enrichment_provider_diagnostic(
+                stage="persistence",
+                provider="jobops",
+                status="completed",
+                label="Candidate company link/upsert",
+                result_summary={
+                    "linkedCompanyCount": linked_company_count,
+                    "skippedCompanyCount": skipped_company_count,
+                    "upsertedCompanyCount": their_stack_summary.get("upsertedCompanyCount"),
+                },
+            ),
+        ]
+    )
+    return rows
+
+
+def build_first_party_sync_provider_diagnostic(*, provider: str, sync: dict[str, Any]) -> dict[str, Any]:
+    selected = sync["boards_selected_for_sync"]
+    synced = sync["board_tokens_synced"] if provider == "greenhouse" else sync["board_urls_synced"]
+    attempted = bool(sync["board_sync_attempted"] or selected)
+    if sync["board_sync_failed_count"] and not sync["board_sync_completed_count"]:
+        status = "failed"
+    elif sync["board_sync_completed_count"] or synced:
+        status = "completed"
+    else:
+        status = "skipped"
+    return build_company_enrichment_provider_diagnostic(
+        stage="first_party_sync",
+        provider=provider,
+        status=status,
+        label=f"{provider.title()} board sync",
+        request_summary={"attempted": attempted, "boardsSelected": selected},
+        result_summary={
+            "boardsSynced": synced,
+            "completedCount": sync["board_sync_completed_count"],
+            "failedCount": sync["board_sync_failed_count"],
+            "rawResultCount": sync["board_sync_raw_result_count"],
+            "normalizedJobCount": sync["board_sync_normalized_count"],
+            "createdCount": sync["board_sync_created_count"],
+            "updatedCount": sync["board_sync_updated_count"],
+            "skippedFreshCount": sync["board_sync_skipped_fresh_count"],
+            "unavailableReason": sync["sync_unavailable_reason"],
+        },
+    )
 
 
 def serialize_plan(plan: CompanyEnrichmentPlan) -> dict[str, Any]:

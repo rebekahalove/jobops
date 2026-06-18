@@ -142,6 +142,11 @@ def test_disabled_theirstack_plan_returns_unavailable_without_client_call(tmp_pa
 
     assert result.handled is True
     assert result.body["result"]["zeroResultReason"] == "clarificationNeeded"
+    provider_rows = result.body["result"]["providerDiagnostics"]
+    assert any(row["stage"] == "planner" for row in provider_rows)
+    theirstack_row = next(row for row in provider_rows if row["provider"] == "theirstack")
+    assert theirstack_row["status"] == "skipped"
+    assert theirstack_row["resultSummary"]["unavailable"] is True
     assert client.requests == []
 
 
@@ -241,6 +246,11 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert payload["ashbyBoardUrlCount"] == 1
         assert payload["leverSlugCount"] == 1
         assert payload["requiresFirstPartySyncForVerification"] is True
+        theirstack_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "theirstack")
+        assert theirstack_row["stage"] == "company_source"
+        assert theirstack_row["status"] == "completed"
+        assert theirstack_row["resultSummary"]["rawCompanyCount"] == 3
+        assert theirstack_row["resultSummary"]["linkedCandidateCompanyCount"] == 3
         assert "TheirStack returned" in payload["assistantMessage"]
         assert "not synced those boards yet" in payload["assistantMessage"]
         assert len(session.scalars(select(Company)).all()) == 3
@@ -280,12 +290,19 @@ def test_theirstack_discovery_audit_sanitizes_sensitive_request_shape_keys(tmp_p
         )
 
     request_shape = result.body["result"]["discoveryAudit"]["theirStack"]["requestShape"]
+    provider_request_shape = next(
+        row for row in result.body["result"]["providerDiagnostics"] if row["provider"] == "theirstack"
+    )["requestSummary"]["requestShape"]
     assert request_shape["job_filters"] == "<present>"
     assert request_shape["limit"] == 25
     assert request_shape["max_pages"] == 1
     assert "api_key" not in request_shape
     assert "authorization" not in request_shape
     assert "secretToken" not in request_shape
+    assert provider_request_shape["job_filters"] == "<present>"
+    assert "api_key" not in provider_request_shape
+    assert "authorization" not in provider_request_shape
+    assert "secretToken" not in provider_request_shape
     assert "should-not-return" not in json.dumps(result.body)
 
 
@@ -516,9 +533,16 @@ def test_theirstack_greenhouse_enrichment_can_sync_boards_and_save_synced_jobs(t
     assert payload["boardSyncRawResultCount"] == 1
     assert payload["boardSyncNormalizedCount"] == 1
     assert payload["boardSyncCreatedCount"] == 1
+    greenhouse_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "greenhouse")
+    assert greenhouse_row["stage"] == "first_party_sync"
+    assert greenhouse_row["status"] == "completed"
+    assert greenhouse_row["resultSummary"]["rawResultCount"] == 1
     assert payload["syncedJobPoolCount"] == 1
     assert payload["jobsReviewedAfterBoardSyncCount"] == 1
     assert payload["jobsAddedAfterBoardSyncCount"] == 1
+    job_search_row = next(row for row in payload["providerDiagnostics"] if row["stage"] == "post_sync_job_search")
+    assert job_search_row["status"] == "completed"
+    assert job_search_row["resultSummary"]["jobsAdded"] == 1
     assert len(saved_jobs) == 1
     assert saved_jobs[0].job_listing_id is not None
     assert {source.source_provider for source in sources} == {"greenhouse"}
@@ -584,6 +608,9 @@ def test_theirstack_enrichment_can_sync_greenhouse_and_ashby_boards_and_save_job
     assert payload["ashbyBoardTokensSynced"] == ["ashbyco"]
     assert payload["totalBoardSyncCompletedCount"] == 2
     assert payload["totalBoardSyncNormalizedCount"] == 2
+    provider_rows = payload["providerDiagnostics"]
+    assert next(row for row in provider_rows if row["provider"] == "greenhouse")["status"] == "completed"
+    assert next(row for row in provider_rows if row["provider"] == "ashby")["status"] == "completed"
     assert payload["syncedJobPoolCount"] == 2
     assert payload["jobsReviewedAfterBoardSyncCount"] == 2
     assert payload["jobsAddedAfterBoardSyncCount"] == 1

@@ -316,6 +316,18 @@ export type JobSearchProviderDiagnostic = {
   reason?: string | null;
 };
 
+export type CompanyDiscoveryProviderDiagnostic = {
+  stage?: string | null;
+  provider?: string | null;
+  status?: string | null;
+  label?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  requestSummary?: Record<string, unknown> | null;
+  resultSummary?: Record<string, unknown> | null;
+  error?: string | Record<string, unknown> | null;
+};
+
 export type CompanyDiscoveryDiagnosticsStatus = {
   id: string;
   status: "completed" | "failed" | "running" | "unknown" | string;
@@ -366,6 +378,7 @@ export type CompanyDiscoveryDiagnosticsStatus = {
     failedCount?: number;
     normalizedJobCount?: number;
   };
+  providerDiagnostics?: CompanyDiscoveryProviderDiagnostic[];
   companies?: Array<{
     name?: string | null;
     discoverySource?: string | null;

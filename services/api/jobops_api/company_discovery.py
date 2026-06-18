@@ -494,6 +494,7 @@ class CompanyDiscoveryDiagnosticsResponse(BaseModel):
     discoveryAngles: list[str] = Field(default_factory=list)
     theirStack: dict[str, Any] = Field(default_factory=dict)
     firstPartySync: dict[str, Any] = Field(default_factory=dict)
+    providerDiagnostics: list[dict[str, Any]] = Field(default_factory=list)
     companies: list[dict[str, Any]] = Field(default_factory=list)
     diagnosticMessages: list[str] = Field(default_factory=list)
 
@@ -959,6 +960,7 @@ def run_company_discovery(
         "companyDiscoveryAttemptCount": len(attempts),
         "zeroSaveRetryUsed": len(attempts) > 1,
         "discoveryAudit": discovery_audit,
+        "providerDiagnostics": discovery_audit["providerDiagnostics"],
         **build_company_discovery_result_diagnostics(
             attempts=attempts,
             final_attempt=final_attempt,
@@ -2030,6 +2032,44 @@ def build_company_discovery_result_diagnostics(
     }
 
 
+def build_company_provider_diagnostic(
+    *,
+    stage: str,
+    provider: str,
+    status: str,
+    label: str,
+    request_summary: dict[str, Any] | None = None,
+    result_summary: dict[str, Any] | None = None,
+    error: str | dict[str, Any] | None = None,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "stage": stage,
+        "provider": provider,
+        "status": status,
+        "label": label,
+        "startedAt": started_at,
+        "completedAt": completed_at,
+        "requestSummary": sanitize_provider_summary(request_summary or {}),
+        "resultSummary": sanitize_provider_summary(result_summary or {}),
+        "error": sanitize_diagnostic_value(error) if error else None,
+    }
+    return row
+
+
+def sanitize_provider_summary(value: dict[str, Any]) -> dict[str, Any]:
+    return sanitize_diagnostic_request_shape(value)
+
+
+def format_provider_label(value: str | None) -> str:
+    if not value:
+        return "Model"
+    if value.casefold() == "gemini":
+        return "Gemini"
+    return value.replace("_", " ").replace("-", " ").title()
+
+
 def build_model_grounded_discovery_audit(
     *,
     attempts: list[CompanyDiscoveryAttempt],
@@ -2040,13 +2080,49 @@ def build_model_grounded_discovery_audit(
     saved_companies: list[dict[str, Any]],
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
+    provider = response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider
+    model_name = response.model if isinstance(getattr(response, "model", None), str) else model_request.model
+    provider_diagnostics = [
+        build_company_provider_diagnostic(
+            stage="company_source",
+            provider=provider,
+            status="completed",
+            label=f"{format_provider_label(provider)} model-grounded company discovery",
+            request_summary={
+                "searchGroundingEnabled": bool(model_request.search_grounding),
+                "modelProvider": provider,
+                "modelName": model_name,
+                "attempts": len(attempts),
+            },
+            result_summary={
+                "modelCompanyCount": diagnostics.get("modelCompanyCount", 0),
+                "savedCompanyCount": diagnostics.get("savedCompanyCount", 0),
+                "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
+                "skippedCompanyCount": diagnostics.get("skippedCompanyCount", 0),
+                "searchQueriesUsed": diagnostics.get("searchQueriesUsed") or search_queries_used_from_attempts(attempts),
+                "discoveryAngles": diagnostics.get("discoveryAngles") or [],
+            },
+        ),
+        build_company_provider_diagnostic(
+            stage="persistence",
+            provider="jobops",
+            status="completed",
+            label="Company save/upsert",
+            result_summary={
+                "savedCompanyCount": diagnostics.get("savedCompanyCount", 0),
+                "linkedCompanyCount": diagnostics.get("savedCompanyCount", 0),
+                "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
+                "skippedCompanyCount": diagnostics.get("skippedCompanyCount", 0),
+            },
+        ),
+    ]
     return {
         "sourcePath": "model_grounded_company_discovery",
         "routerAction": "company_discovery",
-        "sourceProvider": response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider,
+        "sourceProvider": provider,
         "searchGroundingEnabled": bool(model_request.search_grounding),
-        "modelProvider": response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider,
-        "modelName": response.model if isinstance(getattr(response, "model", None), str) else model_request.model,
+        "modelProvider": provider,
+        "modelName": model_name,
         "savedCompanyCount": diagnostics.get("savedCompanyCount", 0),
         "linkedCompanyCount": diagnostics.get("savedCompanyCount", 0),
         "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
@@ -2074,6 +2150,7 @@ def build_model_grounded_discovery_audit(
             "errorMessage": None,
         },
         "firstPartySync": empty_first_party_sync_payload(),
+        "providerDiagnostics": provider_diagnostics,
         "companies": [compact_company_diagnostic(company) for company in saved_companies],
         "diagnosticMessages": [],
     }
@@ -2114,6 +2191,19 @@ def build_company_discovery_diagnostics_from_log(log: CommandInteractionLog) -> 
     payload = {**response_payload, **result_payload}
     audit = payload.get("discoveryAudit") if isinstance(payload.get("discoveryAudit"), dict) else build_company_discovery_audit_from_payload(payload, log)
     status = str(action.get("status") or ("failed" if log.error_details else "completed" if log.action_applied else "unknown"))
+    their_stack = normalize_theirstack_diagnostics(audit.get("theirStack"), payload)
+    first_party_sync = normalize_first_party_sync_diagnostics(audit.get("firstPartySync"), payload)
+    provider_diagnostics = company_provider_diagnostics_from_log(
+        audit=audit,
+        payload=payload,
+        log=log,
+        status=status,
+        their_stack=their_stack,
+        first_party_sync=first_party_sync,
+    )
+    diagnostic_messages = string_list(audit.get("diagnosticMessages"))
+    if company_diagnostics_are_legacy(payload=payload, audit=audit, provider_diagnostics=provider_diagnostics):
+        diagnostic_messages.append(LEGACY_COMPANY_DISCOVERY_DIAGNOSTIC_MESSAGE)
     diagnostics = {
         "id": log.id,
         "status": status,
@@ -2136,10 +2226,11 @@ def build_company_discovery_diagnostics_from_log(log: CommandInteractionLog) -> 
         "zeroNewCompanyReason": audit.get("zeroNewCompanyReason") or payload.get("zeroNewCompanyReason") or payload.get("zeroResultReason"),
         "searchQueriesUsed": string_list(audit.get("searchQueriesUsed") or payload.get("searchQueriesUsed")),
         "discoveryAngles": string_list(audit.get("discoveryAngles") or payload.get("discoveryAngles")),
-        "theirStack": normalize_theirstack_diagnostics(audit.get("theirStack"), payload),
-        "firstPartySync": normalize_first_party_sync_diagnostics(audit.get("firstPartySync"), payload),
+        "theirStack": their_stack,
+        "firstPartySync": first_party_sync,
+        "providerDiagnostics": provider_diagnostics,
         "companies": [compact_company_diagnostic(company) for company in list_of_dicts(audit.get("companies") or payload.get("companies"))],
-        "diagnosticMessages": string_list(audit.get("diagnosticMessages")),
+        "diagnosticMessages": diagnostic_messages,
     }
     if diagnostics["linkedCompanyCount"] == 0:
         diagnostics["linkedCompanyCount"] = diagnostics["savedCompanyCount"]
@@ -2177,6 +2268,204 @@ def build_company_discovery_audit_from_payload(payload: dict[str, Any], log: Com
         "companyDiscoveryPreflightBlocked": payload.get("blockedByTargetPreflight"),
         "preflightReason": payload.get("preflightReason"),
     }
+
+
+def company_provider_diagnostics_from_log(
+    *,
+    audit: dict[str, Any],
+    payload: dict[str, Any],
+    log: CommandInteractionLog,
+    status: str,
+    their_stack: dict[str, Any],
+    first_party_sync: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = [router_provider_diagnostic(log, status)]
+    stored_rows = normalize_company_provider_diagnostics(audit.get("providerDiagnostics") or payload.get("providerDiagnostics"))
+    if stored_rows:
+        rows.extend(stored_rows)
+        return rows
+    if their_stack.get("checked") or their_stack.get("used"):
+        rows.append(theirstack_provider_diagnostic_from_summary(their_stack))
+    for row in first_party_sync_provider_diagnostics_from_summary(first_party_sync):
+        rows.append(row)
+    if payload.get("searchSyncedJobsAttempted") is not None:
+        rows.append(
+            build_company_provider_diagnostic(
+                stage="post_sync_job_search",
+                provider="jobops",
+                status="completed" if payload.get("searchSyncedJobsAttempted") else "skipped",
+                label="Post-sync job search",
+                request_summary={"attempted": bool(payload.get("searchSyncedJobsAttempted"))},
+                result_summary={
+                    "syncedJobQueryCount": int_value(payload.get("syncedJobQueryCount")),
+                    "syncedJobPoolCount": int_value(payload.get("syncedJobPoolCount")),
+                    "jobsReviewed": int_value(payload.get("jobsReviewedAfterBoardSyncCount")),
+                    "jobsAdded": int_value(payload.get("jobsAddedAfterBoardSyncCount")),
+                    "jobsRecommended": int_value(payload.get("jobsRecommendedAfterBoardSyncCount")),
+                    "jobsRejected": int_value(payload.get("jobsRejectedAfterBoardSyncCount")),
+                    "unavailableReason": payload.get("postBoardSyncJobSearchUnavailableReason"),
+                },
+            )
+        )
+    if audit.get("sourcePath") == "model_grounded_company_discovery" and (
+        isinstance(payload.get("discoveryAudit"), dict) or payload.get("modelResponse") or payload.get("modelRequest")
+    ):
+        provider = str(audit.get("modelProvider") or audit.get("sourceProvider") or log.model_provider or "model")
+        rows.append(
+            build_company_provider_diagnostic(
+                stage="company_source",
+                provider=provider,
+                status="completed",
+                label=f"{format_provider_label(provider)} model-grounded company discovery",
+                request_summary={
+                    "searchGroundingEnabled": audit.get("searchGroundingEnabled"),
+                    "modelProvider": provider,
+                    "modelName": audit.get("modelName"),
+                },
+                result_summary={
+                    "savedCompanyCount": int_value(audit.get("savedCompanyCount") or payload.get("savedCompanyCount")),
+                    "duplicateCompanyCount": int_value(audit.get("duplicateCompanyCount") or payload.get("duplicateCompanyCount")),
+                    "skippedCompanyCount": int_value(audit.get("skippedCompanyCount") or payload.get("skippedCompanyCount")),
+                    "searchQueriesUsed": string_list(audit.get("searchQueriesUsed") or payload.get("searchQueriesUsed")),
+                    "discoveryAngles": string_list(audit.get("discoveryAngles") or payload.get("discoveryAngles")),
+                },
+            )
+        )
+    if payload.get("savedCompanyCount") is not None or payload.get("linkedCompanyCount") is not None:
+        rows.append(
+            build_company_provider_diagnostic(
+                stage="persistence",
+                provider="jobops",
+                status="completed",
+                label="Company save/upsert",
+                result_summary={
+                    "savedCompanyCount": int_value(payload.get("savedCompanyCount")),
+                    "linkedCompanyCount": int_value(payload.get("linkedCompanyCount")),
+                    "duplicateCompanyCount": int_value(payload.get("duplicateCompanyCount")),
+                    "skippedCompanyCount": int_value(payload.get("skippedCompanyCount")),
+                },
+            )
+        )
+    return rows
+
+
+def router_provider_diagnostic(log: CommandInteractionLog, status: str) -> dict[str, Any]:
+    parsed = log.parsed_action_payload if isinstance(log.parsed_action_payload, dict) else {}
+    action_type = parsed.get("actionType") or parsed.get("action_type") or log.route_selected or "unknown"
+    return build_company_provider_diagnostic(
+        stage="router",
+        provider="command_router",
+        status="completed" if status != "unknown" else "unknown",
+        label="Command router",
+        request_summary={"targetWorkspace": parsed.get("targetWorkspace") or parsed.get("target_workspace")},
+        result_summary={"actionType": action_type, "confidence": parsed.get("confidence") or router_confidence_from_log(log)},
+    )
+
+
+def normalize_company_provider_diagnostics(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return rows
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            build_company_provider_diagnostic(
+                stage=str(item.get("stage") or "unknown"),
+                provider=str(item.get("provider") or "unknown"),
+                status=str(item.get("status") or "unknown"),
+                label=str(item.get("label") or item.get("provider") or "Provider call"),
+                started_at=item.get("startedAt") if isinstance(item.get("startedAt"), str) else None,
+                completed_at=item.get("completedAt") if isinstance(item.get("completedAt"), str) else None,
+                request_summary=item.get("requestSummary") if isinstance(item.get("requestSummary"), dict) else {},
+                result_summary=item.get("resultSummary") if isinstance(item.get("resultSummary"), dict) else {},
+                error=item.get("error") if isinstance(item.get("error"), (str, dict)) else None,
+            )
+        )
+    return rows
+
+
+def theirstack_provider_diagnostic_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    used = bool(summary.get("used"))
+    error_message = summary.get("errorMessage") if isinstance(summary.get("errorMessage"), str) else None
+    status = "failed" if error_message else "completed" if used else "skipped"
+    return build_company_provider_diagnostic(
+        stage="company_source",
+        provider="theirstack",
+        status=status,
+        label="TheirStack company search",
+        request_summary={
+            "enabled": summary.get("enabled"),
+            "requestShape": summary.get("requestShape"),
+            "requestedPages": summary.get("requestedPages"),
+        },
+        result_summary={
+            "fetchedPages": summary.get("fetchedPages"),
+            "failedPages": summary.get("failedPages"),
+            "skippedPages": summary.get("skippedPages"),
+            "rawCompanyCount": summary.get("rawCompanyCount"),
+            "normalizedCompanyCount": summary.get("normalizedCompanyCount"),
+            "upsertedCompanyCount": summary.get("upsertedCompanyCount"),
+            "linkedCandidateCompanyCount": summary.get("linkedCandidateCompanyCount"),
+            "skippedReason": summary.get("skippedReason"),
+            "errorType": summary.get("errorType"),
+        },
+        error={"message": error_message} if error_message else None,
+    )
+
+
+def first_party_sync_provider_diagnostics_from_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    providers = set(string_list(summary.get("providers")))
+    if summary.get("attempted") or summary.get("greenhouseBoardsSelected") or summary.get("greenhouseBoardsSynced"):
+        providers.add("greenhouse")
+    if summary.get("ashbyBoardsSelected") or summary.get("ashbyBoardsSynced"):
+        providers.add("ashby")
+    for provider in ("greenhouse", "ashby"):
+        if provider not in providers:
+            continue
+        selected_key = "greenhouseBoardsSelected" if provider == "greenhouse" else "ashbyBoardsSelected"
+        synced_key = "greenhouseBoardsSynced" if provider == "greenhouse" else "ashbyBoardsSynced"
+        selected = string_list(summary.get(selected_key))
+        synced = string_list(summary.get(synced_key))
+        rows.append(
+            build_company_provider_diagnostic(
+                stage="first_party_sync",
+                provider=provider,
+                status="completed" if synced else "skipped",
+                label=f"{format_provider_label(provider)} board sync",
+                request_summary={"attempted": bool(summary.get("attempted")), "boardsSelected": selected},
+                result_summary={
+                    "boardsSynced": synced,
+                    "completedCount": summary.get("completedCount"),
+                    "failedCount": summary.get("failedCount"),
+                    "normalizedJobCount": summary.get("normalizedJobCount"),
+                },
+            )
+        )
+    return rows
+
+
+def company_diagnostics_are_legacy(
+    *,
+    payload: dict[str, Any],
+    audit: dict[str, Any],
+    provider_diagnostics: list[dict[str, Any]],
+) -> bool:
+    detailed_rows = [row for row in provider_diagnostics if row.get("stage") != "router"]
+    if detailed_rows:
+        return False
+    detailed_keys = {
+        "discoveryAudit",
+        "providerDiagnostics",
+        "modelRequest",
+        "modelResponse",
+        "theirstackDiagnostics",
+        "companyEnrichmentPlan",
+        "savedCompanyCount",
+        "linkedCompanyCount",
+    }
+    return not any(key in payload for key in detailed_keys) and "providerDiagnostics" not in audit
 
 
 def normalize_theirstack_diagnostics(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2249,7 +2538,8 @@ def sanitize_diagnostic_request_shape(value: object) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key, item in value.items():
         key_text = str(key)
-        if any(part in key_text.casefold() for part in SENSITIVE_DIAGNOSTIC_KEY_PARTS):
+        folded_key = key_text.casefold()
+        if folded_key in SENSITIVE_DIAGNOSTIC_EXACT_KEYS or any(part in folded_key for part in SENSITIVE_DIAGNOSTIC_KEY_PARTS):
             continue
         sanitized[key_text] = sanitize_diagnostic_value(item)
     return sanitized
@@ -2643,6 +2933,11 @@ def preview_model_response(text: str) -> str:
 HIDDEN_SAVED_JOB_STATUSES = {"model_rejected", "model_rejection_reset"}
 TERMINAL_APPLICATION_STATUSES = {"rejected", "withdrawn"}
 SENSITIVE_DIAGNOSTIC_KEY_PARTS = ("key", "token", "secret", "authorization", "cookie", "password", "bearer")
+SENSITIVE_DIAGNOSTIC_EXACT_KEYS = {"rawproviderpayload", "raw_provider_payload", "providerpayload", "provider_payload", "rawpayload", "raw_payload"}
+LEGACY_COMPANY_DISCOVERY_DIAGNOSTIC_MESSAGE = (
+    "This command was logged before company discovery diagnostics were added. "
+    "Run company discovery again to populate detailed diagnostics."
+)
 PROVIDER_METADATA_SUMMARY_KEYS = {
     "provider",
     "source",
