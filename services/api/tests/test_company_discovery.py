@@ -24,6 +24,7 @@ from jobops_api.company_discovery import (
     build_assistant_message,
     company_discovery_validation_failure,
     get_latest_company_discovery_diagnostics,
+    get_company_discovery_run_diagnostics,
     parse_company_discovery_json,
     run_company_discovery,
     save_model_derived_companies,
@@ -32,8 +33,13 @@ from jobops_api.company_discovery import (
     watch_company,
     validate_company_discovery_output,
 )
+from jobops_api.company_discovery_diagnostics import (
+    complete_company_discovery_run,
+    record_company_discovery_provider_call,
+    start_company_discovery_run,
+)
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, CommandInteractionLog, Company, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
+from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, CommandInteractionLog, Company, CompanyDiscoveryRun, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
@@ -87,6 +93,8 @@ def test_command_center_executes_company_discovery_with_context(tmp_path: Path, 
     assert response.actions[0].status == "completed"
     assert response.target_workspace == "companies"
     assert response.result_payload is not None
+    assert isinstance(response.result_payload["companyDiscoveryRunId"], str)
+    assert response.result_payload["companyDiscoveryDiagnostics"]["providerDiagnostics"]
     assert response.result_payload["modelRequest"]["task"] == "company_discovery"
     assert response.result_payload["modelRequest"]["searchGrounding"] is True
     user_prompt = response.result_payload["modelRequest"]["messages"][1]["content"]
@@ -1219,61 +1227,64 @@ def test_company_serialization_derives_user_entered_origin() -> None:
     assert payload["dataOriginSourceLabel"] == "Company website"
 
 
-def test_latest_company_discovery_diagnostics_returns_model_grounded_audit() -> None:
+def test_latest_company_discovery_diagnostics_returns_persisted_run_rows() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
         assert profile is not None
-        log = command_log(
-            profile.id,
-            result_payload={
-                "discoveryAudit": {
-                    "sourcePath": "model_grounded_company_discovery",
-                    "routerAction": "company_discovery",
-                    "sourceProvider": "gemini",
-                    "searchGroundingEnabled": True,
-                    "modelProvider": "gemini",
-                    "modelName": "gemini-test",
-                    "savedCompanyCount": 1,
-                    "linkedCompanyCount": 1,
-                    "duplicateCompanyCount": 0,
-                    "skippedCompanyCount": 0,
-                    "theirStack": {"checked": True, "enabled": True, "used": False, "skippedReason": "planner_chose_model_grounded"},
-                    "firstPartySync": {"attempted": False},
-                    "providerDiagnostics": [
-                        {
-                            "stage": "company_source",
-                            "provider": "gemini",
-                            "status": "completed",
-                            "label": "Gemini model-grounded company discovery",
-                            "requestSummary": {"searchGroundingEnabled": True, "authorization": "Bearer should-not-exist"},
-                            "resultSummary": {"savedCompanyCount": 1, "rawProviderPayload": {"secret": "should-not-exist"}},
-                        }
-                    ],
-                    "companies": [
-                        {
-                            "name": "CivicActions",
-                            "discoverySource": "model_grounded",
-                            "dataOriginSource": "https://civicactions.com/careers",
-                            "dataOriginSourceType": "careers_url",
-                        }
-                    ],
-                }
+        run = start_company_discovery_run(
+            session,
+            candidate_profile_id=profile.id,
+            command_text="find companies to follow",
+            router_action="company_discovery",
+            router_confidence="high",
+            target_workspace="companies",
+            source_path="model_grounded_company_discovery",
+        )
+        record_company_discovery_provider_call(
+            session,
+            company_discovery_run_id=run.id,
+            stage="company_source",
+            provider="gemini",
+            status="completed",
+            label="Gemini model-grounded company discovery",
+            request_summary={"searchGroundingEnabled": True, "authorization": "Bearer should-not-exist"},
+            result_summary={"savedCompanyCount": 1, "api_key": "should-not-exist"},
+        )
+        complete_company_discovery_run(
+            session,
+            run.id,
+            source_path="model_grounded_company_discovery",
+            source_provider="gemini",
+            search_grounding_enabled=True,
+            model_provider="gemini",
+            model_name="gemini-test",
+            saved_company_count=1,
+            linked_company_count=1,
+            run_diagnostics_json={
+                "theirStack": {"checked": True, "enabled": True, "used": False, "skippedReason": "planner_chose_model_grounded"},
+                "firstPartySync": {"attempted": False},
+                "companies": [
+                    {
+                        "name": "CivicActions",
+                        "discoverySource": "model_grounded",
+                        "dataOriginSource": "https://civicactions.com/careers",
+                        "dataOriginSourceType": "careers_url",
+                    }
+                ],
             },
         )
-        session.add(log)
         session.commit()
 
         payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
 
-    assert payload["id"] == log.id
+    assert payload["id"] == run.id
     assert payload["sourcePath"] == "model_grounded_company_discovery"
     assert payload["sourceProvider"] == "gemini"
     assert payload["searchGroundingEnabled"] is True
     assert payload["theirStack"]["checked"] is True
     assert payload["theirStack"]["used"] is False
     assert payload["theirStack"]["skippedReason"] == "planner_chose_model_grounded"
-    assert payload["providerDiagnostics"][0]["stage"] == "router"
     model_row = next(row for row in payload["providerDiagnostics"] if row["stage"] == "company_source")
     assert model_row["provider"] == "gemini"
     assert model_row["requestSummary"]["searchGroundingEnabled"] is True
@@ -1281,8 +1292,16 @@ def test_latest_company_discovery_diagnostics_returns_model_grounded_audit() -> 
     assert "rawProviderPayload" not in model_row["resultSummary"]
     assert payload["companies"][0]["dataOriginSource"] == "https://civicactions.com/careers"
 
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        specific_payload = get_company_discovery_run_diagnostics(run.id, session=session, auth=SimpleNamespace(candidate_profile=profile))
 
-def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_secrets() -> None:
+    assert specific_payload["id"] == run.id
+    assert specific_payload["providerDiagnostics"][0]["provider"] == "gemini"
+
+
+def test_latest_company_discovery_diagnostics_legacy_log_has_no_fake_provider_rows() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
         profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
@@ -1328,10 +1347,8 @@ def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_
     assert "authorization" not in payload["theirStack"]["requestShape"]
     assert "secretToken" not in payload["theirStack"]["requestShape"]
     assert payload["linkedCompanyCount"] == 2
-    theirstack_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "theirstack")
-    assert theirstack_row["stage"] == "company_source"
-    assert theirstack_row["requestSummary"]["requestShape"]["job_filters"] == "<present>"
-    assert "api_key" not in theirstack_row["requestSummary"]["requestShape"]
+    assert payload["providerDiagnostics"] == []
+    assert "logged before detailed company diagnostics were added" in payload["diagnosticMessages"][0]
     assert "secret-theirstack-key" not in json.dumps(payload)
     assert "should-not-exist" not in json.dumps(payload)
 
@@ -1347,9 +1364,9 @@ def test_latest_company_discovery_diagnostics_explains_legacy_logs() -> None:
 
         payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
 
-    assert payload["providerDiagnostics"][0]["stage"] == "router"
+    assert payload["providerDiagnostics"] == []
     assert (
-        "This command was logged before company discovery diagnostics were added. Run company discovery again to populate detailed diagnostics."
+        "This company discovery command was logged before detailed company diagnostics were added. Run company discovery again to populate provider-call diagnostics."
         in payload["diagnosticMessages"]
     )
 

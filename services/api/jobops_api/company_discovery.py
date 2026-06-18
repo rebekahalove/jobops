@@ -21,6 +21,17 @@ from .company_canonicalization import (
     normalize_company_name,
     upsert_canonical_company,
 )
+from .company_discovery_diagnostics import (
+    complete_company_discovery_run,
+    fail_company_discovery_run,
+    latest_company_discovery_run,
+    owned_company_discovery_run,
+    record_company_discovery_provider_call,
+    serialize_company_discovery_run_status,
+    start_company_discovery_run,
+    update_company_discovery_provider_call,
+    update_company_discovery_run,
+)
 from .db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, CommandInteractionLog, Company, JobListing, RoleTarget
 from .db.session import get_db_session
 from .model_connector import (
@@ -474,6 +485,7 @@ class CompanyDiscoveryDiagnosticsResponse(BaseModel):
     id: str
     status: str = "unknown"
     createdAt: str | None = None
+    startedAt: str | None = None
     completedAt: str | None = None
     commandPreview: str | None = None
     sourcePath: str = "unknown"
@@ -603,6 +615,9 @@ def get_latest_company_discovery_diagnostics(
     session: Session = Depends(get_db_session),
     auth: AuthContext = Depends(require_auth_context),
 ) -> dict[str, Any]:
+    run = latest_company_discovery_run(session, candidate_profile_id=auth.candidate_profile.id)
+    if run is not None:
+        return serialize_company_discovery_run_status(run)
     log = session.scalar(
         select(CommandInteractionLog)
         .where(
@@ -614,7 +629,19 @@ def get_latest_company_discovery_diagnostics(
     )
     if log is None:
         raise HTTPException(status_code=404, detail="Company discovery diagnostics not found.")
-    return build_company_discovery_diagnostics_from_log(log)
+    return build_legacy_company_discovery_diagnostics_from_log(log)
+
+
+@router.get("/companies/discovery-runs/{run_id}", response_model=CompanyDiscoveryDiagnosticsResponse)
+def get_company_discovery_run_diagnostics(
+    run_id: str,
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    run = owned_company_discovery_run(session, run_id=run_id, candidate_profile_id=auth.candidate_profile.id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Company discovery diagnostics not found.")
+    return serialize_company_discovery_run_status(run)
 
 
 @router.post("/companies/{company_ref}/archive", response_model=CompanyActionResponse)
@@ -714,6 +741,7 @@ def run_company_discovery(
     db_session: Session,
     settings: Settings | None = None,
     candidate_profile: CandidateProfile | None = None,
+    company_discovery_run_id: str | None = None,
 ) -> CompanyDiscoveryServiceResult:
     active_settings = settings or load_settings()
     connector_config = read_model_connector_config_from_settings(active_settings)
@@ -781,8 +809,11 @@ def run_company_discovery(
             target_context=target_context,
             profile_context=profile_context,
             discovery_context=discovery_context,
+            company_discovery_run_id=company_discovery_run_id,
         )
         if enrichment_result.handled:
+            if isinstance(enrichment_result.body.get("result"), dict):
+                enrichment_result.body["result"]["companyDiscoveryRunId"] = company_discovery_run_id
             db_session.commit()
             return CompanyDiscoveryServiceResult(
                 body=enrichment_result.body,
@@ -807,6 +838,31 @@ def run_company_discovery(
         search_grounding_enabled=active_settings.company_discovery_search_grounding_enabled,
     )
     routed_request = route_model_request(model_request, connector_config.routing)
+    model_provider_name = connector_config.provider or active_settings.model_provider
+    model_call = record_company_discovery_provider_call(
+        db_session,
+        company_discovery_run_id=company_discovery_run_id,
+        stage="company_source",
+        provider=model_provider_name,
+        status="started",
+        label=f"{format_provider_label(model_provider_name)} model-grounded company discovery",
+        request_summary={
+            "searchGroundingEnabled": bool(routed_request.search_grounding),
+            "targetContextIncluded": bool(target_context),
+            "savedCompanyContextIncluded": bool(current_saved_companies),
+            "recentCompanyDiscoveryContextIncluded": bool(discovery_context.get("recent_discovery")),
+        },
+    )
+    update_company_discovery_run(
+        db_session,
+        company_discovery_run_id,
+        status="running",
+        source_path="model_grounded_company_discovery",
+        source_provider=model_provider_name,
+        search_grounding_enabled=bool(routed_request.search_grounding),
+        model_provider=model_provider_name,
+        model_name=routed_request.model,
+    )
     logger.info(
         "company_discovery.model_grounded.started",
         extra={
@@ -829,6 +885,19 @@ def run_company_discovery(
             mock_responses_by_task={"company_discovery": build_mock_company_discovery_response},
         )
     except ModelConfigurationError as error:
+        update_company_discovery_provider_call(
+            db_session,
+            model_call,
+            status="failed",
+            error={"type": error.code, "message": "Company discovery model is not configured."},
+        )
+        fail_company_discovery_run(
+            db_session,
+            company_discovery_run_id,
+            error="Company discovery model is not configured.",
+            source_path="failed",
+            zero_new_company_reason="provider/searchUnavailable",
+        )
         return CompanyDiscoveryServiceResult(
             body={
                 "ok": False,
@@ -860,6 +929,19 @@ def run_company_discovery(
             )
         ]
     except ModelProviderError as error:
+        update_company_discovery_provider_call(
+            db_session,
+            model_call,
+            status="failed",
+            error={"type": error.code, "message": "Company discovery model call failed."},
+        )
+        fail_company_discovery_run(
+            db_session,
+            company_discovery_run_id,
+            error="Company discovery model call failed.",
+            source_path="failed",
+            zero_new_company_reason="provider/searchUnavailable",
+        )
         return CompanyDiscoveryServiceResult(
             body={
                 "ok": False,
@@ -877,6 +959,19 @@ def run_company_discovery(
         )
     except CompanyDiscoveryValidationFailure as error:
         response = getattr(error, "response", None)
+        update_company_discovery_provider_call(
+            db_session,
+            model_call,
+            status="failed",
+            error={"type": "validationFailed", "message": "; ".join(error.issues[:5])},
+        )
+        fail_company_discovery_run(
+            db_session,
+            company_discovery_run_id,
+            error="Company discovery model output validation failed.",
+            source_path="failed",
+            zero_new_company_reason="validationFailed",
+        )
         return company_discovery_validation_failure(
             active_settings,
             routed_request,
@@ -936,6 +1031,46 @@ def run_company_discovery(
     added_companies = [serialize_company(company) for company in save_result.added]
     skipped = [item.model_dump() for item in save_result.skipped]
     assistant_message = build_assistant_message(output, save_result.added, save_result.skipped)
+    result_diagnostics = build_company_discovery_result_diagnostics(
+        attempts=attempts,
+        final_attempt=final_attempt,
+        recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
+        recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+        search_queries_used=search_queries_used_from_attempts(attempts),
+        context_signals=preflight_signals,
+    )
+    update_company_discovery_provider_call(
+        db_session,
+        model_call,
+        status="completed",
+        request_summary={
+            "modelProvider": response.provider,
+            "modelName": response.model,
+        },
+        result_summary={
+            "modelCompanyCount": result_diagnostics.get("modelCompanyCount", 0),
+            "savedCompanyCount": result_diagnostics.get("savedCompanyCount", 0),
+            "duplicateCompanyCount": result_diagnostics.get("duplicateCompanyCount", 0),
+            "invalidCompanyCount": result_diagnostics.get("invalidCompanyCount", 0),
+            "skippedCompanyCount": result_diagnostics.get("skippedCompanyCount", 0),
+            "searchQueriesUsed": result_diagnostics.get("searchQueriesUsed") or [],
+            "discoveryAngles": result_diagnostics.get("discoveryAngles") or [],
+        },
+    )
+    record_company_discovery_provider_call(
+        db_session,
+        company_discovery_run_id=company_discovery_run_id,
+        stage="persistence",
+        provider="jobops_database",
+        status="completed",
+        label="Company save/upsert",
+        result_summary={
+            "savedCompanyCount": result_diagnostics.get("savedCompanyCount", 0),
+            "linkedCompanyCount": result_diagnostics.get("savedCompanyCount", 0),
+            "duplicateCompanyCount": result_diagnostics.get("duplicateCompanyCount", 0),
+            "skippedCompanyCount": result_diagnostics.get("skippedCompanyCount", 0),
+        },
+    )
     discovery_audit = build_model_grounded_discovery_audit(
         attempts=attempts,
         final_attempt=final_attempt,
@@ -943,14 +1078,31 @@ def run_company_discovery(
         model_request=final_model_request,
         response=response,
         saved_companies=added_companies,
-        diagnostics=build_company_discovery_result_diagnostics(
-            attempts=attempts,
-            final_attempt=final_attempt,
-            recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
-            recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
-            search_queries_used=search_queries_used_from_attempts(attempts),
-            context_signals=preflight_signals,
-        ),
+        diagnostics=result_diagnostics,
+    )
+    complete_company_discovery_run(
+        db_session,
+        company_discovery_run_id,
+        source_path="model_grounded_company_discovery",
+        source_provider=response.provider,
+        search_grounding_enabled=bool(final_model_request.search_grounding),
+        model_provider=response.provider,
+        model_name=response.model,
+        saved_company_count=int(result_diagnostics.get("savedCompanyCount") or 0),
+        linked_company_count=int(result_diagnostics.get("savedCompanyCount") or 0),
+        duplicate_company_count=int(result_diagnostics.get("duplicateCompanyCount") or 0),
+        skipped_company_count=int(result_diagnostics.get("skippedCompanyCount") or 0),
+        zero_new_company_reason=result_diagnostics.get("zeroNewCompanyReason"),
+        company_discovery_preflight_blocked=bool(result_diagnostics.get("blockedByTargetPreflight")),
+        preflight_reason=result_diagnostics.get("preflightReason"),
+        run_diagnostics_json={
+            "searchQueriesUsed": result_diagnostics.get("searchQueriesUsed") or [],
+            "discoveryAngles": result_diagnostics.get("discoveryAngles") or [],
+            "theirStack": discovery_audit.get("theirStack") or {},
+            "firstPartySync": discovery_audit.get("firstPartySync") or {},
+            "companies": discovery_audit.get("companies") or [],
+            "diagnosticMessages": [],
+        },
     )
     result_payload = {
         "assistantMessage": assistant_message,
@@ -961,14 +1113,8 @@ def run_company_discovery(
         "zeroSaveRetryUsed": len(attempts) > 1,
         "discoveryAudit": discovery_audit,
         "providerDiagnostics": discovery_audit["providerDiagnostics"],
-        **build_company_discovery_result_diagnostics(
-            attempts=attempts,
-            final_attempt=final_attempt,
-            recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
-            recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
-            search_queries_used=search_queries_used_from_attempts(attempts),
-            context_signals=preflight_signals,
-        ),
+        "companyDiscoveryRunId": company_discovery_run_id,
+        **result_diagnostics,
         **({"validationWarnings": validation_warnings} if validation_warnings else {}),
         **model_request_debug_fields(active_settings, final_model_request),
         **model_response_debug_fields(active_settings, response),
@@ -2234,6 +2380,16 @@ def build_company_discovery_diagnostics_from_log(log: CommandInteractionLog) -> 
     }
     if diagnostics["linkedCompanyCount"] == 0:
         diagnostics["linkedCompanyCount"] = diagnostics["savedCompanyCount"]
+    return diagnostics
+
+
+def build_legacy_company_discovery_diagnostics_from_log(log: CommandInteractionLog) -> dict[str, Any]:
+    diagnostics = build_company_discovery_diagnostics_from_log(log)
+    diagnostics["providerDiagnostics"] = []
+    diagnostics["diagnosticMessages"] = [
+        "This company discovery command was logged before detailed company diagnostics were added. "
+        "Run company discovery again to populate provider-call diagnostics."
+    ]
     return diagnostics
 
 

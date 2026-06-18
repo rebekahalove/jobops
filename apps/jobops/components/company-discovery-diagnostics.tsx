@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { CompanyDiscoveryDiagnosticsStatus, CompanyDiscoveryProviderDiagnostic } from "../lib/command-center-contract";
+import type { CompanyDiscoveryDiagnosticsStatus } from "../lib/command-center-contract";
 
 const COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS = 2500;
 
 type PendingDiagnostics = {
   commandPreview?: string | null;
+  companyDiscoveryRunId?: string | null;
   startedAt?: string | null;
 };
 
@@ -23,10 +24,11 @@ export function CompanyDiscoveryDiagnostics({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const pendingStartedAtRef = useRef<string | null>(null);
 
-  const loadLatestRun = useCallback(async ({ clearWhenMissing = false }: { clearWhenMissing?: boolean } = {}) => {
+  const loadLatestRun = useCallback(async ({ clearWhenMissing = false, runId = null }: { clearWhenMissing?: boolean; runId?: string | null } = {}) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${apiBasePath}/companies/discovery-runs/latest`, { cache: "no-store" });
+      const path = runId ? `/companies/discovery-runs/${encodeURIComponent(runId)}` : "/companies/discovery-runs/latest";
+      const response = await fetch(`${apiBasePath}${path}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => null)) as unknown;
       if (response.status === 404) {
         if (clearWhenMissing && !pendingStartedAtRef.current) {
@@ -61,7 +63,7 @@ export function CompanyDiscoveryDiagnostics({
   useEffect(() => {
     let active = true;
 
-    async function loadIfActive(options: { clearWhenMissing?: boolean } = {}) {
+    async function loadIfActive(options: { clearWhenMissing?: boolean; runId?: string | null } = {}) {
       if (active) {
         await loadLatestRun(options);
       }
@@ -73,6 +75,7 @@ export function CompanyDiscoveryDiagnostics({
       pendingStartedAtRef.current = startedAt;
       setPendingRun({
         commandPreview: typeof detail.commandPreview === "string" ? detail.commandPreview : null,
+        companyDiscoveryRunId: typeof detail.companyDiscoveryRunId === "string" ? detail.companyDiscoveryRunId : null,
         startedAt
       });
       setLatestRun(null);
@@ -87,7 +90,8 @@ export function CompanyDiscoveryDiagnostics({
         setPendingRun(null);
         setStatusMessage(null);
       }
-      loadIfActive({ clearWhenMissing: false });
+      const runId = typeof detail.companyDiscoveryRunId === "string" ? detail.companyDiscoveryRunId : null;
+      loadIfActive({ clearWhenMissing: false, runId });
     }
 
     function handleCompaniesUpdated() {
@@ -110,11 +114,12 @@ export function CompanyDiscoveryDiagnostics({
     if (!pendingRun) {
       return;
     }
+    const activePendingRun = pendingRun;
     let cancelled = false;
     let timeoutId: number | null = null;
 
     async function pollLatestRun() {
-      await loadLatestRun();
+      await loadLatestRun({ runId: activePendingRun.companyDiscoveryRunId });
       if (!cancelled && pendingStartedAtRef.current) {
         timeoutId = window.setTimeout(pollLatestRun, COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS);
       }
@@ -174,7 +179,12 @@ function CompanyDiscoveryDiagnosticsPanel({
               </section>
               <section className="diagnostics-section">
                 <h3>Source timeline / Provider calls</h3>
-                <PendingCompanyProviderTimeline pendingRun={pendingRun} statusMessage={statusMessage} />
+                <p className="diagnostics-muted">
+                  {pendingRun.companyDiscoveryRunId
+                    ? `Waiting for provider-call diagnostics for run ${pendingRun.companyDiscoveryRunId}...`
+                    : "Waiting for router/source diagnostics..."}
+                </p>
+                {statusMessage ? <p className="diagnostics-muted">Status: {statusMessage}</p> : null}
               </section>
             </>
           ) : run ? (
@@ -314,67 +324,6 @@ function CompanyDiscoveryDiagnosticsPanel({
         </div>
       </details>
     </section>
-  );
-}
-
-function PendingCompanyProviderTimeline({
-  pendingRun,
-  statusMessage
-}: {
-  pendingRun: PendingDiagnostics;
-  statusMessage: string | null;
-}) {
-  const rows: CompanyDiscoveryProviderDiagnostic[] = [
-    {
-      stage: "router",
-      provider: "command_router",
-      status: "started",
-      label: "Command router",
-      requestSummary: { commandPreview: pendingRun.commandPreview },
-      resultSummary: { targetWorkspace: "companies" }
-    },
-    {
-      stage: "planner",
-      provider: "model",
-      status: "waiting",
-      label: "Company discovery planner",
-      requestSummary: { commandPreview: pendingRun.commandPreview },
-      resultSummary: { expectedDecision: "TheirStack company search or model-grounded discovery" }
-    },
-    {
-      stage: "company_source",
-      provider: "theirstack_or_model",
-      status: "waiting",
-      label: "Company source API/model call",
-      requestSummary: { expectedProviders: ["TheirStack", "Gemini/model-grounded search"] },
-      resultSummary: { expectedCounts: ["requestedPages", "fetchedPages", "raw", "normalized", "linked"] }
-    },
-    {
-      stage: "first_party_sync",
-      provider: "greenhouse_ashby",
-      status: "conditional",
-      label: "First-party board verification",
-      requestSummary: { providers: ["Greenhouse", "Ashby"] },
-      resultSummary: { expectedCounts: ["selected", "synced", "raw", "normalized", "created", "updated", "failed"] }
-    },
-    {
-      stage: "persistence",
-      provider: "jobops",
-      status: "waiting",
-      label: "Company save/upsert",
-      resultSummary: { expectedCounts: ["saved", "linked", "duplicates", "skipped"] }
-    }
-  ];
-
-  return (
-    <>
-      <div className="diagnostics-provider-list">
-        {rows.map((row, index) => (
-          <CompanyProviderDiagnosticRow row={row} key={`${row.stage}-${row.provider}-${index}`} />
-        ))}
-      </div>
-      {statusMessage ? <p className="diagnostics-muted">Status: {statusMessage}</p> : null}
-    </>
   );
 }
 

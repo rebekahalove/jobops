@@ -947,7 +947,11 @@ function getCompanyDiscoveryDiagnosticsId(action?: PlannedCommandAction) {
     return null;
   }
   const payload = action.resultPayload;
-  return typeof payload.companyDiscoveryDiagnosticsId === "string" ? payload.companyDiscoveryDiagnosticsId : null;
+  return typeof payload.companyDiscoveryRunId === "string"
+    ? payload.companyDiscoveryRunId
+    : typeof payload.companyDiscoveryDiagnosticsId === "string"
+      ? payload.companyDiscoveryDiagnosticsId
+      : null;
 }
 
 function companyDiagnosticsFromAction(action: PlannedCommandAction): CompanyDiscoveryDiagnosticsStatus | null {
@@ -955,59 +959,11 @@ function companyDiagnosticsFromAction(action: PlannedCommandAction): CompanyDisc
     return null;
   }
   const payload = action.resultPayload;
-  const audit = isRecord(payload.discoveryAudit) ? payload.discoveryAudit : {};
-  return {
-    id: typeof payload.companyDiscoveryDiagnosticsId === "string" ? payload.companyDiscoveryDiagnosticsId : `command-center-${Date.now()}`,
-    status: action.status,
-    createdAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-    commandPreview: resultCommandPreview(action),
-    sourcePath: stringOrNull(audit.sourcePath) ?? stringOrNull(payload.sourcePath),
-    routerAction: stringOrNull(audit.routerAction) ?? stringOrNull(payload.commandRouterAction),
-    routerConfidence: stringOrNull(payload.commandRouterConfidence),
-    companyDiscoveryPreflightBlocked: booleanOrFalse(audit.companyDiscoveryPreflightBlocked) || booleanOrFalse(payload.blockedByTargetPreflight),
-    preflightReason: stringOrNull(audit.preflightReason) ?? stringOrNull(payload.preflightReason),
-    sourceProvider: stringOrNull(audit.sourceProvider) ?? stringOrNull(payload.sourceProvider),
-    searchGroundingEnabled: booleanOrNull(audit.searchGroundingEnabled),
-    modelProvider: stringOrNull(audit.modelProvider),
-    modelName: stringOrNull(audit.modelName),
-    savedCompanyCount: numberOrZero(audit.savedCompanyCount ?? payload.savedCompanyCount),
-    linkedCompanyCount: numberOrZero(audit.linkedCompanyCount ?? payload.linkedCompanyCount),
-    duplicateCompanyCount: numberOrZero(audit.duplicateCompanyCount ?? payload.duplicateCompanyCount),
-    skippedCompanyCount: numberOrZero(audit.skippedCompanyCount ?? payload.skippedCompanyCount),
-    zeroNewCompanyReason: stringOrNull(audit.zeroNewCompanyReason) ?? stringOrNull(payload.zeroNewCompanyReason) ?? stringOrNull(payload.zeroResultReason),
-    searchQueriesUsed: stringArray(audit.searchQueriesUsed ?? payload.searchQueriesUsed),
-    discoveryAngles: stringArray(audit.discoveryAngles ?? payload.discoveryAngles),
-    theirStack: isRecord(audit.theirStack) ? audit.theirStack : isRecord(payload.theirstackDiagnostics) ? payload.theirstackDiagnostics : {},
-    firstPartySync: isRecord(audit.firstPartySync) ? audit.firstPartySync : {},
-    providerDiagnostics: Array.isArray(audit.providerDiagnostics)
-      ? audit.providerDiagnostics
-      : Array.isArray(payload.providerDiagnostics)
-        ? payload.providerDiagnostics
-        : [],
-    companies: Array.isArray(audit.companies) ? audit.companies : Array.isArray(payload.companies) ? payload.companies : [],
-    diagnosticMessages: stringArray(audit.diagnosticMessages)
-  };
+  return isCompanyDiscoveryDiagnosticsStatus(payload.companyDiscoveryDiagnostics) ? payload.companyDiscoveryDiagnostics : null;
 }
 
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function booleanOrNull(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function booleanOrFalse(value: unknown): boolean {
-  return value === true;
-}
-
-function numberOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+function isCompanyDiscoveryDiagnosticsStatus(value: unknown): value is CompanyDiscoveryDiagnosticsStatus {
+  return isRecord(value) && typeof value.id === "string" && typeof value.status === "string";
 }
 
 function isTerminalActionStatus(status: PlannedCommandAction["status"]) {

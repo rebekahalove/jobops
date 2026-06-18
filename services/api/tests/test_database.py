@@ -114,10 +114,69 @@ def test_alembic_migrations_apply_to_sqlite(tmp_path: Path, monkeypatch) -> None
     assert "saved_job_id" in application_columns
     assert "target_company_id" not in application_columns
     assert "job_postings" not in inspector.get_table_names()
+    assert "company_discovery_runs" in inspector.get_table_names()
+    assert "company_discovery_provider_calls" in inspector.get_table_names()
     candidate_saved_job_columns = {column["name"] for column in inspector.get_columns("candidate_saved_jobs")}
     assert "job_id" not in candidate_saved_job_columns
     assert "job_listing_id" in candidate_saved_job_columns
     assert "job_listings" in inspector.get_table_names()
+
+
+def test_company_discovery_run_downgrade_drops_empty_tables(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_company_discovery_empty_downgrade_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "head")
+    command.downgrade(alembic_config, "20260615_0034")
+
+    inspector = inspect_database(create_engine(database_url))
+    assert "company_discovery_runs" not in inspector.get_table_names()
+    assert "company_discovery_provider_calls" not in inspector.get_table_names()
+
+
+def test_company_discovery_run_downgrade_preserves_populated_tables(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "jobops_company_discovery_populated_downgrade_test.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    api_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(api_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(api_root / "alembic"))
+    command.upgrade(alembic_config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO tenants (id, name, slug) VALUES ('tenant-1', 'Tenant', 'tenant')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO candidate_profiles (id, tenant_id, slug, display_name, headline, summary, profile_status) "
+                "VALUES ('profile-1', 'tenant-1', 'profile', 'Profile', 'Headline', '', 'draft')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO company_discovery_runs "
+                "(id, candidate_profile_id, command_text, status, source_path, saved_company_count, linked_company_count, duplicate_company_count, skipped_company_count, company_discovery_preflight_blocked, run_diagnostics_json) "
+                "VALUES ('run-1', 'profile-1', 'find companies', 'completed', 'model_grounded_company_discovery', 0, 0, 0, 0, 0, '{}')"
+            )
+        )
+
+    command.downgrade(alembic_config, "20260615_0034")
+
+    inspector = inspect_database(engine)
+    assert "company_discovery_runs" in inspector.get_table_names()
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM company_discovery_runs")).scalar_one() == 1
     assert "job_listing_sources" in inspector.get_table_names()
     assert "job_sync_runs" in inspector.get_table_names()
     assert "job_location_targets" in inspector.get_table_names()

@@ -413,7 +413,7 @@ describe("AI command center", () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("companyDiagnosticsFromAction(action)");
-    expect(source).toContain("providerDiagnostics");
+    expect(source).toContain("payload.companyDiscoveryDiagnostics");
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:company-discovery-completed"');
   });
 

@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session
 
 from .auth import AuthContext, require_auth_context
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
+from .company_discovery_diagnostics import (
+    record_company_discovery_provider_call,
+    serialize_company_discovery_run_status,
+    start_company_discovery_run,
+)
 from .company_update import CompanyUpdateRequest, run_company_update
 from .command_center_guidance import CommandCenterGuidanceRequest, run_command_center_guidance
 from .command_router import (
@@ -513,6 +518,7 @@ def dispatch_command_center_action(
             session=session,
             settings=settings,
             router_payload=router_payload,
+            router_decision=router_decision,
         )
 
     if interpreted_action == "job_discovery":
@@ -730,7 +736,36 @@ def execute_company_discovery_command(
     session: Session,
     settings,
     router_payload: dict[str, Any] | None = None,
+    router_decision: CommandRouterOutput | None = None,
 ) -> CommandCenterCommandResponse:
+    router_action = normalize_dispatch_action(router_decision.action_type) if router_decision is not None else "company_discovery"
+    router_confidence = router_decision.confidence if router_decision is not None else None
+    target_workspace = (router_decision.target_workspace if router_decision is not None else None) or "companies"
+    company_discovery_run = start_company_discovery_run(
+        session,
+        candidate_profile_id=candidate_profile.id,
+        command_text=request.command,
+        router_action=router_action,
+        router_confidence=router_confidence,
+        target_workspace=target_workspace,
+    )
+    record_company_discovery_provider_call(
+        session,
+        company_discovery_run_id=company_discovery_run.id,
+        stage="router",
+        provider="command_router",
+        status="completed",
+        label="Command router",
+        request_summary={
+            "activeWorkspace": request.active_workspace or "unknown",
+            "commandLength": len(request.command),
+        },
+        result_summary={
+            "actionType": router_action,
+            "confidence": router_confidence,
+            "targetWorkspace": target_workspace,
+        },
+    )
     discovery_result = run_company_discovery(
         CompanyDiscoveryRequest(
             latest_user_message=request.command,
@@ -739,10 +774,18 @@ def execute_company_discovery_command(
         db_session=session,
         settings=settings,
         candidate_profile=candidate_profile,
+        company_discovery_run_id=company_discovery_run.id,
     )
+    serialized_run = serialize_company_discovery_run_status(company_discovery_run)
 
     if discovery_result.status_code != 200 or not discovery_result.body.get("ok"):
         error_message = discovery_result.body.get("error", "Company discovery failed. No companies were saved.")
+        result_payload = {
+            **discovery_result.body,
+            "companyDiscoveryRunId": company_discovery_run.id,
+            "companyDiscoveryDiagnostics": serialized_run,
+            **router_debug_payload(router_payload),
+        }
         return CommandCenterCommandResponse(
             assistant_message=error_message,
             actions=[
@@ -752,14 +795,19 @@ def execute_company_discovery_command(
                     targetWorkspace="companies",
                     title="Discover companies",
                     summary=error_message,
-                    resultPayload={**discovery_result.body, **router_debug_payload(router_payload)},
+                    resultPayload=result_payload,
                 )
             ],
             target_workspace="companies",
-            result_payload={**discovery_result.body, **router_debug_payload(router_payload)},
+            result_payload=result_payload,
         )
 
-    result_payload = {**discovery_result.body["result"], **router_debug_payload(router_payload)}
+    result_payload = {
+        **discovery_result.body["result"],
+        "companyDiscoveryRunId": company_discovery_run.id,
+        "companyDiscoveryDiagnostics": serialized_run,
+        **router_debug_payload(router_payload),
+    }
     added_count = len(result_payload.get("companies") or [])
     assistant_message = result_payload.get("assistantMessage") or (
         f"Added {added_count} model-derived companies. Please verify them from their source links."

@@ -232,17 +232,18 @@ describe("Companies list", () => {
   it("keeps the provider-call section visible while company diagnostics are pending", async () => {
     const source = await readFile(new URL("./company-discovery-diagnostics.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain("Command router");
-    expect(source).toContain("Company discovery planner");
-    expect(source).toContain("Company source API/model call");
-    expect(source).toContain("First-party board verification");
-    expect(source).toContain("Company save/upsert");
-    expect(source).toContain("TheirStack company search or model-grounded discovery");
-    expect(source).toContain("Gemini/model-grounded search");
+    expect(source).toContain("Waiting for router/source diagnostics");
+    expect(source).toContain("Waiting for provider-call diagnostics for run");
     expect(source).toContain("COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS");
+    expect(source).toContain("encodeURIComponent(runId)");
     expect(source).toContain("loadIfActive({ clearWhenMissing: true })");
     expect(source).toContain("loadIfActive({ clearWhenMissing: false })");
     expect(source).toContain("Source timeline / Provider calls");
+    expect(source).not.toContain("expectedDecision");
+    expect(source).not.toContain("expectedProviders");
+    expect(source).not.toContain("expectedCounts");
+    expect(source).not.toContain("PendingCompanyProviderTimeline");
+    expect(source).not.toContain("TheirStack company search or model-grounded discovery");
   });
 
   it("renders company provider diagnostics for TheirStack and first-party sync rows", () => {

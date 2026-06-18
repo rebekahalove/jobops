@@ -204,6 +204,7 @@ class CandidateProfile(Base, TimestampMixin):
     candidate_companies: Mapped[list[CandidateCompany]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     saved_jobs: Mapped[list[CandidateSavedJob]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
     job_search_runs: Mapped[list[JobSearchRun]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
+    company_discovery_runs: Mapped[list[CompanyDiscoveryRun]] = relationship(back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -762,6 +763,63 @@ class JobSearchQueryRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     job_search_run: Mapped[JobSearchRun] = relationship(back_populates="query_runs")
+
+
+class CompanyDiscoveryRun(Base):
+    __tablename__ = "company_discovery_runs"
+    __table_args__ = (
+        Index("ix_company_discovery_runs_profile_created", "candidate_profile_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_profile_id: Mapped[str] = mapped_column(ForeignKey("candidate_profiles.id", ondelete="CASCADE"))
+    command_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="queued")
+    source_path: Mapped[str] = mapped_column(String(120), default="unknown")
+    router_action: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    router_confidence: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    target_workspace: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    search_grounding_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    model_provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    saved_company_count: Mapped[int] = mapped_column(Integer, default=0)
+    linked_company_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_company_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_company_count: Mapped[int] = mapped_column(Integer, default=0)
+    zero_new_company_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    company_discovery_preflight_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    preflight_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    run_diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    candidate_profile: Mapped[CandidateProfile] = relationship(back_populates="company_discovery_runs")
+    provider_calls: Mapped[list[CompanyDiscoveryProviderCall]] = relationship(back_populates="company_discovery_run", cascade="all, delete-orphan")
+
+
+class CompanyDiscoveryProviderCall(Base):
+    __tablename__ = "company_discovery_provider_calls"
+    __table_args__ = (
+        Index("ix_company_discovery_provider_calls_run_created", "company_discovery_run_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_discovery_run_id: Mapped[str] = mapped_column(ForeignKey("company_discovery_runs.id", ondelete="CASCADE"))
+    stage: Mapped[str] = mapped_column(String(80), default="unknown")
+    provider: Mapped[str] = mapped_column(String(120), default="unknown")
+    status: Mapped[str] = mapped_column(String(40), default="started")
+    label: Mapped[str] = mapped_column(String(240), default="Provider call")
+    request_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    company_discovery_run: Mapped[CompanyDiscoveryRun] = relationship(back_populates="provider_calls")
 
 
 class JobRole(Base, TimestampMixin):

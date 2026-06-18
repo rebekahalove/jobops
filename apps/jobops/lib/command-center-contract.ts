@@ -332,6 +332,7 @@ export type CompanyDiscoveryDiagnosticsStatus = {
   id: string;
   status: "completed" | "failed" | "running" | "unknown" | string;
   createdAt?: string | null;
+  startedAt?: string | null;
   completedAt?: string | null;
   commandPreview?: string | null;
   sourcePath?: string | null;
