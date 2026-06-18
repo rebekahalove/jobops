@@ -382,7 +382,7 @@ class ModelPlannedCompanyEnrichmentService:
                 "theirstack_checked": True,
                 "theirstack_enabled": True,
                 "theirstack_used": True,
-                "request_shape": plan.search.sanitized_shape(),
+                "request_shape": sanitized_company_diagnostic_request_shape(plan.search.sanitized_shape()),
             },
         )
         enrichment = TheirStackCompanyEnrichmentService(
@@ -469,7 +469,7 @@ class ModelPlannedCompanyEnrichmentService:
                 "theirstack_checked": True,
                 "theirstack_enabled": bool((enrichment.diagnostics or {}).get("enabled", True)),
                 "theirstack_used": enrichment.status != "unavailable",
-                "request_shape": (enrichment.diagnostics or {}).get("requestShape", {}),
+                "request_shape": sanitized_company_diagnostic_request_shape((enrichment.diagnostics or {}).get("requestShape", {})),
                 "raw_company_count": (enrichment.diagnostics or {}).get("rawCompanyCount"),
                 "normalized_company_count": (enrichment.diagnostics or {}).get("normalizedCompanyCount"),
                 "upserted_company_count": (enrichment.diagnostics or {}).get("upsertedCompanyCount"),
@@ -1176,7 +1176,7 @@ def build_enrichment_result_payload(
         "jobsFoundCount": jobs_found_count,
         "exampleMatchingJobTitles": [],
         "requiresFirstPartySyncForVerification": plan.requires_first_party_sync_for_verification,
-        "theirstackDiagnostics": enrichment.diagnostics,
+        "theirstackDiagnostics": sanitized_theirstack_diagnostics(enrichment.diagnostics),
         "companyEnrichmentPlan": serialize_plan(plan),
         "companyEnrichmentValidationIssues": validation_issues,
         "zeroResultReason": None if linked_companies else ("theirstackUnavailable" if enrichment.status == "unavailable" else "noTheirStackCompanyLeadsLinked"),
@@ -1366,7 +1366,9 @@ def build_theirstack_discovery_audit(
             "enabled": bool(diagnostics.get("enabled", used)),
             "used": used,
             "skippedReason": None if used else "missing_api_key",
-            "requestShape": diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else plan.search.sanitized_shape(),
+            "requestShape": sanitized_company_diagnostic_request_shape(
+                diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else plan.search.sanitized_shape()
+            ),
             "requestedPages": diagnostics.get("requestedPages", 0),
             "fetchedPages": diagnostics.get("fetchedPages", 0),
             "failedPages": diagnostics.get("failedPages", 0),
@@ -1590,6 +1592,20 @@ def compact_strings(values: list[Any] | tuple[Any, ...], *, limit: int) -> list[
 
 def normalize_for_match(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9+#.-]+", value.casefold()))
+
+
+def sanitized_company_diagnostic_request_shape(value: object) -> dict[str, Any]:
+    from .company_discovery import sanitize_diagnostic_request_shape
+
+    return sanitize_diagnostic_request_shape(value)
+
+
+def sanitized_theirstack_diagnostics(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    sanitized = dict(value)
+    sanitized["requestShape"] = sanitized_company_diagnostic_request_shape(sanitized.get("requestShape", {}))
+    return sanitized
 
 
 def compact_log_preview(value: str, *, limit: int = 180) -> str:

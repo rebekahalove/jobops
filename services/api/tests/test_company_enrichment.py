@@ -250,6 +250,45 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert len(session.scalars(select(JobSyncRun)).all()) == 0
 
 
+def test_theirstack_discovery_audit_sanitizes_sensitive_request_shape_keys(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    client = SensitiveRequestShapeTheirStackClient(
+        [theirstack_payload("Greenhouse Co", domain="greenhouse.example", job_url="https://job-boards.greenhouse.io/greenhouseco/jobs/1")]
+    )
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=StaticPlanConnector(
+                theirstack_plan(
+                    {"jobFilters": {"job_title_pattern_or": ["Product Marketing Manager"]}},
+                    terms=["Product Marketing Manager"],
+                )
+            ),
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies hiring for product marketing.",
+            current_saved_companies=[],
+            target_context={"target_role_titles": ["Product Marketing Manager"]},
+            profile_context={},
+            discovery_context={},
+        )
+
+    request_shape = result.body["result"]["discoveryAudit"]["theirStack"]["requestShape"]
+    assert request_shape["job_filters"] == "<present>"
+    assert request_shape["limit"] == 25
+    assert request_shape["max_pages"] == 1
+    assert "api_key" not in request_shape
+    assert "authorization" not in request_shape
+    assert "secretToken" not in request_shape
+    assert "should-not-return" not in json.dumps(result.body)
+
+
 def test_greenhouse_required_enrichment_reports_only_greenhouse_matches(tmp_path: Path) -> None:
     engine = create_seeded_engine()
     client = FakeTheirStackClient(
@@ -946,6 +985,29 @@ class FakeTheirStackClient:
                 fetched_pages=1,
                 raw_company_count=len(self.companies),
                 request_shape=request.sanitized_shape(),
+            ),
+        )
+
+
+class SensitiveRequestShapeTheirStackClient(FakeTheirStackClient):
+    def search_companies(self, request):
+        self.requests.append(request)
+        return TheirStackCompanySearchResult(
+            status="completed",
+            companies=tuple(self.companies),
+            diagnostics=TheirStackCompanySearchDiagnostics(
+                enabled=True,
+                requested_pages=request.max_pages or 1,
+                fetched_pages=1,
+                raw_company_count=len(self.companies),
+                request_shape={
+                    "job_filters": "<present>",
+                    "limit": 25,
+                    "max_pages": 1,
+                    "api_key": "should-not-return",
+                    "authorization": "Bearer should-not-return",
+                    "secretToken": "should-not-return",
+                },
             ),
         )
 

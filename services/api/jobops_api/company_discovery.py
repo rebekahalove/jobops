@@ -2183,7 +2183,13 @@ def normalize_theirstack_diagnostics(value: Any, payload: dict[str, Any]) -> dic
     diagnostics = value if isinstance(value, dict) else {}
     raw = payload.get("theirstackDiagnostics") if isinstance(payload.get("theirstackDiagnostics"), dict) else {}
     plan = payload.get("companyEnrichmentPlan") if isinstance(payload.get("companyEnrichmentPlan"), dict) else {}
-    request_shape = diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else raw.get("requestShape") if isinstance(raw.get("requestShape"), dict) else {}
+    request_shape = (
+        diagnostics.get("requestShape")
+        if isinstance(diagnostics.get("requestShape"), dict)
+        else raw.get("requestShape")
+        if isinstance(raw.get("requestShape"), dict)
+        else {}
+    )
     used = bool(diagnostics.get("used") or raw or plan.get("useTheirStackCompanySearch"))
     enabled = bool(diagnostics.get("enabled") if "enabled" in diagnostics else raw.get("enabled", used))
     checked = bool(diagnostics.get("checked") if "checked" in diagnostics else (raw or plan))
@@ -2195,7 +2201,7 @@ def normalize_theirstack_diagnostics(value: Any, payload: dict[str, Any]) -> dic
         "enabled": enabled,
         "used": used,
         "skippedReason": skipped_reason,
-        "requestShape": request_shape,
+        "requestShape": sanitize_diagnostic_request_shape(request_shape),
         "requestedPages": int_value(diagnostics.get("requestedPages") or raw.get("requestedPages")),
         "fetchedPages": int_value(diagnostics.get("fetchedPages") or raw.get("fetchedPages")),
         "failedPages": int_value(diagnostics.get("failedPages") or raw.get("failedPages")),
@@ -2235,6 +2241,26 @@ def normalize_first_party_sync_diagnostics(value: Any, payload: dict[str, Any]) 
         "failedCount": int_value(payload.get("totalBoardSyncFailedCount") or payload.get("boardSyncFailedCount")),
         "normalizedJobCount": int_value(payload.get("totalBoardSyncNormalizedCount") or payload.get("boardSyncNormalizedCount")),
     }
+
+
+def sanitize_diagnostic_request_shape(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        if any(part in key_text.casefold() for part in SENSITIVE_DIAGNOSTIC_KEY_PARTS):
+            continue
+        sanitized[key_text] = sanitize_diagnostic_value(item)
+    return sanitized
+
+
+def sanitize_diagnostic_value(value: object) -> Any:
+    if isinstance(value, dict):
+        return sanitize_diagnostic_request_shape(value)
+    if isinstance(value, list):
+        return [sanitize_diagnostic_value(item) for item in value]
+    return value
 
 
 def derive_company_source_fields(link: CandidateCompany) -> dict[str, str]:
@@ -2616,6 +2642,7 @@ def preview_model_response(text: str) -> str:
 
 HIDDEN_SAVED_JOB_STATUSES = {"model_rejected", "model_rejection_reset"}
 TERMINAL_APPLICATION_STATUSES = {"rejected", "withdrawn"}
+SENSITIVE_DIAGNOSTIC_KEY_PARTS = ("key", "token", "secret", "authorization", "cookie", "password", "bearer")
 PROVIDER_METADATA_SUMMARY_KEYS = {
     "provider",
     "source",

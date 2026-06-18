@@ -1274,7 +1274,14 @@ def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_
                 "linkedCompanyCount": 2,
                 "theirstackDiagnostics": {
                     "enabled": True,
-                    "requestShape": {"job_filters": "<present>", "api_key": "should-not-exist"},
+                    "requestShape": {
+                        "job_filters": "<present>",
+                        "limit": 25,
+                        "max_pages": 1,
+                        "api_key": "should-not-exist",
+                        "authorization": "Bearer should-not-exist",
+                        "secretToken": "should-not-exist",
+                    },
                     "requestedPages": 1,
                     "fetchedPages": 1,
                     "rawCompanyCount": 5,
@@ -1295,8 +1302,15 @@ def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_
     assert payload["theirStack"]["checked"] is True
     assert payload["theirStack"]["used"] is True
     assert payload["theirStack"]["rawCompanyCount"] == 5
+    assert payload["theirStack"]["requestShape"]["job_filters"] == "<present>"
+    assert payload["theirStack"]["requestShape"]["limit"] == 25
+    assert payload["theirStack"]["requestShape"]["max_pages"] == 1
+    assert "api_key" not in payload["theirStack"]["requestShape"]
+    assert "authorization" not in payload["theirStack"]["requestShape"]
+    assert "secretToken" not in payload["theirStack"]["requestShape"]
     assert payload["linkedCompanyCount"] == 2
     assert "secret-theirstack-key" not in json.dumps(payload)
+    assert "should-not-exist" not in json.dumps(payload)
 
 
 def test_company_without_supported_ats_is_not_sync_capable() -> None:
