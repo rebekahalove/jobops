@@ -409,6 +409,14 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
   });
 
+  it("passes company diagnostics through the completion event", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("companyDiagnosticsFromAction(action)");
+    expect(source).toContain("providerDiagnostics");
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:company-discovery-completed"');
+  });
+
   it("polls async job-discovery runs without replaying commands", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 

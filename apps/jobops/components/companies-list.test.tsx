@@ -233,8 +233,12 @@ describe("Companies list", () => {
     const source = await readFile(new URL("./company-discovery-diagnostics.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("Command router");
-    expect(source).toContain("Company discovery source");
-    expect(source).toContain("Waiting for TheirStack or model-grounded discovery diagnostics");
+    expect(source).toContain("Company discovery planner");
+    expect(source).toContain("Company source API/model call");
+    expect(source).toContain("First-party board verification");
+    expect(source).toContain("Company save/upsert");
+    expect(source).toContain("TheirStack company search or model-grounded discovery");
+    expect(source).toContain("Gemini/model-grounded search");
     expect(source).toContain("COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS");
     expect(source).toContain("Source timeline / Provider calls");
   });

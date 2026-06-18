@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { CompanyDiscoveryDiagnosticsStatus } from "../lib/command-center-contract";
+import type { CompanyDiscoveryDiagnosticsStatus, CompanyDiscoveryProviderDiagnostic } from "../lib/command-center-contract";
 
 const COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS = 2500;
 
@@ -77,7 +77,14 @@ export function CompanyDiscoveryDiagnostics({
       setStatusMessage("Waiting for router/source diagnostics...");
     }
 
-    function handleDiscoveryCompleted() {
+    function handleDiscoveryCompleted(event: Event) {
+      const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
+      if (isCompanyDiscoveryDiagnosticsStatus(detail.diagnostics)) {
+        pendingStartedAtRef.current = null;
+        setLatestRun(detail.diagnostics);
+        setPendingRun(null);
+        setStatusMessage(null);
+      }
       loadIfActive();
     }
 
@@ -161,30 +168,7 @@ function CompanyDiscoveryDiagnosticsPanel({
               </section>
               <section className="diagnostics-section">
                 <h3>Source timeline / Provider calls</h3>
-                <div className="diagnostics-provider-list">
-                  <article className="diagnostics-provider-row">
-                    <div className="diagnostics-event-header">
-                      <strong>Command router</strong>
-                      <span>Started</span>
-                    </div>
-                    <div className="diagnostics-event-meta">
-                      <span>Router</span>
-                      <span>Command router</span>
-                    </div>
-                    {pendingRun.commandPreview ? <p className="diagnostics-muted">Request: Command preview: {pendingRun.commandPreview}</p> : null}
-                  </article>
-                  <article className="diagnostics-provider-row">
-                    <div className="diagnostics-event-header">
-                      <strong>Company discovery source</strong>
-                      <span>Waiting</span>
-                    </div>
-                    <div className="diagnostics-event-meta">
-                      <span>Company source</span>
-                      <span>Provider pending</span>
-                    </div>
-                    <p className="diagnostics-muted">Waiting for TheirStack or model-grounded discovery diagnostics...</p>
-                  </article>
-                </div>
+                <PendingCompanyProviderTimeline pendingRun={pendingRun} statusMessage={statusMessage} />
               </section>
             </>
           ) : run ? (
@@ -324,6 +308,67 @@ function CompanyDiscoveryDiagnosticsPanel({
         </div>
       </details>
     </section>
+  );
+}
+
+function PendingCompanyProviderTimeline({
+  pendingRun,
+  statusMessage
+}: {
+  pendingRun: PendingDiagnostics;
+  statusMessage: string | null;
+}) {
+  const rows: CompanyDiscoveryProviderDiagnostic[] = [
+    {
+      stage: "router",
+      provider: "command_router",
+      status: "started",
+      label: "Command router",
+      requestSummary: { commandPreview: pendingRun.commandPreview },
+      resultSummary: { targetWorkspace: "companies" }
+    },
+    {
+      stage: "planner",
+      provider: "model",
+      status: "waiting",
+      label: "Company discovery planner",
+      requestSummary: { commandPreview: pendingRun.commandPreview },
+      resultSummary: { expectedDecision: "TheirStack company search or model-grounded discovery" }
+    },
+    {
+      stage: "company_source",
+      provider: "theirstack_or_model",
+      status: "waiting",
+      label: "Company source API/model call",
+      requestSummary: { expectedProviders: ["TheirStack", "Gemini/model-grounded search"] },
+      resultSummary: { expectedCounts: ["requestedPages", "fetchedPages", "raw", "normalized", "linked"] }
+    },
+    {
+      stage: "first_party_sync",
+      provider: "greenhouse_ashby",
+      status: "conditional",
+      label: "First-party board verification",
+      requestSummary: { providers: ["Greenhouse", "Ashby"] },
+      resultSummary: { expectedCounts: ["selected", "synced", "raw", "normalized", "created", "updated", "failed"] }
+    },
+    {
+      stage: "persistence",
+      provider: "jobops",
+      status: "waiting",
+      label: "Company save/upsert",
+      resultSummary: { expectedCounts: ["saved", "linked", "duplicates", "skipped"] }
+    }
+  ];
+
+  return (
+    <>
+      <div className="diagnostics-provider-list">
+        {rows.map((row, index) => (
+          <CompanyProviderDiagnosticRow row={row} key={`${row.stage}-${row.provider}-${index}`} />
+        ))}
+      </div>
+      {statusMessage ? <p className="diagnostics-muted">Status: {statusMessage}</p> : null}
+    </>
   );
 }
 
