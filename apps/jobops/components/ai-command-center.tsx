@@ -128,6 +128,7 @@ export function AiCommandCenter({
           clearStoredJobDiscoveryRunId(run.id);
           setActiveJobDiscoveryRunId((current) => (current === run.id ? null : current));
           addTerminalJobDiscoveryRunMessage(run);
+          dispatchJobDiscoveryCompleted({ actionType: "job_discovery", commandPreview: null, jobSearchRunId: run.id });
           return;
         }
       } catch {
@@ -213,6 +214,7 @@ export function AiCommandCenter({
       ]);
       return;
     }
+    dispatchDiscoveryStartedForAction(plannedPreview, submittedCommand);
 
     const submissionId = Date.now();
     const clientContext = buildCommandCenterClientContext(messages, submittedCommand);
@@ -353,15 +355,33 @@ export function AiCommandCenter({
     if (nextActions.some((action) => action.type === "profile_intake" && action.status === "completed")) {
       window.dispatchEvent(new CustomEvent("jobops:profile-draft-updated"));
     }
-    if (nextActions.some((action) => action.type === "company_discovery" && action.status === "completed")) {
+    if (nextActions.some((action) => action.type === "company_discovery" && isTerminalActionStatus(action.status))) {
+      const action = nextActions.find((item) => item.type === "company_discovery" && isTerminalActionStatus(item.status));
+      dispatchCompanyDiscoveryCompleted({
+        actionType: "company_discovery",
+        commandPreview: resultCommandPreview(action),
+        diagnosticsId: getCompanyDiscoveryDiagnosticsId(action)
+      });
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
-    if (nextActions.some((action) => (action.type === "job_discovery" || action.type === "add_job_from_url") && action.status === "completed")) {
+    if (nextActions.some((action) => (action.type === "job_discovery" || action.type === "add_job_from_url") && isTerminalActionStatus(action.status))) {
+      const action = nextActions.find((item) => (item.type === "job_discovery" || item.type === "add_job_from_url") && isTerminalActionStatus(item.status));
+      dispatchJobDiscoveryCompleted({
+        actionType: action?.type,
+        commandPreview: resultCommandPreview(action),
+        jobSearchRunId: action ? getAsyncJobDiscoveryRunId(action) : null
+      });
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
     const runId = nextActions.map(getAsyncJobDiscoveryRunId).find(Boolean);
     if (runId) {
+      const action = nextActions.find((item) => getAsyncJobDiscoveryRunId(item) === runId);
+      dispatchJobDiscoveryStarted({
+        actionType: "job_discovery",
+        commandPreview: resultCommandPreview(action),
+        jobSearchRunId: runId
+      });
       storeJobDiscoveryRunId(runId);
       setActiveJobDiscoveryRunId(runId);
     }
@@ -880,6 +900,51 @@ function getAsyncJobDiscoveryRunId(action: PlannedCommandAction) {
   }
   const payload = action.resultPayload;
   return payload.async === true && typeof payload.jobSearchRunId === "string" ? payload.jobSearchRunId : null;
+}
+
+function dispatchDiscoveryStartedForAction(action: PlannedCommandAction, command: string) {
+  const detail = {
+    actionType: action.type,
+    commandPreview: summarizeCommandForDisplay(command, 180)
+  };
+  if (action.type === "job_discovery" || action.type === "add_job_from_url") {
+    dispatchJobDiscoveryStarted(detail);
+  }
+  if (action.type === "company_discovery") {
+    dispatchCompanyDiscoveryStarted(detail);
+  }
+}
+
+function dispatchJobDiscoveryStarted(detail: { actionType?: PlannedCommandAction["type"]; commandPreview?: string | null; jobSearchRunId?: string | null }) {
+  window.dispatchEvent(new CustomEvent("jobops:job-discovery-started", { detail }));
+}
+
+function dispatchJobDiscoveryCompleted(detail: { actionType?: PlannedCommandAction["type"]; commandPreview?: string | null; jobSearchRunId?: string | null }) {
+  window.dispatchEvent(new CustomEvent("jobops:job-discovery-completed", { detail }));
+}
+
+function dispatchCompanyDiscoveryStarted(detail: { actionType?: PlannedCommandAction["type"]; commandPreview?: string | null }) {
+  window.dispatchEvent(new CustomEvent("jobops:company-discovery-started", { detail }));
+}
+
+function dispatchCompanyDiscoveryCompleted(detail: { actionType?: PlannedCommandAction["type"]; commandPreview?: string | null; diagnosticsId?: string | null }) {
+  window.dispatchEvent(new CustomEvent("jobops:company-discovery-completed", { detail }));
+}
+
+function resultCommandPreview(action?: PlannedCommandAction) {
+  return action?.summary ? summarizeCommandForDisplay(action.summary, 180) : null;
+}
+
+function getCompanyDiscoveryDiagnosticsId(action?: PlannedCommandAction) {
+  if (!action || !isRecord(action.resultPayload)) {
+    return null;
+  }
+  const payload = action.resultPayload;
+  return typeof payload.companyDiscoveryDiagnosticsId === "string" ? payload.companyDiscoveryDiagnosticsId : null;
+}
+
+function isTerminalActionStatus(status: PlannedCommandAction["status"]) {
+  return status === "completed" || status === "failed" || status === "needs_confirmation";
 }
 
 async function fetchJobSearchRunStatus(runId: string, apiBasePath: string): Promise<JobSearchRunStatus> {

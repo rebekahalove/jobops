@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ from .model_connector import (
 from .settings import Settings
 
 
+logger = logging.getLogger(__name__)
 MAX_THEIRSTACK_PLAN_LIMIT = 50
 MAX_THEIRSTACK_PLAN_PAGES = 3
 DEFAULT_THEIRSTACK_FRESHNESS_DAYS = 30
@@ -344,6 +346,18 @@ class ModelPlannedCompanyEnrichmentService:
             )
 
         if not plan.use_theirstack_company_search:
+            logger.info(
+                "company_enrichment.planner_decision",
+                extra={
+                    "candidate_profile_id": candidate_profile.id,
+                    "command_preview": compact_log_preview(latest_user_message),
+                    "theirstack_checked": True,
+                    "theirstack_enabled": bool(self.settings.theirstack_company_search_enabled and self.settings.theirstack_api_key),
+                    "theirstack_used": False,
+                    "skipped_reason": "clarification_needed" if plan.clarifying_questions else "planner_chose_model_grounded",
+                    "validation_issue_count": len(validation_issues),
+                },
+            )
             if plan.clarifying_questions:
                 return CompanyEnrichmentServiceResult(
                     handled=True,
@@ -359,6 +373,18 @@ class ModelPlannedCompanyEnrichmentService:
                 body={"ok": True, "result": {"companyEnrichmentPlan": serialize_plan(plan), "validationIssues": validation_issues}},
             )
 
+        logger.info(
+            "theirstack.company_search.started",
+            extra={
+                "candidate_profile_id": candidate_profile.id,
+                "command_preview": compact_log_preview(latest_user_message),
+                "source_path": "theirstack_company_enrichment",
+                "theirstack_checked": True,
+                "theirstack_enabled": True,
+                "theirstack_used": True,
+                "request_shape": plan.search.sanitized_shape(),
+            },
+        )
         enrichment = TheirStackCompanyEnrichmentService(
             session=self.session,
             settings=self.settings,
@@ -432,6 +458,37 @@ class ModelPlannedCompanyEnrichmentService:
             board_sync=board_sync,
             ashby_sync=ashby_sync,
             job_search=job_search,
+        )
+        log_event = "theirstack.company_search.completed" if enrichment.status in {"completed", "unavailable"} else "theirstack.company_search.failed"
+        logger.info(
+            log_event,
+            extra={
+                "candidate_profile_id": candidate_profile.id,
+                "command_preview": compact_log_preview(latest_user_message),
+                "source_path": "theirstack_company_enrichment",
+                "theirstack_checked": True,
+                "theirstack_enabled": bool((enrichment.diagnostics or {}).get("enabled", True)),
+                "theirstack_used": enrichment.status != "unavailable",
+                "request_shape": (enrichment.diagnostics or {}).get("requestShape", {}),
+                "raw_company_count": (enrichment.diagnostics or {}).get("rawCompanyCount"),
+                "normalized_company_count": (enrichment.diagnostics or {}).get("normalizedCompanyCount"),
+                "upserted_company_count": (enrichment.diagnostics or {}).get("upsertedCompanyCount"),
+                "linked_company_count": len(companies),
+                "board_sync_completed_count": result_payload.get("totalBoardSyncCompletedCount"),
+                "board_sync_failed_count": result_payload.get("totalBoardSyncFailedCount"),
+                "error_type": (enrichment.diagnostics or {}).get("errorType"),
+                "error_message": (enrichment.diagnostics or {}).get("errorMessage") or enrichment.error_message,
+            },
+        )
+        logger.info(
+            "company_discovery.completed",
+            extra={
+                "candidate_profile_id": candidate_profile.id,
+                "command_preview": compact_log_preview(latest_user_message),
+                "source_path": "theirstack_company_enrichment",
+                "linked_company_count": len(companies),
+                "theirstack_used": enrichment.status != "unavailable",
+            },
         )
         return CompanyEnrichmentServiceResult(
             handled=True,
@@ -1050,9 +1107,20 @@ def build_enrichment_result_payload(
     total_board_sync_completed_count = board_sync["board_sync_completed_count"] + ashby_sync["board_sync_completed_count"]
     total_board_sync_failed_count = board_sync["board_sync_failed_count"] + ashby_sync["board_sync_failed_count"]
     total_board_sync_normalized_count = board_sync["board_sync_normalized_count"] + ashby_sync["board_sync_normalized_count"]
+    discovery_audit = build_theirstack_discovery_audit(
+        plan=plan,
+        enrichment=enrichment,
+        linked_companies=companies_payload,
+        board_sync=board_sync,
+        ashby_sync=ashby_sync,
+        total_board_sync_completed_count=total_board_sync_completed_count,
+        total_board_sync_failed_count=total_board_sync_failed_count,
+        total_board_sync_normalized_count=total_board_sync_normalized_count,
+    )
     return {
         "assistantMessage": message,
         "companies": companies_payload,
+        "discoveryAudit": discovery_audit,
         "enrichedCompanyCount": len(enrichment.companies),
         "rawCompanyCount": (enrichment.diagnostics or {}).get("rawCompanyCount"),
         "normalizedCompanyCount": (enrichment.diagnostics or {}).get("normalizedCompanyCount"),
@@ -1222,6 +1290,8 @@ def build_enrichment_assistant_message(
 
 def serialize_enriched_company(link: CandidateCompany) -> dict[str, Any]:
     company = link.company
+    metadata = link.provider_grounding_metadata if isinstance(link.provider_grounding_metadata, dict) else {}
+    company_metadata = metadata.get("companyMetadata") if isinstance(metadata.get("companyMetadata"), dict) else {}
     return {
         "id": link.id,
         "company_id": company.id,
@@ -1234,7 +1304,113 @@ def serialize_enriched_company(link: CandidateCompany) -> dict[str, Any]:
         "lever_slug": company.lever_slug,
         "review_status": link.review_status,
         "derivation_status": link.derivation_status,
-        "provider_grounding_metadata": link.provider_grounding_metadata,
+        "discovered_by": link.discovered_by,
+        "discoverySource": "theirstack",
+        "discoverySourceLabel": "TheirStack",
+        "dataOriginSource": "theirstack",
+        "dataOriginSourceType": "provider",
+        "dataOriginSourceLabel": "TheirStack company search",
+        "provider_grounding_metadata_summary": {
+            key: value
+            for key, value in {
+                "provider": metadata.get("provider"),
+                "discoveryQuery": metadata.get("discoveryQuery"),
+                "industry": company_metadata.get("industry"),
+                "employeeCount": company_metadata.get("employeeCount"),
+                "employeeCountRange": company_metadata.get("employeeCountRange"),
+                "fundingStage": company_metadata.get("fundingStage"),
+                "totalFundingUsd": company_metadata.get("totalFundingUsd"),
+                "technologyNames": company_metadata.get("technologyNames"),
+                "technologySlugs": company_metadata.get("technologySlugs"),
+                "keywordSlugs": company_metadata.get("keywordSlugs"),
+                "numJobsFound": company_metadata.get("numJobsFound"),
+                "atsInference": metadata.get("atsInference"),
+            }.items()
+            if value not in (None, [], {})
+        },
+    }
+
+
+def build_theirstack_discovery_audit(
+    *,
+    plan: CompanyEnrichmentPlan,
+    enrichment: Any,
+    linked_companies: list[dict[str, Any]],
+    board_sync: dict[str, Any],
+    ashby_sync: dict[str, Any],
+    total_board_sync_completed_count: int,
+    total_board_sync_failed_count: int,
+    total_board_sync_normalized_count: int,
+) -> dict[str, Any]:
+    diagnostics = enrichment.diagnostics if isinstance(enrichment.diagnostics, dict) else {}
+    status = enrichment.status
+    used = status != "unavailable"
+    return {
+        "sourcePath": "theirstack_company_enrichment",
+        "routerAction": "company_discovery",
+        "sourceProvider": "theirstack",
+        "searchGroundingEnabled": None,
+        "modelProvider": None,
+        "modelName": None,
+        "savedCompanyCount": len(linked_companies),
+        "linkedCompanyCount": len(linked_companies),
+        "duplicateCompanyCount": 0,
+        "skippedCompanyCount": max(0, len(enrichment.companies) - len(linked_companies)),
+        "zeroNewCompanyReason": None if linked_companies else ("theirstackUnavailable" if status == "unavailable" else "noTheirStackCompanyLeadsLinked"),
+        "searchQueriesUsed": [],
+        "discoveryAngles": list(plan.hiring_signal_terms),
+        "companyDiscoveryPreflightBlocked": False,
+        "preflightReason": None,
+        "theirStack": {
+            "checked": True,
+            "enabled": bool(diagnostics.get("enabled", used)),
+            "used": used,
+            "skippedReason": None if used else "missing_api_key",
+            "requestShape": diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else plan.search.sanitized_shape(),
+            "requestedPages": diagnostics.get("requestedPages", 0),
+            "fetchedPages": diagnostics.get("fetchedPages", 0),
+            "failedPages": diagnostics.get("failedPages", 0),
+            "skippedPages": diagnostics.get("skippedPages", 0),
+            "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
+            "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
+            "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+            "linkedCandidateCompanyCount": diagnostics.get("linkedCandidateCompanyCount", len(linked_companies)),
+            "errorType": diagnostics.get("errorType"),
+            "errorMessage": diagnostics.get("errorMessage") or enrichment.error_message,
+        },
+        "firstPartySync": {
+            "attempted": bool(board_sync["board_sync_attempted"] or ashby_sync["board_sync_attempted"]),
+            "providers": [
+                provider
+                for provider, attempted in (
+                    ("greenhouse", bool(board_sync["board_sync_attempted"] or board_sync["boards_selected_for_sync"])),
+                    ("ashby", bool(ashby_sync["board_sync_attempted"] or ashby_sync["boards_selected_for_sync"])),
+                )
+                if attempted
+            ],
+            "greenhouseBoardsSelected": board_sync["boards_selected_for_sync"],
+            "greenhouseBoardsSynced": board_sync["board_tokens_synced"],
+            "ashbyBoardsSelected": ashby_sync["boards_selected_for_sync"],
+            "ashbyBoardsSynced": ashby_sync["board_urls_synced"],
+            "completedCount": total_board_sync_completed_count,
+            "failedCount": total_board_sync_failed_count,
+            "normalizedJobCount": total_board_sync_normalized_count,
+        },
+        "companies": [
+            {
+                "name": company.get("name"),
+                "discoverySource": company.get("discoverySource"),
+                "dataOriginSource": company.get("dataOriginSource"),
+                "dataOriginSourceType": company.get("dataOriginSourceType"),
+                "greenhouseBoardToken": company.get("greenhouse_board_token"),
+                "ashbyBoardUrl": company.get("ashby_board_url"),
+                "jobsFoundSignal": (company.get("provider_grounding_metadata_summary") or {}).get("numJobsFound")
+                if isinstance(company.get("provider_grounding_metadata_summary"), dict)
+                else None,
+            }
+            for company in linked_companies
+        ],
+        "diagnosticMessages": [],
     }
 
 
@@ -1414,3 +1590,7 @@ def compact_strings(values: list[Any] | tuple[Any, ...], *, limit: int) -> list[
 
 def normalize_for_match(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9+#.-]+", value.casefold()))
+
+
+def compact_log_preview(value: str, *, limit: int = 180) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()[:limit]

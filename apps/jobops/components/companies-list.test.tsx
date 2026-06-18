@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import CompaniesPage from "../app/companies/page";
+import JobsPage from "../app/jobs/page";
+import { CompanyDiscoveryDiagnostics } from "./company-discovery-diagnostics";
 import { buildCompanyBucketCounts, CompaniesList, companyBucket, defaultCompanyBucket, type TrackedCompany } from "./companies-list";
 import { CompanyDetail } from "./company-detail";
 import MountedCompaniesPage from "../../portfolio/app/jobops/companies/page";
@@ -12,8 +14,10 @@ describe("Companies list", () => {
     const html = renderToStaticMarkup(<CompaniesPage />);
 
     expect(html).toContain("Company watchlist");
+    expect(html).toContain("Company discovery diagnostics");
     expect(html).toContain("Saved companies");
     expect(html).toContain("No watched companies yet");
+    expect(html).not.toContain("id=\"job-discovery-diagnostics-title\"");
   });
 
   it("renders the real companies workspace in the mounted portfolio app", () => {
@@ -84,6 +88,10 @@ describe("Companies list", () => {
 
     expect(html).toContain("CivicActions");
     expect(html).toContain("company-provider-metadata");
+    expect(html).toContain("Discovery source");
+    expect(html).toContain("Model-grounded discovery");
+    expect(html).toContain("Data source");
+    expect(html).toContain("civicactions.com");
     expect(html).toContain("company-description-panel");
     expect(html).toContain("Company Description");
     expect(html).toContain("Works with public-interest teams.");
@@ -120,6 +128,92 @@ describe("Companies list", () => {
     expect(html).toContain('href="https://civicactions.com/careers"');
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("renders company card source labels for TheirStack and user-entered companies", () => {
+    const html = renderToStaticMarkup(
+      <CompaniesList
+        initialCompanies={[
+          companyFixture({
+            id: "theirstack-company",
+            name: "Hightouch",
+            discovered_by: "theirstack",
+            discoverySource: "theirstack",
+            discoverySourceLabel: "TheirStack",
+            dataOriginSource: "theirstack",
+            dataOriginSourceType: "provider",
+            dataOriginSourceLabel: "TheirStack company search",
+            greenhouse_board_token: "hightouch",
+            provider_grounding_metadata_summary: {
+              atsInference: {
+                greenhouseBoardToken: "hightouch"
+              }
+            }
+          }),
+          companyFixture({
+            id: "user-company",
+            name: "User Entered Co",
+            derivation_status: "user_entered",
+            discoverySource: "user_entered",
+            discoverySourceLabel: "User-entered",
+            dataOriginSource: "user",
+            dataOriginSourceType: "user",
+            dataOriginSourceLabel: "User-entered"
+          })
+        ]}
+      />
+    );
+
+    expect(html).toContain("TheirStack");
+    expect(html).toContain("TheirStack company search");
+    expect(html).toContain("ATS inferred");
+    expect(html).toContain("Greenhouse");
+    expect(html).toContain("User-entered");
+  });
+
+  it("renders company diagnostics and keeps job diagnostics on the jobs page", () => {
+    const companyHtml = renderToStaticMarkup(
+      <CompanyDiscoveryDiagnostics
+        initialRun={{
+          id: "company-run-1",
+          status: "completed",
+          sourcePath: "model_grounded_company_discovery",
+          sourceProvider: "gemini",
+          searchGroundingEnabled: true,
+          savedCompanyCount: 4,
+          linkedCompanyCount: 4,
+          duplicateCompanyCount: 0,
+          skippedCompanyCount: 0,
+          theirStack: {
+            checked: true,
+            enabled: true,
+            used: false,
+            skippedReason: "planner_chose_model_grounded"
+          },
+          firstPartySync: {
+            attempted: false,
+            providers: []
+          },
+          companies: [
+            {
+              name: "CivicActions",
+              discoverySource: "model_grounded",
+              dataOriginSource: "https://civicactions.com/careers",
+              dataOriginSourceType: "careers_url"
+            }
+          ]
+        }}
+      />
+    );
+    const jobsHtml = renderToStaticMarkup(<JobsPage />);
+
+    expect(companyHtml).toContain("Company discovery diagnostics");
+    expect(companyHtml).toContain("Gemini model-grounded discovery saved 4 companies");
+    expect(companyHtml).toContain("TheirStack");
+    expect(companyHtml).toContain("Planner chose model grounded");
+    expect(companyHtml).not.toContain("id=\"job-discovery-diagnostics-title\"");
+    expect(jobsHtml).toContain("id=\"job-discovery-diagnostics-title\"");
+    expect(jobsHtml).not.toContain("Company discovery diagnostics");
   });
 
   it("buckets watched, avoided, and archived companies into exactly one tab", () => {

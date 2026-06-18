@@ -21,7 +21,7 @@ from .company_canonicalization import (
     normalize_company_name,
     upsert_canonical_company,
 )
-from .db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, Company, JobListing, RoleTarget
+from .db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, CommandInteractionLog, Company, JobListing, RoleTarget
 from .db.session import get_db_session
 from .model_connector import (
     ModelConfigurationError,
@@ -385,6 +385,11 @@ class CompanyResponse(BaseModel):
     discovery_query: str | None
     search_queries_used: list[str]
     discovered_by: str | None
+    discoverySource: str = "unknown"
+    discoverySourceLabel: str = "Unknown"
+    dataOriginSource: str = "unknown"
+    dataOriginSourceType: str = "unknown"
+    dataOriginSourceLabel: str = "Unknown"
     derivation_status: str
     review_status: str
     notes: str
@@ -463,6 +468,34 @@ class CompanyActionResponse(BaseModel):
     action: str
     message: str
     company: CompanyResponse
+
+
+class CompanyDiscoveryDiagnosticsResponse(BaseModel):
+    id: str
+    status: str = "unknown"
+    createdAt: str | None = None
+    completedAt: str | None = None
+    commandPreview: str | None = None
+    sourcePath: str = "unknown"
+    routerAction: str = "unknown"
+    routerConfidence: str = "unknown"
+    companyDiscoveryPreflightBlocked: bool = False
+    preflightReason: str | None = None
+    sourceProvider: str = "unknown"
+    searchGroundingEnabled: bool | None = None
+    modelProvider: str | None = None
+    modelName: str | None = None
+    savedCompanyCount: int = 0
+    linkedCompanyCount: int = 0
+    duplicateCompanyCount: int = 0
+    skippedCompanyCount: int = 0
+    zeroNewCompanyReason: str | None = None
+    searchQueriesUsed: list[str] = Field(default_factory=list)
+    discoveryAngles: list[str] = Field(default_factory=list)
+    theirStack: dict[str, Any] = Field(default_factory=dict)
+    firstPartySync: dict[str, Any] = Field(default_factory=dict)
+    companies: list[dict[str, Any]] = Field(default_factory=list)
+    diagnosticMessages: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -562,6 +595,25 @@ def get_company_detail(
     ]
     payload["applications"] = [serialize_company_detail_application(application) for application in applications]
     return payload
+
+
+@router.get("/companies/discovery-runs/latest", response_model=CompanyDiscoveryDiagnosticsResponse)
+def get_latest_company_discovery_diagnostics(
+    session: Session = Depends(get_db_session),
+    auth: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    log = session.scalar(
+        select(CommandInteractionLog)
+        .where(
+            CommandInteractionLog.candidate_profile_id == auth.candidate_profile.id,
+            CommandInteractionLog.route_selected == "company_discovery",
+        )
+        .order_by(CommandInteractionLog.created_at.desc())
+        .limit(1)
+    )
+    if log is None:
+        raise HTTPException(status_code=404, detail="Company discovery diagnostics not found.")
+    return build_company_discovery_diagnostics_from_log(log)
 
 
 @router.post("/companies/{company_ref}/archive", response_model=CompanyActionResponse)
@@ -670,6 +722,15 @@ def run_company_discovery(
             body={"ok": False, "error": "Candidate profile not found.", "code": "candidate_profile_not_found"},
             status_code=404,
         )
+    logger.info(
+        "company_discovery.started",
+        extra={
+            "candidate_profile_id": candidate_profile.id,
+            "candidate_profile_slug": candidate_profile.slug,
+            "command_preview": command_preview(request.latest_user_message),
+            "theirstack_enabled": bool(active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key),
+        },
+    )
 
     current_saved_companies = serialize_current_saved_companies(db_session, candidate_profile.id)
     target_context = build_candidate_target_context(db_session, candidate_profile)
@@ -745,6 +806,21 @@ def run_company_discovery(
         search_grounding_enabled=active_settings.company_discovery_search_grounding_enabled,
     )
     routed_request = route_model_request(model_request, connector_config.routing)
+    logger.info(
+        "company_discovery.model_grounded.started",
+        extra={
+            "candidate_profile_id": candidate_profile.id,
+            "candidate_profile_slug": candidate_profile.slug,
+            "command_preview": command_preview(request.latest_user_message),
+            "source_path": "model_grounded_company_discovery",
+            "model_provider": connector_config.provider,
+            "model_name": routed_request.model,
+            "search_grounding_enabled": routed_request.search_grounding,
+            "theirstack_enabled": bool(active_settings.theirstack_company_search_enabled),
+            "theirstack_checked": bool(active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key),
+            "theirstack_used": False,
+        },
+    )
 
     try:
         active_connector = connector or create_model_connector(
@@ -859,6 +935,22 @@ def run_company_discovery(
     added_companies = [serialize_company(company) for company in save_result.added]
     skipped = [item.model_dump() for item in save_result.skipped]
     assistant_message = build_assistant_message(output, save_result.added, save_result.skipped)
+    discovery_audit = build_model_grounded_discovery_audit(
+        attempts=attempts,
+        final_attempt=final_attempt,
+        settings=active_settings,
+        model_request=final_model_request,
+        response=response,
+        saved_companies=added_companies,
+        diagnostics=build_company_discovery_result_diagnostics(
+            attempts=attempts,
+            final_attempt=final_attempt,
+            recent_search_query_count=len(discovery_context["recent_discovery"]["recent_search_queries_used"]),
+            recent_search_queries=recent_search_queries_from_discovery_context(discovery_context),
+            search_queries_used=search_queries_used_from_attempts(attempts),
+            context_signals=preflight_signals,
+        ),
+    )
     result_payload = {
         "assistantMessage": assistant_message,
         "companies": added_companies,
@@ -866,6 +958,7 @@ def run_company_discovery(
         "clarifyingQuestions": output.clarifying_questions,
         "companyDiscoveryAttemptCount": len(attempts),
         "zeroSaveRetryUsed": len(attempts) > 1,
+        "discoveryAudit": discovery_audit,
         **build_company_discovery_result_diagnostics(
             attempts=attempts,
             final_attempt=final_attempt,
@@ -878,6 +971,36 @@ def run_company_discovery(
         **model_request_debug_fields(active_settings, final_model_request),
         **model_response_debug_fields(active_settings, response),
     }
+    logger.info(
+        "company_discovery.model_grounded.completed",
+        extra={
+            "candidate_profile_id": candidate_profile.id,
+            "candidate_profile_slug": candidate_profile.slug,
+            "command_preview": command_preview(request.latest_user_message),
+            "source_path": "model_grounded_company_discovery",
+            "model_provider": response.provider,
+            "model_name": response.model,
+            "search_grounding_enabled": final_model_request.search_grounding,
+            "saved_company_count": len(save_result.added),
+            "duplicate_company_count": len(save_result.skipped),
+            "search_query_count": len(discovery_audit["searchQueriesUsed"]),
+            "theirstack_enabled": bool(active_settings.theirstack_company_search_enabled),
+            "theirstack_checked": bool(active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key),
+            "theirstack_used": False,
+        },
+    )
+    logger.info(
+        "company_discovery.completed",
+        extra={
+            "candidate_profile_id": candidate_profile.id,
+            "candidate_profile_slug": candidate_profile.slug,
+            "command_preview": command_preview(request.latest_user_message),
+            "source_path": "model_grounded_company_discovery",
+            "saved_company_count": len(save_result.added),
+            "duplicate_company_count": len(save_result.skipped),
+            "theirstack_used": False,
+        },
+    )
 
     return CompanyDiscoveryServiceResult(
         body={
@@ -1907,6 +2030,367 @@ def build_company_discovery_result_diagnostics(
     }
 
 
+def build_model_grounded_discovery_audit(
+    *,
+    attempts: list[CompanyDiscoveryAttempt],
+    final_attempt: CompanyDiscoveryAttempt,
+    settings: Settings,
+    model_request: ModelRequest,
+    response: Any,
+    saved_companies: list[dict[str, Any]],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "sourcePath": "model_grounded_company_discovery",
+        "routerAction": "company_discovery",
+        "sourceProvider": response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider,
+        "searchGroundingEnabled": bool(model_request.search_grounding),
+        "modelProvider": response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider,
+        "modelName": response.model if isinstance(getattr(response, "model", None), str) else model_request.model,
+        "savedCompanyCount": diagnostics.get("savedCompanyCount", 0),
+        "linkedCompanyCount": diagnostics.get("savedCompanyCount", 0),
+        "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
+        "skippedCompanyCount": diagnostics.get("skippedCompanyCount", 0),
+        "zeroNewCompanyReason": diagnostics.get("zeroNewCompanyReason"),
+        "searchQueriesUsed": diagnostics.get("searchQueriesUsed") or search_queries_used_from_attempts(attempts),
+        "discoveryAngles": diagnostics.get("discoveryAngles") or [],
+        "companyDiscoveryPreflightBlocked": bool(diagnostics.get("blockedByTargetPreflight")),
+        "preflightReason": diagnostics.get("preflightReason"),
+        "theirStack": {
+            "checked": bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key),
+            "enabled": bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key),
+            "used": False,
+            "skippedReason": "planner_chose_model_grounded",
+            "requestShape": {},
+            "requestedPages": 0,
+            "fetchedPages": 0,
+            "failedPages": 0,
+            "skippedPages": 0,
+            "rawCompanyCount": 0,
+            "normalizedCompanyCount": 0,
+            "upsertedCompanyCount": 0,
+            "linkedCandidateCompanyCount": 0,
+            "errorType": None,
+            "errorMessage": None,
+        },
+        "firstPartySync": empty_first_party_sync_payload(),
+        "companies": [compact_company_diagnostic(company) for company in saved_companies],
+        "diagnosticMessages": [],
+    }
+
+
+def empty_first_party_sync_payload() -> dict[str, Any]:
+    return {
+        "attempted": False,
+        "providers": [],
+        "greenhouseBoardsSelected": [],
+        "greenhouseBoardsSynced": [],
+        "ashbyBoardsSelected": [],
+        "ashbyBoardsSynced": [],
+        "completedCount": 0,
+        "failedCount": 0,
+        "normalizedJobCount": 0,
+    }
+
+
+def compact_company_diagnostic(company: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": company.get("name") or "Unknown company",
+        "discoverySource": company.get("discoverySource") or "unknown",
+        "dataOriginSource": company.get("dataOriginSource") or "unknown",
+        "dataOriginSourceType": company.get("dataOriginSourceType") or "unknown",
+        "greenhouseBoardToken": company.get("greenhouse_board_token"),
+        "ashbyBoardUrl": company.get("ashby_board_url"),
+        "jobsFoundSignal": safe_nested_int(company.get("provider_grounding_metadata_summary"), "numJobsFound"),
+    }
+
+
+def build_company_discovery_diagnostics_from_log(log: CommandInteractionLog) -> dict[str, Any]:
+    validation_result = log.validation_result if isinstance(log.validation_result, dict) else {}
+    command_response = validation_result.get("commandResponse") if isinstance(validation_result.get("commandResponse"), dict) else {}
+    action = first_company_discovery_action(command_response)
+    result_payload = action.get("resultPayload") if isinstance(action.get("resultPayload"), dict) else {}
+    response_payload = command_response.get("result_payload") if isinstance(command_response.get("result_payload"), dict) else {}
+    payload = {**response_payload, **result_payload}
+    audit = payload.get("discoveryAudit") if isinstance(payload.get("discoveryAudit"), dict) else build_company_discovery_audit_from_payload(payload, log)
+    status = str(action.get("status") or ("failed" if log.error_details else "completed" if log.action_applied else "unknown"))
+    diagnostics = {
+        "id": log.id,
+        "status": status,
+        "createdAt": log.created_at.isoformat() if log.created_at else None,
+        "completedAt": log.updated_at.isoformat() if getattr(log, "updated_at", None) else (log.created_at.isoformat() if log.created_at else None),
+        "commandPreview": command_preview(log.user_message),
+        "routerAction": audit.get("routerAction") or log.route_selected or "company_discovery",
+        "routerConfidence": router_confidence_from_log(log),
+        "sourcePath": audit.get("sourcePath") or "unknown",
+        "companyDiscoveryPreflightBlocked": bool(audit.get("companyDiscoveryPreflightBlocked") or payload.get("blockedByTargetPreflight")),
+        "preflightReason": audit.get("preflightReason") or payload.get("preflightReason"),
+        "sourceProvider": audit.get("sourceProvider") or "unknown",
+        "searchGroundingEnabled": audit.get("searchGroundingEnabled"),
+        "modelProvider": audit.get("modelProvider"),
+        "modelName": audit.get("modelName"),
+        "savedCompanyCount": int_value(audit.get("savedCompanyCount") or payload.get("savedCompanyCount")),
+        "linkedCompanyCount": int_value(audit.get("linkedCompanyCount") or payload.get("linkedCompanyCount")),
+        "duplicateCompanyCount": int_value(audit.get("duplicateCompanyCount") or payload.get("duplicateCompanyCount")),
+        "skippedCompanyCount": int_value(audit.get("skippedCompanyCount") or payload.get("skippedCompanyCount")),
+        "zeroNewCompanyReason": audit.get("zeroNewCompanyReason") or payload.get("zeroNewCompanyReason") or payload.get("zeroResultReason"),
+        "searchQueriesUsed": string_list(audit.get("searchQueriesUsed") or payload.get("searchQueriesUsed")),
+        "discoveryAngles": string_list(audit.get("discoveryAngles") or payload.get("discoveryAngles")),
+        "theirStack": normalize_theirstack_diagnostics(audit.get("theirStack"), payload),
+        "firstPartySync": normalize_first_party_sync_diagnostics(audit.get("firstPartySync"), payload),
+        "companies": [compact_company_diagnostic(company) for company in list_of_dicts(audit.get("companies") or payload.get("companies"))],
+        "diagnosticMessages": string_list(audit.get("diagnosticMessages")),
+    }
+    if diagnostics["linkedCompanyCount"] == 0:
+        diagnostics["linkedCompanyCount"] = diagnostics["savedCompanyCount"]
+    return diagnostics
+
+
+def first_company_discovery_action(command_response: dict[str, Any]) -> dict[str, Any]:
+    actions = command_response.get("actions")
+    if isinstance(actions, list):
+        for action in actions:
+            if isinstance(action, dict) and action.get("type") == "company_discovery":
+                return action
+    return {}
+
+
+def build_company_discovery_audit_from_payload(payload: dict[str, Any], log: CommandInteractionLog) -> dict[str, Any]:
+    model_request = payload.get("modelRequest") if isinstance(payload.get("modelRequest"), dict) else {}
+    model_response = payload.get("modelResponse") if isinstance(payload.get("modelResponse"), dict) else {}
+    has_theirstack = "companyEnrichmentPlan" in payload or "theirstackDiagnostics" in payload
+    source_path = "theirstack_company_enrichment" if has_theirstack else "model_grounded_company_discovery"
+    return {
+        "sourcePath": source_path,
+        "routerAction": "company_discovery",
+        "sourceProvider": "theirstack" if has_theirstack else (model_response.get("provider") or log.model_provider or "unknown"),
+        "searchGroundingEnabled": model_request.get("searchGrounding") if "searchGrounding" in model_request else None,
+        "modelProvider": model_response.get("provider") or log.model_provider,
+        "modelName": model_response.get("model") or model_request.get("model"),
+        "savedCompanyCount": payload.get("savedCompanyCount") or payload.get("linkedCompanyCount") or len(list_of_dicts(payload.get("companies"))),
+        "linkedCompanyCount": payload.get("linkedCompanyCount") or len(list_of_dicts(payload.get("companies"))),
+        "duplicateCompanyCount": payload.get("duplicateCompanyCount"),
+        "skippedCompanyCount": payload.get("skippedCompanyCount"),
+        "zeroNewCompanyReason": payload.get("zeroNewCompanyReason") or payload.get("zeroResultReason"),
+        "searchQueriesUsed": payload.get("searchQueriesUsed"),
+        "discoveryAngles": payload.get("discoveryAngles"),
+        "companyDiscoveryPreflightBlocked": payload.get("blockedByTargetPreflight"),
+        "preflightReason": payload.get("preflightReason"),
+    }
+
+
+def normalize_theirstack_diagnostics(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = value if isinstance(value, dict) else {}
+    raw = payload.get("theirstackDiagnostics") if isinstance(payload.get("theirstackDiagnostics"), dict) else {}
+    plan = payload.get("companyEnrichmentPlan") if isinstance(payload.get("companyEnrichmentPlan"), dict) else {}
+    request_shape = diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else raw.get("requestShape") if isinstance(raw.get("requestShape"), dict) else {}
+    used = bool(diagnostics.get("used") or raw or plan.get("useTheirStackCompanySearch"))
+    enabled = bool(diagnostics.get("enabled") if "enabled" in diagnostics else raw.get("enabled", used))
+    checked = bool(diagnostics.get("checked") if "checked" in diagnostics else (raw or plan))
+    skipped_reason = diagnostics.get("skippedReason")
+    if not skipped_reason and checked and not used:
+        skipped_reason = "disabled" if not enabled else "planner_chose_model_grounded"
+    return {
+        "checked": checked,
+        "enabled": enabled,
+        "used": used,
+        "skippedReason": skipped_reason,
+        "requestShape": request_shape,
+        "requestedPages": int_value(diagnostics.get("requestedPages") or raw.get("requestedPages")),
+        "fetchedPages": int_value(diagnostics.get("fetchedPages") or raw.get("fetchedPages")),
+        "failedPages": int_value(diagnostics.get("failedPages") or raw.get("failedPages")),
+        "skippedPages": int_value(diagnostics.get("skippedPages") or raw.get("skippedPages")),
+        "rawCompanyCount": int_value(diagnostics.get("rawCompanyCount") or raw.get("rawCompanyCount") or payload.get("rawCompanyCount")),
+        "normalizedCompanyCount": int_value(diagnostics.get("normalizedCompanyCount") or raw.get("normalizedCompanyCount") or payload.get("normalizedCompanyCount")),
+        "upsertedCompanyCount": int_value(diagnostics.get("upsertedCompanyCount") or raw.get("upsertedCompanyCount") or payload.get("upsertedCompanyCount")),
+        "linkedCandidateCompanyCount": int_value(
+            diagnostics.get("linkedCandidateCompanyCount") or raw.get("linkedCandidateCompanyCount") or payload.get("linkedCompanyCount")
+        ),
+        "errorType": diagnostics.get("errorType") or raw.get("errorType"),
+        "errorMessage": diagnostics.get("errorMessage") or raw.get("errorMessage"),
+    }
+
+
+def normalize_first_party_sync_diagnostics(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict) and value:
+        return {**empty_first_party_sync_payload(), **value}
+    greenhouse_selected = string_list(payload.get("boardsSelectedForSync"))
+    greenhouse_synced = string_list(payload.get("boardTokensSynced"))
+    ashby_selected = string_list(payload.get("ashbyBoardsSelectedForSync"))
+    ashby_synced = string_list(payload.get("ashbyBoardUrlsSynced") or payload.get("ashbyBoardTokensSynced"))
+    attempted = bool(payload.get("boardSyncAttempted") or payload.get("ashbyBoardSyncAttempted"))
+    providers = []
+    if attempted or greenhouse_selected or greenhouse_synced:
+        providers.append("greenhouse")
+    if ashby_selected or ashby_synced:
+        providers.append("ashby")
+    return {
+        "attempted": attempted,
+        "providers": providers,
+        "greenhouseBoardsSelected": greenhouse_selected,
+        "greenhouseBoardsSynced": greenhouse_synced,
+        "ashbyBoardsSelected": ashby_selected,
+        "ashbyBoardsSynced": ashby_synced,
+        "completedCount": int_value(payload.get("totalBoardSyncCompletedCount") or payload.get("boardSyncCompletedCount")),
+        "failedCount": int_value(payload.get("totalBoardSyncFailedCount") or payload.get("boardSyncFailedCount")),
+        "normalizedJobCount": int_value(payload.get("totalBoardSyncNormalizedCount") or payload.get("boardSyncNormalizedCount")),
+    }
+
+
+def derive_company_source_fields(link: CandidateCompany) -> dict[str, str]:
+    company = link.company
+    discovered_by = (link.discovered_by or "").strip().casefold()
+    derivation_status = (link.derivation_status or "").strip().casefold()
+    source_urls = clean_company_source_urls([*(company.source_urls or []), *(link.personal_source_urls or [])])
+
+    if discovered_by == "theirstack" or provider_metadata_source(link) == "theirstack":
+        return {
+            "discoverySource": "theirstack",
+            "discoverySourceLabel": "TheirStack",
+            "dataOriginSource": "theirstack",
+            "dataOriginSourceType": "provider",
+            "dataOriginSourceLabel": "TheirStack company search",
+        }
+
+    if derivation_status == "user_entered" or discovered_by == "user":
+        return source_fields_for_url_or_default(
+            company,
+            source_urls,
+            discovery_source="user_entered",
+            discovery_label="User-entered",
+            fallback_source="user",
+            fallback_type="user",
+            fallback_label="User-entered",
+        )
+
+    if derivation_status == "imported" or discovered_by == "import":
+        return source_fields_for_url_or_default(
+            company,
+            source_urls,
+            discovery_source="imported",
+            discovery_label="Imported",
+            fallback_source="import",
+            fallback_type="import",
+            fallback_label="Imported",
+        )
+
+    if discovered_by in {"gemini", "mock"} or discovered_by or derivation_status == "model_derived":
+        data_source, data_type, data_label = strongest_model_data_origin(company, source_urls, link)
+        return {
+            "discoverySource": "model_grounded",
+            "discoverySourceLabel": model_discovery_source_label(discovered_by),
+            "dataOriginSource": data_source,
+            "dataOriginSourceType": data_type,
+            "dataOriginSourceLabel": data_label,
+        }
+
+    return {
+        "discoverySource": "unknown",
+        "discoverySourceLabel": "Unknown",
+        "dataOriginSource": "unknown",
+        "dataOriginSourceType": "unknown",
+        "dataOriginSourceLabel": "Unknown",
+    }
+
+
+def source_fields_for_url_or_default(
+    company: Company,
+    source_urls: list[str],
+    *,
+    discovery_source: str,
+    discovery_label: str,
+    fallback_source: str,
+    fallback_type: str,
+    fallback_label: str,
+) -> dict[str, str]:
+    data_source, data_type, data_label = strongest_concrete_company_url(company, source_urls)
+    return {
+        "discoverySource": discovery_source,
+        "discoverySourceLabel": discovery_label,
+        "dataOriginSource": data_source or fallback_source,
+        "dataOriginSourceType": data_type or fallback_type,
+        "dataOriginSourceLabel": data_label or fallback_label,
+    }
+
+
+def strongest_model_data_origin(company: Company, source_urls: list[str], link: CandidateCompany) -> tuple[str, str, str]:
+    source, source_type, label = strongest_concrete_company_url(company, source_urls)
+    if source:
+        return source, source_type, label
+    metadata = link.provider_grounding_metadata if isinstance(link.provider_grounding_metadata, dict) else {}
+    if metadata or link.search_queries_used:
+        return "gemini_search_grounding", "search_grounding", "Gemini search grounding"
+    return "unknown", "unknown", "Unknown"
+
+
+def strongest_concrete_company_url(company: Company, source_urls: list[str]) -> tuple[str | None, str | None, str | None]:
+    candidates = [
+        (company.careers_url, "careers_url", "Company careers page"),
+        (company.job_listings_url, "job_listings_url", "Company job listings page"),
+        (company.website_url, "website", "Company website"),
+        (source_urls[0] if source_urls else None, "source_url", "Source URL"),
+    ]
+    for url, source_type, label in candidates:
+        if is_public_http_url(url):
+            return str(url), source_type, label
+    return None, None, None
+
+
+def provider_metadata_source(link: CandidateCompany) -> str | None:
+    metadata = link.provider_grounding_metadata if isinstance(link.provider_grounding_metadata, dict) else {}
+    provider = metadata.get("provider") or metadata.get("source")
+    return provider.strip().casefold() if isinstance(provider, str) else None
+
+
+def model_discovery_source_label(discovered_by: str) -> str:
+    if discovered_by == "gemini":
+        return "Gemini model-grounded discovery"
+    if discovered_by == "mock":
+        return "Model-grounded discovery"
+    if discovered_by and discovered_by != "unknown":
+        return f"{discovered_by.replace('_', ' ').title()} model-grounded discovery"
+    return "Model-grounded discovery"
+
+
+def is_public_http_url(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(domain_from_url(value))
+
+
+def command_preview(value: str, *, limit: int = 180) -> str:
+    compact = re.sub(r"\s+", " ", value or "").strip()
+    return compact[:limit]
+
+
+def router_confidence_from_log(log: CommandInteractionLog) -> str:
+    payload = log.parsed_action_payload if isinstance(log.parsed_action_payload, dict) else {}
+    value = payload.get("confidence")
+    return value if isinstance(value, str) and value else "unknown"
+
+
+def list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return compact_unique_strings([item for item in value if isinstance(item, str)], limit=30)
+
+
+def int_value(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def safe_nested_int(value: Any, key: str) -> int | None:
+    if isinstance(value, dict) and isinstance(value.get(key), int):
+        return value[key]
+    return None
+
+
 def parse_company_discovery_json(raw_text: str) -> Any:
     stripped = raw_text.strip()
     candidates = [stripped]
@@ -2182,6 +2666,7 @@ def serialize_company(
         }
     )
     sync_providers = company_sync_providers(company)
+    source_fields = derive_company_source_fields(link)
     return {
         "id": link.id,
         "company_id": link.company_id,
@@ -2212,6 +2697,7 @@ def serialize_company(
         "discovery_query": link.discovery_query,
         "search_queries_used": link.search_queries_used or [],
         "discovered_by": link.discovered_by,
+        **source_fields,
         "derivation_status": link.derivation_status,
         "review_status": link.review_status,
         "notes": link.notes,

@@ -23,6 +23,7 @@ from jobops_api.company_discovery import (
     build_company_discovery_model_request,
     build_assistant_message,
     company_discovery_validation_failure,
+    get_latest_company_discovery_diagnostics,
     parse_company_discovery_json,
     run_company_discovery,
     save_model_derived_companies,
@@ -32,7 +33,7 @@ from jobops_api.company_discovery import (
     validate_company_discovery_output,
 )
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, Company, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
+from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, CommandInteractionLog, Company, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
@@ -1142,6 +1143,162 @@ def test_company_serialization_includes_provider_fields_counts_and_compact_metad
     assert "rawProviderPayload" not in payload["provider_grounding_metadata_summary"]
 
 
+def test_company_serialization_derives_theirstack_data_origin() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        company = upsert_canonical_company(session, name="Hightouch", website_url="https://hightouch.com")
+        link = ensure_candidate_company_link(
+            session,
+            candidate_profile_id=profile.id,
+            company=company,
+            discovered_by="theirstack",
+            provider_grounding_metadata={"provider": "theirstack", "rawProviderPayload": {"secret": "nope"}},
+        ).link
+        payload = serialize_company(link, session=session, candidate_profile_id=profile.id)
+
+    assert payload["discovered_by"] == "theirstack"
+    assert payload["discoverySource"] == "theirstack"
+    assert payload["discoverySourceLabel"] == "TheirStack"
+    assert payload["dataOriginSource"] == "theirstack"
+    assert payload["dataOriginSourceType"] == "provider"
+    assert payload["dataOriginSourceLabel"] == "TheirStack company search"
+    assert "rawProviderPayload" not in json.dumps(payload["provider_grounding_metadata_summary"])
+
+
+def test_company_serialization_derives_model_grounded_url_origin() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        company = upsert_canonical_company(
+            session,
+            name="CivicActions",
+            website_url="https://civicactions.com",
+            careers_url="https://civicactions.com/careers",
+            source_urls=["https://civicactions.com/about"],
+        )
+        link = ensure_candidate_company_link(
+            session,
+            candidate_profile_id=profile.id,
+            company=company,
+            discovered_by="gemini",
+            provider_grounding_metadata={"provider": "gemini"},
+        ).link
+        payload = serialize_company(link, session=session, candidate_profile_id=profile.id)
+
+    assert payload["discoverySource"] == "model_grounded"
+    assert payload["discoverySourceLabel"] == "Gemini model-grounded discovery"
+    assert payload["dataOriginSource"] == "https://civicactions.com/careers"
+    assert payload["dataOriginSourceType"] == "careers_url"
+    assert payload["dataOriginSourceLabel"] == "Company careers page"
+
+
+def test_company_serialization_derives_user_entered_origin() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        link = add_candidate_company(
+            session,
+            profile.id,
+            "User Co",
+            website_url="https://user.example",
+            derivation_status="user_entered",
+        )
+        payload = serialize_company(link, session=session, candidate_profile_id=profile.id)
+
+    assert payload["discoverySource"] == "user_entered"
+    assert payload["discoverySourceLabel"] == "User-entered"
+    assert payload["dataOriginSource"] == "https://user.example"
+    assert payload["dataOriginSourceType"] == "website"
+    assert payload["dataOriginSourceLabel"] == "Company website"
+
+
+def test_latest_company_discovery_diagnostics_returns_model_grounded_audit() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        log = command_log(
+            profile.id,
+            result_payload={
+                "discoveryAudit": {
+                    "sourcePath": "model_grounded_company_discovery",
+                    "routerAction": "company_discovery",
+                    "sourceProvider": "gemini",
+                    "searchGroundingEnabled": True,
+                    "modelProvider": "gemini",
+                    "modelName": "gemini-test",
+                    "savedCompanyCount": 1,
+                    "linkedCompanyCount": 1,
+                    "duplicateCompanyCount": 0,
+                    "skippedCompanyCount": 0,
+                    "theirStack": {"checked": True, "enabled": True, "used": False, "skippedReason": "planner_chose_model_grounded"},
+                    "firstPartySync": {"attempted": False},
+                    "companies": [
+                        {
+                            "name": "CivicActions",
+                            "discoverySource": "model_grounded",
+                            "dataOriginSource": "https://civicactions.com/careers",
+                            "dataOriginSourceType": "careers_url",
+                        }
+                    ],
+                }
+            },
+        )
+        session.add(log)
+        session.commit()
+
+        payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
+
+    assert payload["id"] == log.id
+    assert payload["sourcePath"] == "model_grounded_company_discovery"
+    assert payload["sourceProvider"] == "gemini"
+    assert payload["searchGroundingEnabled"] is True
+    assert payload["theirStack"]["checked"] is True
+    assert payload["theirStack"]["used"] is False
+    assert payload["theirStack"]["skippedReason"] == "planner_chose_model_grounded"
+    assert payload["companies"][0]["dataOriginSource"] == "https://civicactions.com/careers"
+
+
+def test_latest_company_discovery_diagnostics_returns_theirstack_counts_without_secrets() -> None:
+    engine = create_seeded_engine()
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        log = command_log(
+            profile.id,
+            result_payload={
+                "linkedCompanyCount": 2,
+                "theirstackDiagnostics": {
+                    "enabled": True,
+                    "requestShape": {"job_filters": "<present>", "api_key": "should-not-exist"},
+                    "requestedPages": 1,
+                    "fetchedPages": 1,
+                    "rawCompanyCount": 5,
+                    "normalizedCompanyCount": 4,
+                    "upsertedCompanyCount": 4,
+                    "linkedCandidateCompanyCount": 2,
+                },
+                "companyEnrichmentPlan": {"useTheirStackCompanySearch": True},
+                "companies": [{"name": "Hightouch", "discoverySource": "theirstack", "dataOriginSource": "theirstack"}],
+            },
+        )
+        session.add(log)
+        session.commit()
+
+        payload = get_latest_company_discovery_diagnostics(session=session, auth=SimpleNamespace(candidate_profile=profile))
+
+    assert payload["sourcePath"] == "theirstack_company_enrichment"
+    assert payload["theirStack"]["checked"] is True
+    assert payload["theirStack"]["used"] is True
+    assert payload["theirStack"]["rawCompanyCount"] == 5
+    assert payload["linkedCompanyCount"] == 2
+    assert "secret-theirstack-key" not in json.dumps(payload)
+
+
 def test_company_without_supported_ats_is_not_sync_capable() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -1274,6 +1431,37 @@ def add_candidate_company(
         review_status=review_status,
     )
     return result.link
+
+
+def command_log(candidate_profile_id: str, *, result_payload: dict[str, Any], status: str = "completed") -> CommandInteractionLog:
+    return CommandInteractionLog(
+        user_id="user-1",
+        tenant_id="tenant-1",
+        candidate_profile_id=candidate_profile_id,
+        user_message="find companies to follow",
+        route_selected="company_discovery",
+        model_provider="mock",
+        parsed_action_payload={"actionType": "company_discovery", "confidence": "high"},
+        validation_result={
+            "commandResponse": {
+                "assistant_message": "Done.",
+                "actions": [
+                    {
+                        "type": "company_discovery",
+                        "status": status,
+                        "targetWorkspace": "companies",
+                        "title": "Discover companies",
+                        "summary": "Company discovery completed.",
+                        "resultPayload": result_payload,
+                    }
+                ],
+                "target_workspace": "companies",
+                "result_payload": result_payload,
+            }
+        },
+        action_applied=status in {"completed", "running"},
+        final_response="Done.",
+    )
 
 
 def make_settings(repo_root: Path) -> Settings:

@@ -316,6 +316,68 @@ export type JobSearchProviderDiagnostic = {
   reason?: string | null;
 };
 
+export type CompanyDiscoveryDiagnosticsStatus = {
+  id: string;
+  status: "completed" | "failed" | "running" | "unknown" | string;
+  createdAt?: string | null;
+  completedAt?: string | null;
+  commandPreview?: string | null;
+  sourcePath?: string | null;
+  routerAction?: string | null;
+  routerConfidence?: string | null;
+  companyDiscoveryPreflightBlocked?: boolean;
+  preflightReason?: string | null;
+  sourceProvider?: string | null;
+  searchGroundingEnabled?: boolean | null;
+  modelProvider?: string | null;
+  modelName?: string | null;
+  savedCompanyCount?: number;
+  linkedCompanyCount?: number;
+  duplicateCompanyCount?: number;
+  skippedCompanyCount?: number;
+  zeroNewCompanyReason?: string | null;
+  searchQueriesUsed?: string[];
+  discoveryAngles?: string[];
+  theirStack?: {
+    checked?: boolean;
+    enabled?: boolean;
+    used?: boolean;
+    skippedReason?: string | null;
+    requestShape?: Record<string, unknown>;
+    requestedPages?: number;
+    fetchedPages?: number;
+    failedPages?: number;
+    skippedPages?: number;
+    rawCompanyCount?: number;
+    normalizedCompanyCount?: number;
+    upsertedCompanyCount?: number;
+    linkedCandidateCompanyCount?: number;
+    errorType?: string | null;
+    errorMessage?: string | null;
+  };
+  firstPartySync?: {
+    attempted?: boolean;
+    providers?: string[];
+    greenhouseBoardsSelected?: string[];
+    greenhouseBoardsSynced?: string[];
+    ashbyBoardsSelected?: string[];
+    ashbyBoardsSynced?: string[];
+    completedCount?: number;
+    failedCount?: number;
+    normalizedJobCount?: number;
+  };
+  companies?: Array<{
+    name?: string | null;
+    discoverySource?: string | null;
+    dataOriginSource?: string | null;
+    dataOriginSourceType?: string | null;
+    greenhouseBoardToken?: string | null;
+    ashbyBoardUrl?: string | null;
+    jobsFoundSignal?: number | null;
+  }>;
+  diagnosticMessages?: string[];
+};
+
 export type CommandCenterProxyResponse =
   | {
       ok: true;

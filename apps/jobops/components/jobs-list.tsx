@@ -484,6 +484,7 @@ export function JobDiscoveryDiagnostics({
   initialRun?: JobSearchRunStatus | null;
 }) {
   const [latestJobSearchRun, setLatestJobSearchRun] = useState<JobSearchRunStatus | null>(initialRun);
+  const [pendingRun, setPendingRun] = useState<{ commandPreview?: string | null; jobSearchRunId?: string | null } | null>(null);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
   const [diagnosticsStatusMessage, setDiagnosticsStatusMessage] = useState<string | null>(null);
 
@@ -491,14 +492,15 @@ export function JobDiscoveryDiagnostics({
     let active = true;
     let timeoutId: number | null = null;
 
-    async function loadLatestRunStatus() {
+    async function loadRunStatus(runId?: string | null) {
       if (timeoutId) {
         window.clearTimeout(timeoutId);
         timeoutId = null;
       }
       setIsDiagnosticsLoading(true);
       try {
-        const response = await fetch(`${apiBasePath}/job-search-runs/latest`, { cache: "no-store" });
+        const path = runId ? `/job-search-runs/${encodeURIComponent(runId)}` : "/job-search-runs/latest";
+        const response = await fetch(`${apiBasePath}${path}`, { cache: "no-store" });
         const payload = (await response.json().catch(() => null)) as unknown;
         if (!active) {
           return;
@@ -513,9 +515,10 @@ export function JobDiscoveryDiagnostics({
           return;
         }
         setLatestJobSearchRun(payload);
+        setPendingRun(null);
         setDiagnosticsStatusMessage(null);
         if (isActiveJobSearchRunStatus(payload.status)) {
-          timeoutId = window.setTimeout(loadLatestRunStatus, 2500);
+          timeoutId = window.setTimeout(() => loadRunStatus(payload.id), 2500);
         }
       } catch {
         if (active) {
@@ -528,26 +531,50 @@ export function JobDiscoveryDiagnostics({
       }
     }
 
+    function loadLatestRunStatus() {
+      loadRunStatus();
+    }
+
+    function handleJobDiscoveryStarted(event: Event) {
+      const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
+      const runId = typeof detail.jobSearchRunId === "string" ? detail.jobSearchRunId : null;
+      setLatestJobSearchRun(null);
+      setPendingRun({
+        commandPreview: typeof detail.commandPreview === "string" ? detail.commandPreview : null,
+        jobSearchRunId: runId
+      });
+      setDiagnosticsStatusMessage("Waiting for provider/database/model diagnostics...");
+      if (runId) {
+        loadRunStatus(runId);
+      }
+    }
+
     loadLatestRunStatus();
+    window.addEventListener("jobops:job-discovery-started", handleJobDiscoveryStarted);
+    window.addEventListener("jobops:job-discovery-completed", loadLatestRunStatus);
     window.addEventListener("jobops:jobs-updated", loadLatestRunStatus);
     return () => {
       active = false;
       if (timeoutId) {
         window.clearTimeout(timeoutId);
       }
+      window.removeEventListener("jobops:job-discovery-started", handleJobDiscoveryStarted);
+      window.removeEventListener("jobops:job-discovery-completed", loadLatestRunStatus);
       window.removeEventListener("jobops:jobs-updated", loadLatestRunStatus);
     };
   }, [apiBasePath]);
 
-  return <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} run={latestJobSearchRun} statusMessage={diagnosticsStatusMessage} />;
+  return <JobDiscoveryDiagnosticsPanel isLoading={isDiagnosticsLoading} pendingRun={pendingRun} run={latestJobSearchRun} statusMessage={diagnosticsStatusMessage} />;
 }
 
 function JobDiscoveryDiagnosticsPanel({
   run,
+  pendingRun,
   isLoading,
   statusMessage
 }: {
   run: JobSearchRunStatus | null;
+  pendingRun: { commandPreview?: string | null; jobSearchRunId?: string | null } | null;
   isLoading: boolean;
   statusMessage: string | null;
 }) {
@@ -557,11 +584,15 @@ function JobDiscoveryDiagnosticsPanel({
   const criteria = diagnostics?.searchCriteria;
   const replanning = diagnostics?.replanning;
   const explanation = diagnostics?.modelExplanation;
-  const isActive = run ? isActiveJobSearchRunStatus(run.status) : false;
+  const isActive = pendingRun ? true : run ? isActiveJobSearchRunStatus(run.status) : false;
   const hasDbBackedDiagnostics = Boolean(diagnostics?.jobSync || diagnostics?.databaseQueries);
   const providerTimeline = buildProviderSearchTimeline(providerRows, replanning, criteria);
 
-  const summaryText = run ? jobDiscoveryRunDigest(run) : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
+  const summaryText = pendingRun
+    ? "Job discovery is starting..."
+    : run
+      ? jobDiscoveryRunDigest(run)
+      : statusMessage || (isLoading ? "Waiting for run status..." : "No recent job discovery diagnostics yet.");
 
   return (
     <section className="job-discovery-diagnostics" aria-labelledby="job-discovery-diagnostics-title">
@@ -574,7 +605,16 @@ function JobDiscoveryDiagnosticsPanel({
           <span className="diagnostics-toggle-label">Details</span>
         </summary>
 
-        {run ? (
+        {pendingRun ? (
+          <div className="job-discovery-diagnostics-body">
+            <section className="diagnostics-section">
+              <h3>Summary</h3>
+              <p className="diagnostics-muted">Waiting for provider/database/model diagnostics...</p>
+              {pendingRun.commandPreview ? <p className="diagnostics-muted">Command: {pendingRun.commandPreview}</p> : null}
+              {pendingRun.jobSearchRunId ? <p className="diagnostics-muted">Run ID: {pendingRun.jobSearchRunId}</p> : null}
+            </section>
+          </div>
+        ) : run ? (
           <div className="job-discovery-diagnostics-body">
             <section className="diagnostics-section">
               <h3>Summary</h3>
@@ -1643,4 +1683,8 @@ function formatDateTime(value: string) {
     return value;
   }
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

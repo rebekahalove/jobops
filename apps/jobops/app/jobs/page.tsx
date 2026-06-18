@@ -1,6 +1,13 @@
 import React from "react";
-import { JobsList } from "../../components/jobs-list";
+import { JobDiscoveryDiagnostics, JobsList } from "../../components/jobs-list";
 
 export default function JobsPage() {
-  return <JobsList />;
+  return (
+    <>
+      <div className="workspace-diagnostics" aria-label="Job discovery diagnostics">
+        <JobDiscoveryDiagnostics />
+      </div>
+      <JobsList />
+    </>
+  );
 }
