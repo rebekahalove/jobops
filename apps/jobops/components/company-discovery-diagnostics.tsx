@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { CompanyDiscoveryDiagnosticsStatus } from "../lib/command-center-contract";
 
 const COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS = 2500;
+const TERMINAL_COMPANY_DISCOVERY_STATUSES = new Set(["completed", "failed", "needs_confirmation", "cancelled"]);
 
 type PendingDiagnostics = {
   commandPreview?: string | null;
@@ -43,7 +44,7 @@ export function CompanyDiscoveryDiagnostics({
         setStatusMessage(`Company discovery diagnostics could not be loaded (HTTP ${response.status}).`);
         return false;
       }
-      if (pendingStartedAtRef.current && !isDiagnosticsAtOrAfter(payload.createdAt, pendingStartedAtRef.current)) {
+      if (!runId && pendingStartedAtRef.current && !isDiagnosticsAtOrAfter(payload.createdAt, pendingStartedAtRef.current)) {
         setStatusMessage("Waiting for router/source diagnostics...");
         return false;
       }
@@ -72,10 +73,11 @@ export function CompanyDiscoveryDiagnostics({
     function handleDiscoveryStarted(event: Event) {
       const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
       const startedAt = new Date().toISOString();
-      pendingStartedAtRef.current = startedAt;
+      const companyDiscoveryRunId = companyDiscoveryRunIdFromEventDetail(detail);
+      pendingStartedAtRef.current = companyDiscoveryRunId ? null : startedAt;
       setPendingRun({
         commandPreview: typeof detail.commandPreview === "string" ? detail.commandPreview : null,
-        companyDiscoveryRunId: typeof detail.companyDiscoveryRunId === "string" ? detail.companyDiscoveryRunId : null,
+        companyDiscoveryRunId,
         startedAt
       });
       setLatestRun(null);
@@ -90,7 +92,7 @@ export function CompanyDiscoveryDiagnostics({
         setPendingRun(null);
         setStatusMessage(null);
       }
-      const runId = typeof detail.companyDiscoveryRunId === "string" ? detail.companyDiscoveryRunId : null;
+      const runId = companyDiscoveryRunIdFromEventDetail(detail);
       loadIfActive({ clearWhenMissing: false, runId });
     }
 
@@ -111,16 +113,17 @@ export function CompanyDiscoveryDiagnostics({
   }, [loadLatestRun]);
 
   useEffect(() => {
-    if (!pendingRun) {
+    const activeRunId =
+      pendingRun?.companyDiscoveryRunId ?? (latestRun?.id && !TERMINAL_COMPANY_DISCOVERY_STATUSES.has(latestRun.status) ? latestRun.id : null);
+    if (!pendingRun && !activeRunId) {
       return;
     }
-    const activePendingRun = pendingRun;
     let cancelled = false;
     let timeoutId: number | null = null;
 
     async function pollLatestRun() {
-      await loadLatestRun({ runId: activePendingRun.companyDiscoveryRunId });
-      if (!cancelled && pendingStartedAtRef.current) {
+      await loadLatestRun({ runId: activeRunId });
+      if (!cancelled) {
         timeoutId = window.setTimeout(pollLatestRun, COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS);
       }
     }
@@ -132,7 +135,7 @@ export function CompanyDiscoveryDiagnostics({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [loadLatestRun, pendingRun]);
+  }, [latestRun?.id, latestRun?.status, loadLatestRun, pendingRun]);
 
   return <CompanyDiscoveryDiagnosticsPanel isLoading={isLoading} pendingRun={pendingRun} run={latestRun} statusMessage={statusMessage} />;
 }
@@ -496,6 +499,14 @@ function displayUrlHost(value?: string | null) {
 
 function isCompanyDiscoveryDiagnosticsStatus(value: unknown): value is CompanyDiscoveryDiagnosticsStatus {
   return isRecord(value) && typeof value.id === "string" && typeof value.status === "string";
+}
+
+function companyDiscoveryRunIdFromEventDetail(detail: Record<string, unknown>) {
+  return typeof detail.companyDiscoveryRunId === "string"
+    ? detail.companyDiscoveryRunId
+    : typeof detail.diagnosticsId === "string"
+      ? detail.diagnosticsId
+      : null;
 }
 
 function isDiagnosticsAtOrAfter(createdAt: string | null | undefined, startedAt: string) {

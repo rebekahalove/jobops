@@ -20,8 +20,11 @@ from jobops_api.auth import SESSION_COOKIE_NAME, create_session_for_username, se
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
 from jobops_api.db.models import (
     Base,
+    CandidateProfile,
     CandidateCompany,
     CandidateSavedJob,
+    CompanyDiscoveryProviderCall,
+    CompanyDiscoveryRun,
     ExperienceProjectDraft,
     JobListing,
     JobListingSource,
@@ -149,6 +152,173 @@ def test_company_following_advice_executes_company_discovery(tmp_path: Path, mon
     assert response.status_updates[0].action_type == "company_discovery"
     assert "Discover companies" in response.status_updates[0].message
     assert len(saved) >= 1
+
+
+def test_company_discovery_run_is_visible_before_long_discovery_work(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'company-diagnostics.db'}")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as seed_session:
+        seed_public_profile(
+            seed_session,
+            {
+                "slug": "rebekah-love",
+                "displayName": "Rebekah Love",
+                "headline": "Candidate profile setup in progress",
+                "summary": "Verified public profile facts are being reviewed before publication.",
+                "profileStatus": "draft",
+            },
+            hostname="rebekahalove.dev",
+        )
+        seed_session.commit()
+
+    def fake_run_company_discovery(*args, **kwargs):
+        run_id = kwargs["company_discovery_run_id"]
+        with Session(engine) as probe_session:
+            persisted_run = probe_session.get(CompanyDiscoveryRun, run_id)
+            provider_call = probe_session.scalar(
+                select(CompanyDiscoveryProviderCall).where(
+                    CompanyDiscoveryProviderCall.company_discovery_run_id == run_id,
+                    CompanyDiscoveryProviderCall.stage == "router",
+                )
+            )
+
+        assert persisted_run is not None
+        assert persisted_run.command_text == "Find companies in progressive politics hiring AI engineers."
+        assert provider_call is not None
+        assert provider_call.provider == "command_router"
+        return SimpleNamespace(
+            status_code=200,
+            body={
+                "ok": True,
+                "result": {
+                    "assistantMessage": "Discovery complete.",
+                    "companies": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(command_center_module, "run_company_discovery", fake_run_company_discovery)
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        response = command_center_module.execute_company_discovery_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="Find companies in progressive politics hiring AI engineers.",
+                active_workspace="companies",
+            ),
+            candidate_slug=profile.slug,
+            candidate_profile=profile,
+            session=session,
+            settings=make_settings(tmp_path),
+            router_decision=SimpleNamespace(
+                action_type="company_discovery",
+                confidence="high",
+                target_workspace="companies",
+            ),
+        )
+
+    assert response.actions[0].status == "completed"
+    assert response.result_payload["companyDiscoveryRunId"]
+
+
+def test_company_discovery_stream_response_schedules_background_run(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_seeded_engine()
+    scheduled: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def fail_if_called_inline(*args, **kwargs):
+        raise AssertionError("company discovery should be scheduled in the background for streaming responses")
+
+    monkeypatch.setattr(command_center_module, "run_company_discovery", fail_if_called_inline)
+    background_tasks = SimpleNamespace(add_task=lambda fn, *args, **kwargs: scheduled.append((fn, args, kwargs)))
+
+    with Session(engine) as session:
+        profile = session.scalar(select(CandidateProfile).where(CandidateProfile.slug == "rebekah-love"))
+        assert profile is not None
+        response = command_center_module.execute_company_discovery_command(
+            command_center_module.CommandCenterCommandRequest(
+                command="Find companies in progressive politics hiring AI engineers.",
+                active_workspace="companies",
+            ),
+            candidate_slug=profile.slug,
+            candidate_profile=profile,
+            session=session,
+            settings=make_settings(tmp_path),
+            router_decision=SimpleNamespace(
+                action_type="company_discovery",
+                confidence="high",
+                target_workspace="companies",
+            ),
+            background_tasks=background_tasks,
+            defer_to_background=True,
+        )
+
+    assert response.actions[0].status == "running"
+    assert response.result_payload["async"] is True
+    assert response.result_payload["companyDiscoveryRunId"]
+    assert response.status_updates[0].stage == "company_discovery"
+    assert scheduled
+    assert scheduled[0][0] is command_center_module.run_company_discovery_background
+
+
+def test_company_discovery_background_commits_terminal_run_updates(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(command_center_module, "load_settings", lambda: make_settings(tmp_path))
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'company-background.db'}")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as seed_session:
+        profile = seed_public_profile(
+            seed_session,
+            {
+                "slug": "rebekah-love",
+                "displayName": "Rebekah Love",
+                "headline": "Candidate profile setup in progress",
+                "summary": "Verified public profile facts are being reviewed before publication.",
+                "profileStatus": "draft",
+            },
+            hostname="rebekahalove.dev",
+        )
+        run = CompanyDiscoveryRun(
+            candidate_profile_id=profile.id,
+            command_text="Find companies to follow",
+            status="running",
+            source_path="model_grounded_company_discovery",
+        )
+        seed_session.add(run)
+        seed_session.commit()
+        run_id = run.id
+        profile_id = profile.id
+
+    def fake_run_company_discovery(*args, **kwargs):
+        db_session = kwargs["db_session"]
+        run = db_session.get(CompanyDiscoveryRun, kwargs["company_discovery_run_id"])
+        assert run is not None
+        run.status = "completed"
+        run.saved_company_count = 3
+        db_session.add(run)
+        db_session.flush()
+        return SimpleNamespace(status_code=200, body={"ok": True, "result": {"companies": []}})
+
+    monkeypatch.setattr(command_center_module, "run_company_discovery", fake_run_company_discovery)
+
+    command_center_module.run_company_discovery_background(
+        run_id,
+        profile_id,
+        {
+            "latest_user_message": "Find companies to follow",
+            "candidate_profile_slug": "rebekah-love",
+        },
+        session_factory=lambda: Session(engine),
+    )
+
+    with Session(engine) as verify_session:
+        persisted = verify_session.get(CompanyDiscoveryRun, run_id)
+        assert persisted is not None
+        assert persisted.status == "completed"
+        assert persisted.saved_company_count == 3
 
 
 def test_profile_action_summary_counts_only_active_saved_draft_items() -> None:

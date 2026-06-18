@@ -236,8 +236,14 @@ describe("Companies list", () => {
     expect(source).toContain("Waiting for provider-call diagnostics for run");
     expect(source).toContain("COMPANY_DISCOVERY_DIAGNOSTICS_POLL_INTERVAL_MS");
     expect(source).toContain("encodeURIComponent(runId)");
+    expect(source).toContain("companyDiscoveryRunIdFromEventDetail(detail)");
+    expect(source).toContain("detail.diagnosticsId");
     expect(source).toContain("loadIfActive({ clearWhenMissing: true })");
     expect(source).toContain("loadIfActive({ clearWhenMissing: false })");
+    expect(source).toContain("TERMINAL_COMPANY_DISCOVERY_STATUSES.has(latestRun.status)");
+    expect(source).toContain("latestRun?.id");
+    expect(source).toContain("!runId && pendingStartedAtRef.current");
+    expect(source).toContain("pendingStartedAtRef.current = companyDiscoveryRunId ? null : startedAt");
     expect(source).toContain("Source timeline / Provider calls");
     expect(source).not.toContain("expectedDecision");
     expect(source).not.toContain("expectedProviders");

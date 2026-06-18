@@ -43,8 +43,10 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const COMMAND_CENTER_DIAGNOSTIC_BODY_PREVIEW_CHARS = 200;
 const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 const JOB_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeJobDiscoveryRunId";
+const COMPANY_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeCompanyDiscoveryRunId";
 const JOB_DISCOVERY_POLL_INTERVAL_MS = 2500;
 const TERMINAL_JOB_SEARCH_RUN_STATUSES = new Set(["completed", "failed", "needs_confirmation", "cancelled"]);
+const TERMINAL_COMPANY_DISCOVERY_RUN_STATUSES = new Set(["completed", "failed", "needs_confirmation", "cancelled"]);
 
 const initialMessages: CommandMessage[] = [
   {
@@ -72,12 +74,15 @@ export function AiCommandCenter({
   const [areExamplesExpanded, setAreExamplesExpanded] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeJobDiscoveryRunId, setActiveJobDiscoveryRunId] = useState<string | null>(null);
+  const [activeCompanyDiscoveryRunId, setActiveCompanyDiscoveryRunId] = useState<string | null>(null);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const reportedJobDiscoveryRunIdsRef = useRef(new Set<string>());
+  const reportedCompanyDiscoveryRunIdsRef = useRef(new Set<string>());
   const pollingFailureRunIdsRef = useRef(new Set<string>());
+  const companyPollingFailureRunIdsRef = useRef(new Set<string>());
 
   const latestAction = actions[0];
   const transcriptLabel = useMemo(
@@ -105,6 +110,10 @@ export function AiCommandCenter({
     const storedRunId = readStoredJobDiscoveryRunId();
     if (storedRunId) {
       setActiveJobDiscoveryRunId(storedRunId);
+    }
+    const storedCompanyRunId = readStoredCompanyDiscoveryRunId();
+    if (storedCompanyRunId) {
+      setActiveCompanyDiscoveryRunId(storedCompanyRunId);
     }
   }, []);
 
@@ -159,6 +168,63 @@ export function AiCommandCenter({
       }
     };
   }, [activeJobDiscoveryRunId, apiBasePath]);
+
+  useEffect(() => {
+    if (!activeCompanyDiscoveryRunId) {
+      return;
+    }
+
+    const runId = activeCompanyDiscoveryRunId;
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    async function pollRunStatus() {
+      try {
+        const run = await fetchCompanyDiscoveryRunStatus(runId, apiBasePath);
+        if (cancelled) {
+          return;
+        }
+        companyPollingFailureRunIdsRef.current.delete(run.id);
+        updateCompanyDiscoveryActionFromRun(run);
+        if (TERMINAL_COMPANY_DISCOVERY_RUN_STATUSES.has(run.status)) {
+          clearStoredCompanyDiscoveryRunId(run.id);
+          setActiveCompanyDiscoveryRunId((current) => (current === run.id ? null : current));
+          addTerminalCompanyDiscoveryRunMessage(run);
+          dispatchCompanyDiscoveryCompleted({
+            actionType: "company_discovery",
+            commandPreview: run.commandPreview ?? null,
+            companyDiscoveryRunId: run.id,
+            diagnostics: run
+          });
+          return;
+        }
+      } catch {
+        if (!cancelled && !companyPollingFailureRunIdsRef.current.has(runId)) {
+          companyPollingFailureRunIdsRef.current.add(runId);
+          setMessages((current) => [
+            ...current,
+            {
+              id: `agent-company-run-polling-${Date.now()}-${current.length}`,
+              role: "agent",
+              text: "Status update: company discovery is still running, but this browser could not read the latest run status yet. I will keep polling without replaying the command."
+            }
+          ]);
+        }
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(pollRunStatus, JOB_DISCOVERY_POLL_INTERVAL_MS);
+      }
+    }
+
+    pollRunStatus();
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [activeCompanyDiscoveryRunId, apiBasePath]);
 
   function handleConversationScroll() {
     const conversation = conversationRef.current;
@@ -361,7 +427,7 @@ export function AiCommandCenter({
       dispatchCompanyDiscoveryCompleted({
         actionType: "company_discovery",
         commandPreview: resultCommandPreview(action),
-        diagnosticsId: getCompanyDiscoveryDiagnosticsId(action),
+        companyDiscoveryRunId: getCompanyDiscoveryDiagnosticsId(action),
         diagnostics: action ? companyDiagnosticsFromAction(action) : null
       });
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
@@ -386,6 +452,17 @@ export function AiCommandCenter({
       });
       storeJobDiscoveryRunId(runId);
       setActiveJobDiscoveryRunId(runId);
+    }
+    const companyRunAction = nextActions.find((action) => action.type === "company_discovery" && !isTerminalActionStatus(action.status) && getCompanyDiscoveryDiagnosticsId(action));
+    const companyRunId = getCompanyDiscoveryDiagnosticsId(companyRunAction);
+    if (companyRunId) {
+      dispatchCompanyDiscoveryStarted({
+        actionType: "company_discovery",
+        commandPreview: resultCommandPreview(companyRunAction),
+        companyDiscoveryRunId: companyRunId
+      });
+      storeCompanyDiscoveryRunId(companyRunId);
+      setActiveCompanyDiscoveryRunId(companyRunId);
     }
   }
 
@@ -523,6 +600,79 @@ export function AiCommandCenter({
     });
   }
 
+  function updateCompanyDiscoveryActionFromRun(run: CompanyDiscoveryDiagnosticsStatus) {
+    setActions((current) => {
+      const nextStatus =
+        run.status === "completed"
+          ? "completed"
+          : run.status === "failed" || run.status === "cancelled"
+            ? "failed"
+            : run.status === "needs_confirmation"
+              ? "needs_confirmation"
+              : "running";
+      const nextSummary = buildCompanyDiscoveryRunSummary(run);
+      let matched = false;
+      const updated = current.map((action) => {
+        const payloadRunId = getCompanyDiscoveryDiagnosticsId(action);
+        if (action.type !== "company_discovery" || payloadRunId !== run.id) {
+          return action;
+        }
+        matched = true;
+        return {
+          ...action,
+          status: nextStatus,
+          summary: nextSummary,
+          resultPayload: {
+            ...(isRecord(action.resultPayload) ? action.resultPayload : {}),
+            async: true,
+            companyDiscoveryRunId: run.id,
+            status: run.status,
+            companyDiscoveryDiagnostics: run,
+            savedCompanyCount: run.savedCompanyCount ?? 0,
+            linkedCompanyCount: run.linkedCompanyCount ?? 0,
+            duplicateCompanyCount: run.duplicateCompanyCount ?? 0,
+            skippedCompanyCount: run.skippedCompanyCount ?? 0,
+            sourcePath: run.sourcePath ?? undefined,
+            sourceProvider: run.sourceProvider ?? undefined,
+            providerDiagnostics: run.providerDiagnostics ?? [],
+            diagnosticMessages: run.diagnosticMessages ?? undefined,
+            companies: run.companies ?? []
+          }
+        } satisfies PlannedCommandAction;
+      });
+      if (matched) {
+        return updated;
+      }
+      return [
+        {
+          id: `action-company-run-${run.id}`,
+          type: "company_discovery",
+          title: "Discover companies",
+          summary: nextSummary,
+          status: nextStatus,
+          targetWorkspace: "companies",
+          ctaLabel: "Open Companies",
+          resultPayload: {
+            async: true,
+            companyDiscoveryRunId: run.id,
+            status: run.status,
+            companyDiscoveryDiagnostics: run,
+            savedCompanyCount: run.savedCompanyCount ?? 0,
+            linkedCompanyCount: run.linkedCompanyCount ?? 0,
+            duplicateCompanyCount: run.duplicateCompanyCount ?? 0,
+            skippedCompanyCount: run.skippedCompanyCount ?? 0,
+            sourcePath: run.sourcePath ?? undefined,
+            sourceProvider: run.sourceProvider ?? undefined,
+            providerDiagnostics: run.providerDiagnostics ?? [],
+            diagnosticMessages: run.diagnosticMessages ?? undefined,
+            companies: run.companies ?? []
+          }
+        },
+        ...updated
+      ];
+    });
+  }
+
   function addTerminalJobDiscoveryRunMessage(run: JobSearchRunStatus) {
     if (reportedJobDiscoveryRunIdsRef.current.has(run.id)) {
       return;
@@ -541,6 +691,27 @@ export function AiCommandCenter({
     ]);
     if (run.status === "completed") {
       window.dispatchEvent(new CustomEvent("jobops:jobs-updated"));
+      window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
+    }
+  }
+
+  function addTerminalCompanyDiscoveryRunMessage(run: CompanyDiscoveryDiagnosticsStatus) {
+    if (reportedCompanyDiscoveryRunIdsRef.current.has(run.id)) {
+      return;
+    }
+    reportedCompanyDiscoveryRunIdsRef.current.add(run.id);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `agent-company-run-${Date.now()}-${current.length}`,
+        role: "agent",
+        text:
+          run.status === "completed"
+            ? buildCompanyDiscoveryRunSummary(run)
+            : `Company discovery failed: ${run.diagnosticMessages?.[0] || "No companies were saved."}`
+      }
+    ]);
+    if (run.status === "completed") {
       window.dispatchEvent(new CustomEvent("jobops:companies-updated"));
     }
   }
@@ -925,13 +1096,18 @@ function dispatchJobDiscoveryCompleted(detail: { actionType?: PlannedCommandActi
   window.dispatchEvent(new CustomEvent("jobops:job-discovery-completed", { detail }));
 }
 
-function dispatchCompanyDiscoveryStarted(detail: { actionType?: PlannedCommandAction["type"]; commandPreview?: string | null }) {
+function dispatchCompanyDiscoveryStarted(detail: {
+  actionType?: PlannedCommandAction["type"];
+  commandPreview?: string | null;
+  companyDiscoveryRunId?: string | null;
+}) {
   window.dispatchEvent(new CustomEvent("jobops:company-discovery-started", { detail }));
 }
 
 function dispatchCompanyDiscoveryCompleted(detail: {
   actionType?: PlannedCommandAction["type"];
   commandPreview?: string | null;
+  companyDiscoveryRunId?: string | null;
   diagnosticsId?: string | null;
   diagnostics?: CompanyDiscoveryDiagnosticsStatus | null;
 }) {
@@ -939,6 +1115,13 @@ function dispatchCompanyDiscoveryCompleted(detail: {
 }
 
 function resultCommandPreview(action?: PlannedCommandAction) {
+  const diagnostics = action ? companyDiagnosticsFromAction(action) : null;
+  if (diagnostics?.commandPreview) {
+    return summarizeCommandForDisplay(diagnostics.commandPreview, 180);
+  }
+  if (action && isRecord(action.resultPayload) && typeof action.resultPayload.commandPreview === "string") {
+    return summarizeCommandForDisplay(action.resultPayload.commandPreview, 180);
+  }
   return action?.summary ? summarizeCommandForDisplay(action.summary, 180) : null;
 }
 
@@ -984,6 +1167,20 @@ async function fetchJobSearchRunStatus(runId: string, apiBasePath: string): Prom
   return payload;
 }
 
+async function fetchCompanyDiscoveryRunStatus(runId: string, apiBasePath: string): Promise<CompanyDiscoveryDiagnosticsStatus> {
+  const response = await fetch(`${apiBasePath}/companies/discovery-runs/${encodeURIComponent(runId)}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error("Company discovery run status request failed.");
+  }
+  const payload = (await response.json()) as unknown;
+  if (!isCompanyDiscoveryDiagnosticsStatus(payload)) {
+    throw new Error("Company discovery run status response was invalid.");
+  }
+  return payload;
+}
+
 export function buildJobDiscoveryRunSummary(run: JobSearchRunStatus) {
   const modelSummary =
     cleanOptionalSummary(run.userVisibleSummary) ??
@@ -999,12 +1196,36 @@ function cleanOptionalSummary(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+export function buildCompanyDiscoveryRunSummary(run: CompanyDiscoveryDiagnosticsStatus) {
+  if (run.status === "failed") {
+    return `Company discovery failed: ${run.diagnosticMessages?.[0] || "No companies were saved."}`;
+  }
+  const savedCount = run.savedCompanyCount ?? 0;
+  const linkedCount = run.linkedCompanyCount ?? 0;
+  const duplicateCount = run.duplicateCompanyCount ?? 0;
+  const skippedCount = run.skippedCompanyCount ?? 0;
+  const providerCount = run.providerDiagnostics?.length ?? 0;
+  if (run.status === "completed") {
+    return `Company discovery completed with ${savedCount} saved, ${linkedCount} linked, ${duplicateCount} duplicate, and ${skippedCount} skipped compan${skippedCount === 1 ? "y" : "ies"}.`;
+  }
+  return providerCount > 0
+    ? `Company discovery is running with ${providerCount} provider diagnostic row${providerCount === 1 ? "" : "s"} recorded.`
+    : "Company discovery is running. Waiting for provider diagnostics.";
+}
+
 function readStoredJobDiscoveryRunId() {
   try {
     return window.sessionStorage.getItem(JOB_DISCOVERY_RUN_STORAGE_KEY);
   } catch {
     return null;
   }
+}
+
+function readStoredCompanyDiscoveryRunId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.sessionStorage.getItem(COMPANY_DISCOVERY_RUN_STORAGE_KEY);
 }
 
 function storeJobDiscoveryRunId(runId: string) {
@@ -1015,6 +1236,13 @@ function storeJobDiscoveryRunId(runId: string) {
   }
 }
 
+function storeCompanyDiscoveryRunId(runId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.setItem(COMPANY_DISCOVERY_RUN_STORAGE_KEY, runId);
+}
+
 function clearStoredJobDiscoveryRunId(runId: string) {
   try {
     if (window.sessionStorage.getItem(JOB_DISCOVERY_RUN_STORAGE_KEY) === runId) {
@@ -1022,6 +1250,15 @@ function clearStoredJobDiscoveryRunId(runId: string) {
     }
   } catch {
     // Ignore storage failures.
+  }
+}
+
+function clearStoredCompanyDiscoveryRunId(runId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (window.sessionStorage.getItem(COMPANY_DISCOVERY_RUN_STORAGE_KEY) === runId) {
+    window.sessionStorage.removeItem(COMPANY_DISCOVERY_RUN_STORAGE_KEY);
   }
 }
 
