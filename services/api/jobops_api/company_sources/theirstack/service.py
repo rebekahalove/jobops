@@ -79,6 +79,10 @@ class TheirStackCompanyEnrichmentService:
 
         persisted = []
         company_sources = []
+        seen_company_ids: set[str] = set()
+        seen_company_source_ids: set[str] = set()
+        seen_link_ids: set[str] = set()
+        duplicate_company_count = 0
         canonical_created_count = 0
         source_created_count = 0
         source_updated_count = 0
@@ -90,11 +94,17 @@ class TheirStackCompanyEnrichmentService:
                 source_query=discovery_query,
             )
             company = persisted_record.company
-            persisted.append(company)
-            company_sources.append(persisted_record.company_source)
-            canonical_created_count += 1 if persisted_record.created_company else 0
-            source_created_count += 1 if persisted_record.created_source else 0
-            source_updated_count += 1 if persisted_record.updated_source else 0
+            if company.id in seen_company_ids:
+                duplicate_company_count += 1
+            else:
+                seen_company_ids.add(company.id)
+                persisted.append(company)
+                canonical_created_count += 1 if persisted_record.created_company else 0
+            if persisted_record.company_source.id not in seen_company_source_ids:
+                seen_company_source_ids.add(persisted_record.company_source.id)
+                company_sources.append(persisted_record.company_source)
+                source_created_count += 1 if persisted_record.created_source else 0
+                source_updated_count += 1 if persisted_record.updated_source else 0
             if candidate_profile_id and link_to_profile:
                 link_result = ensure_candidate_company_link(
                     self.session,
@@ -110,11 +120,14 @@ class TheirStackCompanyEnrichmentService:
                     discovered_by="theirstack",
                     personal_source_urls=list(company_record.source_urls),
                 )
-                links.append(link_result.link)
+                if link_result.link.id not in seen_link_ids:
+                    seen_link_ids.add(link_result.link.id)
+                    links.append(link_result.link)
 
         diagnostics = (search_result.diagnostics or TheirStackCompanySearchDiagnostics(enabled=True, requested_pages=1)).to_dict()
         diagnostics["normalizedCompanyCount"] = len(normalized)
         diagnostics["upsertedCompanyCount"] = len(persisted)
+        diagnostics["duplicateCompanyCount"] = duplicate_company_count
         diagnostics["canonicalCompanyUpsertedCount"] = len(persisted)
         diagnostics["canonicalCompanyCreatedCount"] = canonical_created_count
         diagnostics["canonicalCompanyUpdatedCount"] = 0

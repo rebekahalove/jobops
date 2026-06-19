@@ -83,6 +83,7 @@ def test_load_settings_can_enable_api_docs_in_prod(tmp_path: Path, monkeypatch: 
 def test_load_settings_reads_theirstack_company_search_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.delenv("JOBOPS_THEIRSTACK_API_KEY", raising=False)
+    monkeypatch.delenv("THEIRSTACK_API_KEY", raising=False)
     monkeypatch.delenv("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED", raising=False)
 
     (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
@@ -105,6 +106,26 @@ def test_load_settings_reads_theirstack_company_search_settings(tmp_path: Path, 
     assert settings.theirstack_company_search_limit == 12
     assert settings.theirstack_company_search_max_pages == 3
     assert settings.theirstack_company_search_freshness_days == 45
+
+
+def test_load_settings_reads_theirstack_api_key_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_API_KEY", raising=False)
+    monkeypatch.delenv("THEIRSTACK_API_KEY", raising=False)
+    monkeypatch.delenv("THEIRSTACK_TOKEN", raising=False)
+    monkeypatch.delenv("THEIRSTACK_API_TOKEN", raising=False)
+    monkeypatch.delenv("THEIR_STACK_API_KEY", raising=False)
+    monkeypatch.delenv("THEIR_STACK_TOKEN", raising=False)
+    monkeypatch.delenv("THEIR_STACK_API_TOKEN", raising=False)
+    monkeypatch.delenv("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED", raising=False)
+
+    (tmp_path / ".env").write_text("APP_ENV=dev\n", encoding="utf-8")
+    (tmp_path / ".env.dev").write_text("THEIRSTACK_API_KEY=alias-theirstack-key\n", encoding="utf-8")
+
+    settings = load_settings(tmp_path)
+
+    assert settings.theirstack_api_key == "alias-theirstack-key"
+    assert settings.theirstack_company_search_enabled is True
 
 
 def test_load_settings_reads_configured_ashby_board_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

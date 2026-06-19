@@ -83,7 +83,16 @@ def load_settings(repo_root: Path | None = None) -> Settings:
     if not job_discovery_providers:
         job_discovery_providers = (job_discovery_source.strip().lower(),) if job_discovery_source.strip().lower() not in {"", "none"} else ()
 
-    theirstack_api_key = merged.get("JOBOPS_THEIRSTACK_API_KEY")
+    theirstack_api_key = first_present_value(
+        merged,
+        "JOBOPS_THEIRSTACK_API_KEY",
+        "THEIRSTACK_API_KEY",
+        "THEIRSTACK_TOKEN",
+        "THEIRSTACK_API_TOKEN",
+        "THEIR_STACK_API_KEY",
+        "THEIR_STACK_TOKEN",
+        "THEIR_STACK_API_TOKEN",
+    )
     theirstack_enabled_value = merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_ENABLED")
 
     return Settings(
@@ -216,6 +225,14 @@ def parse_float(value: str | None, *, default: float) -> float:
     if value is None or not value.strip():
         return default
     return float(value)
+
+
+def first_present_value(values: dict[str, str], *keys: str) -> str | None:
+    for key in keys:
+        value = values.get(key)
+        if value is not None and value.strip():
+            return value
+    return None
 
 
 def parse_json_object(value: str | None) -> dict[str, str] | None:

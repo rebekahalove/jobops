@@ -245,12 +245,24 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert payload["greenhouseBoardTokenCount"] == 1
         assert payload["ashbyBoardUrlCount"] == 1
         assert payload["leverSlugCount"] == 1
+        assert payload["boardsSelectedForSync"] == []
+        assert payload["ashbyBoardsSelectedForSync"] == []
+        assert payload["boardSyncAttempted"] is False
+        assert payload["ashbyBoardSyncAttempted"] is False
         assert payload["requiresFirstPartySyncForVerification"] is True
         theirstack_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "theirstack")
         assert theirstack_row["stage"] == "company_source"
         assert theirstack_row["status"] == "completed"
         assert theirstack_row["resultSummary"]["rawCompanyCount"] == 3
         assert theirstack_row["resultSummary"]["linkedCandidateCompanyCount"] == 3
+        greenhouse_row = next(
+            row
+            for row in payload["providerDiagnostics"]
+            if row["provider"] == "greenhouse" and row["stage"] == "first_party_sync"
+        )
+        assert greenhouse_row["status"] == "skipped"
+        assert greenhouse_row["requestSummary"]["attempted"] is False
+        assert greenhouse_row["requestSummary"]["boardsSelected"] == []
         assert "TheirStack returned" in payload["assistantMessage"]
         assert "not synced those boards yet" in payload["assistantMessage"]
         assert len(session.scalars(select(Company)).all()) == 3
@@ -258,6 +270,52 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert len(session.scalars(select(JobListing)).all()) == 0
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
         assert len(session.scalars(select(JobSyncRun)).all()) == 0
+
+
+def test_theirstack_enrichment_dedupes_repeated_provider_companies(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    client = FakeTheirStackClient(
+        [
+            theirstack_payload("Andiamo", domain="andiamo.example", job_url="https://job-boards.greenhouse.io/andiamo/jobs/1"),
+            theirstack_payload("Andiamo", domain="andiamo.example", job_url="https://job-boards.greenhouse.io/andiamo/jobs/2"),
+            theirstack_payload("Andiamo", domain="andiamo.example", job_url="https://job-boards.greenhouse.io/andiamo/jobs/3"),
+        ]
+    )
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=StaticPlanConnector(
+                theirstack_plan(
+                    {"companyNamePartialMatchOr": ["Andiamo"]},
+                    terms=["Andiamo"],
+                )
+            ),
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies like Andiamo.",
+            current_saved_companies=[],
+            target_context={"target_role_titles": ["Andiamo"]},
+            profile_context={},
+            discovery_context={},
+        )
+        session.commit()
+
+        payload = result.body["result"]
+        assert result.handled is True
+        assert payload["rawCompanyCount"] == 3
+        assert payload["normalizedCompanyCount"] == 3
+        assert payload["upsertedCompanyCount"] == 1
+        assert payload["linkedCompanyCount"] == 1
+        assert [company["name"] for company in payload["companies"]] == ["Andiamo"]
+        assert payload["discoveryAudit"]["theirStack"]["duplicateCompanyCount"] == 2
+        assert len(session.scalars(select(Company)).all()) == 1
+        assert len(session.scalars(select(CandidateCompany)).all()) == 1
 
 
 def test_theirstack_discovery_audit_sanitizes_sensitive_request_shape_keys(tmp_path: Path) -> None:

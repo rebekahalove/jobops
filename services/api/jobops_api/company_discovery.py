@@ -852,6 +852,25 @@ def run_company_discovery(
             )
         )
 
+    theirstack_available = bool(active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key)
+    if not theirstack_available:
+        record_company_discovery_provider_call(
+            db_session,
+            company_discovery_run_id=company_discovery_run_id,
+            stage="company_source",
+            provider="theirstack",
+            status="unavailable",
+            label="TheirStack company search",
+            request_summary={
+                "configured": bool(active_settings.theirstack_company_search_enabled),
+                "apiKeyPresent": bool(active_settings.theirstack_api_key),
+                "requestedPages": active_settings.theirstack_company_search_max_pages,
+                "limit": active_settings.theirstack_company_search_limit,
+            },
+            result_summary={"skippedReason": "missing_api_key"},
+            error={"message": "TheirStack company search is disabled or missing an API key."},
+        )
+
     model_request = build_company_discovery_model_request(
         request,
         current_saved_companies=current_saved_companies,
@@ -1038,7 +1057,6 @@ def run_company_discovery(
     output = final_attempt.output
     response = final_attempt.response
     final_model_request = final_attempt.model_request
-    db_session.commit()
     if validation_warnings:
         logger.warning(
             "Company discovery model output needed cleanup before saving.",
@@ -1050,6 +1068,16 @@ def run_company_discovery(
                 "validation_issues": validation_warnings[:8],
             },
         )
+
+    theirstack_model_enrichment = enrich_model_grounded_companies_with_theirstack(
+        db_session,
+        settings=active_settings,
+        theirstack_client=theirstack_client,
+        company_discovery_run_id=company_discovery_run_id,
+        saved_company_links=save_result.added,
+        discovery_query=request.latest_user_message,
+    )
+    db_session.commit()
 
     added_companies = [serialize_company(company) for company in save_result.added]
     skipped = [item.model_dump() for item in save_result.skipped]
@@ -1102,6 +1130,7 @@ def run_company_discovery(
         response=response,
         saved_companies=added_companies,
         diagnostics=result_diagnostics,
+        theirstack_model_enrichment=theirstack_model_enrichment,
     )
     complete_company_discovery_run(
         db_session,
@@ -1157,7 +1186,7 @@ def run_company_discovery(
             "search_query_count": len(discovery_audit["searchQueriesUsed"]),
             "theirstack_enabled": bool(active_settings.theirstack_company_search_enabled),
             "theirstack_checked": bool(active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key),
-            "theirstack_used": False,
+            "theirstack_used": bool((discovery_audit.get("theirStack") or {}).get("used")),
         },
     )
     logger.info(
@@ -1169,7 +1198,7 @@ def run_company_discovery(
             "source_path": "model_grounded_company_discovery",
             "saved_company_count": len(save_result.added),
             "duplicate_company_count": len(save_result.skipped),
-            "theirstack_used": False,
+            "theirstack_used": bool((discovery_audit.get("theirStack") or {}).get("used")),
         },
     )
 
@@ -1410,12 +1439,11 @@ def find_company_cache_matches(
         .join(CompanySource, CompanySource.company_id == Company.id)
         .options(selectinload(Company.sources))
         .where(CompanySource.is_active.is_(True), or_(*filters))
-        .distinct()
-        .limit(50)
+        .limit(200)
     )
     fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, freshness_hours))
     ranked: list[tuple[Company, int, int]] = []
-    for company in session.scalars(statement).all():
+    for company in session.execute(statement).scalars().unique().all():
         company_sources = source_backing_for_company(company)
         fresh_source_count = 0
         for source in company_sources:
@@ -2596,6 +2624,221 @@ def format_provider_label(value: str | None) -> str:
     return value.replace("_", " ").replace("-", " ").title()
 
 
+def enrich_model_grounded_companies_with_theirstack(
+    session: Session,
+    *,
+    settings: Settings,
+    theirstack_client: TheirStackCompanySearchClient | None,
+    company_discovery_run_id: str | None,
+    saved_company_links: list[CandidateCompany],
+    discovery_query: str,
+) -> dict[str, Any]:
+    available = bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key)
+    if not available:
+        return {
+            "checked": True,
+            "enabled": False,
+            "used": False,
+            "skippedReason": "missing_api_key",
+            "requestedPages": 0,
+            "fetchedPages": 0,
+            "failedPages": 0,
+            "skippedPages": 0,
+            "rawCompanyCount": 0,
+            "normalizedCompanyCount": 0,
+            "upsertedCompanyCount": 0,
+            "linkedCandidateCompanyCount": 0,
+            "errorType": "configuration_unavailable",
+            "errorMessage": "TheirStack company search is disabled or missing an API key.",
+        }
+
+    request = build_model_grounded_theirstack_enrichment_request(saved_company_links, settings=settings)
+    if request is None:
+        return {
+            "checked": True,
+            "enabled": True,
+            "used": False,
+            "skippedReason": "no_saved_company_identities",
+            "requestedPages": 0,
+            "fetchedPages": 0,
+            "failedPages": 0,
+            "skippedPages": 0,
+            "rawCompanyCount": 0,
+            "normalizedCompanyCount": 0,
+            "upsertedCompanyCount": 0,
+            "linkedCandidateCompanyCount": 0,
+            "errorType": None,
+            "errorMessage": None,
+        }
+
+    from .company_sources.theirstack import TheirStackCompanyEnrichmentService
+
+    provider_call = record_company_discovery_provider_call(
+        session,
+        company_discovery_run_id=company_discovery_run_id,
+        stage="company_source",
+        provider="theirstack",
+        status="started",
+        label="TheirStack model-result enrichment",
+        request_summary={
+            "requestShape": sanitize_diagnostic_request_shape(request.sanitized_shape()),
+            "requestedPages": request.max_pages,
+            "limit": request.limit,
+            "enrichmentMode": "model_grounded_saved_company_identity",
+            "creditsAwareness": "TheirStack may consume credits per returned company.",
+        },
+    )
+    try:
+        enrichment = TheirStackCompanyEnrichmentService(
+            session=session,
+            settings=settings,
+            client=theirstack_client,
+        ).search_and_upsert_companies(
+            request,
+            link_to_profile=False,
+            discovery_query=f"Model-grounded company enrichment: {discovery_query}",
+        )
+    except Exception as error:  # pragma: no cover - defensive; provider service handles expected failures.
+        logger.exception("TheirStack model-result enrichment failed unexpectedly.")
+        update_company_discovery_provider_call(
+            session,
+            provider_call,
+            status="failed",
+            error={"type": type(error).__name__, "message": "TheirStack model-result enrichment failed unexpectedly."},
+        )
+        return {
+            "checked": True,
+            "enabled": True,
+            "used": True,
+            "skippedReason": None,
+            "requestShape": sanitize_diagnostic_request_shape(request.sanitized_shape()),
+            "requestedPages": request.max_pages or 1,
+            "fetchedPages": 0,
+            "failedPages": request.max_pages or 1,
+            "skippedPages": 0,
+            "rawCompanyCount": 0,
+            "normalizedCompanyCount": 0,
+            "upsertedCompanyCount": 0,
+            "linkedCandidateCompanyCount": 0,
+            "errorType": type(error).__name__,
+            "errorMessage": "TheirStack model-result enrichment failed unexpectedly.",
+        }
+
+    diagnostics = enrichment.diagnostics if isinstance(enrichment.diagnostics, dict) else {}
+    status = "unavailable" if enrichment.status == "unavailable" else "failed" if enrichment.status == "failed" else "completed"
+    update_company_discovery_provider_call(
+        session,
+        provider_call,
+        status=status,
+        request_summary={
+            "requestShape": sanitize_diagnostic_request_shape(
+                diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else request.sanitized_shape()
+            ),
+            "requestedPages": diagnostics.get("requestedPages") or request.max_pages,
+            "limit": request.limit,
+            "enrichmentMode": "model_grounded_saved_company_identity",
+        },
+        result_summary={
+            "fetchedPages": diagnostics.get("fetchedPages", 0),
+            "failedPages": diagnostics.get("failedPages", 0),
+            "skippedPages": diagnostics.get("skippedPages", 0),
+            "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
+            "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
+            "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+            "canonicalCompanyUpsertedCount": diagnostics.get("canonicalCompanyUpsertedCount", 0),
+            "companySourceCreatedCount": diagnostics.get("companySourceCreatedCount", 0),
+            "companySourceUpdatedCount": diagnostics.get("companySourceUpdatedCount", 0),
+            "companySourceCount": diagnostics.get("companySourceCount", 0),
+            "linkedCandidateCompanyCount": 0,
+            "totalResults": diagnostics.get("totalResults") or diagnostics.get("totalCompanies"),
+        },
+        error={"type": diagnostics.get("errorType"), "message": diagnostics.get("errorMessage") or enrichment.error_message}
+        if enrichment.status in {"failed", "unavailable"} or diagnostics.get("errorMessage") or enrichment.error_message
+        else None,
+    )
+    logger.info(
+        "theirstack.model_grounded_enrichment.completed" if status == "completed" else "theirstack.model_grounded_enrichment.failed",
+        extra={
+            "source_path": "model_grounded_company_discovery",
+            "theirstack_checked": True,
+            "theirstack_enabled": bool(diagnostics.get("enabled", True)),
+            "theirstack_used": enrichment.status != "unavailable",
+            "raw_company_count": diagnostics.get("rawCompanyCount"),
+            "normalized_company_count": diagnostics.get("normalizedCompanyCount"),
+            "upserted_company_count": diagnostics.get("upsertedCompanyCount"),
+            "error_type": diagnostics.get("errorType"),
+            "error_message": diagnostics.get("errorMessage") or enrichment.error_message,
+        },
+    )
+    return {
+        "checked": True,
+        "enabled": bool(diagnostics.get("enabled", True)),
+        "used": enrichment.status != "unavailable",
+        "skippedReason": None if enrichment.status != "unavailable" else "missing_api_key",
+        "requestShape": sanitize_diagnostic_request_shape(
+            diagnostics.get("requestShape") if isinstance(diagnostics.get("requestShape"), dict) else request.sanitized_shape()
+        ),
+        "requestedPages": diagnostics.get("requestedPages") or request.max_pages or 1,
+        "fetchedPages": diagnostics.get("fetchedPages", 0),
+        "failedPages": diagnostics.get("failedPages", 0),
+        "skippedPages": diagnostics.get("skippedPages", 0),
+        "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
+        "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
+        "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+        "canonicalCompanyUpsertedCount": diagnostics.get("canonicalCompanyUpsertedCount", 0),
+        "companySourceCreatedCount": diagnostics.get("companySourceCreatedCount", 0),
+        "companySourceUpdatedCount": diagnostics.get("companySourceUpdatedCount", 0),
+        "companySourceCount": diagnostics.get("companySourceCount", 0),
+        "linkedCandidateCompanyCount": 0,
+        "errorType": diagnostics.get("errorType"),
+        "errorMessage": diagnostics.get("errorMessage") or enrichment.error_message,
+    }
+
+
+def build_model_grounded_theirstack_enrichment_request(
+    saved_company_links: list[CandidateCompany],
+    *,
+    settings: Settings,
+) -> Any | None:
+    from .company_sources.theirstack import TheirStackCompanySearchRequest
+
+    domains: list[str] = []
+    names: list[str] = []
+    for link in saved_company_links:
+        company = link.company
+        if company is None:
+            continue
+        domains.extend(
+            [
+                company.normalized_domain,
+                company.domain,
+                domain_from_url(company.website_url),
+                domain_from_url(company.careers_url),
+                domain_from_url(company.job_listings_url),
+            ]
+        )
+        if company.name:
+            names.append(company.name)
+
+    unique_domains = compact_unique_strings([domain for domain in domains if domain], limit=10)
+    unique_names = compact_unique_strings([name for name in names if name], limit=10)
+    if not unique_domains and not unique_names:
+        return None
+
+    result_limit = min(max(1, len(unique_domains or unique_names) * 2), max(1, settings.theirstack_company_search_limit), 25)
+    if unique_domains:
+        return TheirStackCompanySearchRequest(
+            company_domain_or=tuple(unique_domains),
+            limit=result_limit,
+            max_pages=1,
+        )
+    return TheirStackCompanySearchRequest(
+        company_name_partial_match_or=tuple(unique_names),
+        limit=result_limit,
+        max_pages=1,
+    )
+
+
 def build_model_grounded_discovery_audit(
     *,
     attempts: list[CompanyDiscoveryAttempt],
@@ -2605,10 +2848,83 @@ def build_model_grounded_discovery_audit(
     response: Any,
     saved_companies: list[dict[str, Any]],
     diagnostics: dict[str, Any],
+    theirstack_model_enrichment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = response.provider if isinstance(getattr(response, "provider", None), str) else settings.model_provider
     model_name = response.model if isinstance(getattr(response, "model", None), str) else model_request.model
+    theirstack_available = bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key)
+    theirstack_summary = theirstack_model_enrichment or {
+        "checked": True,
+        "enabled": theirstack_available,
+        "used": False,
+        "skippedReason": "planner_chose_model_grounded" if theirstack_available else "missing_api_key",
+        "requestShape": {},
+        "requestedPages": 0,
+        "fetchedPages": 0,
+        "failedPages": 0,
+        "skippedPages": 0,
+        "rawCompanyCount": 0,
+        "normalizedCompanyCount": 0,
+        "upsertedCompanyCount": 0,
+        "linkedCandidateCompanyCount": 0,
+        "errorType": None if theirstack_available else "configuration_unavailable",
+        "errorMessage": None if theirstack_available else "TheirStack company search is disabled or missing an API key.",
+    }
     provider_diagnostics = [
+        *(
+            [
+                build_company_provider_diagnostic(
+                    stage="company_source",
+                    provider="theirstack",
+                    status="unavailable",
+                    label="TheirStack company search",
+                    request_summary={
+                        "configured": bool(settings.theirstack_company_search_enabled),
+                        "apiKeyPresent": bool(settings.theirstack_api_key),
+                        "requestedPages": settings.theirstack_company_search_max_pages,
+                        "limit": settings.theirstack_company_search_limit,
+                    },
+                    result_summary={"skippedReason": "missing_api_key"},
+                    error={"message": "TheirStack company search is disabled or missing an API key."},
+                )
+            ]
+            if not theirstack_available
+            else []
+        ),
+        *(
+            [
+                build_company_provider_diagnostic(
+                    stage="company_source",
+                    provider="theirstack",
+                    status="failed"
+                    if theirstack_summary.get("errorType")
+                    else "completed"
+                    if theirstack_summary.get("used")
+                    else "skipped",
+                    label="TheirStack model-result enrichment",
+                    request_summary={
+                        "requestShape": theirstack_summary.get("requestShape") or {},
+                        "requestedPages": theirstack_summary.get("requestedPages", 0),
+                        "enrichmentMode": "model_grounded_saved_company_identity",
+                    },
+                    result_summary={
+                        "skippedReason": theirstack_summary.get("skippedReason"),
+                        "fetchedPages": theirstack_summary.get("fetchedPages", 0),
+                        "failedPages": theirstack_summary.get("failedPages", 0),
+                        "skippedPages": theirstack_summary.get("skippedPages", 0),
+                        "rawCompanyCount": theirstack_summary.get("rawCompanyCount", 0),
+                        "normalizedCompanyCount": theirstack_summary.get("normalizedCompanyCount", 0),
+                        "upsertedCompanyCount": theirstack_summary.get("upsertedCompanyCount", 0),
+                        "companySourceCount": theirstack_summary.get("companySourceCount", 0),
+                    },
+                    error={"type": theirstack_summary.get("errorType"), "message": theirstack_summary.get("errorMessage")}
+                    if theirstack_summary.get("errorType") or theirstack_summary.get("errorMessage")
+                    else None,
+                )
+            ]
+            if theirstack_available
+            else []
+        ),
         build_company_provider_diagnostic(
             stage="company_source",
             provider=provider,
@@ -2658,23 +2974,7 @@ def build_model_grounded_discovery_audit(
         "discoveryAngles": diagnostics.get("discoveryAngles") or [],
         "companyDiscoveryPreflightBlocked": bool(diagnostics.get("blockedByTargetPreflight")),
         "preflightReason": diagnostics.get("preflightReason"),
-        "theirStack": {
-            "checked": bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key),
-            "enabled": bool(settings.theirstack_company_search_enabled and settings.theirstack_api_key),
-            "used": False,
-            "skippedReason": "planner_chose_model_grounded",
-            "requestShape": {},
-            "requestedPages": 0,
-            "fetchedPages": 0,
-            "failedPages": 0,
-            "skippedPages": 0,
-            "rawCompanyCount": 0,
-            "normalizedCompanyCount": 0,
-            "upsertedCompanyCount": 0,
-            "linkedCandidateCompanyCount": 0,
-            "errorType": None,
-            "errorMessage": None,
-        },
+        "theirStack": theirstack_summary,
         "firstPartySync": empty_first_party_sync_payload(),
         "providerDiagnostics": provider_diagnostics,
         "companies": [compact_company_diagnostic(company) for company in saved_companies],

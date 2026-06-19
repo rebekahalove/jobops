@@ -610,6 +610,12 @@ export function AiCommandCenter({
   }
 
   function updateCompanyDiscoveryActionFromRun(run: CompanyDiscoveryDiagnosticsStatus) {
+    dispatchCompanyDiscoveryUpdated({
+      actionType: "company_discovery",
+      commandPreview: run.commandPreview ?? null,
+      companyDiscoveryRunId: run.id,
+      diagnostics: run
+    });
     setActions((current) => {
       const nextStatus =
         run.status === "completed"
@@ -1123,6 +1129,15 @@ function dispatchCompanyDiscoveryStarted(detail: {
   companyDiscoveryRunId?: string | null;
 }) {
   window.dispatchEvent(new CustomEvent("jobops:company-discovery-started", { detail }));
+}
+
+function dispatchCompanyDiscoveryUpdated(detail: {
+  actionType?: PlannedCommandAction["type"];
+  commandPreview?: string | null;
+  companyDiscoveryRunId?: string | null;
+  diagnostics?: CompanyDiscoveryDiagnosticsStatus | null;
+}) {
+  window.dispatchEvent(new CustomEvent("jobops:company-discovery-updated", { detail }));
 }
 
 function dispatchCompanyDiscoveryCompleted(detail: {
