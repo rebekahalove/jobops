@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+import jobops_api.cli as cli_module
 from jobops_api.company_discovery import CompanyDiscoveryRequest, run_company_discovery
 from jobops_api.company_sources.theirstack.models import (
     TheirStackCompanySearchDiagnostics,
@@ -30,6 +31,7 @@ from jobops_api.db.models import (
     CompanySyncRun,
     CompanySyncSignature,
     JobListing,
+    ProfileFieldValue,
     RoleTarget,
 )
 from jobops_api.db.seed_profile import seed_public_profile
@@ -297,6 +299,121 @@ def test_model_planned_profile_signature_derivation_calls_planner_and_persists_c
         assert len(session.scalars(select(CompanySyncRun)).all()) == 0
 
 
+def test_model_grounded_semantic_variant_can_verify_without_literal_match() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planned semantic role-market variants.",
+            "signatures": [
+                {
+                    "queryText": "LLM engineering companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "LLM Engineer is a specialization of applied AI/RAG work.",
+                    "sourceFieldsUsed": ["target_titles", "skills"],
+                    "grounding": [
+                        {
+                            "term": "LLM Engineer",
+                            "groundingType": "semantic_variant",
+                            "basedOn": [
+                                {"field": "RoleTarget.target_titles", "value": "Applied AI Engineer"},
+                                {"field": "ProfileFieldValue.skills", "value": "RAG"},
+                            ],
+                            "rationale": "LLM Engineer is a common role-market variant for applied AI/RAG work.",
+                        }
+                    ],
+                    "theirstackRequest": {
+                        "jobFilters": {"job_title_pattern_or": ["LLM Engineer", "Applied AI Engineer"], "posted_at_max_age_days": 30},
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": False,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add_all(
+            [
+                RoleTarget(
+                    candidate_profile_id=profile.id,
+                    target_titles=["Applied AI Engineer"],
+                    role_families=["Applied AI"],
+                    review_status="reviewed",
+                    is_active=True,
+                ),
+                ProfileFieldValue(
+                    candidate_profile_id=profile.id,
+                    field_group="skills",
+                    field_name="skills",
+                    value_text="RAG",
+                    lifecycle_status="generated",
+                ),
+            ]
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert len(result.signatures) == 1
+        signature = result.signatures[0]
+        assert signature.verification_status == "verified"
+        assert signature.enabled is True
+        assert signature.criteria_json["theirstackRequest"]["job_filters"]["job_title_pattern_or"] == ["LLM Engineer", "Applied AI Engineer"]
+        assert signature.criteria_json["modelPlanning"]["grounding"][0]["term"] == "LLM Engineer"
+
+
+def test_model_grounded_ai_platform_variant_can_verify_without_backend_synonym_map() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planned platform variant.",
+            "signatures": [
+                {
+                    "queryText": "Machine learning platform companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "ML platform is a narrower market specialization of AI Platform Engineer.",
+                    "sourceFieldsUsed": ["target_titles"],
+                    "grounding": [
+                        {
+                            "term": "Machine Learning Platform Engineer",
+                            "groundingType": "narrower_specialization",
+                            "basedOn": [{"field": "RoleTarget.target_titles", "value": "AI Platform Engineer"}],
+                            "rationale": "Machine learning platform engineering is a role-market specialization of AI platform engineering.",
+                        }
+                    ],
+                    "theirstackRequest": {
+                        "jobFilters": {"job_title_pattern_or": ["Machine Learning Platform Engineer"], "posted_at_max_age_days": 30},
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": False,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["AI Platform Engineer"],
+                role_families=["Developer Tools"],
+                review_status="reviewed",
+                is_active=True,
+            )
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert len(result.signatures) == 1
+        assert result.signatures[0].verification_status == "verified"
+        assert result.signatures[0].criteria_json["theirstackRequest"]["job_filters"]["job_title_pattern_or"] == [
+            "Machine Learning Platform Engineer"
+        ]
+
+
 def test_model_planned_ungrounded_signature_persists_needs_review_without_provider_call() -> None:
     engine = create_seeded_engine()
     planner = FakePlannerConnector(
@@ -347,6 +464,75 @@ def test_model_planned_ungrounded_signature_persists_needs_review_without_provid
         assert signature.enabled is False
         assert signature.criteria_json["modelPlanning"]["rejectedIdeas"][0]["reason"] == "Not grounded in profile."
         assert len(session.scalars(select(CompanySyncRun)).all()) == 0
+
+
+def test_unsupported_optional_filter_removed_without_forcing_needs_review() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planned role plus unsupported optional keyword.",
+            "signatures": [
+                {
+                    "queryText": "AI engineering companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "Grounded role search.",
+                    "sourceFieldsUsed": ["target_titles"],
+                    "grounding": [{"term": "AI Engineer", "groundingType": "semantic_variant", "basedOn": [{"field": "RoleTarget.target_titles", "value": "Applied AI Engineer"}], "rationale": "AI Engineer is a role-market variant."}],
+                    "theirstackRequest": {
+                        "companyKeywordSlugOr": ["defense"],
+                        "jobFilters": {"job_title_pattern_or": ["AI Engineer"], "posted_at_max_age_days": 30},
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": False,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["Applied AI Engineer"],
+                role_families=["Applied AI"],
+                review_status="reviewed",
+                is_active=True,
+            )
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert len(result.signatures) == 1
+        signature = result.signatures[0]
+        assert signature.verification_status == "verified"
+        assert signature.enabled is True
+        assert "company_keyword_slug_or" not in signature.criteria_json["theirstackRequest"]
+        assert signature.criteria_json["theirstackRequest"]["job_filters"]["job_title_pattern_or"] == ["AI Engineer"]
+        assert any(issue["code"] == "ungrounded_filter_removed" for issue in signature.criteria_json["modelPlanning"]["validationIssues"])
+
+
+def test_needs_review_signatures_are_excluded_from_all_enabled_sync(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    fake_client = FakeTheirStackClient([theirstack_payload()])
+    with Session(engine) as session:
+        upsert_theirstack_company_sync_signature(
+            session,
+            query_text="review needed companies",
+            request=TheirStackCompanySearchRequest(company_name_or=("Review Co",)),
+            verification_status="needs_review",
+        )
+        results = sync_theirstack_company_signatures(
+            session,
+            settings=make_settings(tmp_path),
+            enabled_only=True,
+            force=True,
+            client=fake_client,
+        )
+
+        assert results == []
+        assert fake_client.requests == []
 
 
 def test_model_planned_duplicate_signatures_dedupe_by_sync_key() -> None:
@@ -495,6 +681,52 @@ def test_company_discovery_stale_cache_does_not_short_circuit_fallback(tmp_path:
         assert result.status_code == 200
         assert result.body["result"].get("sourcePath") != "canonical_company_cache"
         assert session.scalar(select(CandidateCompany).join(Company).where(Company.name == "Stale Civic AI Labs")) is None
+
+
+def test_cli_derive_command_accepts_latest_user_request(tmp_path: Path, monkeypatch, capsys) -> None:
+    engine = create_seeded_engine()
+    monkeypatch.setattr(cli_module, "create_db_engine", lambda: engine)
+
+    cli_module.derive_company_sync_signatures_command(
+        candidate_slug="rebekah-love",
+        latest_user_request="derive company sync signatures from my current target",
+        all_active_profiles=False,
+        from_job_listings=False,
+        from_candidate_companies=False,
+        from_saved_jobs=False,
+        from_applications=False,
+        missing_company_metadata_only=False,
+        active_jobs_only=False,
+        recent_days=30,
+        min_active_jobs=1,
+        limit=5,
+        dry_run=True,
+        created_by="test",
+        freshness_hours=168,
+        results_per_page=25,
+        max_pages=1,
+    )
+
+    assert "Derived company sync signatures" in capsys.readouterr().out
+
+
+def test_cli_lists_needs_review_company_sync_signatures(monkeypatch, capsys) -> None:
+    engine = create_seeded_engine()
+    monkeypatch.setattr(cli_module, "create_db_engine", lambda: engine)
+    with Session(engine) as session:
+        upsert_theirstack_company_sync_signature(
+            session,
+            query_text="review needed companies",
+            request=TheirStackCompanySearchRequest(company_name_or=("Review Co",)),
+            verification_status="needs_review",
+        )
+        session.commit()
+
+    cli_module.list_theirstack_company_sync_signatures_command(status="needs_review", enabled_only=False)
+
+    output = capsys.readouterr().out
+    assert "review needed companies" in output
+    assert "status=needs_review" in output
 
 
 class FakePlannerConnector:

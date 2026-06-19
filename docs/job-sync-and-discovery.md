@@ -117,7 +117,10 @@ Planner guardrails:
 
 - Unsupported TheirStack filters are removed.
 - Limits and pages are clamped to bounded sync settings.
-- Ungrounded roles, industries, domains, technologies, geographies, companies, and job filters are removed or force `verification_status="needs_review"`.
+- Search terms are accepted when they appear directly in context or when the model supplies per-term grounding with an allowed grounding type, rationale, and `basedOn` references that exist in planner context.
+- The backend validates references and safety boundaries, but it does not maintain a hard-coded semantic synonym map.
+- Ungrounded optional filters are removed without forcing the whole signature into review when meaningful grounded criteria remain.
+- `verification_status="needs_review"` is reserved for model-admitted uncertainty, unsupported or ambiguous main intent, unverifiable grounding, or no meaningful bounded criteria after validation.
 - Empty broad searches are not persisted as runnable signatures unless broad discovery was explicitly requested.
 - `needs_review` signatures are persisted disabled and are skipped by normal enabled sync runs.
 

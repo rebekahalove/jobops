@@ -17,6 +17,28 @@ from ..model_connector import ModelConnector, ModelMessage, ModelRequest
 SEMANTIC_QUERY_KINDS = {"target_role_company_discovery", "aggregate_target_role_company_discovery", "profile_context_company_discovery"}
 MAX_PLANNED_SIGNATURES = 10
 SUPPORTED_JOB_FILTER_KEYS = {"job_title_pattern_or", "job_title_pattern_and", "job_country_code_or", "posted_at_max_age_days"}
+ALLOWED_GROUNDING_TYPES = {
+    "exact",
+    "semantic_variant",
+    "broader_role_family",
+    "narrower_specialization",
+    "technology_supported",
+    "domain_supported",
+    "location_supported",
+    "company_identity",
+}
+RISKY_CATEGORY_TERMS = {
+    "defense",
+    "military",
+    "weapon",
+    "weapons",
+    "surveillance",
+    "policing",
+    "law enforcement",
+    "nursing",
+    "clinical",
+    "healthcare",
+}
 
 
 @dataclass(frozen=True)
@@ -88,12 +110,14 @@ def plan_company_sync_signatures(
     response = connector.generate(request)
     output = parse_company_sync_signature_planner_output(response.text)
     context_text = json.dumps(context, sort_keys=True)
+    reference_catalog = grounding_reference_catalog(context)
     planned: list[PlannedCompanySyncSignature] = []
     rejected_ideas = [idea.model_dump(by_alias=True) for idea in output.rejected_ideas]
     for model in output.signatures:
         validated = validate_planned_company_sync_signature(
             model,
             context_text=context_text,
+            reference_catalog=reference_catalog,
             latest_user_request=latest_user_request,
             results_per_page=results_per_page,
             max_pages=max_pages,
@@ -128,6 +152,7 @@ def validate_planned_company_sync_signature(
     model: CompanySyncSignaturePlanModel,
     *,
     context_text: str,
+    reference_catalog: set[tuple[str, str]],
     latest_user_request: str | None,
     results_per_page: int,
     max_pages: int,
@@ -139,9 +164,12 @@ def validate_planned_company_sync_signature(
         return None
     query_kind = model.query_kind if model.query_kind in SEMANTIC_QUERY_KINDS else "target_role_company_discovery"
     request = parse_theirstack_search_request(model.theirstack_request)
+    grounding_by_term = build_grounding_by_term(model.grounding)
     request, validation_issues = clamp_and_validate_request(
         request,
         context_text=context_text,
+        reference_catalog=reference_catalog,
+        grounding_by_term=grounding_by_term,
         latest_user_request=latest_user_request,
         results_per_page=results_per_page,
         max_pages=max_pages,
@@ -150,7 +178,7 @@ def validate_planned_company_sync_signature(
         validation_issues.append({"code": "empty_or_ungrounded_search", "message": "No grounded bounded TheirStack criteria remained after validation."})
         if not model.needs_review and not broad_discovery_explicitly_requested(latest_user_request):
             return None
-    verification_status = "needs_review" if model.needs_review or any(issue.get("severity") == "needs_review" for issue in validation_issues) else "verified"
+    verification_status = "needs_review" if model.needs_review or backend_requires_needs_review(validation_issues, request) else "verified"
     criteria_json = {
         "modelPlanning": {
             "assistantMessage": assistant_message,
@@ -182,6 +210,8 @@ def clamp_and_validate_request(
     request: TheirStackCompanySearchRequest,
     *,
     context_text: str,
+    reference_catalog: set[tuple[str, str]],
+    grounding_by_term: dict[str, dict[str, Any]],
     latest_user_request: str | None,
     results_per_page: int,
     max_pages: int,
@@ -207,27 +237,46 @@ def clamp_and_validate_request(
                 issues.append({"code": "unsupported_filter_removed", "field": key})
             continue
         if isinstance(value, list):
-            kept = [item for item in value if isinstance(item, str) and term_is_grounded(item, context_text)]
+            kept = [
+                item
+                for item in value
+                if isinstance(item, str)
+                and term_is_supported_by_context_or_grounding(
+                    item,
+                    context_text=context_text,
+                    reference_catalog=reference_catalog,
+                    grounding_by_term=grounding_by_term,
+                    issues=issues,
+                    field_name=key,
+                )
+            ]
             removed = [item for item in value if isinstance(item, str) and item not in kept]
             if removed:
-                issues.append({"code": "ungrounded_filter_removed", "field": key, "values": removed, "severity": "needs_review"})
+                issues.append({"code": "ungrounded_filter_removed", "field": key, "values": removed})
             if kept:
                 job_filters[key] = compact_strings(kept, limit=24)
-        elif isinstance(value, str) and term_is_grounded(value, context_text):
+        elif isinstance(value, str) and term_is_supported_by_context_or_grounding(
+            value,
+            context_text=context_text,
+            reference_catalog=reference_catalog,
+            grounding_by_term=grounding_by_term,
+            issues=issues,
+            field_name=key,
+        ):
             job_filters[key] = value
         elif value:
-            issues.append({"code": "ungrounded_filter_removed", "field": key, "values": [str(value)], "severity": "needs_review"})
+            issues.append({"code": "ungrounded_filter_removed", "field": key, "values": [str(value)]})
 
     return (
         TheirStackCompanySearchRequest(
-            company_name_or=grounded_tuple(request.company_name_or, "company_name_or", context_text, issues),
-            company_name_partial_match_or=grounded_tuple(request.company_name_partial_match_or, "company_name_partial_match_or", context_text, issues),
-            company_domain_or=grounded_tuple(request.company_domain_or, "company_domain_or", context_text, issues),
-            company_country_code_or=grounded_tuple(request.company_country_code_or, "company_country_code_or", context_text, issues),
-            company_description_pattern_or=grounded_tuple(request.company_description_pattern_or, "company_description_pattern_or", context_text, issues),
-            company_technology_slug_or=grounded_tuple(request.company_technology_slug_or, "company_technology_slug_or", context_text, issues),
-            company_technology_slug_and=grounded_tuple(request.company_technology_slug_and, "company_technology_slug_and", context_text, issues),
-            company_keyword_slug_or=grounded_tuple(request.company_keyword_slug_or, "company_keyword_slug_or", context_text, issues),
+            company_name_or=grounded_tuple(request.company_name_or, "company_name_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_name_partial_match_or=grounded_tuple(request.company_name_partial_match_or, "company_name_partial_match_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_domain_or=grounded_tuple(request.company_domain_or, "company_domain_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_country_code_or=grounded_tuple(request.company_country_code_or, "company_country_code_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_description_pattern_or=grounded_tuple(request.company_description_pattern_or, "company_description_pattern_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_technology_slug_or=grounded_tuple(request.company_technology_slug_or, "company_technology_slug_or", context_text, reference_catalog, grounding_by_term, issues),
+            company_technology_slug_and=grounded_tuple(request.company_technology_slug_and, "company_technology_slug_and", context_text, reference_catalog, grounding_by_term, issues),
+            company_keyword_slug_or=grounded_tuple(request.company_keyword_slug_or, "company_keyword_slug_or", context_text, reference_catalog, grounding_by_term, issues),
             job_filters=job_filters,
             limit=bounded_limit,
             page=1,
@@ -238,12 +287,129 @@ def clamp_and_validate_request(
     )
 
 
-def grounded_tuple(values: tuple[str, ...], field_name: str, context_text: str, issues: list[dict[str, Any]]) -> tuple[str, ...]:
-    kept = tuple(value for value in values if term_is_grounded(value, context_text))
+def grounded_tuple(
+    values: tuple[str, ...],
+    field_name: str,
+    context_text: str,
+    reference_catalog: set[tuple[str, str]],
+    grounding_by_term: dict[str, dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    kept = tuple(
+        value
+        for value in values
+        if term_is_supported_by_context_or_grounding(
+            value,
+            context_text=context_text,
+            reference_catalog=reference_catalog,
+            grounding_by_term=grounding_by_term,
+            issues=issues,
+            field_name=field_name,
+        )
+    )
     removed = [value for value in values if value not in kept]
     if removed:
-        issues.append({"code": "ungrounded_filter_removed", "field": field_name, "values": removed, "severity": "needs_review"})
+        issues.append({"code": "ungrounded_filter_removed", "field": field_name, "values": removed})
     return tuple(compact_strings(list(kept), limit=24))
+
+
+def term_is_supported_by_context_or_grounding(
+    term: str,
+    *,
+    context_text: str,
+    reference_catalog: set[tuple[str, str]],
+    grounding_by_term: dict[str, dict[str, Any]],
+    issues: list[dict[str, Any]],
+    field_name: str,
+) -> bool:
+    if term_is_grounded(term, context_text):
+        return True
+    grounding = grounding_by_term.get(normalize_term_key(term))
+    if grounding is None:
+        if term_has_unsupported_risky_category(term, context_text):
+            issues.append({"code": "unsupported_risky_category_removed", "field": field_name, "term": term, "needsReviewCandidate": True})
+        return False
+    valid, issue = validate_term_grounding(term, grounding, reference_catalog=reference_catalog, context_text=context_text)
+    if not valid:
+        issues.append({"code": "invalid_grounding_removed", "field": field_name, "term": term, **issue, "needsReviewCandidate": True})
+        return False
+    if term_has_unsupported_risky_category(term, context_text):
+        issues.append({"code": "unsupported_risky_category_removed", "field": field_name, "term": term, "needsReviewCandidate": True})
+        return False
+    return True
+
+
+def validate_term_grounding(
+    term: str,
+    grounding: dict[str, Any],
+    *,
+    reference_catalog: set[tuple[str, str]],
+    context_text: str,
+) -> tuple[bool, dict[str, Any]]:
+    grounding_type = grounding.get("groundingType")
+    if grounding_type not in ALLOWED_GROUNDING_TYPES:
+        return False, {"groundingType": grounding_type or "missing"}
+    rationale = grounding.get("rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        return False, {"reason": "missing_rationale"}
+    based_on = grounding.get("basedOn")
+    if not isinstance(based_on, list) or not based_on:
+        return False, {"reason": "missing_based_on"}
+    invalid_refs: list[dict[str, Any]] = []
+    valid_ref_count = 0
+    for ref in based_on:
+        if not isinstance(ref, dict):
+            invalid_refs.append({"reason": "invalid_reference"})
+            continue
+        field = str(ref.get("field") or "").strip()
+        value = str(ref.get("value") or "").strip()
+        if not field or not value:
+            invalid_refs.append({"field": field, "value": value, "reason": "empty_reference"})
+            continue
+        if reference_exists(field, value, reference_catalog=reference_catalog, context_text=context_text):
+            valid_ref_count += 1
+        else:
+            invalid_refs.append({"field": field, "value": value, "reason": "not_in_context"})
+    if valid_ref_count <= 0:
+        return False, {"reason": "unverified_references", "invalidReferences": invalid_refs[:5]}
+    return True, {}
+
+
+def reference_exists(field: str, value: str, *, reference_catalog: set[tuple[str, str]], context_text: str) -> bool:
+    normalized_field = field.casefold()
+    normalized_value = normalize_term_key(value)
+    if (normalized_field, normalized_value) in reference_catalog:
+        return True
+    if normalized_value and term_is_grounded(value, context_text):
+        return True
+    return False
+
+
+def build_grounding_by_term(values: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_term: dict[str, dict[str, Any]] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        term = value.get("term")
+        if isinstance(term, str) and term.strip():
+            by_term[normalize_term_key(term)] = value
+    return by_term
+
+
+def backend_requires_needs_review(issues: list[dict[str, Any]], request: TheirStackCompanySearchRequest) -> bool:
+    if not request_has_meaningful_criteria(request):
+        return True
+    return any(bool(issue.get("forceNeedsReview")) for issue in issues)
+
+
+def term_has_unsupported_risky_category(term: str, context_text: str) -> bool:
+    normalized_term = normalize_term_key(term)
+    normalized_context = normalize_term_key(context_text)
+    return any(risky in normalized_term and risky not in normalized_context for risky in RISKY_CATEGORY_TERMS)
+
+
+def normalize_term_key(value: str) -> str:
+    return " ".join(str(value or "").casefold().replace("_", " ").replace("-", " ").split())
 
 
 def request_has_meaningful_criteria(request: TheirStackCompanySearchRequest) -> bool:
@@ -280,13 +446,16 @@ def build_company_sync_signature_planner_context(
 ) -> dict[str, Any]:
     profiles = load_candidate_profiles_for_planning(session, candidate_slug=candidate_slug, all_active_profiles=all_active_profiles, limit=limit)
     profile_ids = [profile.id for profile in profiles]
+    profile_contexts = [profile_context_for_planning(session, profile) for profile in profiles]
+    profile_fact_context = profile_fact_context_by_candidate(session, profile_ids)
     return {
         "latest_user_request": latest_user_request,
-        "profiles": [profile_context_for_planning(session, profile) for profile in profiles],
-        "profile_fact_context": profile_fact_context_by_candidate(session, profile_ids),
+        "profiles": profile_contexts,
+        "profile_fact_context": profile_fact_context,
         "current_saved_companies": saved_company_context_by_candidate(session, profile_ids),
         "saved_jobs": saved_job_context_by_candidate(session, profile_ids),
         "applications": application_context_by_candidate(session, profile_ids),
+        "grounding_reference_catalog": build_grounding_reference_catalog(profile_contexts, profile_fact_context),
         "planner_rules": {
             "provider": "theirstack",
             "bounded": True,
@@ -294,6 +463,73 @@ def build_company_sync_signature_planner_context(
             "allowed_job_filter_keys": sorted(SUPPORTED_JOB_FILTER_KEYS),
         },
     }
+
+
+def grounding_reference_catalog(context: dict[str, Any]) -> set[tuple[str, str]]:
+    values: set[tuple[str, str]] = set()
+    raw_catalog = context.get("grounding_reference_catalog")
+    if isinstance(raw_catalog, list):
+        for item in raw_catalog:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or "").strip().casefold()
+            value = normalize_term_key(str(item.get("value") or ""))
+            if field and value:
+                values.add((field, value))
+    return values
+
+
+def build_grounding_reference_catalog(
+    profile_contexts: list[dict[str, Any]],
+    profile_fact_context: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, str]]:
+    references: list[dict[str, str]] = []
+    for profile in profile_contexts:
+        add_reference(references, "CandidateProfile.headline", profile.get("headline"))
+        for target in profile.get("roleTargets") or []:
+            if not isinstance(target, dict):
+                continue
+            for value in target.get("targetTitles") or []:
+                add_reference(references, "RoleTarget.target_titles", value)
+            for value in target.get("roleFamilies") or []:
+                add_reference(references, "RoleTarget.role_families", value)
+            add_reference(references, "RoleTarget.seniority", target.get("seniority"))
+            for value in target.get("preferredLocations") or []:
+                add_reference(references, "RoleTarget.preferred_locations", value)
+            for value in target.get("workModes") or []:
+                add_reference(references, "RoleTarget.work_modes", value)
+            constraints = target.get("constraints")
+            if isinstance(constraints, dict):
+                for value in flatten_reference_values(constraints):
+                    add_reference(references, "RoleTarget.constraints", value)
+    for facts in profile_fact_context.values():
+        for fact in facts:
+            field_name = str(fact.get("fieldName") or "value")
+            value = fact.get("valueText")
+            add_reference(references, f"ProfileFieldValue.{field_name}", value)
+            add_reference(references, "ProfileFieldValue.skills", value)
+    return references
+
+
+def add_reference(references: list[dict[str, str]], field: str, value: Any) -> None:
+    if not isinstance(value, str):
+        return
+    cleaned = " ".join(value.split()).strip()
+    if cleaned:
+        references.append({"field": field, "value": cleaned})
+
+
+def flatten_reference_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(flatten_reference_values(item))
+        return values
+    return []
 
 
 def load_candidate_profiles_for_planning(
@@ -437,14 +673,41 @@ def compact_strings(values: list[Any], *, limit: int) -> list[str]:
     return compacted
 
 
-def compact_grounding(values: list[dict[str, Any]]) -> list[dict[str, str]]:
-    compacted: list[dict[str, str]] = []
+def compact_grounding(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
     for value in values[:40]:
+        if not isinstance(value, dict):
+            continue
+        term = value.get("term")
+        if isinstance(term, str) and term.strip():
+            compacted.append(
+                {
+                    "term": term[:160],
+                    "groundingType": str(value.get("groundingType") or "")[:80],
+                    "basedOn": compact_grounding_refs(value.get("basedOn")),
+                    "rationale": str(value.get("rationale") or "")[:900],
+                }
+            )
+            continue
         field = value.get("field")
         grounded_value = value.get("value")
         if isinstance(field, str) and isinstance(grounded_value, str):
             compacted.append({"field": field[:160], "value": grounded_value[:240]})
     return compacted
+
+
+def compact_grounding_refs(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    refs: list[dict[str, str]] = []
+    for item in value[:12]:
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        grounded_value = item.get("value")
+        if isinstance(field, str) and isinstance(grounded_value, str):
+            refs.append({"field": field[:160], "value": grounded_value[:240]})
+    return refs
 
 
 COMPANY_SYNC_SIGNATURE_PLANNER_PROMPT = """You are the JobOps Company Sync Signature Planner.
@@ -456,6 +719,11 @@ Rules:
 - The backend will validate, clamp, dedupe, and persist signatures. Do not call providers.
 - Propose semantic company discovery signatures only when grounded in supplied context.
 - Do not invent roles, industries, domains, technologies, geographies, company names, or job filters.
+- For each search term or job filter term that is not an exact literal context value, include grounding metadata with:
+  term, groundingType, basedOn references, and rationale.
+- Valid groundingType values: exact, semantic_variant, broader_role_family, narrower_specialization,
+  technology_supported, domain_supported, location_supported, company_identity, unsupported.
+- Use unsupported when a term seems useful but should be human-reviewed before automatic sync.
 - Use TheirStack jobFilters for hiring-signal discovery when grounded target roles are present.
 - Keep searches bounded: limit <= 25 and maxPages <= 1 unless explicitly asked otherwise in context.
 - Set needsReview=true if useful but not fully grounded.
@@ -471,7 +739,14 @@ Return this JSON shape:
       "queryKind": "target_role_company_discovery",
       "rationale": "Derived from target titles and role family.",
       "sourceFieldsUsed": ["target_titles", "role_families"],
-      "grounding": [{"field": "RoleTarget.target_titles", "value": "Applied AI Engineer"}],
+      "grounding": [
+        {
+          "term": "LLM Engineer",
+          "groundingType": "semantic_variant",
+          "basedOn": [{"field": "RoleTarget.target_titles", "value": "Applied AI Engineer"}],
+          "rationale": "LLM Engineer is a hiring-market specialization of applied AI work."
+        }
+      ],
       "theirstackRequest": {
         "companyNameOr": [],
         "companyNamePartialMatchOr": [],
