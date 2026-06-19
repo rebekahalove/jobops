@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal
@@ -32,7 +32,17 @@ from .company_discovery_diagnostics import (
     update_company_discovery_provider_call,
     update_company_discovery_run,
 )
-from .db.models import Application, CandidateCompany, CandidateProfile, CandidateSavedJob, CommandInteractionLog, Company, JobListing, RoleTarget
+from .db.models import (
+    Application,
+    CandidateCompany,
+    CandidateProfile,
+    CandidateSavedJob,
+    CommandInteractionLog,
+    Company,
+    CompanySource,
+    JobListing,
+    RoleTarget,
+)
 from .db.session import get_db_session
 from .model_connector import (
     ModelConfigurationError,
@@ -785,6 +795,19 @@ def run_company_discovery(
         target_context=target_context,
         signals=preflight_signals,
     )
+    cache_result = try_company_cache_discovery(
+        db_session,
+        candidate_profile=candidate_profile,
+        latest_user_message=request.latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+        company_discovery_run_id=company_discovery_run_id,
+        freshness_hours=active_settings.theirstack_company_sync_freshness_hours,
+    )
+    if cache_result is not None:
+        db_session.commit()
+        return cache_result
+
     if target_preflight_needed and not (active_settings.theirstack_company_search_enabled and active_settings.theirstack_api_key):
         return build_company_discovery_target_prompt_result(
             diagnostics=build_target_preflight_diagnostics(
@@ -1157,6 +1180,351 @@ def run_company_discovery(
         },
         status_code=200,
     )
+
+
+def try_company_cache_discovery(
+    session: Session,
+    *,
+    candidate_profile: CandidateProfile,
+    latest_user_message: str,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+    company_discovery_run_id: str | None,
+    freshness_hours: int,
+) -> CompanyDiscoveryServiceResult | None:
+    search_terms = company_cache_search_terms(
+        latest_user_message,
+        target_context=target_context,
+        profile_context=profile_context,
+    )
+    if not search_terms:
+        return None
+    update_company_discovery_run(
+        session,
+        company_discovery_run_id,
+        status="running",
+        source_path="canonical_company_cache",
+        source_provider="jobops_database",
+    )
+    provider_call = record_company_discovery_provider_call(
+        session,
+        company_discovery_run_id=company_discovery_run_id,
+        stage="company_source",
+        provider="jobops_database",
+        status="started",
+        label="Canonical company cache",
+        request_summary={
+            "searchTermCount": len(search_terms),
+            "freshnessHours": freshness_hours,
+            "sourceBackedOnly": True,
+        },
+    )
+    matches = find_company_cache_matches(session, search_terms=search_terms, freshness_hours=freshness_hours)
+    existing_links = {
+        link.company_id: link
+        for link in session.scalars(
+            select(CandidateCompany)
+            .options(selectinload(CandidateCompany.company))
+            .where(CandidateCompany.candidate_profile_id == candidate_profile.id)
+        )
+    }
+    linked: list[CandidateCompany] = []
+    skipped: list[dict[str, str]] = []
+    for company, _score, fresh_source_count in matches:
+        existing = existing_links.get(company.id)
+        if existing is not None:
+            skipped.append(
+                {
+                    "companyId": company.id,
+                    "name": company.name,
+                    "reason": "archived_or_avoided" if company_link_is_archived_or_avoided(existing) else "already_followed",
+                }
+            )
+            continue
+        company_sources = source_backing_for_company(company)
+        link_result = ensure_candidate_company_link(
+            session,
+            candidate_profile_id=candidate_profile.id,
+            company=company,
+            review_status="new",
+            derivation_status="provider_enriched",
+            fit_reason=cache_company_fit_reason(company, search_terms),
+            discovery_query=latest_user_message,
+            search_queries_used=search_terms[:12],
+            provider_grounding_metadata={
+                "discoverySource": "canonical_company_cache",
+                "dataOriginSource": "company_sync",
+                "sourceProviders": sorted({source.source_provider for source in company_sources}),
+                "companySourceIds": [source.id for source in company_sources],
+                "matchReason": "Company matched current profile/request terms in canonical provider-backed cache.",
+                "canonicalCacheFreshSourceCount": fresh_source_count,
+                "companySyncSignatureId": None,
+                "companySyncRunId": None,
+                "atsMetadata": {
+                    "greenhouseBoardToken": company.greenhouse_board_token,
+                    "ashbyBoardUrl": company.ashby_board_url,
+                    "leverSlug": company.lever_slug,
+                },
+            },
+            discovered_by="canonical_company_cache",
+            personal_source_urls=clean_company_source_urls(
+                [
+                    company.website_url,
+                    company.careers_url,
+                    company.job_listings_url,
+                    *(company.source_urls or []),
+                    *(source.source_url for source in company_sources),
+                    *(source.website_url for source in company_sources),
+                    *(source.careers_url for source in company_sources),
+                ]
+            ),
+        )
+        existing_links[company.id] = link_result.link
+        if link_result.created_link:
+            linked.append(link_result.link)
+        else:
+            skipped.append({"companyId": company.id, "name": company.name, "reason": "already_followed"})
+        if len(linked) >= 8:
+            break
+
+    update_company_discovery_provider_call(
+        session,
+        provider_call,
+        status="completed",
+        result_summary={
+            "canonicalCacheMatchCount": len(matches),
+            "freshMatchCount": sum(1 for _, _, count in matches if count),
+            "linkedCandidateCompanyCount": len(linked),
+            "skippedCompanyCount": len(skipped),
+            "searchTerms": search_terms[:12],
+        },
+    )
+    if not linked:
+        return None
+    record_company_discovery_provider_call(
+        session,
+        company_discovery_run_id=company_discovery_run_id,
+        stage="persistence",
+        provider="jobops_database",
+        status="completed",
+        label="Canonical company link/upsert",
+        result_summary={
+            "linkedCandidateCompanyCount": len(linked),
+            "skippedCompanyCount": len(skipped),
+            "sourcePath": "canonical_company_cache",
+        },
+    )
+    companies_payload = [serialize_company(link, session=session, candidate_profile_id=candidate_profile.id) for link in linked]
+    message = build_cache_discovery_message(linked, skipped)
+    result_payload = {
+        "message": message,
+        "assistantMessage": message,
+        "companies": companies_payload,
+        "addedCompanyCount": len(linked),
+        "linkedCompanyCount": len(linked),
+        "skippedCompanyCount": len(skipped),
+        "skippedExistingCompanies": skipped[:MAX_DISCOVERY_SKIPPED_COMPANIES],
+        "searchQueriesUsed": search_terms[:12],
+        "discoveryAngles": [],
+        "sourcePath": "canonical_company_cache",
+        "sourceProvider": "jobops_database",
+        "companyDiscoveryRunId": company_discovery_run_id,
+        "discoveryAudit": {
+            "sourcePath": "canonical_company_cache",
+            "sourceProvider": "jobops_database",
+            "savedCompanyCount": len(linked),
+            "linkedCompanyCount": len(linked),
+            "skippedCompanyCount": len(skipped),
+            "companies": companies_payload,
+            "diagnosticMessages": [],
+        },
+    }
+    complete_company_discovery_run(
+        session,
+        company_discovery_run_id,
+        status="completed",
+        source_path="canonical_company_cache",
+        source_provider="jobops_database",
+        saved_company_count=len(linked),
+        linked_company_count=len(linked),
+        skipped_company_count=len(skipped),
+        zero_new_company_reason=None,
+        run_diagnostics_json={
+            "searchQueriesUsed": search_terms[:12],
+            "discoveryAngles": [],
+            "companies": companies_payload,
+            "diagnosticMessages": [],
+            "companyCache": {
+                "matchCount": len(matches),
+                "linkedCandidateCompanyCount": len(linked),
+                "skippedCompanyCount": len(skipped),
+            },
+        },
+    )
+    logger.info(
+        "company_discovery.canonical_cache.completed",
+        extra={
+            "candidate_profile_id": candidate_profile.id,
+            "command_preview": command_preview(latest_user_message),
+            "match_count": len(matches),
+            "linked_company_count": len(linked),
+        },
+    )
+    return CompanyDiscoveryServiceResult(body={"ok": True, "result": result_payload}, status_code=200)
+
+
+def find_company_cache_matches(
+    session: Session,
+    *,
+    search_terms: list[str],
+    freshness_hours: int,
+) -> list[tuple[Company, int, int]]:
+    filters = []
+    for term in search_terms[:12]:
+        pattern = f"%{term}%"
+        filters.append(
+            or_(
+                Company.name.ilike(pattern),
+                Company.normalized_name.ilike(pattern),
+                Company.description.ilike(pattern),
+                Company.source_summary.ilike(pattern),
+                CompanySource.source_query.ilike(pattern),
+            )
+        )
+    if not filters:
+        return []
+    statement = (
+        select(Company)
+        .join(CompanySource, CompanySource.company_id == Company.id)
+        .options(selectinload(Company.sources))
+        .where(CompanySource.is_active.is_(True), or_(*filters))
+        .distinct()
+        .limit(50)
+    )
+    fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, freshness_hours))
+    ranked: list[tuple[Company, int, int]] = []
+    for company in session.scalars(statement).all():
+        company_sources = source_backing_for_company(company)
+        fresh_source_count = 0
+        for source in company_sources:
+            value = source.last_synced_at or source.last_seen_at
+            if value is None:
+                continue
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            if value >= fresh_cutoff:
+                fresh_source_count += 1
+        score = company_cache_match_score(company, search_terms) + (fresh_source_count * 3)
+        if score > 0:
+            ranked.append((company, score, fresh_source_count))
+    ranked.sort(
+        key=lambda item: (
+            item[1],
+            item[2],
+            (item[0].last_seen_at or item[0].updated_at or item[0].created_at).isoformat()
+            if (item[0].last_seen_at or item[0].updated_at or item[0].created_at)
+            else "",
+        ),
+        reverse=True,
+    )
+    return ranked[:20]
+
+
+def company_cache_search_terms(
+    latest_user_message: str,
+    *,
+    target_context: dict[str, Any],
+    profile_context: dict[str, Any],
+) -> list[str]:
+    terms = [token for token in extract_user_company_search_terms(latest_user_message) if token not in GENERIC_DISCOVERY_TOKENS]
+    terms.extend(extract_context_terms(target_context, keys={"target_titles", "targetTitles", "role_families", "roleFamilies", "skills", "industries", "constraints"}))
+    terms.extend(extract_context_terms(profile_context, keys={"headline", "skills", "technologies", "industries", "domains"}))
+    return compact_unique_strings([term for term in terms if len(term) >= 3], limit=24)
+
+
+def extract_context_terms(value: Any, *, keys: set[str]) -> list[str]:
+    terms: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys:
+                terms.extend(flatten_context_text_values(item))
+            elif isinstance(item, (dict, list, tuple)):
+                terms.extend(extract_context_terms(item, keys=keys))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            terms.extend(extract_context_terms(item, keys=keys))
+    return terms
+
+
+def flatten_context_text_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if isinstance(item, str)]
+    if isinstance(value, dict):
+        terms: list[str] = []
+        for item in value.values():
+            terms.extend(flatten_context_text_values(item))
+        return terms
+    return []
+
+
+def source_backing_for_company(company: Company) -> list[CompanySource]:
+    return [source for source in getattr(company, "sources", []) or [] if source.is_active]
+
+
+def company_cache_match_score(company: Company, search_terms: list[str]) -> int:
+    haystack = " ".join(
+        str(value or "")
+        for value in [
+            company.name,
+            company.normalized_name,
+            company.description,
+            company.source_summary,
+            company.headquarters_city,
+            company.headquarters_country,
+            *(company.hiring_locations or []),
+            *(company.operating_countries or []),
+            *(source.source_query or "" for source in source_backing_for_company(company)),
+            *(str(source.company_signals_json or "") for source in source_backing_for_company(company)),
+        ]
+    ).casefold()
+    return sum(1 for term in search_terms if term.casefold() in haystack)
+
+
+def company_link_is_archived_or_avoided(link: CandidateCompany) -> bool:
+    return bool(link.archived_at or is_avoided_review_status(link.review_status))
+
+
+def cache_company_fit_reason(company: Company, search_terms: list[str]) -> str:
+    matched_terms = [term for term in search_terms[:12] if term.casefold() in company_cache_match_text(company)]
+    if matched_terms:
+        return f"Matched canonical provider-backed company cache terms: {', '.join(matched_terms[:5])}."
+    return "Matched canonical provider-backed company cache for this discovery request."
+
+
+def company_cache_match_text(company: Company) -> str:
+    return " ".join(
+        str(value or "")
+        for value in [
+            company.name,
+            company.description,
+            company.source_summary,
+            *(str(source.company_signals_json or "") for source in source_backing_for_company(company)),
+        ]
+    ).casefold()
+
+
+def build_cache_discovery_message(linked: list[CandidateCompany], skipped: list[dict[str, str]]) -> str:
+    names = ", ".join(link.company.name for link in linked if link.company is not None)
+    company_word = "company" if len(linked) == 1 else "companies"
+    message = f"Saved {len(linked)} provider-backed {company_word} from the canonical company cache"
+    if names:
+        message += f": {names}"
+    message += "."
+    if skipped:
+        message += f" Skipped {len(skipped)} existing or archived company match(es)."
+    return message
 
 
 def build_company_discovery_model_request(

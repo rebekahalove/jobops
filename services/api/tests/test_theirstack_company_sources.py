@@ -16,7 +16,7 @@ from jobops_api.company_sources.theirstack.models import TheirStackCompanySearch
 from jobops_api.company_sources.theirstack.normalizer import normalize_theirstack_company
 from jobops_api.company_sources.theirstack.service import TheirStackCompanyEnrichmentService
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Base, CandidateCompany, Company
+from jobops_api.db.models import Base, CandidateCompany, Company, CompanySource
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.settings import Settings
 
@@ -143,10 +143,15 @@ def test_theirstack_enrichment_upserts_company_without_linking_profile(tmp_path:
 
     with Session(engine) as session:
         company = session.scalar(select(Company).where(Company.name == "Hightouch"))
+        company_source = session.scalar(select(CompanySource).where(CompanySource.provider_company_id == "company_123"))
         assert result.status == "completed"
         assert company is not None
         assert company.greenhouse_board_token == "hightouch"
         assert company.job_listings_url == "https://boards-api.greenhouse.io/v1/boards/hightouch/jobs"
+        assert company_source is not None
+        assert company_source.company_id == company.id
+        assert company_source.source_provider == "theirstack"
+        assert company_source.ats_metadata_json["greenhouseBoardToken"] == "hightouch"
         assert session.scalar(select(CandidateCompany)) is None
 
 

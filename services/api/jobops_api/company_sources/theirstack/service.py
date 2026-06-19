@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from ...db.models import Company, CompanySource
 from ...job_discovery.greenhouse_utils import canonical_greenhouse_jobs_api_url
 from ...settings import Settings
 from .client import TheirStackCompanySearchClient, TheirStackCompanySearchError
@@ -76,27 +78,21 @@ class TheirStackCompanyEnrichmentService:
         )
 
         persisted = []
+        company_sources = []
+        source_created_count = 0
+        source_updated_count = 0
         links = []
         for company_record in normalized:
-            company = upsert_canonical_company(
+            persisted_record = upsert_theirstack_company_record(
                 self.session,
-                name=company_record.name,
-                normalized_name=company_record.normalized_name,
-                domain=company_record.domain,
-                normalized_domain=company_record.domain,
-                website_url=company_record.website_url,
-                job_listings_url=job_listings_url_for(company_record),
-                description=company_record.description,
-                headquarters_city=company_record.headquarters_city,
-                headquarters_country=company_record.headquarters_country,
-                source_urls=list(company_record.source_urls),
-                source_summary=company_record.source_summary,
-                data_confidence="medium",
-                greenhouse_board_token=company_record.greenhouse_board_token,
-                ashby_board_url=company_record.ashby_board_url,
-                lever_slug=company_record.lever_slug,
+                company_record,
+                source_query=discovery_query,
             )
+            company = persisted_record.company
             persisted.append(company)
+            company_sources.append(persisted_record.company_source)
+            source_created_count += 1 if persisted_record.created_source else 0
+            source_updated_count += 1 if persisted_record.updated_source else 0
             if candidate_profile_id and link_to_profile:
                 link_result = ensure_candidate_company_link(
                     self.session,
@@ -117,10 +113,15 @@ class TheirStackCompanyEnrichmentService:
         diagnostics = (search_result.diagnostics or TheirStackCompanySearchDiagnostics(enabled=True, requested_pages=1)).to_dict()
         diagnostics["normalizedCompanyCount"] = len(normalized)
         diagnostics["upsertedCompanyCount"] = len(persisted)
+        diagnostics["createdCompanyCount"] = source_created_count
+        diagnostics["updatedCompanyCount"] = source_updated_count
+        diagnostics["companySourceCreatedCount"] = source_created_count
+        diagnostics["companySourceUpdatedCount"] = source_updated_count
         diagnostics["linkedCandidateCompanyCount"] = len(links)
         return TheirStackCompanyEnrichmentResult(
             status="completed",
             companies=tuple(persisted),
+            company_sources=tuple(company_sources),
             candidate_company_links=tuple(links),
             normalized_companies=normalized,
             diagnostics=diagnostics,
@@ -143,6 +144,143 @@ def job_listings_url_for(company: NormalizedCompanyEnrichment) -> str | None:
     if company.greenhouse_board_token:
         return canonical_greenhouse_jobs_api_url(company.greenhouse_board_token)
     return None
+
+
+@dataclass(frozen=True)
+class PersistedTheirStackCompanyRecord:
+    company: Company
+    company_source: CompanySource
+    created_source: bool
+    updated_source: bool
+
+
+def upsert_theirstack_company_record(
+    session: Session,
+    company_record: NormalizedCompanyEnrichment,
+    *,
+    source_query: str | None = None,
+) -> PersistedTheirStackCompanyRecord:
+    company = upsert_canonical_company(
+        session,
+        name=company_record.name,
+        normalized_name=company_record.normalized_name,
+        domain=company_record.domain,
+        normalized_domain=company_record.domain,
+        website_url=company_record.website_url,
+        job_listings_url=job_listings_url_for(company_record),
+        description=company_record.description,
+        headquarters_city=company_record.headquarters_city,
+        headquarters_country=company_record.headquarters_country,
+        source_urls=list(company_record.source_urls),
+        source_summary=company_record.source_summary,
+        data_confidence="medium",
+        greenhouse_board_token=company_record.greenhouse_board_token,
+        ashby_board_url=company_record.ashby_board_url,
+        lever_slug=company_record.lever_slug,
+    )
+    company_source = find_existing_company_source(session, company_record, company=company)
+    created = company_source is None
+    if company_source is None:
+        company_source = CompanySource(
+            company=company,
+            source_provider="theirstack",
+            provider_type="company_source",
+        )
+        session.add(company_source)
+    apply_theirstack_company_source_fields(company_source, company_record, source_query=source_query)
+    session.flush()
+    return PersistedTheirStackCompanyRecord(
+        company=company,
+        company_source=company_source,
+        created_source=created,
+        updated_source=not created,
+    )
+
+
+def find_existing_company_source(
+    session: Session,
+    company_record: NormalizedCompanyEnrichment,
+    *,
+    company: Company,
+) -> CompanySource | None:
+    provider_company_id = provider_company_id_for(company_record)
+    if provider_company_id:
+        source = session.scalar(
+            select(CompanySource).where(
+                CompanySource.source_provider == "theirstack",
+                CompanySource.provider_company_id == provider_company_id,
+            )
+        )
+        if source is not None:
+            return source
+    source_url = primary_source_url_for(company_record)
+    if source_url:
+        source = session.scalar(
+            select(CompanySource).where(
+                CompanySource.source_provider == "theirstack",
+                CompanySource.source_url == source_url,
+            )
+        )
+        if source is not None:
+            return source
+    return session.scalar(
+        select(CompanySource).where(
+            CompanySource.source_provider == "theirstack",
+            CompanySource.company_id == company.id,
+        )
+    )
+
+
+def apply_theirstack_company_source_fields(
+    company_source: CompanySource,
+    company_record: NormalizedCompanyEnrichment,
+    *,
+    source_query: str | None,
+) -> None:
+    company_source.source_provider = "theirstack"
+    company_source.provider_type = "company_source"
+    company_source.provider_company_id = provider_company_id_for(company_record)
+    company_source.source_result_id = company_source.provider_company_id
+    company_source.source_url = primary_source_url_for(company_record)
+    company_source.website_url = company_record.website_url
+    company_source.linkedin_url = company_record.linkedin_url
+    company_source.careers_url = company_record.source_urls[0] if company_record.source_urls else None
+    company_source.source_query = source_query
+    company_source.raw_metadata_json = company_record.raw_provider_metadata
+    company_source.ats_metadata_json = {
+        "greenhouseBoardToken": company_record.greenhouse_board_token,
+        "ashbyBoardUrl": company_record.ashby_board_url,
+        "leverSlug": company_record.lever_slug,
+        "unsupportedAtsUrls": list(company_record.unsupported_ats_urls),
+    }
+    company_source.company_signals_json = {
+        "industry": company_record.industry,
+        "employeeCount": company_record.employee_count,
+        "employeeCountRange": company_record.employee_count_range,
+        "fundingStage": company_record.funding_stage,
+        "totalFundingUsd": company_record.total_funding_usd,
+        "technologyNames": list(company_record.technology_names),
+        "technologySlugs": list(company_record.technology_slugs),
+        "keywordSlugs": list(company_record.keyword_slugs),
+        "numJobs": company_record.num_jobs,
+        "numJobsFound": company_record.num_jobs_found,
+        "numJobsLast30Days": company_record.num_jobs_last_30_days,
+    }
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    company_source.last_seen_at = now
+    company_source.last_synced_at = now
+    company_source.is_active = True
+
+
+def provider_company_id_for(company: NormalizedCompanyEnrichment) -> str | None:
+    value = company.raw_provider_metadata.get("id")
+    return str(value).strip() if value not in (None, "") else None
+
+
+def primary_source_url_for(company: NormalizedCompanyEnrichment) -> str | None:
+    return company.website_url or company.linkedin_url or next(iter(company.source_urls), None)
 
 
 def build_candidate_company_metadata(

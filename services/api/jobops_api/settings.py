@@ -44,6 +44,10 @@ class Settings:
     theirstack_company_search_limit: int = 25
     theirstack_company_search_max_pages: int = 1
     theirstack_company_search_freshness_days: int = 30
+    theirstack_company_sync_freshness_hours: int = 168
+    theirstack_company_sync_results_per_page: int = 25
+    theirstack_company_sync_max_pages: int = 1
+    theirstack_company_sync_max_signatures_per_run: int = 25
     llm_request_timeout_seconds: float = 60
     internal_api_key: str | None = None
     cors_origins: tuple[str, ...] = ()
@@ -158,6 +162,22 @@ def load_settings(repo_root: Path | None = None) -> Settings:
         theirstack_company_search_freshness_days=parse_int(
             merged.get("JOBOPS_THEIRSTACK_COMPANY_SEARCH_FRESHNESS_DAYS"),
             default=30,
+        ),
+        theirstack_company_sync_freshness_hours=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SYNC_FRESHNESS_HOURS"),
+            default=168,
+        ),
+        theirstack_company_sync_results_per_page=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SYNC_RESULTS_PER_PAGE"),
+            default=25,
+        ),
+        theirstack_company_sync_max_pages=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_PAGES"),
+            default=1,
+        ),
+        theirstack_company_sync_max_signatures_per_run=parse_int(
+            merged.get("JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_SIGNATURES_PER_RUN"),
+            default=25,
         ),
         database_url=merged.get("DATABASE_URL"),
         repo_root=root,
