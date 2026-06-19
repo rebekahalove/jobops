@@ -2,7 +2,15 @@ import React from "react";
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AiCommandCenter, MarkdownMessage, buildCommandCenterClientContext, buildJobDiscoveryRunSummary, starterPrompts, type CommandMessage } from "./ai-command-center";
+import {
+  AiCommandCenter,
+  MarkdownMessage,
+  buildCommandCenterClientContext,
+  buildCompanyDiscoveryRunSummary,
+  buildJobDiscoveryRunSummary,
+  starterPrompts,
+  type CommandMessage
+} from "./ai-command-center";
 import {
   classifyCommand,
   createPlannedAction,
@@ -253,6 +261,19 @@ describe("AI command center", () => {
     expect(html).toContain('role="status"');
   });
 
+  it("wires command running state to a spinner, status note, and duplicate-run guard", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+    const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf-8");
+
+    expect(source).toContain("const isCommandRunning = isSubmitting || hasActiveDiscoveryRun");
+    expect(source).toContain("disabled={isCommandRunning}");
+    expect(source).toContain("className=\"jobops-inline-spinner\"");
+    expect(source).toContain("Keep this page open until discovery finishes.");
+    expect(source).toContain("finally {\n      setIsSubmitting(false);");
+    expect(css).toContain(".jobops-inline-spinner");
+    expect(css).toContain("animation: jobops-spin");
+  });
+
   it("renders jobs returned by a job-discovery result on the action card", () => {
     const html = renderToStaticMarkup(
       <AiCommandCenter
@@ -409,6 +430,16 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:companies-updated"');
   });
 
+  it("passes company diagnostics through the completion event", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("companyDiagnosticsFromAction(action)");
+    expect(source).toContain("payload.companyDiscoveryDiagnostics");
+    expect(source).toContain("diagnostics?.commandPreview");
+    expect(source).toContain("companyDiscoveryRunId: getCompanyDiscoveryDiagnosticsId(action)");
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:company-discovery-completed"');
+  });
+
   it("polls async job-discovery runs without replaying commands", async () => {
     const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
 
@@ -420,6 +451,19 @@ describe("AI command center", () => {
     expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:jobs-updated"');
     expect(source).toContain("without replaying the command");
     expect(source).toContain("clearStoredJobDiscoveryRunId(run.id)");
+  });
+
+  it("polls async company-discovery runs and updates the action card", async () => {
+    const source = await readFile(new URL("./ai-command-center.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain('const COMPANY_DISCOVERY_RUN_STORAGE_KEY = "jobops.activeCompanyDiscoveryRunId"');
+    expect(source).toContain("setActiveCompanyDiscoveryRunId(companyRunId)");
+    expect(source).toContain("storeCompanyDiscoveryRunId(companyRunId)");
+    expect(source).toContain('fetch(`${apiBasePath}/companies/discovery-runs/${encodeURIComponent(runId)}`');
+    expect(source).toContain("TERMINAL_COMPANY_DISCOVERY_RUN_STATUSES.has(run.status)");
+    expect(source).toContain("updateCompanyDiscoveryActionFromRun(run)");
+    expect(source).toContain("companyDiscoveryRunId: run.id");
+    expect(source).toContain("clearStoredCompanyDiscoveryRunId(run.id)");
   });
 
   it("warns before submitting duplicate job discovery while a run is active", async () => {
@@ -461,6 +505,27 @@ describe("AI command center", () => {
 
     expect(summary).toContain("none matched strongly enough to save");
     expect(summary).not.toContain("0 new job(s) saved");
+  });
+
+  it("summarizes running and completed company-discovery runs", () => {
+    expect(
+      buildCompanyDiscoveryRunSummary({
+        id: "company-run-running",
+        status: "running",
+        providerDiagnostics: [{ label: "Command router" }, { label: "TheirStack company search" }]
+      })
+    ).toContain("2 provider diagnostic rows");
+
+    expect(
+      buildCompanyDiscoveryRunSummary({
+        id: "company-run-complete",
+        status: "completed",
+        savedCompanyCount: 4,
+        linkedCompanyCount: 3,
+        duplicateCompanyCount: 2,
+        skippedCompanyCount: 1
+      })
+    ).toContain("4 saved");
   });
 
   it("returns from the stream as soon as an async result event is parsed", async () => {

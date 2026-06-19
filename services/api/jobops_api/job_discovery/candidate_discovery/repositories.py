@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ...db.models import CandidateJobRejectionReason, CandidateSavedJob, JobListing
+from ...db.models import CandidateJobRejectionReason, CandidateSavedJob, JobListing, JobListingSource
 from .models import JobReviewResult, RejectedJobDecision, SelectedJobDecision
 from .rejection_reasons import normalize_reason_codes, resettable_field_for_reason
 from .statuses import MODEL_REJECTED_STATUS, MODEL_REJECTION_RESET_STATUS
@@ -59,6 +59,11 @@ class CandidateJobRepository:
             "decision": "selected",
             "matchHighlights": list(decision.match_highlights),
         }
+        link.discovery_metadata = {
+            **(link.discovery_metadata or {}),
+            "source": "db_backed_job_discovery",
+            **self.provider_source_snapshot(decision.job_listing_id),
+        }
         link.last_model_reviewed_at = now
         link.model_selected_at = now
         link.model_rejected_at = None
@@ -66,6 +71,33 @@ class CandidateJobRepository:
         deactivate_reasons(link, reset_reason="Selected by model.", reset_by="model")
         self.session.flush()
         return link
+
+    def provider_source_snapshot(self, job_listing_id: str) -> dict[str, str | None]:
+        source = self.session.scalar(
+            select(JobListingSource)
+            .where(
+                JobListingSource.job_listing_id == job_listing_id,
+                JobListingSource.is_active.is_(True),
+                JobListingSource.last_seen_at.is_not(None),
+            )
+            .order_by(JobListingSource.last_seen_at.desc().nullslast(), JobListingSource.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        if source is None:
+            job = self.session.get(JobListing, job_listing_id)
+            return {
+                "jobListingId": job_listing_id,
+                "sourceProvider": None,
+                "sourceUrl": job.source_url if job is not None else None,
+                "fetchedAt": job.last_seen_at.isoformat() if job is not None and job.last_seen_at else None,
+            }
+        return {
+            "jobListingId": job_listing_id,
+            "sourceProvider": source.source_provider,
+            "sourceUrl": source.source_url or source.apply_url or source.canonical_url,
+            "sourceResultId": source.source_result_id,
+            "fetchedAt": source.last_seen_at.isoformat() if source.last_seen_at else None,
+        }
 
     def mark_rejected(
         self,

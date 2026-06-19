@@ -456,6 +456,20 @@ describe("Jobs list", () => {
               status: "planned",
               modelUsed: true,
               planningFailed: false,
+              providerConsiderations: [
+                {
+                  providerName: "theirstack",
+                  providerRole: "company_hiring_signal_source",
+                  available: true,
+                  consideredForFreshDiscovery: true,
+                  selectedForFreshDiscovery: true,
+                  called: false,
+                  status: "skipped",
+                  skippedReason: "theirstack_is_company_hiring_signal_source_not_canonical_job_detail_source",
+                  resultSummary:
+                    "TheirStack may identify hiring companies and ATS boards; JobOps saves jobs only after first-party or job-provider confirmation."
+                }
+              ],
               plannedSyncSignatures: [
                 {
                   id: "sig-1",
@@ -489,11 +503,22 @@ describe("Jobs list", () => {
               runs: [
                 {
                   syncKey: "adzuna:broad:gb:remote-uk:ai",
+                  providerName: "adzuna",
                   status: "completed",
                   raw: 50,
                   normalized: 49,
                   created: 12,
                   updated: 37
+                },
+                {
+                  syncKey: "adzuna:broad:gb:remote-ai-fail",
+                  providerName: "adzuna",
+                  status: "failed",
+                  raw: 0,
+                  normalized: 0,
+                  created: 0,
+                  updated: 0,
+                  error: "provider unavailable"
                 }
               ]
             },
@@ -517,7 +542,11 @@ describe("Jobs list", () => {
 
     expect(html).toContain("Job Sync");
     expect(html).toContain("Planner");
+    expect(html).toContain("theirstack");
+    expect(html).toContain("Company hiring signal source");
+    expect(html).toContain("Theirstack is company hiring signal source not canonical job detail source");
     expect(html).toContain("adzuna:broad:gb:remote-uk:ai");
+    expect(html).toContain("provider unavailable");
     expect(html).toContain("Model-planned AI/software search");
     expect(html).toContain("AI, Engineer");
     expect(html).toContain("Database queries");

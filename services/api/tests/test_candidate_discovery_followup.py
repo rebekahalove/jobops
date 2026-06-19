@@ -21,12 +21,13 @@ from jobops_api.job_discovery.candidate_discovery.models import (
     RejectedJobDecision,
     SelectedJobDecision,
 )
+from jobops_api.job_discovery.candidate_discovery.diagnostics import build_candidate_discovery_diagnostics, format_candidate_discovery_diagnostics
 from jobops_api.job_discovery.candidate_discovery.planner import DbJobSearchPlanner, DbJobSearchPlanningError, parse_db_search_plan
 from jobops_api.job_discovery.candidate_discovery.prompts import DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT, DB_JOB_SEARCH_PLANNER_SYSTEM_PROMPT
 from jobops_api.job_discovery.candidate_discovery.query_builder import JobListingQueryBuilder
 from jobops_api.job_discovery.candidate_discovery.repositories import CandidateJobRepository, ModelRejectionService
 from jobops_api.job_discovery.candidate_discovery.reviewer import JobReviewSelector, validate_review_result
-from jobops_api.job_discovery.candidate_discovery.service import CandidateJobDiscoveryService
+from jobops_api.job_discovery.candidate_discovery.service import CandidateJobDiscoveryService, build_theirstack_provider_consideration
 from jobops_api.job_discovery.models import JobDiscoveryRequest
 from jobops_api.job_discovery.service import build_db_backed_job_discovery_result, list_jobs, serialize_job_search_run_status
 from jobops_api.job_discovery.job_sync.models import JobSyncRequest, JobSyncResult
@@ -69,8 +70,14 @@ def test_planner_prompt_contains_broadening_and_override_instructions() -> None:
     assert "missing_followed_company_board_sync" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
     assert "new_job_discovery" in prompt
     assert "Do not call job results \"candidates.\"" in prompt
+    assert "For model-grounded discovery, you must ground recommendations in fresh provider or web search results from this run" in prompt
+    assert "Prefer TheirStack for fresh" in prompt
+    assert "company hiring/job discovery when available" in prompt
+    assert "If no fresh source confirms the job is currently" in prompt
+    assert "available, do not save it" in prompt
     assert "Return JSON only" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
     assert "correctedPlan" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
+    assert "prior model knowledge, or stale history" in DB_JOB_SEARCH_PLAN_CRITIC_SYSTEM_PROMPT
 
 
 def test_db_planner_without_connector_fails_without_deterministic_terms(tmp_path) -> None:
@@ -1604,6 +1611,56 @@ class UnknownIdReviewer:
         )
 
 
+def test_theirstack_consideration_is_visible_for_fresh_job_discovery(tmp_path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        theirstack_api_key="their-stack-test-key",
+        theirstack_company_search_enabled=True,
+    )
+    plan = DbJobSearchPlan(mode="new_job_discovery", job_scope="new_to_candidate")
+    row = build_theirstack_provider_consideration(
+        settings,
+        request=JobDiscoveryRequest(latest_user_message="Find fresh companies hiring AI engineers.", candidate_profile_slug="rebekah-love"),
+        plan=plan,
+        called=False,
+    )
+    diagnostics = {
+        "planner": {"providerConsiderations": [row]},
+        "jobSync": {"runs": []},
+        "databaseQueries": {"queries": []},
+        "modelReview": {},
+    }
+
+    assert row["available"] is True
+    assert row["consideredForFreshDiscovery"] is True
+    assert row["selectedForFreshDiscovery"] is True
+    assert row["called"] is False
+    assert row["skippedReason"] == "theirstack_is_company_hiring_signal_source_not_canonical_job_detail_source"
+    assert "Provider theirstack - skipped" in format_candidate_discovery_diagnostics(diagnostics)
+
+
+def test_provider_failure_error_is_in_discovery_diagnostics() -> None:
+    diagnostics = build_candidate_discovery_diagnostics(
+        job_sync_results=(
+            JobSyncResult(
+                request=JobSyncRequest(sync_key="adzuna:test", provider_name="adzuna", provider_type="broad_search", sync_kind="broad_search"),
+                status="failed",
+                error="provider unavailable",
+            ),
+        ),
+        query_counts=(),
+        unique_job_pool_count=0,
+        jobs_reviewed_count=0,
+        added_count=0,
+        rejected_count=0,
+        rejection_reason_counts={},
+    )
+
+    assert diagnostics["jobSync"]["failedCount"] == 1
+    assert diagnostics["jobSync"]["runs"][0]["error"] == "provider unavailable"
+    assert "error=provider unavailable" in format_candidate_discovery_diagnostics(diagnostics)
+
+
 class ProposedAdzunaPlanner:
     def plan(self, *args, **kwargs) -> DbJobSearchPlan:
         return DbJobSearchPlan(
@@ -1635,6 +1692,58 @@ class SelectFirstReviewer:
             selected_jobs=(SelectedJobDecision(job_listing_id=job_pool[0].job_listing_id, rationale="Strong match."),),
             diagnostics={"modelReviewCompleted": True},
         )
+
+
+def test_model_only_job_listing_without_fresh_provider_source_is_not_saved(tmp_path) -> None:
+    engine = create_candidate_discovery_engine()
+    with Session(engine) as session:
+        profile = create_candidate_profile(session)
+        stale_model_only = JobListing(
+            title="Model Memory AI Engineer",
+            company_name="Unverified Co",
+            canonical_url="https://example.test/model-memory",
+            apply_url="https://example.test/model-memory/apply",
+            source_url="https://example.test/model-memory",
+            location_display="Remote US",
+            location_country="us",
+            remote_work_mode="remote",
+            employment_type="full_time",
+            description_excerpt="This row has no provider source.",
+            source_status="active",
+            is_active=True,
+            last_seen_at=datetime.now(UTC),
+            source_updated_at=datetime.now(UTC),
+        )
+        session.add(stale_model_only)
+        fresh_provider_job = create_job_listing(session, title="Fresh Provider AI Engineer", provider="adzuna", provider_job_id="fresh-provider")
+        fresh_provider_job_id = fresh_provider_job.id
+        fresh_provider_job_source_url = fresh_provider_job.source_url
+        session.commit()
+
+        service = NoSyncCandidateJobDiscoveryService(
+            session=session,
+            settings=make_settings(tmp_path),
+            planner=StaticPlanner(),
+            reviewer=SelectFirstReviewer(),
+        )
+        result = service.run(
+            JobDiscoveryRequest(latest_user_message="Find fresh AI jobs.", candidate_profile_slug=profile.slug),
+            candidate_profile=profile,
+            current_saved_jobs=[],
+            current_saved_companies=[],
+            target_context={},
+            private_profile_context={},
+        )
+        session.commit()
+        saved = list(session.scalars(select(CandidateSavedJob)).all())
+        saved_listing_ids = [link.job_listing_id for link in saved]
+        saved_metadata = [dict(link.discovery_metadata or {}) for link in saved]
+
+    assert result.unique_job_pool_count == 1
+    assert saved_listing_ids == [fresh_provider_job_id]
+    assert saved_metadata[0]["sourceProvider"] == "adzuna"
+    assert saved_metadata[0]["sourceUrl"] == fresh_provider_job_source_url
+    assert saved_metadata[0]["fetchedAt"]
 
 
 class CriticCorrectsConnector:

@@ -47,6 +47,8 @@ class JobListingQueryBuilder:
 
         if query.active_only:
             statement = statement.where(JobListing.is_active.is_(True), JobListing.closed_at.is_(None))
+        if review_task != "rank_existing_jobs":
+            statement = statement.where(fresh_provider_source_exists(query))
         if query.source_statuses_any:
             statement = statement.where(JobListing.source_status.in_(query.source_statuses_any))
         statement = apply_text_filters(statement, JobListing.title, query.title_terms_any, any_match=True)
@@ -136,6 +138,30 @@ class JobListingQueryBuilder:
 
 def requires_source_join(query: DbJobSearchQuery) -> bool:
     return bool(query.source_providers_any or query.ats_board_tokens_any)
+
+
+def fresh_provider_source_exists(query: DbJobSearchQuery):
+    cutoff = query.last_seen_after
+    if cutoff is None and query.freshness_days:
+        cutoff = datetime.now(UTC) - timedelta(days=max(1, query.freshness_days))
+
+    source_exists = exists().where(
+        JobListingSource.job_listing_id == JobListing.id,
+        JobListingSource.is_active.is_(True),
+        JobListingSource.last_seen_at.is_not(None),
+        or_(
+            JobListingSource.source_url.is_not(None),
+            JobListingSource.apply_url.is_not(None),
+            JobListingSource.canonical_url.is_not(None),
+        ),
+    )
+    if cutoff is not None:
+        source_exists = source_exists.where(JobListingSource.last_seen_at >= cutoff)
+    if query.source_providers_any:
+        source_exists = source_exists.where(JobListingSource.source_provider.in_(query.source_providers_any))
+    if query.ats_board_tokens_any:
+        source_exists = source_exists.where(JobListingSource.ats_board_token.in_(query.ats_board_tokens_any))
+    return source_exists.correlate(JobListing)
 
 
 def apply_text_filters(statement, column, terms: tuple[str, ...], *, any_match: bool):

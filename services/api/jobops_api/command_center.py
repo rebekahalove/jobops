@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -15,6 +16,13 @@ from sqlalchemy.orm import Session
 
 from .auth import AuthContext, require_auth_context
 from .company_discovery import CompanyDiscoveryRequest, run_company_discovery
+from .company_discovery_diagnostics import (
+    complete_company_discovery_run,
+    fail_company_discovery_run,
+    record_company_discovery_provider_call,
+    serialize_company_discovery_run_status,
+    start_company_discovery_run,
+)
 from .company_update import CompanyUpdateRequest, run_company_update
 from .command_center_guidance import CommandCenterGuidanceRequest, run_command_center_guidance
 from .command_router import (
@@ -23,8 +31,8 @@ from .command_router import (
     RouterActionType,
     run_command_router,
 )
-from .db.models import CandidateProfile, CommandInteractionLog
-from .db.session import get_db_session
+from .db.models import CandidateProfile, CommandInteractionLog, CompanyDiscoveryRun
+from .db.session import create_session_factory, get_db_session
 from .job_discovery import JobDiscoveryRequest, run_job_discovery, start_job_discovery_run
 from .profile_intake import ProfileIntakeExtractRequest, run_profile_intake_extraction
 from .profile_intake.persistence import get_latest_profile_draft_snapshot
@@ -340,6 +348,7 @@ def stream_command_center_command(
                         session=session,
                         settings=settings,
                         background_tasks=background_tasks,
+                        defer_company_discovery=True,
                     )
                 else:
                     response = clarifying_router_response(router_result.decision, router_result.body)
@@ -410,6 +419,7 @@ def stream_command_center_command(
                         session=session,
                         settings=settings,
                         background_tasks=background_tasks,
+                        defer_company_discovery=True,
                     )
 
             if status_update is None:
@@ -489,6 +499,7 @@ def dispatch_command_center_action(
     session: Session,
     settings,
     background_tasks: BackgroundTasks | None = None,
+    defer_company_discovery: bool = False,
 ) -> CommandCenterCommandResponse:
     interpreted_action = normalize_dispatch_action(action_type)
 
@@ -513,6 +524,9 @@ def dispatch_command_center_action(
             session=session,
             settings=settings,
             router_payload=router_payload,
+            router_decision=router_decision,
+            background_tasks=background_tasks,
+            defer_to_background=defer_company_discovery,
         )
 
     if interpreted_action == "job_discovery":
@@ -730,7 +744,83 @@ def execute_company_discovery_command(
     session: Session,
     settings,
     router_payload: dict[str, Any] | None = None,
+    router_decision: CommandRouterOutput | None = None,
+    background_tasks: BackgroundTasks | None = None,
+    defer_to_background: bool = False,
 ) -> CommandCenterCommandResponse:
+    router_action = normalize_dispatch_action(router_decision.action_type) if router_decision is not None else "company_discovery"
+    router_confidence = router_decision.confidence if router_decision is not None else None
+    target_workspace = (router_decision.target_workspace if router_decision is not None else None) or "companies"
+    company_discovery_run = start_company_discovery_run(
+        session,
+        candidate_profile_id=candidate_profile.id,
+        command_text=request.command,
+        router_action=router_action,
+        router_confidence=router_confidence,
+        target_workspace=target_workspace,
+    )
+    record_company_discovery_provider_call(
+        session,
+        company_discovery_run_id=company_discovery_run.id,
+        stage="router",
+        provider="command_router",
+        status="completed",
+        label="Command router",
+        request_summary={
+            "activeWorkspace": request.active_workspace or "unknown",
+            "commandLength": len(request.command),
+        },
+        result_summary={
+            "actionType": router_action,
+            "confidence": router_confidence,
+            "targetWorkspace": target_workspace,
+        },
+    )
+    session.commit()
+    if defer_to_background and background_tasks is not None:
+        background_tasks.add_task(
+            run_company_discovery_background,
+            company_discovery_run.id,
+            candidate_profile.id,
+            {
+                "latest_user_message": request.command,
+                "candidate_profile_slug": candidate_slug,
+            },
+        )
+        serialized_run = serialize_company_discovery_run_status(company_discovery_run)
+        result_payload = {
+            "ok": True,
+            "async": True,
+            "companyDiscoveryRunId": company_discovery_run.id,
+            "status": company_discovery_run.status if company_discovery_run.status in {"queued", "running", "started"} else "running",
+            "companyDiscoveryDiagnostics": serialized_run,
+            **router_debug_payload(router_payload),
+        }
+        return CommandCenterCommandResponse(
+            assistant_message="Company discovery started. I will update this card when the saved company results are ready.",
+            actions=[
+                CommandCenterActionResult(
+                    type="company_discovery",
+                    status="running",
+                    targetWorkspace="companies",
+                    title="Discover companies",
+                    summary="Company discovery is running. JobOps will refresh Companies when the run completes.",
+                    resultPayload=result_payload,
+                )
+            ],
+            target_workspace="companies",
+            result_payload=result_payload,
+            statusUpdates=[
+                CommandCenterStatusUpdate(
+                    stage="company_discovery",
+                    message="Status update: company discovery started in the background.",
+                    actionType="company_discovery",
+                    confidence=None,
+                    targetWorkspace="companies",
+                )
+            ],
+        )
+
     discovery_result = run_company_discovery(
         CompanyDiscoveryRequest(
             latest_user_message=request.command,
@@ -739,10 +829,18 @@ def execute_company_discovery_command(
         db_session=session,
         settings=settings,
         candidate_profile=candidate_profile,
+        company_discovery_run_id=company_discovery_run.id,
     )
+    serialized_run = serialize_company_discovery_run_status(company_discovery_run)
 
     if discovery_result.status_code != 200 or not discovery_result.body.get("ok"):
         error_message = discovery_result.body.get("error", "Company discovery failed. No companies were saved.")
+        result_payload = {
+            **discovery_result.body,
+            "companyDiscoveryRunId": company_discovery_run.id,
+            "companyDiscoveryDiagnostics": serialized_run,
+            **router_debug_payload(router_payload),
+        }
         return CommandCenterCommandResponse(
             assistant_message=error_message,
             actions=[
@@ -752,14 +850,19 @@ def execute_company_discovery_command(
                     targetWorkspace="companies",
                     title="Discover companies",
                     summary=error_message,
-                    resultPayload={**discovery_result.body, **router_debug_payload(router_payload)},
+                    resultPayload=result_payload,
                 )
             ],
             target_workspace="companies",
-            result_payload={**discovery_result.body, **router_debug_payload(router_payload)},
+            result_payload=result_payload,
         )
 
-    result_payload = {**discovery_result.body["result"], **router_debug_payload(router_payload)}
+    result_payload = {
+        **discovery_result.body["result"],
+        "companyDiscoveryRunId": company_discovery_run.id,
+        "companyDiscoveryDiagnostics": serialized_run,
+        **router_debug_payload(router_payload),
+    }
     added_count = len(result_payload.get("companies") or [])
     assistant_message = result_payload.get("assistantMessage") or (
         f"Added {added_count} model-derived companies. Please verify them from their source links."
@@ -784,6 +887,87 @@ def execute_company_discovery_command(
         target_workspace="companies",
         result_payload=result_payload,
     )
+
+
+def run_company_discovery_background(
+    run_id: str,
+    candidate_profile_id: str,
+    request_payload: dict[str, Any],
+    *,
+    session_factory: Callable[[], Session] | None = None,
+) -> None:
+    factory = session_factory or create_session_factory()
+    with factory() as session:
+        run = session.get(CompanyDiscoveryRun, run_id)
+        candidate_profile = session.get(CandidateProfile, candidate_profile_id)
+        if run is None or candidate_profile is None or run.candidate_profile_id != candidate_profile.id:
+            return
+        settings = load_settings()
+        run.status = "running"
+        run.started_at = run.started_at or datetime.now(timezone.utc)
+        run.error = None
+        session.commit()
+        logger.warning(
+            "Async company discovery run started: %s",
+            json.dumps(
+                {
+                    "candidateProfileId": candidate_profile.id,
+                    "runId": run.id,
+                    "status": run.status,
+                },
+                sort_keys=True,
+            ),
+        )
+        try:
+            result = run_company_discovery(
+                CompanyDiscoveryRequest(**request_payload),
+                db_session=session,
+                settings=settings,
+                candidate_profile=candidate_profile,
+                company_discovery_run_id=run.id,
+            )
+            session.commit()
+            refreshed_run = session.get(CompanyDiscoveryRun, run.id)
+            if refreshed_run is not None and refreshed_run.status not in {"completed", "failed", "needs_confirmation"}:
+                if result.status_code == 200 and result.body.get("ok"):
+                    complete_company_discovery_run(session, refreshed_run.id)
+                else:
+                    fail_company_discovery_run(
+                        session,
+                        refreshed_run.id,
+                        error=str(result.body.get("error") or "Company discovery did not complete."),
+                    )
+                session.commit()
+            logger.warning(
+                "Async company discovery run completed: %s",
+                json.dumps(
+                    {
+                        "candidateProfileId": candidate_profile.id,
+                        "runId": run.id,
+                        "status": session.get(CompanyDiscoveryRun, run.id).status if session.get(CompanyDiscoveryRun, run.id) is not None else None,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception as error:
+            session.rollback()
+            fail_company_discovery_run(
+                session,
+                run_id,
+                error=str(error)[:500] or type(error).__name__,
+            )
+            session.commit()
+            logger.exception(
+                "Async company discovery run failed: %s",
+                json.dumps(
+                    {
+                        "candidateProfileId": candidate_profile_id,
+                        "errorType": type(error).__name__,
+                        "runId": run_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
 
 
 def execute_job_discovery_command(

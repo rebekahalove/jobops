@@ -18,11 +18,14 @@ def build_candidate_discovery_diagnostics(
     sync_runs = [
         {
             "syncKey": getattr(result.request, "sync_key", None),
+            "providerName": getattr(result.request, "provider_name", None),
+            "providerType": getattr(result.request, "provider_type", None),
             "status": result.status,
             "raw": result.raw_result_count,
             "normalized": result.normalized_count,
             "created": result.created_count,
             "updated": result.updated_count,
+            "error": getattr(result, "error", None),
         }
         for result in job_sync_results
     ]
@@ -109,6 +112,14 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
             f"country={item.get('providerCountry') or '-'} where={item.get('providerWhere') or '-'} "
             f"pages={item.get('maxPages') or '-'}"
         )
+    for item in planner.get("providerConsiderations", []) if isinstance(planner.get("providerConsiderations"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- Provider {item.get('providerName') or '-'} - {item.get('status') or 'unknown'} - "
+            f"available={item.get('available')} selected={item.get('selectedForFreshDiscovery')} "
+            f"called={item.get('called')} reason={item.get('skippedReason') or item.get('resultSummary') or '-'}"
+        )
     for item in planner.get("plannedDbQueries", []) if isinstance(planner.get("plannedDbQueries"), list) else []:
         if not isinstance(item, dict):
             continue
@@ -126,11 +137,14 @@ def format_candidate_discovery_diagnostics(diagnostics: dict[str, Any]) -> str:
     job_sync = diagnostics.get("jobSync", {})
     job_sync_rows = job_sync.get("runs", []) if isinstance(job_sync, dict) else job_sync
     for item in job_sync_rows:
-        lines.append(
+        sync_line = (
             f"- {item.get('syncKey') or '-'} - {item.get('status')} "
             f"raw={item.get('raw', 0)} normalized={item.get('normalized', 0)} "
             f"created={item.get('created', 0)} updated={item.get('updated', 0)}"
         )
+        if item.get("error"):
+            sync_line = f"{sync_line} error={item.get('error')}"
+        lines.append(sync_line)
     lines.append("")
     lines.append("Database queries")
     database_queries = diagnostics.get("databaseQueries", {})

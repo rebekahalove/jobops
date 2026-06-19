@@ -58,7 +58,7 @@ class CandidateJobDiscoveryService:
             command_text=request.latest_user_message,
             job_search_run_id=job_search_run_id,
         )
-        self.mark_planning_started(run)
+        self.mark_planning_started(run, request)
         inventory_context = self.build_planner_inventory_context(current_saved_jobs=current_saved_jobs)
         try:
             plan = self.plan_with_model_critique(
@@ -114,7 +114,7 @@ class CandidateJobDiscoveryService:
                 self.persist_db_query_runs(run.id, plan.queries, query_counts, deduped_count=len(job_listings))
             except DbJobSearchPlanningError as exc:
                 return self.complete_planning_failure_run(run, exc)
-        planner_diagnostics = self.build_planner_diagnostics(plan, job_sync_results)
+        planner_diagnostics = self.build_planner_diagnostics(plan, job_sync_results, request=request)
         if planning_corrections:
             planner_diagnostics["inputCapCorrections"] = planning_corrections
         pool_entries = self.build_pool_entries(job_listings, candidate_profile_id=candidate_profile.id)
@@ -405,7 +405,7 @@ class CandidateJobDiscoveryService:
             result_replan_reason=str(execution_facts.get("reason") or "pool_size"),
         )
 
-    def mark_planning_started(self, run: JobSearchRun) -> None:
+    def mark_planning_started(self, run: JobSearchRun, request: JobDiscoveryRequest) -> None:
         run.search_mode = "db_backed"
         run.provider_names = ["model_planner"]
         run.status = "running"
@@ -416,6 +416,14 @@ class CandidateJobDiscoveryService:
                 "status": "running",
                 "modelUsed": True,
                 "planningFailed": False,
+                "providerConsiderations": [
+                    build_theirstack_provider_consideration(
+                        self.settings,
+                        request=request,
+                        plan=None,
+                        called=False,
+                    )
+                ],
             },
             "jobSync": {"runs": [], "runCount": 0, "rawResultCount": 0, "normalizedCount": 0, "createdCount": 0, "updatedCount": 0, "completedCount": 0, "failedCount": 0},
             "databaseQueries": {"queries": [], "uniqueJobPoolCount": 0, "totalRowsMatched": 0},
@@ -630,7 +638,7 @@ class CandidateJobDiscoveryService:
             },
         }
 
-    def build_planner_diagnostics(self, plan: DbJobSearchPlan, job_sync_results: list[Any]) -> dict[str, Any]:
+    def build_planner_diagnostics(self, plan: DbJobSearchPlan, job_sync_results: list[Any], *, request: JobDiscoveryRequest) -> dict[str, Any]:
         results_by_signature_id = {
             result.request.job_sync_signature_id: result
             for result in job_sync_results
@@ -674,6 +682,14 @@ class CandidateJobDiscoveryService:
             "resultReplanReason": plan.result_replan_reason,
             "plannedSyncSignatures": [serialize_signature_for_diagnostics(signatures.get(signature_id), results_by_signature_id.get(signature_id), action=proposed_actions.get(signature_id, "updated")) for signature_id in proposed_ids if signatures.get(signature_id)],
             "existingSyncSignaturesSelected": [serialize_signature_for_diagnostics(signatures.get(signature_id), results_by_signature_id.get(signature_id), action="reused") for signature_id in existing_ids if signatures.get(signature_id)],
+            "providerConsiderations": [
+                build_theirstack_provider_consideration(
+                    self.settings,
+                    request=request,
+                    plan=plan,
+                    called=False,
+                )
+            ],
             "plannedDbQueries": [serialize_query_for_diagnostics(query) for query in plan.queries],
         }
 
@@ -781,6 +797,11 @@ def serialize_plan(plan: DbJobSearchPlan) -> dict[str, Any]:
             "existingAdzunaSignatureIdsToRefresh": list(plan.existing_adzuna_signature_ids_to_refresh),
             "rationale": plan.sync_plan_rationale,
         },
+        "providerPlan": {
+            "jobDetailProviders": ["greenhouse", "ashby", "adzuna"],
+            "companyHiringSignalProviders": ["theirstack"],
+            "notes": "JobOps may consider TheirStack for fresh company hiring signals, but saves jobs only from first-party or job-detail provider results.",
+        },
         "dbSearchPlan": {
             "queries": [json_safe(asdict(query)) for query in plan.queries],
         },
@@ -802,6 +823,69 @@ def serialize_plan(plan: DbJobSearchPlan) -> dict[str, Any]:
         "finalPlanStatus": plan.final_plan_status,
         "resultReplanCount": plan.result_replan_count,
         "resultReplanReason": plan.result_replan_reason,
+    }
+
+
+def build_theirstack_provider_consideration(
+    settings: Settings,
+    *,
+    request: JobDiscoveryRequest,
+    plan: DbJobSearchPlan | None,
+    called: bool,
+) -> dict[str, Any]:
+    enabled = bool(settings.theirstack_company_search_enabled)
+    has_api_key = bool(settings.theirstack_api_key)
+    available = enabled and has_api_key
+    message = request.latest_user_message.casefold()
+    explicit_other_provider = any(provider in message for provider in ("adzuna", "greenhouse", "ashby")) and "theirstack" not in message
+    fresh_discovery_mode = plan is None or plan.mode in {"new_job_discovery", "mixed_new_and_existing"}
+    fresh_intent = fresh_discovery_mode or any(
+        phrase in message
+        for phrase in (
+            "fresh",
+            "new job",
+            "new jobs",
+            "hiring",
+            "actively hiring",
+            "company",
+            "companies",
+            "role discovery",
+        )
+    )
+    considered = fresh_intent and not explicit_other_provider
+    selected_for_fresh_discovery = considered and available
+    if not considered:
+        status = "skipped"
+        skipped_reason = "explicit_other_provider_requested" if explicit_other_provider else "not_fresh_discovery_request"
+    elif not enabled:
+        status = "unavailable"
+        skipped_reason = "theirstack_company_search_disabled"
+    elif not has_api_key:
+        status = "unavailable"
+        skipped_reason = "missing_theirstack_api_key"
+    elif called:
+        status = "called"
+        skipped_reason = None
+    else:
+        status = "skipped"
+        skipped_reason = "theirstack_is_company_hiring_signal_source_not_canonical_job_detail_source"
+    return {
+        "providerName": "theirstack",
+        "providerRole": "company_hiring_signal_source",
+        "registeredAsJobDetailProvider": False,
+        "registeredAsCompanyDiscoveryProvider": True,
+        "available": available,
+        "enabled": enabled,
+        "hasApiKey": has_api_key,
+        "consideredForFreshDiscovery": considered,
+        "selectedForFreshDiscovery": selected_for_fresh_discovery,
+        "selectedByPlanner": False,
+        "called": called,
+        "status": status,
+        "skippedReason": skipped_reason,
+        "resultSummary": (
+            "TheirStack may identify hiring companies and ATS boards; JobOps saves jobs only after first-party or job-provider confirmation."
+        ),
     }
 
 

@@ -3,6 +3,7 @@ import {
   redirectResponse,
   resolveSafeDashboardReturnTo
 } from "../../../../lib/dashboard-auth";
+import { normalizeProxiedSetCookieForRequest } from "../../../../lib/session-cookie";
 
 export const runtime = "nodejs";
 
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
     },
     status: 303
   });
-  response.headers.append("Set-Cookie", backendSession.setCookie);
+  response.headers.append("Set-Cookie", normalizeProxiedSetCookieForRequest(backendSession.setCookie, request));
   return response;
 }
 

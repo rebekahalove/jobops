@@ -153,6 +153,22 @@ export type JobSearchRunDiagnostics = {
     finalPlanStatus?: string | null;
     resultReplanCount?: number | null;
     resultReplanReason?: string | null;
+    providerConsiderations?: Array<{
+      providerName?: string | null;
+      providerRole?: string | null;
+      registeredAsJobDetailProvider?: boolean;
+      registeredAsCompanyDiscoveryProvider?: boolean;
+      available?: boolean;
+      enabled?: boolean;
+      hasApiKey?: boolean;
+      consideredForFreshDiscovery?: boolean;
+      selectedForFreshDiscovery?: boolean;
+      selectedByPlanner?: boolean;
+      called?: boolean;
+      status?: string | null;
+      skippedReason?: string | null;
+      resultSummary?: string | null;
+    }>;
     plannedSyncSignatures?: JobSearchPlannerSyncSignature[];
     existingSyncSignaturesSelected?: JobSearchPlannerSyncSignature[];
     plannedDbQueries?: Array<{
@@ -193,6 +209,9 @@ export type JobSearchRunDiagnostics = {
       created?: number | null;
       updated?: number | null;
       failed?: number | null;
+      providerName?: string | null;
+      providerType?: string | null;
+      error?: string | null;
     }>;
     runCount?: number;
     rawResultCount?: number;
@@ -314,6 +333,82 @@ export type JobSearchProviderDiagnostic = {
   errorSummary?: string | null;
   searchMode?: string | null;
   reason?: string | null;
+};
+
+export type CompanyDiscoveryProviderDiagnostic = {
+  stage?: string | null;
+  provider?: string | null;
+  status?: string | null;
+  label?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  requestSummary?: Record<string, unknown> | null;
+  resultSummary?: Record<string, unknown> | null;
+  error?: string | Record<string, unknown> | null;
+};
+
+export type CompanyDiscoveryDiagnosticsStatus = {
+  id: string;
+  status: "completed" | "failed" | "running" | "unknown" | string;
+  createdAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  commandPreview?: string | null;
+  sourcePath?: string | null;
+  routerAction?: string | null;
+  routerConfidence?: string | null;
+  companyDiscoveryPreflightBlocked?: boolean;
+  preflightReason?: string | null;
+  sourceProvider?: string | null;
+  searchGroundingEnabled?: boolean | null;
+  modelProvider?: string | null;
+  modelName?: string | null;
+  savedCompanyCount?: number;
+  linkedCompanyCount?: number;
+  duplicateCompanyCount?: number;
+  skippedCompanyCount?: number;
+  zeroNewCompanyReason?: string | null;
+  searchQueriesUsed?: string[];
+  discoveryAngles?: string[];
+  theirStack?: {
+    checked?: boolean;
+    enabled?: boolean;
+    used?: boolean;
+    skippedReason?: string | null;
+    requestShape?: Record<string, unknown>;
+    requestedPages?: number;
+    fetchedPages?: number;
+    failedPages?: number;
+    skippedPages?: number;
+    rawCompanyCount?: number;
+    normalizedCompanyCount?: number;
+    upsertedCompanyCount?: number;
+    linkedCandidateCompanyCount?: number;
+    errorType?: string | null;
+    errorMessage?: string | null;
+  };
+  firstPartySync?: {
+    attempted?: boolean;
+    providers?: string[];
+    greenhouseBoardsSelected?: string[];
+    greenhouseBoardsSynced?: string[];
+    ashbyBoardsSelected?: string[];
+    ashbyBoardsSynced?: string[];
+    completedCount?: number;
+    failedCount?: number;
+    normalizedJobCount?: number;
+  };
+  providerDiagnostics?: CompanyDiscoveryProviderDiagnostic[];
+  companies?: Array<{
+    name?: string | null;
+    discoverySource?: string | null;
+    dataOriginSource?: string | null;
+    dataOriginSourceType?: string | null;
+    greenhouseBoardToken?: string | null;
+    ashbyBoardUrl?: string | null;
+    jobsFoundSignal?: number | null;
+  }>;
+  diagnosticMessages?: string[];
 };
 
 export type CommandCenterProxyResponse =

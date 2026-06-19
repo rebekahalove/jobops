@@ -142,6 +142,11 @@ def test_disabled_theirstack_plan_returns_unavailable_without_client_call(tmp_pa
 
     assert result.handled is True
     assert result.body["result"]["zeroResultReason"] == "clarificationNeeded"
+    provider_rows = result.body["result"]["providerDiagnostics"]
+    assert any(row["stage"] == "planner" for row in provider_rows)
+    theirstack_row = next(row for row in provider_rows if row["provider"] == "theirstack")
+    assert theirstack_row["status"] == "skipped"
+    assert theirstack_row["resultSummary"]["unavailable"] is True
     assert client.requests == []
 
 
@@ -241,6 +246,11 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert payload["ashbyBoardUrlCount"] == 1
         assert payload["leverSlugCount"] == 1
         assert payload["requiresFirstPartySyncForVerification"] is True
+        theirstack_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "theirstack")
+        assert theirstack_row["stage"] == "company_source"
+        assert theirstack_row["status"] == "completed"
+        assert theirstack_row["resultSummary"]["rawCompanyCount"] == 3
+        assert theirstack_row["resultSummary"]["linkedCandidateCompanyCount"] == 3
         assert "TheirStack returned" in payload["assistantMessage"]
         assert "not synced those boards yet" in payload["assistantMessage"]
         assert len(session.scalars(select(Company)).all()) == 3
@@ -248,6 +258,52 @@ def test_model_planned_theirstack_enrichment_links_companies_and_reports_ats_cou
         assert len(session.scalars(select(JobListing)).all()) == 0
         assert len(session.scalars(select(CandidateSavedJob)).all()) == 0
         assert len(session.scalars(select(JobSyncRun)).all()) == 0
+
+
+def test_theirstack_discovery_audit_sanitizes_sensitive_request_shape_keys(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    client = SensitiveRequestShapeTheirStackClient(
+        [theirstack_payload("Greenhouse Co", domain="greenhouse.example", job_url="https://job-boards.greenhouse.io/greenhouseco/jobs/1")]
+    )
+    with Session(engine) as session:
+        profile = command_center_module.get_candidate_profile_by_slug(session, "rebekah-love")
+        assert profile is not None
+        service = ModelPlannedCompanyEnrichmentService(
+            session=session,
+            settings=make_settings(tmp_path),
+            connector=StaticPlanConnector(
+                theirstack_plan(
+                    {"jobFilters": {"job_title_pattern_or": ["Product Marketing Manager"]}},
+                    terms=["Product Marketing Manager"],
+                )
+            ),
+            theirstack_client=client,
+        )
+
+        result = service.run(
+            candidate_profile=profile,
+            latest_user_message="Find companies hiring for product marketing.",
+            current_saved_companies=[],
+            target_context={"target_role_titles": ["Product Marketing Manager"]},
+            profile_context={},
+            discovery_context={},
+        )
+
+    request_shape = result.body["result"]["discoveryAudit"]["theirStack"]["requestShape"]
+    provider_request_shape = next(
+        row for row in result.body["result"]["providerDiagnostics"] if row["provider"] == "theirstack"
+    )["requestSummary"]["requestShape"]
+    assert request_shape["job_filters"] == "<present>"
+    assert request_shape["limit"] == 25
+    assert request_shape["max_pages"] == 1
+    assert "api_key" not in request_shape
+    assert "authorization" not in request_shape
+    assert "secretToken" not in request_shape
+    assert provider_request_shape["job_filters"] == "<present>"
+    assert "api_key" not in provider_request_shape
+    assert "authorization" not in provider_request_shape
+    assert "secretToken" not in provider_request_shape
+    assert "should-not-return" not in json.dumps(result.body)
 
 
 def test_greenhouse_required_enrichment_reports_only_greenhouse_matches(tmp_path: Path) -> None:
@@ -477,9 +533,16 @@ def test_theirstack_greenhouse_enrichment_can_sync_boards_and_save_synced_jobs(t
     assert payload["boardSyncRawResultCount"] == 1
     assert payload["boardSyncNormalizedCount"] == 1
     assert payload["boardSyncCreatedCount"] == 1
+    greenhouse_row = next(row for row in payload["providerDiagnostics"] if row["provider"] == "greenhouse")
+    assert greenhouse_row["stage"] == "first_party_sync"
+    assert greenhouse_row["status"] == "completed"
+    assert greenhouse_row["resultSummary"]["rawResultCount"] == 1
     assert payload["syncedJobPoolCount"] == 1
     assert payload["jobsReviewedAfterBoardSyncCount"] == 1
     assert payload["jobsAddedAfterBoardSyncCount"] == 1
+    job_search_row = next(row for row in payload["providerDiagnostics"] if row["stage"] == "post_sync_job_search")
+    assert job_search_row["status"] == "completed"
+    assert job_search_row["resultSummary"]["jobsAdded"] == 1
     assert len(saved_jobs) == 1
     assert saved_jobs[0].job_listing_id is not None
     assert {source.source_provider for source in sources} == {"greenhouse"}
@@ -545,6 +608,9 @@ def test_theirstack_enrichment_can_sync_greenhouse_and_ashby_boards_and_save_job
     assert payload["ashbyBoardTokensSynced"] == ["ashbyco"]
     assert payload["totalBoardSyncCompletedCount"] == 2
     assert payload["totalBoardSyncNormalizedCount"] == 2
+    provider_rows = payload["providerDiagnostics"]
+    assert next(row for row in provider_rows if row["provider"] == "greenhouse")["status"] == "completed"
+    assert next(row for row in provider_rows if row["provider"] == "ashby")["status"] == "completed"
     assert payload["syncedJobPoolCount"] == 2
     assert payload["jobsReviewedAfterBoardSyncCount"] == 2
     assert payload["jobsAddedAfterBoardSyncCount"] == 1
@@ -946,6 +1012,29 @@ class FakeTheirStackClient:
                 fetched_pages=1,
                 raw_company_count=len(self.companies),
                 request_shape=request.sanitized_shape(),
+            ),
+        )
+
+
+class SensitiveRequestShapeTheirStackClient(FakeTheirStackClient):
+    def search_companies(self, request):
+        self.requests.append(request)
+        return TheirStackCompanySearchResult(
+            status="completed",
+            companies=tuple(self.companies),
+            diagnostics=TheirStackCompanySearchDiagnostics(
+                enabled=True,
+                requested_pages=request.max_pages or 1,
+                fetched_pages=1,
+                raw_company_count=len(self.companies),
+                request_shape={
+                    "job_filters": "<present>",
+                    "limit": 25,
+                    "max_pages": 1,
+                    "api_key": "should-not-return",
+                    "authorization": "Bearer should-not-return",
+                    "secretToken": "should-not-return",
+                },
             ),
         )
 

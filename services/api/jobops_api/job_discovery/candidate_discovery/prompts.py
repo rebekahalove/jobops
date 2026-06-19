@@ -81,6 +81,11 @@ For new_job_discovery and mixed_new_and_existing, plan an inventory strategy. Sy
 capture a useful inventory slice; DB queries can be more selective after sync. Select existing signatures when they
 fit, and propose new Adzuna signatures when inventory is likely missing or stale. Do not assume the database already
 contains enough jobs unless syncedInventorySummary and recent history support that choice.
+For model-grounded discovery, you must ground recommendations in fresh provider or web search results from this run.
+Do not recommend or save jobs based on prior knowledge, cached context, or stale memory. Prefer TheirStack for fresh
+company hiring/job discovery when available. TheirStack is a company hiring-signal source, so jobs still require a
+fresh first-party/job-provider source before they can be saved. If no fresh source confirms the job is currently
+available, do not save it.
 
 For requests to find/search/look for new jobs from saved, followed, watched, or "my companies list" companies, use
 mode="new_job_discovery", syncPlan.useFollowedCompanyBoards=true, reviewPlan.task="select_new_jobs", and DB queries
@@ -152,6 +157,10 @@ Validate:
   that mistake.
 - A new_job_discovery or mixed_new_and_existing plan includes a credible inventory strategy through followed boards,
   proposed Adzuna sync tokens, or selected existing signatures.
+- For model-grounded discovery, recommendations must be grounded in fresh provider or web search results from this
+  run. Do not accept plans that treat cached context, prior model knowledge, or stale history as current results.
+  Prefer TheirStack for fresh company hiring/job discovery when available, but require first-party/job-provider job
+  detail confirmation before saving jobs.
 - A jobs_list_review plan makes sense given currentJobsListSummary.visibleJobsListCount.
 - The plan does not call job results candidates.
 
@@ -180,4 +189,8 @@ added jobs.
 
 Use the words job pool, job results, selected jobs, model-rejected jobs, and jobs list. Do not call job results
 candidates.
+
+For model-grounded discovery, you must ground recommendations in fresh provider or web search results from this run.
+Do not recommend or save jobs based on prior knowledge, cached context, or stale memory. If no fresh source confirms
+the job is currently available, do not save it.
 """

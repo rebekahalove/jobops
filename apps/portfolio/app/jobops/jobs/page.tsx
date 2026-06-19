@@ -1,6 +1,13 @@
 import React from "react";
-import { JobsList } from "../../../../jobops/components/jobs-list";
+import { JobDiscoveryDiagnostics, JobsList } from "../../../../jobops/components/jobs-list";
 
 export default function JobOpsJobsPage() {
-  return <JobsList apiBasePath="/jobops/api" workspaceBasePath="/jobops" />;
+  return (
+    <>
+      <div className="workspace-diagnostics" aria-label="Job discovery diagnostics">
+        <JobDiscoveryDiagnostics apiBasePath="/jobops/api" />
+      </div>
+      <JobsList apiBasePath="/jobops/api" workspaceBasePath="/jobops" />
+    </>
+  );
 }

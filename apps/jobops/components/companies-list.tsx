@@ -33,6 +33,11 @@ export type TrackedCompany = {
   discovery_query: string | null;
   search_queries_used: string[];
   discovered_by: string | null;
+  discoverySource?: string | null;
+  discoverySourceLabel?: string | null;
+  dataOriginSource?: string | null;
+  dataOriginSourceType?: string | null;
+  dataOriginSourceLabel?: string | null;
   derivation_status: string;
   review_status: string;
   notes: string;
@@ -243,6 +248,7 @@ export function CompanyCard({
   const careersUrl = safeExternalUrl(company.careers_url);
   const companySiteUrl = websiteUrl || websiteUrlFromDomain(company.domain);
   const providerMetadata = company.provider_grounding_metadata_summary || {};
+  const atsInferred = inferredAtsProviders(company, providerMetadata);
 
   return (
     <article className="company-card">
@@ -311,7 +317,10 @@ export function CompanyCard({
             <DetailItem label="Status" value={formatStatus(company.review_status)} />
             <DetailItem label="Derived" value={formatStatus(company.derivation_status)} />
             <DetailItem label="Confidence" value={formatStatus(company.data_confidence || "unknown")} />
+            <DetailItem label="Discovery source" value={formatDiscoverySource(company)} />
+            <DetailItem label="Data source" value={formatDataSource(company)} />
             <DetailItem label="Discovered by" value={company.discovered_by || "Unknown"} />
+            {atsInferred ? <DetailItem label="ATS inferred" value={atsInferred} /> : null}
             <DetailItem label="Source URLs" value={`${safeSourceUrls(company.source_urls).length}`} />
           </dl>
         </details>
@@ -582,6 +591,82 @@ function metadataList(value: unknown) {
     return [];
   }
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8);
+}
+
+function formatDataSource(company: TrackedCompany) {
+  if (company.dataOriginSourceLabel && company.dataOriginSource !== "unknown") {
+    if (company.dataOriginSourceType && ["source_url", "website", "careers_url", "job_listings_url"].includes(company.dataOriginSourceType)) {
+      return displayUrlHost(company.dataOriginSource) || company.dataOriginSourceLabel;
+    }
+    return company.dataOriginSourceLabel;
+  }
+  if (company.dataOriginSource && company.dataOriginSource !== "unknown") {
+    return displayUrlHost(company.dataOriginSource) || formatStatus(company.dataOriginSource);
+  }
+  if (company.careers_url) {
+    return displayUrlHost(company.careers_url) || "Company careers page";
+  }
+  if (company.job_listings_url) {
+    return displayUrlHost(company.job_listings_url) || "Company job listings page";
+  }
+  if (company.website_url) {
+    return displayUrlHost(company.website_url) || "Company website";
+  }
+  const firstSourceUrl = safeSourceUrls(company.source_urls)[0];
+  if (firstSourceUrl) {
+    return displayUrlHost(firstSourceUrl) || "Source URL";
+  }
+  return "Unknown";
+}
+
+function formatDiscoverySource(company: TrackedCompany) {
+  if (company.discoverySourceLabel && company.discoverySource !== "unknown") {
+    return company.discoverySourceLabel;
+  }
+  if (company.discoverySource && company.discoverySource !== "unknown") {
+    return formatStatus(company.discoverySource);
+  }
+  const discoveredBy = (company.discovered_by || "").toLowerCase();
+  if (discoveredBy === "theirstack") {
+    return "TheirStack";
+  }
+  if (discoveredBy === "gemini") {
+    return "Gemini model-grounded discovery";
+  }
+  if (discoveredBy || company.derivation_status === "model_derived") {
+    return "Model-grounded discovery";
+  }
+  if (company.derivation_status === "user_entered") {
+    return "User-entered";
+  }
+  return "Unknown";
+}
+
+function inferredAtsProviders(company: TrackedCompany, providerMetadata: Record<string, unknown>) {
+  const providers = new Set<string>();
+  if (company.greenhouse_board_token) {
+    providers.add("Greenhouse");
+  }
+  if (company.ashby_board_url) {
+    providers.add("Ashby");
+  }
+  if (company.lever_slug) {
+    providers.add("Lever");
+  }
+  const atsInference = providerMetadata.atsInference;
+  if (atsInference && typeof atsInference === "object" && !Array.isArray(atsInference)) {
+    const row = atsInference as Record<string, unknown>;
+    if (row.greenhouseBoardToken) {
+      providers.add("Greenhouse");
+    }
+    if (row.ashbyBoardUrl) {
+      providers.add("Ashby");
+    }
+    if (row.leverSlug) {
+      providers.add("Lever");
+    }
+  }
+  return providers.size ? Array.from(providers).join(", ") : null;
 }
 
 function preserveText(value: string) {
