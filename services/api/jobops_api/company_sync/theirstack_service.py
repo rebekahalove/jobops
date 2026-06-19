@@ -32,6 +32,7 @@ def upsert_theirstack_company_sync_signature(
     max_pages: int = 1,
     freshness_hours: int = 168,
     enabled: bool = True,
+    verification_status: str = "verified",
     created_by: str | None = None,
     criteria_json: dict[str, Any] | None = None,
 ) -> CompanySyncSignature:
@@ -65,8 +66,8 @@ def upsert_theirstack_company_sync_signature(
     signature.results_per_page = max(1, effective_request.limit or results_per_page)
     signature.max_pages = max(1, effective_request.max_pages or max_pages)
     signature.freshness_hours = max(1, freshness_hours)
-    signature.enabled = bool(enabled)
-    signature.verification_status = "verified"
+    signature.enabled = bool(enabled and verification_status != "needs_review")
+    signature.verification_status = verification_status
     signature.source = source
     signature.created_by = created_by
     signature.criteria_json = criteria
@@ -154,8 +155,8 @@ def sync_theirstack_company_signatures(
             status=enrichment.status if enrichment.status != "unavailable" else "skipped",
             raw_result_count=int(diagnostics.get("rawCompanyCount") or len(enrichment.normalized_companies)),
             normalized_count=len(enrichment.normalized_companies),
-            created_count=int(diagnostics.get("createdCompanyCount") or diagnostics.get("upsertedCompanyCount") or len(enrichment.companies)),
-            updated_count=int(diagnostics.get("updatedCompanyCount") or 0),
+            created_count=int(diagnostics.get("canonicalCompanyCreatedCount") or 0),
+            updated_count=int(diagnostics.get("canonicalCompanyUpdatedCount") or 0),
             duplicate_count=max(0, len(enrichment.normalized_companies) - len(enrichment.companies)),
             failed_normalization_count=max(
                 0,
@@ -164,7 +165,7 @@ def sync_theirstack_company_signatures(
             error=error,
             diagnostics_json={
                 **diagnostics,
-                "companySourceCount": len(enrichment.company_sources),
+                "companySourceCount": diagnostics.get("companySourceCount", len(enrichment.company_sources)),
                 "companyIds": [company.id for company in enrichment.companies if hasattr(company, "id")],
                 "companySourceIds": [source.id for source in enrichment.company_sources if hasattr(source, "id")],
             },

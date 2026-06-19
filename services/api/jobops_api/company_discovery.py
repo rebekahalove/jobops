@@ -1230,7 +1230,12 @@ def try_company_cache_discovery(
     }
     linked: list[CandidateCompany] = []
     skipped: list[dict[str, str]] = []
+    fresh_match_count = sum(1 for _, _, count in matches if count)
+    stale_match_count = max(0, len(matches) - fresh_match_count)
     for company, _score, fresh_source_count in matches:
+        if fresh_source_count <= 0:
+            skipped.append({"companyId": company.id, "name": company.name, "reason": "stale_cache_match"})
+            continue
         existing = existing_links.get(company.id)
         if existing is not None:
             skipped.append(
@@ -1293,10 +1298,14 @@ def try_company_cache_discovery(
         status="completed",
         result_summary={
             "canonicalCacheMatchCount": len(matches),
-            "freshMatchCount": sum(1 for _, _, count in matches if count),
+            "freshCanonicalCacheMatchCount": fresh_match_count,
+            "staleCanonicalCacheMatchCount": stale_match_count,
             "linkedCandidateCompanyCount": len(linked),
             "skippedCompanyCount": len(skipped),
             "searchTerms": search_terms[:12],
+            "cacheShortCircuited": bool(linked),
+            "cacheFallbackReason": None if linked else ("stale_or_insufficient_cache" if matches else "no_cache_matches"),
+            "requestTimeSyncRefreshAttempted": False,
         },
     )
     if not linked:
@@ -1356,6 +1365,9 @@ def try_company_cache_discovery(
             "diagnosticMessages": [],
             "companyCache": {
                 "matchCount": len(matches),
+                "freshCanonicalCacheMatchCount": fresh_match_count,
+                "staleCanonicalCacheMatchCount": stale_match_count,
+                "cacheShortCircuited": True,
                 "linkedCandidateCompanyCount": len(linked),
                 "skippedCompanyCount": len(skipped),
             },

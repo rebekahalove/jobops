@@ -7,6 +7,7 @@ from typing import Any, Literal
 ModelTask = Literal[
     "command_router",
     "company_discovery",
+    "company_sync_signature_planner",
     "candidate_db_job_search_planning",
     "candidate_db_job_plan_critique",
     "candidate_job_review",

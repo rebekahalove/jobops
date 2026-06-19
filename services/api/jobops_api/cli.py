@@ -179,6 +179,7 @@ def main() -> None:
         help="Derive/upsert bounded Company Sync signatures from profile demand and inventory gaps.",
     )
     derive_company_signatures_parser.add_argument("--candidate-slug", default=None)
+    derive_company_signatures_parser.add_argument("--latest-user-request", default=None)
     derive_company_signatures_parser.add_argument("--all-active-profiles", action="store_true")
     derive_company_signatures_parser.add_argument("--from-job-listings", action="store_true")
     derive_company_signatures_parser.add_argument("--from-candidate-companies", action="store_true")
@@ -333,6 +334,7 @@ def main() -> None:
     elif args.command == "derive-company-sync-signatures":
         derive_company_sync_signatures_command(
             candidate_slug=args.candidate_slug,
+            latest_user_request=args.latest_user_request,
             all_active_profiles=args.all_active_profiles,
             from_job_listings=args.from_job_listings,
             from_candidate_companies=args.from_candidate_companies,
@@ -751,6 +753,7 @@ def sync_theirstack_company_signatures_command(
 def derive_company_sync_signatures_command(
     *,
     candidate_slug: str | None,
+    latest_user_request: str | None,
     all_active_profiles: bool,
     from_job_listings: bool,
     from_candidate_companies: bool,
@@ -774,6 +777,7 @@ def derive_company_sync_signatures_command(
         result = derive_company_sync_signatures(
             session,
             candidate_slug=candidate_slug,
+            latest_user_request=latest_user_request,
             all_active_profiles=all_active_profiles,
             from_job_listings=from_job_listings,
             from_candidate_companies=from_candidate_companies,
@@ -818,7 +822,7 @@ def format_theirstack_company_signature(signature: CompanySyncSignature) -> str:
         f"results_per_page={signature.results_per_page} freshness_hours={signature.freshness_hours} "
         f"last_completed_at={signature.last_completed_at or '-'} last_status={signature.last_status or '-'} "
         f"raw={signature.last_raw_result_count} normalized={signature.last_normalized_count} "
-        f"created={signature.last_created_count} updated={signature.last_updated_count}"
+        f"canonical_created={signature.last_created_count} canonical_updated={signature.last_updated_count}"
     )
 
 
@@ -856,10 +860,12 @@ def format_theirstack_company_sync_result(result) -> str:
         return f"{request.sync_key} failed error={result.error}"
     return (
         f"{request.sync_key} {result.status} raw={result.raw_result_count} "
-        f"normalized={result.normalized_count} created={result.created_count} "
-        f"updated={result.updated_count} duplicate={result.duplicate_count} "
+        f"normalized={result.normalized_count} canonical_created={result.created_count} "
+        f"canonical_updated={result.updated_count} duplicate={result.duplicate_count} "
         f"failed_normalization={result.failed_normalization_count} "
-        f"company_sources={diagnostics.get('companySourceCount', 0)}"
+        f"company_sources={diagnostics.get('companySourceCount', 0)} "
+        f"source_created={diagnostics.get('companySourceCreatedCount', 0)} "
+        f"source_updated={diagnostics.get('companySourceUpdatedCount', 0)}"
     )
 
 

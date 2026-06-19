@@ -106,10 +106,20 @@ Company Sync uses three core tables:
 
 Signatures are derived from demand and inventory gaps:
 
-- Role/profile demand: `RoleTarget.target_titles`, role families, seniority, preferred locations, work modes, constraints, headline, skills, and similar profile facts.
+- Role/profile demand: the Company Sync Signature Planner receives `RoleTarget.target_titles`, role families, seniority, preferred locations, work modes, constraints, headline, relevant profile facts, recent request context, saved companies, saved jobs, and applications. The model proposes semantic TheirStack search criteria; the backend validates, clamps, dedupes, and persists the durable signature. Sync runs never re-plan these semantics.
 - Aggregate demand: equivalent target/search segments across active profiles collapse to the same `sync_key` with capped, privacy-safe demand metadata.
 - Job inventory: companies already represented by active/recent `job_listings` can produce enrichment signatures when canonical company metadata is weak or stale.
 - Known user-linked companies: followed companies, companies attached to saved jobs, and application companies can produce enrichment signatures when domain, careers URL, ATS metadata, or provider evidence is missing.
+
+Only semantic profile/target discovery uses the model planner. Identity enrichment from existing job listings, followed companies, saved jobs, and applications remains deterministic and uses company identity fields such as `company_domain_or`, `company_name_or`, or `company_name_partial_match_or`.
+
+Planner guardrails:
+
+- Unsupported TheirStack filters are removed.
+- Limits and pages are clamped to bounded sync settings.
+- Ungrounded roles, industries, domains, technologies, geographies, companies, and job filters are removed or force `verification_status="needs_review"`.
+- Empty broad searches are not persisted as runnable signatures unless broad discovery was explicitly requested.
+- `needs_review` signatures are persisted disabled and are skipped by normal enabled sync runs.
 
 The manual CLI entry point creates or updates a signature only; it does not call TheirStack:
 
@@ -140,7 +150,13 @@ Company Sync defaults are intentionally slower than job sync. TheirStack company
 - `JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_PAGES`
 - `JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_SIGNATURES_PER_RUN`
 
-Candidate-facing company discovery queries canonical `companies` plus active `company_sources` first. When source-backed cache matches are available, discovery links selected companies into `candidate_companies` with `discovered_by="canonical_company_cache"` and provider/source metadata. Archived or avoided companies are not re-added. If the canonical cache is empty or insufficient, the existing TheirStack enrichment and model-grounded fallback paths remain available.
+Candidate-facing company discovery queries canonical `companies` plus active `company_sources` first. Only fresh source-backed matches short-circuit discovery and link selected companies into `candidate_companies` with `discovered_by="canonical_company_cache"` and provider/source metadata. Stale-only cache matches are diagnosed with `canonicalCacheMatchCount`, `freshCanonicalCacheMatchCount`, `staleCanonicalCacheMatchCount`, `cacheShortCircuited=false`, and a fallback reason, then discovery continues to the provider/model fallback path. Archived or avoided companies are not re-added.
+
+Company sync diagnostics distinguish canonical company counts from provider-source counts:
+
+- `canonicalCompanyUpsertedCount`, `canonicalCompanyCreatedCount`, and `canonicalCompanyUpdatedCount`.
+- `companySourceCount`, `companySourceCreatedCount`, and `companySourceUpdatedCount`.
+- `company_sync_runs.created_count` and `updated_count` represent canonical company row counts; source row counts live in `diagnostics_json`.
 
 TheirStack Company Sync can discover ATS metadata that later feeds first-party Job Sync providers:
 

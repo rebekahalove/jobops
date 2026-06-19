@@ -17,10 +17,11 @@ from ..db.models import (
     CompanySource,
     CompanySyncSignature,
     JobListing,
-    ProfileFieldValue,
-    RoleTarget,
 )
 from ..job_discovery.job_sync.service import normalize_sync_key_text
+from ..model_connector import ModelConnector, create_model_connector, read_model_connector_config_from_settings
+from ..settings import Settings, load_settings
+from .planner import plan_company_sync_signatures
 from .theirstack_service import upsert_theirstack_company_sync_signature
 
 
@@ -50,27 +51,62 @@ def derive_company_sync_signatures(
     freshness_hours: int = 168,
     results_per_page: int = 25,
     max_pages: int = 1,
+    latest_user_request: str | None = None,
+    connector: ModelConnector | None = None,
+    settings: Settings | None = None,
 ) -> CompanySyncDerivationResult:
-    candidates = list_signature_candidates(
-        session,
-        candidate_slug=candidate_slug,
-        all_active_profiles=all_active_profiles,
-        from_job_listings=from_job_listings,
-        from_candidate_companies=from_candidate_companies,
-        from_saved_jobs=from_saved_jobs,
-        from_applications=from_applications,
-        missing_company_metadata_only=missing_company_metadata_only,
-        active_jobs_only=active_jobs_only,
-        recent_days=recent_days,
-        min_active_jobs=min_active_jobs,
-        limit=limit,
+    candidates: list[dict[str, Any]] = []
+    planner_result = None
+    if candidate_slug or all_active_profiles:
+        active_connector = connector or create_default_planner_connector(settings)
+        planner_result = plan_company_sync_signatures(
+            session,
+            connector=active_connector,
+            candidate_slug=candidate_slug,
+            all_active_profiles=all_active_profiles,
+            latest_user_request=latest_user_request,
+            limit=limit,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+        )
+        for planned in planner_result.signatures:
+            candidates.append(
+                {
+                    "queryText": planned.query_text,
+                    "queryKind": planned.query_kind,
+                    "source": "model_planned_profile_target_context",
+                    "request": planned.request,
+                    "criteria": planned.criteria_json,
+                    "verificationStatus": planned.verification_status,
+                    "enabled": planned.enabled,
+                }
+            )
+    candidates.extend(
+        list_identity_signature_candidates(
+            session,
+            candidate_slug=candidate_slug,
+            from_job_listings=from_job_listings,
+            from_candidate_companies=from_candidate_companies,
+            from_saved_jobs=from_saved_jobs,
+            from_applications=from_applications,
+            missing_company_metadata_only=missing_company_metadata_only,
+            active_jobs_only=active_jobs_only,
+            recent_days=recent_days,
+            min_active_jobs=min_active_jobs,
+            limit=limit,
+        )
     )
     deduped = dedupe_signature_candidates(candidates)[: max(1, limit)]
     if dry_run:
         return CompanySyncDerivationResult(
             signatures=(),
             dry_run_signatures=tuple(deduped),
-            diagnostics={"candidateCount": len(candidates), "dedupedCount": len(deduped), "dryRun": True},
+            diagnostics={
+                "candidateCount": len(candidates),
+                "dedupedCount": len(deduped),
+                "dryRun": True,
+                "modelPlanner": planner_result.diagnostics if planner_result else None,
+            },
         )
 
     signatures: list[CompanySyncSignature] = []
@@ -84,22 +120,37 @@ def derive_company_sync_signatures(
             results_per_page=results_per_page,
             max_pages=max_pages,
             freshness_hours=freshness_hours,
-            enabled=True,
+            enabled=bool(candidate.get("enabled", True)),
+            verification_status=str(candidate.get("verificationStatus") or "verified"),
             created_by=created_by,
             criteria_json=candidate["criteria"],
         )
         signatures.append(signature)
     return CompanySyncDerivationResult(
         signatures=tuple(signatures),
-        diagnostics={"candidateCount": len(candidates), "dedupedCount": len(deduped), "createdOrUpdatedCount": len(signatures)},
+        diagnostics={
+            "candidateCount": len(candidates),
+            "dedupedCount": len(deduped),
+            "createdOrUpdatedCount": len(signatures),
+            "modelPlanner": planner_result.diagnostics if planner_result else None,
+        },
     )
 
 
-def list_signature_candidates(
+def create_default_planner_connector(settings: Settings | None) -> ModelConnector:
+    connector_config = read_model_connector_config_from_settings(settings or load_settings())
+    return create_model_connector(
+        connector_config,
+        mock_responses_by_task={
+            "company_sync_signature_planner": '{"assistantMessage":"Mock planner produced no company sync signatures.","signatures":[],"rejectedIdeas":[]}'
+        },
+    )
+
+
+def list_identity_signature_candidates(
     session: Session,
     *,
     candidate_slug: str | None,
-    all_active_profiles: bool,
     from_job_listings: bool,
     from_candidate_companies: bool,
     from_saved_jobs: bool,
@@ -111,7 +162,6 @@ def list_signature_candidates(
     limit: int,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    candidates.extend(profile_target_signature_candidates(session, candidate_slug=candidate_slug, all_active_profiles=all_active_profiles, limit=limit))
     if from_job_listings:
         candidates.extend(
             job_listing_signature_candidates(
@@ -137,77 +187,6 @@ def list_signature_candidates(
     if from_applications:
         candidates.extend(application_company_signature_candidates(session, candidate_slug=candidate_slug, limit=limit))
     return candidates
-
-
-def profile_target_signature_candidates(
-    session: Session,
-    *,
-    candidate_slug: str | None,
-    all_active_profiles: bool,
-    limit: int,
-) -> list[dict[str, Any]]:
-    statement = (
-        select(RoleTarget, CandidateProfile)
-        .join(CandidateProfile, RoleTarget.candidate_profile_id == CandidateProfile.id)
-        .where(RoleTarget.is_active.is_(True))
-        .order_by(RoleTarget.updated_at.desc())
-        .limit(max(1, limit))
-    )
-    if candidate_slug:
-        statement = statement.where(CandidateProfile.slug == candidate_slug)
-    elif not all_active_profiles:
-        return []
-    profile_facts = profile_fact_terms_by_candidate(session)
-    rows = list(session.execute(statement).all())
-    if not rows:
-        return []
-    by_key: dict[str, dict[str, Any]] = {}
-    for role_target, profile in rows:
-        target_terms = clean_terms([*(role_target.target_titles or ()), *(role_target.role_families or ())])
-        if not target_terms:
-            continue
-        skill_terms = profile_facts.get(profile.id, [])[:12]
-        constraints = flatten_constraints(role_target.constraints or {})
-        query_text = " / ".join(target_terms[:4])
-        job_filters: dict[str, Any] = {
-            "job_title_pattern_or": target_terms[:8],
-            "posted_at_max_age_days": 30,
-        }
-        request = TheirStackCompanySearchRequest(
-            job_filters=job_filters,
-            company_description_pattern_or=tuple(clean_terms([*skill_terms, *constraints])[:8]),
-        )
-        key = f"profile:{normalize_sync_key_text(query_text)}:{normalize_sync_key_text(','.join(role_target.preferred_locations or []))}"
-        existing = by_key.get(key)
-        profile_id = profile.id
-        metadata = {
-            "source": "profile_target_context",
-            "activeProfileCount": 1,
-            "contributingCandidateProfileIds": [profile_id],
-            "contributingRoleTargetIds": [role_target.id],
-            "sourceFields": ["target_titles", "role_families", "skills", "constraints", "preferred_locations", "work_modes"],
-            "targetTitles": list(role_target.target_titles or []),
-            "roleFamilies": list(role_target.role_families or []),
-            "seniority": role_target.seniority,
-            "preferredLocations": list(role_target.preferred_locations or []),
-            "workModes": list(role_target.work_modes or []),
-            "constraints": role_target.constraints or {},
-            "profileHeadlineIncluded": bool(profile.headline),
-            "lastDerivedAt": datetime.now(UTC).isoformat(),
-        }
-        if existing:
-            existing["criteria"]["demand"]["activeProfileCount"] += 1
-            append_capped(existing["criteria"]["demand"]["contributingCandidateProfileIds"], profile_id)
-            append_capped(existing["criteria"]["demand"]["contributingRoleTargetIds"], role_target.id)
-            continue
-        by_key[key] = {
-            "queryText": query_text,
-            "queryKind": "aggregate_target_role_company_discovery" if all_active_profiles and not candidate_slug else "target_role_company_discovery",
-            "source": "profile_target_context",
-            "request": request,
-            "criteria": {"demand": metadata},
-        }
-    return list(by_key.values())
 
 
 def job_listing_signature_candidates(
@@ -393,21 +372,6 @@ def merge_demand_metadata(target: dict[str, Any], source: dict[str, Any]) -> Non
         values = target_demand.setdefault(key, [])
         for value in source_demand.get(key) or []:
             append_capped(values, value)
-
-
-def profile_fact_terms_by_candidate(session: Session) -> dict[str, list[str]]:
-    rows = session.execute(
-        select(ProfileFieldValue.candidate_profile_id, ProfileFieldValue.value_text)
-        .where(ProfileFieldValue.lifecycle_status != "archived")
-        .order_by(ProfileFieldValue.updated_at.desc())
-    ).all()
-    terms_by_profile: dict[str, list[str]] = {}
-    for candidate_profile_id, value_text in rows:
-        if not value_text:
-            continue
-        terms_by_profile.setdefault(candidate_profile_id, [])
-        terms_by_profile[candidate_profile_id].extend(clean_terms(value_text.split(","))[:8])
-    return {key: values[:20] for key, values in terms_by_profile.items()}
 
 
 def missing_company_metadata_fields(company: Company) -> list[str]:

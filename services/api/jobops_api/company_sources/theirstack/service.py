@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
+from ...company_canonicalization import ensure_candidate_company_link, find_canonical_company, upsert_canonical_company
 from ...db.models import Company, CompanySource
 from ...job_discovery.greenhouse_utils import canonical_greenhouse_jobs_api_url
 from ...settings import Settings
@@ -79,6 +79,7 @@ class TheirStackCompanyEnrichmentService:
 
         persisted = []
         company_sources = []
+        canonical_created_count = 0
         source_created_count = 0
         source_updated_count = 0
         links = []
@@ -91,6 +92,7 @@ class TheirStackCompanyEnrichmentService:
             company = persisted_record.company
             persisted.append(company)
             company_sources.append(persisted_record.company_source)
+            canonical_created_count += 1 if persisted_record.created_company else 0
             source_created_count += 1 if persisted_record.created_source else 0
             source_updated_count += 1 if persisted_record.updated_source else 0
             if candidate_profile_id and link_to_profile:
@@ -113,10 +115,12 @@ class TheirStackCompanyEnrichmentService:
         diagnostics = (search_result.diagnostics or TheirStackCompanySearchDiagnostics(enabled=True, requested_pages=1)).to_dict()
         diagnostics["normalizedCompanyCount"] = len(normalized)
         diagnostics["upsertedCompanyCount"] = len(persisted)
-        diagnostics["createdCompanyCount"] = source_created_count
-        diagnostics["updatedCompanyCount"] = source_updated_count
+        diagnostics["canonicalCompanyUpsertedCount"] = len(persisted)
+        diagnostics["canonicalCompanyCreatedCount"] = canonical_created_count
+        diagnostics["canonicalCompanyUpdatedCount"] = 0
         diagnostics["companySourceCreatedCount"] = source_created_count
         diagnostics["companySourceUpdatedCount"] = source_updated_count
+        diagnostics["companySourceCount"] = len(company_sources)
         diagnostics["linkedCandidateCompanyCount"] = len(links)
         return TheirStackCompanyEnrichmentResult(
             status="completed",
@@ -150,6 +154,7 @@ def job_listings_url_for(company: NormalizedCompanyEnrichment) -> str | None:
 class PersistedTheirStackCompanyRecord:
     company: Company
     company_source: CompanySource
+    created_company: bool
     created_source: bool
     updated_source: bool
 
@@ -160,6 +165,14 @@ def upsert_theirstack_company_record(
     *,
     source_query: str | None = None,
 ) -> PersistedTheirStackCompanyRecord:
+    existing_company = find_canonical_company(
+        session,
+        normalized_name=company_record.normalized_name,
+        normalized_domain=company_record.domain,
+        greenhouse_board_token=company_record.greenhouse_board_token,
+        ashby_board_url=company_record.ashby_board_url,
+        lever_slug=company_record.lever_slug,
+    )
     company = upsert_canonical_company(
         session,
         name=company_record.name,
@@ -192,6 +205,7 @@ def upsert_theirstack_company_record(
     return PersistedTheirStackCompanyRecord(
         company=company,
         company_source=company_source,
+        created_company=existing_company is None,
         created_source=created,
         updated_source=not created,
     )
