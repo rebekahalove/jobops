@@ -117,8 +117,10 @@ Planner guardrails:
 
 - Unsupported TheirStack filters are removed.
 - Limits and pages are clamped to bounded sync settings.
-- Search terms are accepted when they appear directly in context or when the model supplies per-term grounding with an allowed grounding type, rationale, and `basedOn` references that exist in planner context.
+- Search terms are accepted when they appear in positive context or when the model supplies per-term grounding with an allowed grounding type, rationale, and `basedOn` references that exist in positive planner context.
+- Model-explained semantic variants are allowed when grounded in positive target/profile context; exclusion and avoidance constraints such as `avoid`, `exclude`, `blocked`, or `not_interested` do not count as positive grounding.
 - The backend validates references and safety boundaries, but it does not maintain a hard-coded semantic synonym map.
+- Unsupported or uncertain ideas should go to `rejectedIdeas` or `needs_review`, not auto-sync.
 - Ungrounded optional filters are removed without forcing the whole signature into review when meaningful grounded criteria remain.
 - `verification_status="needs_review"` is reserved for model-admitted uncertainty, unsupported or ambiguous main intent, unverifiable grounding, or no meaningful bounded criteria after validation.
 - Empty broad searches are not persisted as runnable signatures unless broad discovery was explicitly requested.

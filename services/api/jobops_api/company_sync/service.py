@@ -89,7 +89,7 @@ def sanitize_company_sync_json(value: Any, *, max_list_items: int = 50, max_stri
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if any(part in key_text.casefold() for part in SENSITIVE_COMPANY_SYNC_KEY_PARTS):
+            if is_sensitive_company_sync_key(key_text):
                 continue
             sanitized[key_text] = sanitize_company_sync_json(item, max_list_items=max_list_items, max_string_chars=max_string_chars)
         return sanitized
@@ -101,6 +101,16 @@ def sanitize_company_sync_json(value: Any, *, max_list_items: int = 50, max_stri
     if isinstance(value, str):
         return value[:max_string_chars]
     return value
+
+
+def is_sensitive_company_sync_key(key_text: str) -> bool:
+    folded = key_text.casefold()
+    if any(part in folded for part in SENSITIVE_COMPANY_SYNC_KEY_PARTS if part != "key"):
+        return True
+    if "keyword" in folded:
+        return False
+    normalized = folded.replace("-", "_")
+    return normalized == "key" or normalized.endswith("_key") or normalized in {"apikey", "api_key", "accesskey", "access_key", "privatekey", "private_key"}
 
 
 def request_summary_from_signature(signature: CompanySyncSignature) -> CompanySyncRequest:

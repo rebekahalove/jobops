@@ -21,6 +21,7 @@ from jobops_api.company_sync import (
     sync_theirstack_company_signatures,
     upsert_theirstack_company_sync_signature,
 )
+from jobops_api.company_sync.planner import COMPANY_SYNC_SIGNATURE_PLANNER_PROMPT
 from jobops_api.model_connector import ModelRequest, ModelResponse
 from jobops_api.db.models import (
     Base,
@@ -498,6 +499,7 @@ def test_unsupported_optional_filter_removed_without_forcing_needs_review() -> N
                 candidate_profile_id=profile.id,
                 target_titles=["Applied AI Engineer"],
                 role_families=["Applied AI"],
+                constraints={"avoid": ["defense"]},
                 review_status="reviewed",
                 is_active=True,
             )
@@ -510,7 +512,152 @@ def test_unsupported_optional_filter_removed_without_forcing_needs_review() -> N
         assert signature.enabled is True
         assert "company_keyword_slug_or" not in signature.criteria_json["theirstackRequest"]
         assert signature.criteria_json["theirstackRequest"]["job_filters"]["job_title_pattern_or"] == ["AI Engineer"]
+        assert any(issue["code"] == "term_matched_exclusion_context" for issue in signature.criteria_json["modelPlanning"]["validationIssues"])
         assert any(issue["code"] == "ungrounded_filter_removed" for issue in signature.criteria_json["modelPlanning"]["validationIssues"])
+
+
+def test_exclusion_constraint_does_not_ground_search_term() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planner proposed an excluded industry.",
+            "signatures": [
+                {
+                    "queryText": "Defense companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "Incorrectly cited an avoidance constraint.",
+                    "sourceFieldsUsed": ["constraints"],
+                    "grounding": [
+                        {
+                            "term": "defense",
+                            "groundingType": "domain_supported",
+                            "basedOn": [{"field": "RoleTarget.constraints.avoid", "value": "defense"}],
+                            "rationale": "Defense appears in constraints.",
+                        }
+                    ],
+                    "theirstackRequest": {
+                        "companyKeywordSlugOr": ["defense"],
+                        "companyDescriptionPatternOr": ["defense"],
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": True,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["Applied AI Engineer"],
+                constraints={"avoid": ["defense"]},
+                review_status="reviewed",
+                is_active=True,
+            )
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert len(result.signatures) == 1
+        signature = result.signatures[0]
+        assert signature.verification_status == "needs_review"
+        assert signature.enabled is False
+        assert "company_keyword_slug_or" not in signature.criteria_json["theirstackRequest"]
+        assert "company_description_pattern_or" not in signature.criteria_json["theirstackRequest"]
+        assert any(issue["code"] == "term_matched_exclusion_context" for issue in signature.criteria_json["modelPlanning"]["validationIssues"])
+
+
+def test_positive_healthcare_context_allows_healthcare_term() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planner proposed healthcare AI.",
+            "signatures": [
+                {
+                    "queryText": "Healthcare AI companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "Grounded in positive industry constraints.",
+                    "sourceFieldsUsed": ["constraints"],
+                    "grounding": [],
+                    "theirstackRequest": {
+                        "companyKeywordSlugOr": ["healthcare"],
+                        "jobFilters": {"job_title_pattern_or": ["AI Engineer"], "posted_at_max_age_days": 30},
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": False,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["AI Engineer"],
+                constraints={"industries": ["healthcare"]},
+                review_status="reviewed",
+                is_active=True,
+            )
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert len(result.signatures) == 1
+        signature = result.signatures[0]
+        assert signature.verification_status == "verified"
+        assert signature.criteria_json["theirstackRequest"]["company_keyword_slug_or"] == ["healthcare"]
+
+
+def test_avoid_healthcare_rejects_healthcare_term() -> None:
+    engine = create_seeded_engine()
+    planner = FakePlannerConnector(
+        {
+            "assistantMessage": "Planner proposed excluded healthcare.",
+            "signatures": [
+                {
+                    "queryText": "Healthcare AI companies",
+                    "queryKind": "target_role_company_discovery",
+                    "rationale": "Healthcare is only in the avoid list.",
+                    "sourceFieldsUsed": ["constraints"],
+                    "grounding": [],
+                    "theirstackRequest": {
+                        "companyKeywordSlugOr": ["healthcare"],
+                        "limit": 25,
+                        "maxPages": 1,
+                    },
+                    "confidence": "medium",
+                    "needsReview": False,
+                }
+            ],
+            "rejectedIdeas": [],
+        }
+    )
+    with Session(engine) as session:
+        profile = seeded_profile(session)
+        session.add(
+            RoleTarget(
+                candidate_profile_id=profile.id,
+                target_titles=["AI Engineer"],
+                constraints={"avoid": ["healthcare"]},
+                review_status="reviewed",
+                is_active=True,
+            )
+        )
+        result = derive_company_sync_signatures(session, candidate_slug=profile.slug, connector=planner, limit=5)
+
+        assert result.signatures == ()
+
+
+def test_planner_prompt_sends_unsupported_ideas_to_rejected_ideas() -> None:
+    assert "company_identity, unsupported" not in COMPANY_SYNC_SIGNATURE_PLANNER_PROMPT
+    assert 'Do not use groundingType="unsupported"' in COMPANY_SYNC_SIGNATURE_PLANNER_PROMPT
+    assert "rejectedIdeas" in COMPANY_SYNC_SIGNATURE_PLANNER_PROMPT
 
 
 def test_needs_review_signatures_are_excluded_from_all_enabled_sync(tmp_path: Path) -> None:
