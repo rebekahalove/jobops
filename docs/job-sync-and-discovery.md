@@ -92,6 +92,85 @@ TheirStack response language must describe results as company leads or hiring si
 
 Role, domain, geography, technology, and hiring-signal filters in TheirStack plans are derived from the latest user message, authenticated profile, candidate target context, saved-company context, or recent discovery context. They are not hardcoded to any role or field such as Applied AI, AI Engineer, LLM, software engineering, healthcare, product marketing, or Greenhouse.
 
+## Company Sync
+
+Company Sync parallels Job Sync for canonical company inventory. It uses bounded provider signatures, durable provider runs, freshness windows, canonical company rows, provider-source evidence, and DB-backed candidate discovery. It is not a global TheirStack mirror and it is not a TheirStack job-ingestion path.
+
+Company Sync uses three core tables:
+
+- `company_sync_signatures`: durable bounded company-source searches or enrichment targets.
+- `company_sync_runs`: each refresh attempt, status, count, error, and sanitized diagnostics.
+- `company_sources`: provider-specific canonical company evidence shared across users.
+
+`company_sources` stores TheirStack company-source metadata such as provider company id, source URL, website/LinkedIn/careers URLs, ATS metadata, technology/keyword/funding/job-count signals, and last synced/seen timestamps. Candidate-specific fit, notes, and discovery context remain on `candidate_companies`.
+
+Signatures are derived from demand and inventory gaps:
+
+- Role/profile demand: the Company Sync Signature Planner receives `RoleTarget.target_titles`, role families, seniority, preferred locations, work modes, constraints, headline, relevant profile facts, recent request context, saved companies, saved jobs, and applications. The model proposes semantic TheirStack search criteria; the backend validates, clamps, dedupes, and persists the durable signature. Sync runs never re-plan these semantics.
+- Aggregate demand: equivalent target/search segments across active profiles collapse to the same `sync_key` with capped, privacy-safe demand metadata.
+- Job inventory: companies already represented by active/recent `job_listings` can produce enrichment signatures when canonical company metadata is weak or stale.
+- Known user-linked companies: followed companies, companies attached to saved jobs, and application companies can produce enrichment signatures when domain, careers URL, ATS metadata, or provider evidence is missing.
+
+Only semantic profile/target discovery uses the model planner. Identity enrichment from existing job listings, followed companies, saved jobs, and applications remains deterministic and uses company identity fields such as `company_domain_or`, `company_name_or`, or `company_name_partial_match_or`.
+
+Planner guardrails:
+
+- Unsupported TheirStack filters are removed.
+- Limits and pages are clamped to bounded sync settings.
+- Search terms are accepted when they appear in positive context or when the model supplies per-term grounding with an allowed grounding type, rationale, and `basedOn` references that exist in positive planner context.
+- Model-explained semantic variants are allowed when grounded in positive target/profile context; exclusion and avoidance constraints such as `avoid`, `exclude`, `blocked`, or `not_interested` do not count as positive grounding.
+- The backend validates references and safety boundaries, but it does not maintain a hard-coded semantic synonym map.
+- Unsupported or uncertain ideas should go to `rejectedIdeas` or `needs_review`, not auto-sync.
+- Ungrounded optional filters are removed without forcing the whole signature into review when meaningful grounded criteria remain.
+- `verification_status="needs_review"` is reserved for model-admitted uncertainty, unsupported or ambiguous main intent, unverifiable grounding, or no meaningful bounded criteria after validation.
+- Empty broad searches are not persisted as runnable signatures unless broad discovery was explicitly requested.
+- `needs_review` signatures are persisted disabled and are skipped by normal enabled sync runs.
+
+The manual CLI entry point creates or updates a signature only; it does not call TheirStack:
+
+```powershell
+python -m jobops_api.cli upsert-theirstack-company-sync-signature --query "AI platform companies" --job-title-pattern "AI Engineer" --max-pages 1
+python -m jobops_api.cli list-theirstack-company-sync-signatures --enabled-only
+```
+
+Signature derivation can inspect profile demand and inventory gaps:
+
+```powershell
+python -m jobops_api.cli derive-company-sync-signatures --candidate-slug rebekah-love
+python -m jobops_api.cli derive-company-sync-signatures --from-job-listings --missing-company-metadata-only --active-jobs-only
+python -m jobops_api.cli derive-company-sync-signatures --from-candidate-companies --from-saved-jobs --from-applications --candidate-slug rebekah-love
+```
+
+Run bounded refreshes with:
+
+```powershell
+python -m jobops_api.cli sync-theirstack-company-signatures --all-enabled
+python -m jobops_api.cli sync-theirstack-company-signatures --signature-id <id> --force --max-pages 1
+```
+
+Company Sync defaults are intentionally slower than job sync. TheirStack company sync uses weekly-ish defaults unless overridden:
+
+- `JOBOPS_THEIRSTACK_COMPANY_SYNC_FRESHNESS_HOURS`
+- `JOBOPS_THEIRSTACK_COMPANY_SYNC_RESULTS_PER_PAGE`
+- `JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_PAGES`
+- `JOBOPS_THEIRSTACK_COMPANY_SYNC_MAX_SIGNATURES_PER_RUN`
+
+Candidate-facing company discovery queries canonical `companies` plus active `company_sources` first. Only fresh source-backed matches short-circuit discovery and link selected companies into `candidate_companies` with `discovered_by="canonical_company_cache"` and provider/source metadata. Stale-only cache matches are diagnosed with `canonicalCacheMatchCount`, `freshCanonicalCacheMatchCount`, `staleCanonicalCacheMatchCount`, `cacheShortCircuited=false`, and a fallback reason, then discovery continues to the provider/model fallback path. Archived or avoided companies are not re-added.
+
+Company sync diagnostics distinguish canonical company counts from provider-source counts:
+
+- `canonicalCompanyUpsertedCount`, `canonicalCompanyCreatedCount`, and `canonicalCompanyUpdatedCount`.
+- `companySourceCount`, `companySourceCreatedCount`, and `companySourceUpdatedCount`.
+- `company_sync_runs.created_count` and `updated_count` represent canonical company row counts; source row counts live in `diagnostics_json`.
+
+TheirStack Company Sync can discover ATS metadata that later feeds first-party Job Sync providers:
+
+- Greenhouse board token -> Greenhouse board sync.
+- Ashby board URL -> Ashby board sync.
+- Lever slug -> stored as company evidence until a Lever job sync path exists.
+
+Actual saved jobs still come from Job Sync providers and `job_listings` / `job_listing_sources`, not from TheirStack company search.
+
 The planner never emits raw SQL. Provider refreshes remain behind Job Sync: Greenhouse and Ashby boards for followed companies can be refreshed before DB search only when the model plan asks for followed-company board sync, model-selected existing Adzuna signatures can be refreshed, and planner-proposed Adzuna signatures may be upserted/refreshed only when the plan supplies explicit search criteria. There are no hard-coded broad Adzuna terms in candidate discovery.
 
 For requests such as `find jobs from my companies list`, `look for jobs at my saved companies`, `find new jobs from companies I'm following`, or `search my watched companies for jobs`, the correct DB-backed job-discovery plan is new-job discovery with `syncPlan.useFollowedCompanyBoards=true`. JobOps uses the candidate's non-archived `CandidateCompany` links, finds companies with Greenhouse or Ashby board metadata, syncs those first-party boards, searches the synced inventory, and saves/recommends selected jobs. If no followed companies have syncable board metadata, the response should say so and should not silently fall back to broad provider search unless the model plan explicitly asks for a broader search.

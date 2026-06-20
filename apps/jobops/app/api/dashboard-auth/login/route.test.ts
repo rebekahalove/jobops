@@ -80,6 +80,69 @@ describe("dashboard auth login route", () => {
     expect(response.headers.get("set-cookie")).toContain("Secure");
   });
 
+  it("strips upstream cookie domains for LAN-hosted HTTP login", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        headers: {
+          "Set-Cookie": "jobops_session=test-session; Max-Age=43200; Domain=127.0.0.1; Path=/; SameSite=Lax; HttpOnly; Secure"
+        },
+        status: 200
+      })
+    );
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://192.168.1.218:3002/api/dashboard-auth/login", {
+        body: new URLSearchParams({
+          username: "rebekah-love",
+          password: "test-password",
+          returnTo: "/companies"
+        }),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        method: "POST"
+      })
+    );
+
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/companies");
+    expect(setCookie).toContain("jobops_session=test-session");
+    expect(setCookie).not.toContain("Domain=");
+    expect(setCookie).not.toContain("Secure");
+  });
+
+  it("keeps host-only cookies over https while preserving secure", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        headers: {
+          "Set-Cookie": "jobops_session=test-session; Max-Age=43200; Domain=127.0.0.1; Path=/; SameSite=Lax; HttpOnly; Secure"
+        },
+        status: 200
+      })
+    );
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("https://jobops.test/api/dashboard-auth/login", {
+        body: new URLSearchParams({
+          username: "rebekah-love",
+          password: "test-password",
+          returnTo: "/companies"
+        }),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        method: "POST"
+      })
+    );
+
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    expect(setCookie).not.toContain("Domain=");
+    expect(setCookie).toContain("Secure");
+  });
+
   it("does not create a backend session without a username", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     const { POST } = await import("./route");

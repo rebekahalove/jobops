@@ -239,10 +239,15 @@ describe("Companies list", () => {
     expect(source).toContain("companyDiscoveryRunIdFromEventDetail(detail)");
     expect(source).toContain("detail.diagnosticsId");
     expect(source).toContain("loadIfActive({ clearWhenMissing: true })");
-    expect(source).toContain("loadIfActive({ clearWhenMissing: false })");
+    expect(source).toContain("loadIfActive({ clearWhenMissing: false, ignorePendingStartTime: true");
+    expect(source).toContain("ignorePendingStartTime: true");
+    expect(source).toContain("const effectivePendingRun = run ? null : pendingRun");
+    expect(source).toContain('window.addEventListener("jobops:company-discovery-updated", handleDiscoveryUpdated)');
+    expect(source).toContain("setLatestRun(detail.diagnostics)");
     expect(source).toContain("TERMINAL_COMPANY_DISCOVERY_STATUSES.has(latestRun.status)");
     expect(source).toContain("latestRun?.id");
     expect(source).toContain("!runId && pendingStartedAtRef.current");
+    expect(source).toContain("setPendingRun(null)");
     expect(source).toContain("pendingStartedAtRef.current = companyDiscoveryRunId ? null : startedAt");
     expect(source).toContain("Source timeline / Provider calls");
     expect(source).not.toContain("expectedDecision");
@@ -315,6 +320,7 @@ describe("Companies list", () => {
       />
     );
 
+    expect(html).toContain("<details open=\"\"");
     expect(html).toContain("Source timeline / Provider calls");
     expect(html).toContain("TheirStack company search");
     expect(html).toContain("Raw Company Count: 5");

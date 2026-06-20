@@ -128,6 +128,7 @@ class NormalizedCompanyEnrichment:
 class TheirStackCompanyEnrichmentResult:
     status: str
     companies: tuple[Any, ...] = ()
+    company_sources: tuple[Any, ...] = ()
     candidate_company_links: tuple[Any, ...] = ()
     normalized_companies: tuple[NormalizedCompanyEnrichment, ...] = ()
     diagnostics: dict[str, Any] = field(default_factory=dict)

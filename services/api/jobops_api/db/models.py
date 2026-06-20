@@ -309,9 +309,58 @@ class Company(Base, TimestampMixin):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     candidate_links: Mapped[list[CandidateCompany]] = relationship(back_populates="company", cascade="all, delete-orphan")
+    sources: Mapped[list[CompanySource]] = relationship(back_populates="company", cascade="all, delete-orphan")
     job_listings: Mapped[list[JobListing]] = relationship(back_populates="company")
     job_roles: Mapped[list[JobRole]] = relationship(back_populates="company")
     applications: Mapped[list[Application]] = relationship(back_populates="company")
+
+
+class CompanySource(Base, TimestampMixin):
+    __tablename__ = "company_sources"
+    __table_args__ = (
+        Index("ix_company_sources_company", "company_id"),
+        Index("ix_company_sources_provider_active", "source_provider", "is_active"),
+        Index("ix_company_sources_provider_last_seen", "source_provider", "last_seen_at"),
+        Index("ix_company_sources_provider_query", "source_provider", "source_query"),
+        Index(
+            "uq_company_sources_provider_company_id",
+            "source_provider",
+            "provider_company_id",
+            unique=True,
+            sqlite_where=text("provider_company_id IS NOT NULL"),
+            postgresql_where=text("provider_company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_company_sources_provider_source_url",
+            "source_provider",
+            "source_url",
+            unique=True,
+            sqlite_where=text("source_url IS NOT NULL"),
+            postgresql_where=text("source_url IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    source_provider: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    provider_company_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_result_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    careers_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    ats_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    company_signals_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    company: Mapped[Company] = relationship(back_populates="sources")
 
 
 class CandidateCompany(Base, TimestampMixin):
@@ -703,6 +752,75 @@ class JobSyncRun(Base, TimestampMixin):
 
     company: Mapped[Company | None] = relationship()
     job_sync_signature: Mapped[JobSyncSignature | None] = relationship()
+
+
+class CompanySyncSignature(Base, TimestampMixin):
+    __tablename__ = "company_sync_signatures"
+    __table_args__ = (
+        UniqueConstraint("sync_key", name="uq_company_sync_signatures_sync_key"),
+        Index("ix_company_sync_signatures_provider_enabled", "provider_name", "enabled"),
+        Index("ix_company_sync_signatures_provider_completed", "provider_name", "last_completed_at"),
+        Index("ix_company_sync_signatures_provider_request", "provider_name", "query_kind", "query_text"),
+        Index("ix_company_sync_signatures_status_enabled", "verification_status", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider_name: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    sync_kind: Mapped[str] = mapped_column(String(80))
+    sync_key: Mapped[str] = mapped_column(Text)
+    query_text: Mapped[str] = mapped_column(Text)
+    query_kind: Mapped[str] = mapped_column(String(80), default="manual")
+    results_per_page: Mapped[int] = mapped_column(Integer, default=25)
+    max_pages: Mapped[int] = mapped_column(Integer, default=1)
+    freshness_hours: Mapped[int] = mapped_column(Integer, default=168)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    verification_status: Mapped[str] = mapped_column(String(40), default="verified")
+    source: Mapped[str] = mapped_column(String(80), default="cli")
+    created_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_raw_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_normalized_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_created_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criteria_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class CompanySyncRun(Base, TimestampMixin):
+    __tablename__ = "company_sync_runs"
+    __table_args__ = (
+        Index("ix_company_sync_runs_sync_key_completed", "sync_key", "completed_at"),
+        Index("ix_company_sync_runs_provider_completed", "provider_name", "completed_at"),
+        Index("ix_company_sync_runs_status_started", "status", "started_at"),
+        Index("ix_company_sync_runs_signature", "company_sync_signature_id"),
+        Index("ix_company_sync_runs_provider_request_completed", "provider_name", "query_kind", "query_text", "completed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_sync_signature_id: Mapped[str | None] = mapped_column(ForeignKey("company_sync_signatures.id", ondelete="SET NULL"), nullable=True)
+    sync_key: Mapped[str] = mapped_column(Text)
+    provider_name: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(60))
+    sync_kind: Mapped[str] = mapped_column(String(80))
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_kind: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    criteria_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(40), default="started")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    normalized_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_normalization_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    company_sync_signature: Mapped[CompanySyncSignature | None] = relationship()
 
 
 class JobSearchRun(Base):

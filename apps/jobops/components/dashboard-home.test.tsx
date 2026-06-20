@@ -1,4 +1,5 @@
 import React from "react";
+import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardHome } from "./dashboard-home";
@@ -28,6 +29,13 @@ describe("JobOps dashboard shell", () => {
     expect(html).toContain('action="/api/dashboard-auth/logout"');
     expect(html).not.toContain("No recent job discovery diagnostics yet.");
     expect(html).toContain("JobOps alpha · dev · build local");
+  });
+
+  it("does not redirect to login on transient session-check failures", async () => {
+    const source = await readFile(new URL("./dashboard-shell.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("response.status !== 401 && response.status !== 403");
+    expect(source).toContain("redirectToLogin(basePath, pathname)");
   });
 
   it("renders workspace tabs without auth assumptions", () => {

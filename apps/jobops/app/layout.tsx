@@ -18,8 +18,8 @@ export default async function RootLayout({
   const session = await getCurrentJobOpsSession();
 
   return (
-    <html lang="en">
-      <body>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning>
         <DashboardShell appMetadata={appMetadata} isAdmin={session.isAuthenticated && session.user.userType === "admin"}>
           {children}
         </DashboardShell>

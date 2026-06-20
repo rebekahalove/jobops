@@ -184,10 +184,14 @@ function useSessionValidityRedirect({
           }
           return;
         }
+        if (response.status !== 401 && response.status !== 403) {
+          return;
+        }
       } catch {
         if (isCancelled) {
           return;
         }
+        return;
       }
 
       redirectToLogin(basePath, pathname);

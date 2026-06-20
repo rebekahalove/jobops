@@ -462,6 +462,8 @@ describe("AI command center", () => {
     expect(source).toContain('fetch(`${apiBasePath}/companies/discovery-runs/${encodeURIComponent(runId)}`');
     expect(source).toContain("TERMINAL_COMPANY_DISCOVERY_RUN_STATUSES.has(run.status)");
     expect(source).toContain("updateCompanyDiscoveryActionFromRun(run)");
+    expect(source).toContain("dispatchCompanyDiscoveryUpdated({");
+    expect(source).toContain('window.dispatchEvent(new CustomEvent("jobops:company-discovery-updated"');
     expect(source).toContain("companyDiscoveryRunId: run.id");
     expect(source).toContain("clearStoredCompanyDiscoveryRunId(run.id)");
   });

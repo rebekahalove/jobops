@@ -25,6 +25,7 @@ from jobops_api.company_discovery import (
     company_discovery_validation_failure,
     get_latest_company_discovery_diagnostics,
     get_company_discovery_run_diagnostics,
+    find_company_cache_matches,
     parse_company_discovery_json,
     run_company_discovery,
     save_model_derived_companies,
@@ -38,8 +39,9 @@ from jobops_api.company_discovery_diagnostics import (
     record_company_discovery_provider_call,
     start_company_discovery_run,
 )
+from jobops_api.company_sources.theirstack.models import TheirStackCompanySearchDiagnostics, TheirStackCompanySearchResult
 from jobops_api.company_canonicalization import ensure_candidate_company_link, upsert_canonical_company
-from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, CommandInteractionLog, Company, CompanyDiscoveryRun, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
+from jobops_api.db.models import Application, Base, CandidateCompany, CandidateSavedJob, CommandInteractionLog, Company, CompanyDiscoveryRun, CompanySource, JobListing, JobListingSource, ProfileFactDraft, RoleTarget, SkillClaim
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.model_connector import ModelResponse
 from jobops_api.settings import Settings
@@ -651,6 +653,134 @@ def test_save_model_derived_companies_does_not_report_global_canonical_matches_a
         assert len(session.scalars(select(CandidateCompany)).all()) == 2
 
 
+def test_company_cache_matches_dedupe_duplicate_provider_sources_without_sql_distinct() -> None:
+    engine = create_seeded_engine()
+    synced_at = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        company = Company(
+            name="Applied AI Foundry",
+            normalized_name="applied ai foundry",
+            description="Builds Applied AI platforms.",
+            source_summary="Provider-backed company cache row.",
+            operating_countries=["US"],
+            hiring_locations=["Remote"],
+            source_urls=["https://applied-ai.example"],
+        )
+        session.add(company)
+        session.flush()
+        session.add_all(
+            [
+                CompanySource(
+                    company_id=company.id,
+                    source_provider="theirstack",
+                    provider_type="company_source",
+                    provider_company_id="ts-applied-ai-foundry",
+                    source_query="Applied AI Engineer",
+                    raw_metadata_json={"numJobs": 4},
+                    last_seen_at=synced_at,
+                    last_synced_at=synced_at,
+                    is_active=True,
+                ),
+                CompanySource(
+                    company_id=company.id,
+                    source_provider="theirstack",
+                    provider_type="company_source",
+                    source_result_id="ts-applied-ai-foundry-repeat",
+                    source_query="AI Platform Engineer",
+                    company_signals_json={"numJobsLast30Days": 2},
+                    last_seen_at=synced_at,
+                    last_synced_at=synced_at,
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        matches = find_company_cache_matches(
+            session,
+            search_terms=["Applied AI Engineer", "AI Platform Engineer"],
+            freshness_hours=168,
+        )
+
+    assert [(match[0].name, match[2]) for match in matches] == [("Applied AI Foundry", 2)]
+
+
+def test_model_grounded_discovery_enriches_saved_companies_with_theirstack_when_planner_declines(tmp_path: Path) -> None:
+    engine = create_seeded_engine()
+    settings = make_settings(tmp_path)
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "theirstack_api_key": "secret-theirstack-key",
+            "theirstack_company_search_enabled": True,
+            "theirstack_company_search_limit": 25,
+            "theirstack_company_search_max_pages": 1,
+        }
+    )
+    connector = SequentialCompanyDiscoveryConnector(
+        [
+            json.dumps(
+                {
+                    "useTheirStackCompanySearch": False,
+                    "rationale": "Use model-grounded discovery first.",
+                    "clarifyingQuestions": [],
+                    "search": {},
+                }
+            ),
+            company_discovery_response(
+                "Added companies.",
+                [
+                    {
+                        "name": "Model Found Co",
+                        "normalizedName": "model found co",
+                        "websiteUrl": "https://model-found.example",
+                        "sourceUrls": ["https://model-found.example"],
+                    }
+                ],
+                search_queries=["Model Found Co AI hiring"],
+            ),
+        ]
+    )
+    theirstack_client = RecordingTheirStackCompanyClient(
+        [
+            {
+                "name": "Model Found Co",
+                "domain": "model-found.example",
+                "description": "Provider-enriched company metadata.",
+                "num_jobs_found": 3,
+            }
+        ]
+    )
+    with Session(engine) as session:
+        result = run_company_discovery(
+            CompanyDiscoveryRequest(
+                latest_user_message="Find artificial intelligence companies to follow",
+                candidate_profile_slug="rebekah-love",
+            ),
+            connector=connector,
+            theirstack_client=theirstack_client,
+            db_session=session,
+            settings=settings,
+        )
+
+        assert result.status_code == 200
+        assert len(theirstack_client.requests) == 1
+        assert theirstack_client.requests[0].company_domain_or == ("model-found.example",)
+        payload = result.body["result"]
+        theirstack_rows = [
+            row
+            for row in payload["providerDiagnostics"]
+            if row["provider"] == "theirstack" and row["label"] == "TheirStack model-result enrichment"
+        ]
+        assert theirstack_rows
+        assert theirstack_rows[0]["status"] == "completed"
+        assert payload["discoveryAudit"]["theirStack"]["used"] is True
+        assert payload["discoveryAudit"]["theirStack"]["rawCompanyCount"] == 1
+        company = session.scalar(select(Company).where(Company.normalized_domain == "model-found.example"))
+        assert company is not None
+        assert company.sources[0].source_provider == "theirstack"
+
+
 def test_save_model_derived_companies_silently_dedupes_repeated_model_candidates() -> None:
     engine = create_seeded_engine()
     with Session(engine) as session:
@@ -708,6 +838,14 @@ def test_mock_provider_path_saves_model_derived_companies(tmp_path: Path) -> Non
     assert len(result.body["result"]["companies"]) == 2
     assert result.body["result"]["modelResponse"]["provider"] == "mock"
     assert json.loads(result.body["result"]["modelResponse"]["text"])["companies"][0]["name"] == "Profile-Aligned Example Co"
+    assert result.body["result"]["discoveryAudit"]["theirStack"]["checked"] is True
+    assert result.body["result"]["discoveryAudit"]["theirStack"]["enabled"] is False
+    assert result.body["result"]["discoveryAudit"]["theirStack"]["skippedReason"] == "missing_api_key"
+    theirstack_row = next(
+        row for row in result.body["result"]["providerDiagnostics"] if row["provider"] == "theirstack"
+    )
+    assert theirstack_row["status"] == "unavailable"
+    assert theirstack_row["resultSummary"]["skippedReason"] == "missing_api_key"
 
 
 def test_company_discovery_prompts_for_targets_on_generic_request(tmp_path: Path) -> None:
@@ -1481,6 +1619,27 @@ class SequentialCompanyDiscoveryConnector:
         self.requests.append(request)
         text = self.responses.pop(0)
         return ModelResponse(text=text, provider=self.provider, model=self.model, finish_reason="stop", metadata={})
+
+
+class RecordingTheirStackCompanyClient:
+    def __init__(self, companies: list[dict[str, Any]]) -> None:
+        self.companies = companies
+        self.requests = []
+
+    def search_companies(self, request):
+        self.requests.append(request)
+        return TheirStackCompanySearchResult(
+            status="completed",
+            companies=tuple(self.companies),
+            diagnostics=TheirStackCompanySearchDiagnostics(
+                enabled=True,
+                requested_pages=request.max_pages or 1,
+                fetched_pages=request.max_pages or 1,
+                raw_company_count=len(self.companies),
+                total_companies=len(self.companies),
+                request_shape=request.sanitized_shape(),
+            ),
+        )
 
 
 def company_discovery_response(

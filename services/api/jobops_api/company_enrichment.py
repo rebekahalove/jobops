@@ -497,6 +497,7 @@ class ModelPlannedCompanyEnrichmentService:
                 "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
                 "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
                 "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+                "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
                 "totalResults": diagnostics.get("totalResults"),
             },
             error={"type": diagnostics.get("errorType"), "message": diagnostics.get("errorMessage") or enrichment.error_message}
@@ -575,6 +576,7 @@ class ModelPlannedCompanyEnrichmentService:
             result_summary={
                 "upsertedCompanyCount": (enrichment.diagnostics or {}).get("upsertedCompanyCount", 0),
                 "linkedCandidateCompanyCount": len(companies),
+                "duplicateCompanyCount": (enrichment.diagnostics or {}).get("duplicateCompanyCount", 0),
                 "filteredNoSupportedAtsCount": result_payload.get("filteredNoSupportedAtsCount"),
                 "filteredNoGreenhouseTokenCount": result_payload.get("filteredNoGreenhouseTokenCount"),
             },
@@ -670,6 +672,7 @@ def link_filtered_theirstack_companies(
     require_supported_ats: bool,
 ) -> list[CandidateCompany]:
     links: list[CandidateCompany] = []
+    seen_link_ids: set[str] = set()
     for company, normalized in zip(enrichment.companies, enrichment.normalized_companies, strict=False):
         if require_greenhouse and not getattr(company, "greenhouse_board_token", None):
             continue
@@ -689,7 +692,9 @@ def link_filtered_theirstack_companies(
             discovered_by="theirstack",
             personal_source_urls=list(normalized.source_urls),
         )
-        links.append(link_result.link)
+        if link_result.link.id not in seen_link_ids:
+            seen_link_ids.add(link_result.link.id)
+            links.append(link_result.link)
     return links
 
 
@@ -713,9 +718,11 @@ def run_post_enrichment_greenhouse_sync(
     linked_companies: list[CandidateCompany],
 ) -> dict[str, Any]:
     tokens = unique_greenhouse_board_tokens(linked_companies)
+    sync_requested = bool(plan.sync_discovered_greenhouse_boards or plan.sync_discovered_ats_boards)
     diagnostics = {
         "greenhouse_board_token_count": len(tokens),
-        "boards_selected_for_sync": tokens,
+        "boards_detected": tokens,
+        "boards_selected_for_sync": tokens if sync_requested else [],
         "board_tokens_synced": [],
         "board_sync_attempted": False,
         "board_sync_completed_count": 0,
@@ -728,7 +735,7 @@ def run_post_enrichment_greenhouse_sync(
         "sync_unavailable_reason": None,
         "job_sync_results": (),
     }
-    if not (plan.sync_discovered_greenhouse_boards or plan.sync_discovered_ats_boards):
+    if not sync_requested:
         diagnostics["sync_unavailable_reason"] = "sync_not_requested"
         return diagnostics
     if not tokens:
@@ -776,9 +783,11 @@ def run_post_enrichment_ashby_sync(
     linked_companies: list[CandidateCompany],
 ) -> dict[str, Any]:
     board_urls = unique_ashby_board_urls(linked_companies)
+    sync_requested = bool(plan.sync_discovered_ashby_boards or plan.sync_discovered_ats_boards)
     diagnostics = {
         "ashby_board_url_count": len(board_urls),
-        "boards_selected_for_sync": board_urls,
+        "boards_detected": board_urls,
+        "boards_selected_for_sync": board_urls if sync_requested else [],
         "board_tokens_synced": [],
         "board_urls_synced": [],
         "board_sync_attempted": False,
@@ -792,7 +801,7 @@ def run_post_enrichment_ashby_sync(
         "sync_unavailable_reason": None,
         "job_sync_results": (),
     }
-    if not (plan.sync_discovered_ashby_boards or plan.sync_discovered_ats_boards):
+    if not sync_requested:
         diagnostics["sync_unavailable_reason"] = "sync_not_requested"
         return diagnostics
     if not board_urls:
@@ -1629,6 +1638,7 @@ def build_theirstack_discovery_audit(
         "rawCompanyCount": diagnostics.get("rawCompanyCount", 0),
         "normalizedCompanyCount": diagnostics.get("normalizedCompanyCount", 0),
         "upsertedCompanyCount": diagnostics.get("upsertedCompanyCount", 0),
+        "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
         "linkedCandidateCompanyCount": diagnostics.get("linkedCandidateCompanyCount", len(linked_companies)),
         "totalCompanies": diagnostics.get("totalCompanies"),
         "totalResults": diagnostics.get("totalResults"),
@@ -1659,7 +1669,7 @@ def build_theirstack_discovery_audit(
         "modelName": None,
         "savedCompanyCount": len(linked_companies),
         "linkedCompanyCount": len(linked_companies),
-        "duplicateCompanyCount": 0,
+        "duplicateCompanyCount": diagnostics.get("duplicateCompanyCount", 0),
         "skippedCompanyCount": max(0, len(enrichment.companies) - len(linked_companies)),
         "zeroNewCompanyReason": None if linked_companies else ("theirstackUnavailable" if status == "unavailable" else "noTheirStackCompanyLeadsLinked"),
         "searchQueriesUsed": [],
@@ -1672,8 +1682,8 @@ def build_theirstack_discovery_audit(
             "providers": [
                 provider
                 for provider, attempted in (
-                    ("greenhouse", bool(board_sync["board_sync_attempted"] or board_sync["boards_selected_for_sync"])),
-                    ("ashby", bool(ashby_sync["board_sync_attempted"] or ashby_sync["boards_selected_for_sync"])),
+                    ("greenhouse", bool(board_sync["board_sync_attempted"])),
+                    ("ashby", bool(ashby_sync["board_sync_attempted"])),
                 )
                 if attempted
             ],
@@ -1754,6 +1764,7 @@ def build_theirstack_provider_diagnostics(
                 "rawCompanyCount": their_stack_summary.get("rawCompanyCount"),
                 "normalizedCompanyCount": their_stack_summary.get("normalizedCompanyCount"),
                 "upsertedCompanyCount": their_stack_summary.get("upsertedCompanyCount"),
+                "duplicateCompanyCount": their_stack_summary.get("duplicateCompanyCount"),
                 "linkedCandidateCompanyCount": linked_company_count,
                 "skippedCompanyCount": skipped_company_count,
                 "totalCompanies": their_stack_summary.get("totalCompanies"),
@@ -1811,11 +1822,13 @@ def record_first_party_sync_diagnostics(
 ) -> None:
     selected = sync["boards_selected_for_sync"]
     synced = sync["board_tokens_synced"] if provider == "greenhouse" else sync["board_urls_synced"]
-    attempted = bool(sync["board_sync_attempted"] or selected)
+    attempted = bool(sync["board_sync_attempted"])
     if sync["board_sync_failed_count"] and not sync["board_sync_completed_count"]:
         status = "failed"
     elif sync["board_sync_completed_count"] or synced:
         status = "completed"
+    elif sync["sync_unavailable_reason"] == "sync_not_requested":
+        status = "skipped"
     elif sync["sync_unavailable_reason"]:
         status = "unavailable"
     else:
@@ -1845,11 +1858,15 @@ def record_first_party_sync_diagnostics(
 def build_first_party_sync_provider_diagnostic(*, provider: str, sync: dict[str, Any]) -> dict[str, Any]:
     selected = sync["boards_selected_for_sync"]
     synced = sync["board_tokens_synced"] if provider == "greenhouse" else sync["board_urls_synced"]
-    attempted = bool(sync["board_sync_attempted"] or selected)
+    attempted = bool(sync["board_sync_attempted"])
     if sync["board_sync_failed_count"] and not sync["board_sync_completed_count"]:
         status = "failed"
     elif sync["board_sync_completed_count"] or synced:
         status = "completed"
+    elif sync["sync_unavailable_reason"] == "sync_not_requested":
+        status = "skipped"
+    elif sync["sync_unavailable_reason"]:
+        status = "unavailable"
     else:
         status = "skipped"
     return build_company_enrichment_provider_diagnostic(

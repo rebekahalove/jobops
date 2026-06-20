@@ -12,6 +12,12 @@ type PendingDiagnostics = {
   startedAt?: string | null;
 };
 
+type LoadCompanyDiscoveryRunOptions = {
+  clearWhenMissing?: boolean;
+  ignorePendingStartTime?: boolean;
+  runId?: string | null;
+};
+
 export function CompanyDiscoveryDiagnostics({
   apiBasePath = "/api",
   initialRun = null
@@ -25,7 +31,11 @@ export function CompanyDiscoveryDiagnostics({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const pendingStartedAtRef = useRef<string | null>(null);
 
-  const loadLatestRun = useCallback(async ({ clearWhenMissing = false, runId = null }: { clearWhenMissing?: boolean; runId?: string | null } = {}) => {
+  const loadLatestRun = useCallback(async ({
+    clearWhenMissing = false,
+    ignorePendingStartTime = false,
+    runId = null
+  }: LoadCompanyDiscoveryRunOptions = {}) => {
     setIsLoading(true);
     try {
       const path = runId ? `/companies/discovery-runs/${encodeURIComponent(runId)}` : "/companies/discovery-runs/latest";
@@ -44,7 +54,7 @@ export function CompanyDiscoveryDiagnostics({
         setStatusMessage(`Company discovery diagnostics could not be loaded (HTTP ${response.status}).`);
         return false;
       }
-      if (!runId && pendingStartedAtRef.current && !isDiagnosticsAtOrAfter(payload.createdAt, pendingStartedAtRef.current)) {
+      if (!runId && pendingStartedAtRef.current && !ignorePendingStartTime && !isDiagnosticsAtOrAfter(payload.createdAt, pendingStartedAtRef.current)) {
         setStatusMessage("Waiting for router/source diagnostics...");
         return false;
       }
@@ -64,7 +74,7 @@ export function CompanyDiscoveryDiagnostics({
   useEffect(() => {
     let active = true;
 
-    async function loadIfActive(options: { clearWhenMissing?: boolean; runId?: string | null } = {}) {
+    async function loadIfActive(options: LoadCompanyDiscoveryRunOptions = {}) {
       if (active) {
         await loadLatestRun(options);
       }
@@ -86,27 +96,44 @@ export function CompanyDiscoveryDiagnostics({
 
     function handleDiscoveryCompleted(event: Event) {
       const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
+      pendingStartedAtRef.current = null;
+      setPendingRun(null);
+      if (isCompanyDiscoveryDiagnosticsStatus(detail.diagnostics)) {
+        setLatestRun(detail.diagnostics);
+        setStatusMessage(null);
+      }
+      const runId = companyDiscoveryRunIdFromEventDetail(detail);
+      loadIfActive({ clearWhenMissing: false, ignorePendingStartTime: true, runId });
+    }
+
+    function handleDiscoveryUpdated(event: Event) {
+      const detail = event instanceof CustomEvent && isRecord(event.detail) ? event.detail : {};
       if (isCompanyDiscoveryDiagnosticsStatus(detail.diagnostics)) {
         pendingStartedAtRef.current = null;
         setLatestRun(detail.diagnostics);
         setPendingRun(null);
         setStatusMessage(null);
+        return;
       }
       const runId = companyDiscoveryRunIdFromEventDetail(detail);
-      loadIfActive({ clearWhenMissing: false, runId });
+      if (runId) {
+        loadIfActive({ clearWhenMissing: false, ignorePendingStartTime: true, runId });
+      }
     }
 
     function handleCompaniesUpdated() {
-      loadIfActive({ clearWhenMissing: false });
+      loadIfActive({ clearWhenMissing: false, ignorePendingStartTime: true });
     }
 
     loadIfActive({ clearWhenMissing: true });
     window.addEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
+    window.addEventListener("jobops:company-discovery-updated", handleDiscoveryUpdated);
     window.addEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
     window.addEventListener("jobops:companies-updated", handleCompaniesUpdated);
     return () => {
       active = false;
       window.removeEventListener("jobops:company-discovery-started", handleDiscoveryStarted);
+      window.removeEventListener("jobops:company-discovery-updated", handleDiscoveryUpdated);
       window.removeEventListener("jobops:company-discovery-completed", handleDiscoveryCompleted);
       window.removeEventListener("jobops:companies-updated", handleCompaniesUpdated);
     };
@@ -151,8 +178,9 @@ function CompanyDiscoveryDiagnosticsPanel({
   isLoading: boolean;
   statusMessage: string | null;
 }) {
-  const isOpen = Boolean(pendingRun || run?.status === "failed" || run?.status === "running");
-  const summaryText = pendingRun
+  const effectivePendingRun = run ? null : pendingRun;
+  const isOpen = Boolean(effectivePendingRun || run);
+  const summaryText = effectivePendingRun
     ? "Company discovery is starting..."
     : run
       ? companyDiscoveryDigest(run)
@@ -173,18 +201,18 @@ function CompanyDiscoveryDiagnosticsPanel({
         </summary>
 
         <div className="job-discovery-diagnostics-body">
-          {pendingRun ? (
+          {effectivePendingRun ? (
             <>
               <section className="diagnostics-section">
                 <h3>Summary</h3>
                 <p className="diagnostics-muted">Waiting for router/source diagnostics...</p>
-                {pendingRun.commandPreview ? <p className="diagnostics-muted">Command: {pendingRun.commandPreview}</p> : null}
+                {effectivePendingRun.commandPreview ? <p className="diagnostics-muted">Command: {effectivePendingRun.commandPreview}</p> : null}
               </section>
               <section className="diagnostics-section">
                 <h3>Source timeline / Provider calls</h3>
                 <p className="diagnostics-muted">
-                  {pendingRun.companyDiscoveryRunId
-                    ? `Waiting for provider-call diagnostics for run ${pendingRun.companyDiscoveryRunId}...`
+                  {effectivePendingRun.companyDiscoveryRunId
+                    ? `Waiting for provider-call diagnostics for run ${effectivePendingRun.companyDiscoveryRunId}...`
                     : "Waiting for router/source diagnostics..."}
                 </p>
                 {statusMessage ? <p className="diagnostics-muted">Status: {statusMessage}</p> : null}

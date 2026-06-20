@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from jobops_api.db.models import (
     CandidateCompany,
     CandidateProfile,
     CommandInteractionLog,
+    CompanySyncSignature,
     JobLocationTarget,
     JobProviderLocationMapping,
     JobRole,
@@ -21,6 +23,12 @@ from jobops_api.db.models import (
     User,
     UserSession,
     WorkspaceMembership,
+)
+from jobops_api.company_sources.theirstack.models import TheirStackCompanySearchRequest
+from jobops_api.company_sync import (
+    derive_company_sync_signatures,
+    sync_theirstack_company_signatures,
+    upsert_theirstack_company_sync_signature,
 )
 from jobops_api.db.seed_profile import seed_public_profile
 from jobops_api.db.session import create_db_engine
@@ -127,6 +135,67 @@ def main() -> None:
     sync_adzuna_signatures_parser.add_argument("--freshness-hours", type=int, default=None)
     sync_adzuna_signatures_parser.add_argument("--max-pages", type=int, default=None)
 
+    upsert_company_signature_parser = subparsers.add_parser(
+        "upsert-theirstack-company-sync-signature",
+        help="Create or update a bounded TheirStack Company Sync signature without calling TheirStack.",
+    )
+    upsert_company_signature_parser.add_argument("--query", required=True)
+    upsert_company_signature_parser.add_argument("--query-kind", default="manual")
+    upsert_company_signature_parser.add_argument("--source", default="cli")
+    upsert_company_signature_parser.add_argument("--results-per-page", type=int, default=25)
+    upsert_company_signature_parser.add_argument("--max-pages", type=int, default=1)
+    upsert_company_signature_parser.add_argument("--freshness-hours", type=int, default=168)
+    upsert_company_signature_parser.add_argument("--enabled", dest="enabled", action="store_true", default=True)
+    upsert_company_signature_parser.add_argument("--disabled", dest="enabled", action="store_false")
+    upsert_company_signature_parser.add_argument("--created-by", default=None)
+    upsert_company_signature_parser.add_argument("--company-name", action="append", default=[])
+    upsert_company_signature_parser.add_argument("--company-name-partial", action="append", default=[])
+    upsert_company_signature_parser.add_argument("--company-domain", action="append", default=[])
+    upsert_company_signature_parser.add_argument("--company-country-code", action="append", default=[])
+    upsert_company_signature_parser.add_argument("--job-title-pattern", action="append", default=[])
+    upsert_company_signature_parser.add_argument("--posted-at-max-age-days", type=int, default=None)
+    upsert_company_signature_parser.add_argument("--criteria-json", default=None)
+
+    list_company_signatures_parser = subparsers.add_parser(
+        "list-theirstack-company-sync-signatures",
+        help="List persisted TheirStack Company Sync signatures.",
+    )
+    list_company_signatures_parser.add_argument("--status", default=None)
+    list_company_signatures_parser.add_argument("--enabled-only", action="store_true")
+
+    sync_company_signatures_parser = subparsers.add_parser(
+        "sync-theirstack-company-signatures",
+        help="Refresh persisted TheirStack Company Sync signatures.",
+    )
+    sync_company_signatures_parser.add_argument("--signature-id", action="append", default=[])
+    sync_company_signatures_parser.add_argument("--all-enabled", action="store_true")
+    sync_company_signatures_parser.add_argument("--force", action="store_true")
+    sync_company_signatures_parser.add_argument("--freshness-hours", type=int, default=None)
+    sync_company_signatures_parser.add_argument("--max-pages", type=int, default=None)
+    sync_company_signatures_parser.add_argument("--max-signatures", type=int, default=None)
+
+    derive_company_signatures_parser = subparsers.add_parser(
+        "derive-company-sync-signatures",
+        help="Derive/upsert bounded Company Sync signatures from profile demand and inventory gaps.",
+    )
+    derive_company_signatures_parser.add_argument("--candidate-slug", default=None)
+    derive_company_signatures_parser.add_argument("--latest-user-request", default=None)
+    derive_company_signatures_parser.add_argument("--all-active-profiles", action="store_true")
+    derive_company_signatures_parser.add_argument("--from-job-listings", action="store_true")
+    derive_company_signatures_parser.add_argument("--from-candidate-companies", action="store_true")
+    derive_company_signatures_parser.add_argument("--from-saved-jobs", action="store_true")
+    derive_company_signatures_parser.add_argument("--from-applications", action="store_true")
+    derive_company_signatures_parser.add_argument("--missing-company-metadata-only", action="store_true")
+    derive_company_signatures_parser.add_argument("--active-jobs-only", action="store_true")
+    derive_company_signatures_parser.add_argument("--recent-days", type=int, default=30)
+    derive_company_signatures_parser.add_argument("--min-active-jobs", type=int, default=1)
+    derive_company_signatures_parser.add_argument("--limit", type=int, default=25)
+    derive_company_signatures_parser.add_argument("--dry-run", action="store_true")
+    derive_company_signatures_parser.add_argument("--created-by", default=None)
+    derive_company_signatures_parser.add_argument("--freshness-hours", type=int, default=168)
+    derive_company_signatures_parser.add_argument("--results-per-page", type=int, default=25)
+    derive_company_signatures_parser.add_argument("--max-pages", type=int, default=1)
+
     list_location_mappings_parser = subparsers.add_parser(
         "list-job-location-mappings",
         help="List Job Sync provider location mappings needing review or maintenance.",
@@ -231,6 +300,55 @@ def main() -> None:
             all_enabled=args.all_enabled,
             force=args.force,
             freshness_hours=args.freshness_hours,
+            max_pages=args.max_pages,
+        )
+    elif args.command == "upsert-theirstack-company-sync-signature":
+        upsert_theirstack_company_sync_signature_command(
+            query=args.query,
+            query_kind=args.query_kind,
+            source=args.source,
+            results_per_page=args.results_per_page,
+            max_pages=args.max_pages,
+            freshness_hours=args.freshness_hours,
+            enabled=args.enabled,
+            created_by=args.created_by,
+            company_names=args.company_name,
+            company_name_partials=args.company_name_partial,
+            company_domains=args.company_domain,
+            company_country_codes=args.company_country_code,
+            job_title_patterns=args.job_title_pattern,
+            posted_at_max_age_days=args.posted_at_max_age_days,
+            criteria_json=args.criteria_json,
+        )
+    elif args.command == "list-theirstack-company-sync-signatures":
+        list_theirstack_company_sync_signatures_command(status=args.status, enabled_only=args.enabled_only)
+    elif args.command == "sync-theirstack-company-signatures":
+        sync_theirstack_company_signatures_command(
+            signature_ids=args.signature_id,
+            all_enabled=args.all_enabled,
+            force=args.force,
+            freshness_hours=args.freshness_hours,
+            max_pages=args.max_pages,
+            max_signatures=args.max_signatures,
+        )
+    elif args.command == "derive-company-sync-signatures":
+        derive_company_sync_signatures_command(
+            candidate_slug=args.candidate_slug,
+            latest_user_request=args.latest_user_request,
+            all_active_profiles=args.all_active_profiles,
+            from_job_listings=args.from_job_listings,
+            from_candidate_companies=args.from_candidate_companies,
+            from_saved_jobs=args.from_saved_jobs,
+            from_applications=args.from_applications,
+            missing_company_metadata_only=args.missing_company_metadata_only,
+            active_jobs_only=args.active_jobs_only,
+            recent_days=args.recent_days,
+            min_active_jobs=args.min_active_jobs,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            created_by=args.created_by,
+            freshness_hours=args.freshness_hours,
+            results_per_page=args.results_per_page,
             max_pages=args.max_pages,
         )
     elif args.command == "list-job-location-mappings":
@@ -532,6 +650,236 @@ def format_adzuna_sync_result(result) -> str:
         f"normalized={result.normalized_count} created={result.created_count} updated={result.updated_count} "
         f"failed={result.failed_normalization_count}"
     )
+
+
+def upsert_theirstack_company_sync_signature_command(
+    *,
+    query: str,
+    query_kind: str,
+    source: str,
+    results_per_page: int,
+    max_pages: int,
+    freshness_hours: int,
+    enabled: bool,
+    created_by: str | None,
+    company_names: list[str],
+    company_name_partials: list[str],
+    company_domains: list[str],
+    company_country_codes: list[str],
+    job_title_patterns: list[str],
+    posted_at_max_age_days: int | None,
+    criteria_json: str | None,
+) -> None:
+    criteria = parse_optional_json(criteria_json)
+    job_filters: dict[str, object] = {}
+    if job_title_patterns:
+        job_filters["job_title_pattern_or"] = clean_cli_values(job_title_patterns)
+    if posted_at_max_age_days:
+        job_filters["posted_at_max_age_days"] = max(1, posted_at_max_age_days)
+    request = TheirStackCompanySearchRequest(
+        company_name_or=tuple(clean_cli_values(company_names)),
+        company_name_partial_match_or=tuple(clean_cli_values(company_name_partials or ([query] if not company_names and not company_domains else []))),
+        company_domain_or=tuple(clean_cli_values(company_domains)),
+        company_country_code_or=tuple(clean_cli_values(company_country_codes)),
+        job_filters=job_filters,
+    )
+    engine = create_db_engine()
+    with Session(engine) as session:
+        signature = upsert_theirstack_company_sync_signature(
+            session,
+            query_text=query,
+            request=request,
+            query_kind=query_kind,
+            source=source,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+            freshness_hours=freshness_hours,
+            enabled=enabled,
+            created_by=created_by,
+            criteria_json=criteria,
+        )
+        session.commit()
+        print(format_theirstack_company_signature_upsert(signature))
+
+
+def list_theirstack_company_sync_signatures_command(*, status: str | None, enabled_only: bool) -> None:
+    engine = create_db_engine()
+    with Session(engine) as session:
+        statement = select(CompanySyncSignature).where(CompanySyncSignature.provider_name == "theirstack")
+        if status:
+            statement = statement.where(CompanySyncSignature.verification_status == status)
+        if enabled_only:
+            statement = statement.where(CompanySyncSignature.enabled.is_(True))
+        signatures = list(session.scalars(statement.order_by(CompanySyncSignature.created_at.asc(), CompanySyncSignature.sync_key.asc())).all())
+    if not signatures:
+        print("No TheirStack company sync signatures matched.")
+        return
+    for signature in signatures:
+        print(format_theirstack_company_signature(signature))
+
+
+def sync_theirstack_company_signatures_command(
+    *,
+    signature_ids: list[str],
+    all_enabled: bool,
+    force: bool,
+    freshness_hours: int | None,
+    max_pages: int | None,
+    max_signatures: int | None,
+) -> None:
+    if not signature_ids and not all_enabled:
+        raise SystemExit("Pass --signature-id or --all-enabled.")
+    engine = create_db_engine()
+    settings = load_settings()
+    with Session(engine) as session:
+        results = sync_theirstack_company_signatures(
+            session,
+            settings=settings,
+            signature_ids=signature_ids or None,
+            enabled_only=all_enabled,
+            force=force,
+            freshness_hours=freshness_hours,
+            max_pages=max_pages,
+            max_signatures=max_signatures or settings.theirstack_company_sync_max_signatures_per_run,
+        )
+        session.commit()
+    if not results:
+        print("No TheirStack company sync signatures matched.")
+        return
+    for result in results:
+        print(format_theirstack_company_sync_result(result))
+
+
+def derive_company_sync_signatures_command(
+    *,
+    candidate_slug: str | None,
+    latest_user_request: str | None,
+    all_active_profiles: bool,
+    from_job_listings: bool,
+    from_candidate_companies: bool,
+    from_saved_jobs: bool,
+    from_applications: bool,
+    missing_company_metadata_only: bool,
+    active_jobs_only: bool,
+    recent_days: int,
+    min_active_jobs: int,
+    limit: int,
+    dry_run: bool,
+    created_by: str | None,
+    freshness_hours: int,
+    results_per_page: int,
+    max_pages: int,
+) -> None:
+    if not any([candidate_slug, all_active_profiles, from_job_listings, from_candidate_companies, from_saved_jobs, from_applications]):
+        raise SystemExit("Pass a profile scope or at least one inventory source.")
+    engine = create_db_engine()
+    with Session(engine) as session:
+        result = derive_company_sync_signatures(
+            session,
+            candidate_slug=candidate_slug,
+            latest_user_request=latest_user_request,
+            all_active_profiles=all_active_profiles,
+            from_job_listings=from_job_listings,
+            from_candidate_companies=from_candidate_companies,
+            from_saved_jobs=from_saved_jobs,
+            from_applications=from_applications,
+            missing_company_metadata_only=missing_company_metadata_only,
+            active_jobs_only=active_jobs_only,
+            recent_days=recent_days,
+            min_active_jobs=min_active_jobs,
+            limit=limit,
+            dry_run=dry_run,
+            created_by=created_by,
+            freshness_hours=freshness_hours,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+        )
+        if not dry_run:
+            session.commit()
+    diagnostics = result.diagnostics or {}
+    print(
+        f"Derived company sync signatures: candidates={diagnostics.get('candidateCount', 0)} "
+        f"deduped={diagnostics.get('dedupedCount', 0)} "
+        f"upserted={diagnostics.get('createdOrUpdatedCount', 0)} dry_run={diagnostics.get('dryRun', False)}"
+    )
+    if dry_run:
+        for candidate in result.dry_run_signatures:
+            print(
+                f"dry-run | {candidate['queryKind']} | query={candidate['queryText']} "
+                f"request={candidate['request'].sanitized_shape()}"
+            )
+    else:
+        for signature in result.signatures:
+            print(format_theirstack_company_signature(signature))
+
+
+def format_theirstack_company_signature(signature: CompanySyncSignature) -> str:
+    criteria = signature.criteria_json or {}
+    return (
+        f"{signature.id} | {signature.sync_key} | query={signature.query_text} "
+        f"kind={signature.query_kind} enabled={signature.enabled} status={signature.verification_status} "
+        f"request={criteria.get('requestShape') or '-'} max_pages={signature.max_pages} "
+        f"results_per_page={signature.results_per_page} freshness_hours={signature.freshness_hours} "
+        f"last_completed_at={signature.last_completed_at or '-'} last_status={signature.last_status or '-'} "
+        f"raw={signature.last_raw_result_count} normalized={signature.last_normalized_count} "
+        f"canonical_created={signature.last_created_count} canonical_updated={signature.last_updated_count}"
+    )
+
+
+def format_theirstack_company_signature_upsert(signature: CompanySyncSignature) -> str:
+    criteria = signature.criteria_json or {}
+    return "\n".join(
+        [
+            "TheirStack company sync signature upserted.",
+            f"id: {signature.id}",
+            f"sync_key: {signature.sync_key}",
+            f"query: {signature.query_text}",
+            f"query_kind: {signature.query_kind}",
+            f"enabled: {signature.enabled}",
+            f"verification_status: {signature.verification_status}",
+            f"request_shape: {criteria.get('requestShape') or '-'}",
+            f"max_pages: {signature.max_pages}",
+            f"results_per_page: {signature.results_per_page}",
+            f"freshness_hours: {signature.freshness_hours}",
+            "",
+            "No provider API call was made. To fetch companies, run:",
+            (
+                "python -m jobops_api.cli sync-theirstack-company-signatures "
+                f"--signature-id {signature.id} --force --max-pages {signature.max_pages}"
+            ),
+        ]
+    )
+
+
+def format_theirstack_company_sync_result(result) -> str:
+    request = result.request
+    diagnostics = result.diagnostics_json or {}
+    if result.status == "skipped_fresh":
+        return f"{request.sync_key} skipped_fresh freshness_hours={diagnostics.get('freshnessHours') or '-'}"
+    if result.error:
+        return f"{request.sync_key} failed error={result.error}"
+    return (
+        f"{request.sync_key} {result.status} raw={result.raw_result_count} "
+        f"normalized={result.normalized_count} canonical_created={result.created_count} "
+        f"canonical_updated={result.updated_count} duplicate={result.duplicate_count} "
+        f"failed_normalization={result.failed_normalization_count} "
+        f"company_sources={diagnostics.get('companySourceCount', 0)} "
+        f"source_created={diagnostics.get('companySourceCreatedCount', 0)} "
+        f"source_updated={diagnostics.get('companySourceUpdatedCount', 0)}"
+    )
+
+
+def parse_optional_json(value: str | None) -> dict[str, object]:
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise SystemExit("--criteria-json must be a JSON object.")
+    return parsed
+
+
+def clean_cli_values(values: list[str]) -> list[str]:
+    return [" ".join(value.split()).strip() for value in values if " ".join(value.split()).strip()]
 
 
 def list_job_location_mappings_command(*, status: str, provider_name: str | None) -> None:
