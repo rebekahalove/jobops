@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import create_engine, select
@@ -832,7 +833,18 @@ def test_company_discovery_stale_cache_does_not_short_circuit_fallback(tmp_path:
 
 def test_cli_derive_command_accepts_latest_user_request(tmp_path: Path, monkeypatch, capsys) -> None:
     engine = create_seeded_engine()
+    captured: dict[str, Any] = {}
+
+    def fake_derive_company_sync_signatures(session: Session, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            diagnostics={"candidateCount": 1, "dedupedCount": 1, "createdOrUpdatedCount": 0, "dryRun": True},
+            dry_run_signatures=[],
+            signatures=[],
+        )
+
     monkeypatch.setattr(cli_module, "create_db_engine", lambda: engine)
+    monkeypatch.setattr(cli_module, "derive_company_sync_signatures", fake_derive_company_sync_signatures)
 
     cli_module.derive_company_sync_signatures_command(
         candidate_slug="rebekah-love",
@@ -854,6 +866,7 @@ def test_cli_derive_command_accepts_latest_user_request(tmp_path: Path, monkeypa
         max_pages=1,
     )
 
+    assert captured["latest_user_request"] == "derive company sync signatures from my current target"
     assert "Derived company sync signatures" in capsys.readouterr().out
 
 
